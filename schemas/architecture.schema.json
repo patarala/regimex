@@ -1,0 +1,207 @@
+{
+  "$defs": {
+    "JsonValue": {},
+    "TrainingPolicy": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_size": {
+          "default": 16,
+          "maximum": 128,
+          "minimum": 1,
+          "title": "Batch Size",
+          "type": "integer"
+        },
+        "epochs": {
+          "default": 30,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Epochs",
+          "type": "integer"
+        },
+        "learning_rate": {
+          "default": 0.001,
+          "exclusiveMinimum": 0,
+          "title": "Learning Rate",
+          "type": "number"
+        },
+        "optimizer": {
+          "enum": [
+            "lbfgs",
+            "adamw"
+          ],
+          "title": "Optimizer",
+          "type": "string"
+        },
+        "patience": {
+          "default": 5,
+          "minimum": 1,
+          "title": "Patience",
+          "type": "integer"
+        },
+        "seeds": {
+          "default": [
+            11,
+            23,
+            47
+          ],
+          "items": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Seeds",
+          "type": "array"
+        },
+        "selection_metric": {
+          "const": "validation_segment_macro_f1",
+          "default": "validation_segment_macro_f1",
+          "title": "Selection Metric",
+          "type": "string"
+        },
+        "validation_interval": {
+          "default": 2,
+          "minimum": 1,
+          "title": "Validation Interval",
+          "type": "integer"
+        },
+        "weight_decay": {
+          "default": 0.0001,
+          "minimum": 0,
+          "title": "Weight Decay",
+          "type": "number"
+        }
+      },
+      "required": [
+        "optimizer"
+      ],
+      "title": "TrainingPolicy",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Serializable installed metadata; worker availability may still be unknown.",
+  "properties": {
+    "architecture_id": {
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "title": "Architecture Id",
+      "type": "string"
+    },
+    "availability_reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Availability Reason"
+    },
+    "default_training_policy": {
+      "$ref": "#/$defs/TrainingPolicy"
+    },
+    "dependency_modules": {
+      "items": {
+        "pattern": "^[A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)*$",
+        "type": "string"
+      },
+      "title": "Dependency Modules",
+      "type": "array"
+    },
+    "descriptor_version": {
+      "const": "1.0",
+      "title": "Descriptor Version",
+      "type": "string"
+    },
+    "executable": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Executable"
+    },
+    "implementation_version": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^\\S+$",
+      "title": "Implementation Version",
+      "type": "string"
+    },
+    "interface_version": {
+      "const": "1.0",
+      "title": "Interface Version",
+      "type": "string"
+    },
+    "missing_value_policy": {
+      "const": "explicit_masks",
+      "title": "Missing Value Policy",
+      "type": "string"
+    },
+    "parameter_schema": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Parameter Schema",
+      "type": "object"
+    },
+    "required_observation_fields": {
+      "items": {
+        "enum": [
+          "last_price",
+          "trade_count",
+          "trade_volume",
+          "buy_order_count",
+          "buy_order_volume",
+          "sell_order_count",
+          "sell_order_volume",
+          "best_bid",
+          "best_ask"
+        ],
+        "type": "string"
+      },
+      "title": "Required Observation Fields",
+      "type": "array"
+    },
+    "supported_devices": {
+      "items": {
+        "const": "cpu",
+        "type": "string"
+      },
+      "title": "Supported Devices",
+      "type": "array"
+    },
+    "supported_optimizers": {
+      "items": {
+        "enum": [
+          "lbfgs",
+          "adamw"
+        ],
+        "type": "string"
+      },
+      "title": "Supported Optimizers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "descriptor_version",
+    "architecture_id",
+    "implementation_version",
+    "interface_version",
+    "parameter_schema",
+    "default_training_policy",
+    "supported_optimizers",
+    "required_observation_fields",
+    "missing_value_policy",
+    "supported_devices",
+    "dependency_modules",
+    "executable",
+    "availability_reason"
+  ],
+  "title": "ArchitectureInfo",
+  "type": "object"
+}

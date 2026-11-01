@@ -1,0 +1,91 @@
+{
+  "schema_version": "2.1",
+  "source": {
+    "source_id": "test-simulator",
+    "source_version": "1.0",
+    "configuration_id": "configuration-1",
+    "run_id": "run-1",
+    "snapshot_id": "snapshot-1",
+    "state_revision": "revision-1",
+    "run_status": "completed",
+    "consistency": "atomic_completed_snapshot"
+  },
+  "producer": {
+    "name": "fixture",
+    "version": "1.0"
+  },
+  "time_grid": {
+    "origin": 100.0,
+    "unit": "model_second",
+    "bin_width": 0.5,
+    "completed_horizon": 101.0,
+    "step_count": 2,
+    "interval_bounds": "[start,stop)",
+    "terminal_bin": "full_bins_only"
+  },
+  "capabilities": {
+    "execution_prices": "partial",
+    "trade_aggregates": "partial",
+    "accepted_order_aggregates": "complete",
+    "historical_quotes": {
+      "mode": "unavailable",
+      "coverage": "unavailable",
+      "provenance": "The source retains no historical quote snapshots.",
+      "complete_event_history_sha256": null,
+      "reconstruction_policy": null
+    },
+    "price_policy": "initial_then_carry",
+    "trade_count_policy": "one_per_partial_execution",
+    "order_count_policy": "accepted_submissions_including_immediate_fills",
+    "rejected_order_policy": "excluded"
+  },
+  "instruments": [
+    {
+      "instrument_id": "A/Q",
+      "base_asset": "A",
+      "quote_asset": "Q",
+      "initial_price": 100.0,
+      "units": {
+        "price_unit": "quote_asset_per_base_asset",
+        "volume_unit": "base_asset",
+        "price_decimal_places": 2,
+        "volume_decimal_places": 3
+      }
+    }
+  ],
+  "observations": [
+    {
+      "instrument_id": "A/Q",
+      "step": 0,
+      "last_price": 100.0,
+      "trade_count": 0,
+      "trade_volume": 0.0,
+      "buy_order_count": 0,
+      "buy_order_volume": 0.0,
+      "sell_order_count": 0,
+      "sell_order_volume": 0.0,
+      "best_bid": null,
+      "best_ask": null,
+      "price_state": "carried",
+      "bid_state": "unknown",
+      "ask_state": "unknown"
+    },
+    {
+      "instrument_id": "A/Q",
+      "step": 1,
+      "last_price": null,
+      "trade_count": null,
+      "trade_volume": null,
+      "buy_order_count": 0,
+      "buy_order_volume": 0.0,
+      "sell_order_count": 0,
+      "sell_order_volume": 0.0,
+      "best_bid": null,
+      "best_ask": null,
+      "price_state": "unknown",
+      "bid_state": "unknown",
+      "ask_state": "unknown"
+    }
+  ],
+  "content_sha256": "168bb5951226a7674e2fc257ad5437375eae8cd7bbc87849b26fb80a7c87b35f"
+}

@@ -1,0 +1,269 @@
+{
+  "$defs": {
+    "Direction": {
+      "enum": [
+        "sideways",
+        "growth",
+        "decline"
+      ],
+      "title": "Direction",
+      "type": "string"
+    },
+    "DirectionInterval": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Direction"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instrument_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "start": {
+          "exclusiveMaximum": 4096,
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "statistics": {
+          "$ref": "#/$defs/IntervalStatistics"
+        },
+        "status": {
+          "enum": [
+            "observed",
+            "no_trades",
+            "insufficient_data"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "stop": {
+          "exclusiveMinimum": 0,
+          "maximum": 4096,
+          "title": "Stop",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "start",
+        "stop",
+        "direction",
+        "status",
+        "statistics"
+      ],
+      "title": "DirectionInterval",
+      "type": "object"
+    },
+    "IntervalStatistics": {
+      "additionalProperties": false,
+      "description": "Observed totals, adjacent one-step returns, and explicit coverage.\n\nPrice change uses the first and last available prices at the reported steps.\nReturn standard deviation uses population normalization and only adjacent\nobserved prices; it is absent when fewer than two returns are available.\nTrade totals include known values only and are absent at zero coverage.",
+      "properties": {
+        "first_price_step": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "First Price Step"
+        },
+        "last_price_step": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Price Step"
+        },
+        "longest_no_trade_run": {
+          "minimum": 0,
+          "title": "Longest No Trade Run",
+          "type": "integer"
+        },
+        "price_change_percent": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Price Change Percent"
+        },
+        "price_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Price Coverage",
+          "type": "number"
+        },
+        "return_count": {
+          "minimum": 0,
+          "title": "Return Count",
+          "type": "integer"
+        },
+        "return_std": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Return Std"
+        },
+        "trade_active_fraction": {
+          "anyOf": [
+            {
+              "maximum": 1,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trade Active Fraction"
+        },
+        "trade_count": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trade Count"
+        },
+        "trade_count_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Trade Count Coverage",
+          "type": "number"
+        },
+        "trade_volume": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trade Volume"
+        },
+        "trade_volume_coverage": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Trade Volume Coverage",
+          "type": "number"
+        }
+      },
+      "required": [
+        "price_change_percent",
+        "first_price_step",
+        "last_price_step",
+        "return_std",
+        "return_count",
+        "trade_count",
+        "trade_volume",
+        "trade_active_fraction",
+        "price_coverage",
+        "trade_count_coverage",
+        "trade_volume_coverage",
+        "longest_no_trade_run"
+      ],
+      "title": "IntervalStatistics",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "experiment_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Experiment Id",
+      "type": "string"
+    },
+    "intervals": {
+      "items": {
+        "$ref": "#/$defs/DirectionInterval"
+      },
+      "minItems": 1,
+      "title": "Intervals",
+      "type": "array"
+    },
+    "policy": {
+      "default": "retrospective-directions/3.0",
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Policy",
+      "type": "string"
+    },
+    "policy_config": {
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      },
+      "title": "Policy Config",
+      "type": "object"
+    },
+    "reference_kind": {
+      "default": "automatic",
+      "enum": [
+        "automatic",
+        "human"
+      ],
+      "title": "Reference Kind",
+      "type": "string"
+    },
+    "reviewer": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reviewer"
+    },
+    "schema_version": {
+      "const": "3.0",
+      "default": "3.0",
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "experiment_id",
+    "intervals"
+  ],
+  "title": "DirectionAnnotations",
+  "type": "object"
+}

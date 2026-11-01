@@ -1,0 +1,115 @@
+[build-system]
+requires = ["hatchling==1.32.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "regimex"
+version = "0.1.0"
+description = "Price direction intervals for completed market experiments."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+  "pydantic>=2.12,<3",
+  "typer>=0.20,<1",
+]
+
+[project.optional-dependencies]
+service = [
+  "fastapi>=0.119,<1",
+  "uvicorn>=0.38,<1",
+  "psycopg[binary,pool]==3.3.6",
+  "procrastinate==3.8.1",
+  "alembic>=1.17,<2",
+]
+s3 = ["boto3==1.43.117"]
+ml = [
+  "numpy>=2.3,<3",
+  "scikit-learn>=1.7,<2",
+  "torch>=2.9,<3",
+  "threadpoolctl>=3.6,<4",
+]
+viz = [
+  "numpy>=2.3,<3",
+  "plotly>=6.3,<7",
+]
+
+[project.scripts]
+regimex = "regimex.cli:app"
+
+[project.entry-points."regimex.models"]
+baseline = "regimex.model_registry:baseline_descriptor"
+tcn = "regimex.model_registry:tcn_descriptor"
+
+[dependency-groups]
+dev = [
+  "mypy>=1.18,<2",
+  "pre-commit>=4.3,<5",
+  "pytest>=8.4,<10",
+  "ruff>=0.14,<1",
+]
+build = ["hatchling==1.32.4"]
+queue-test = [
+  "procrastinate==3.8.1",
+  "psycopg[binary,pool]==3.3.6",
+]
+# Starlette's current TestClient uses the maintained HTTPX2 interface.
+service-test = ["httpx2==2.13.0"]
+
+[tool.uv]
+required-version = "==0.13.0"
+default-groups = ["dev", "build"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/regimex"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src", "/tests", "/schemas", "/docs", "/deploy",
+  "/README.md", "/AGENTS.md", "/pyproject.toml", "/uv.lock",
+  "/.python-version", "/Dockerfile", "/.dockerignore", "/compose.yaml", "/compose.s3.yaml",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Optional dependency guards must execute before scientific imports.
+"tests/test_science.py" = ["E402"]
+"tests/test_prediction_inputs.py" = ["E402"]
+"tests/test_evaluation.py" = ["E402"]
+"tests/test_market.py" = ["E402"]
+"tests/test_temporal.py" = ["E402"]
+"tests/test_baseline_backend.py" = ["E402"]
+"tests/test_application_training.py" = ["E402"]
+"tests/test_training_plugin.py" = ["E402"]
+"tests/test_api.py" = ["E402"]
+"tests/test_service_database.py" = ["E402"]
+"tests/test_service_workflow.py" = ["E402"]
+"tests/test_tcn_backend.py" = ["E402"]
+"tests/test_tcn_application.py" = ["E402"]
+"tests/test_admin_api.py" = ["E402"]
+"tests/test_admin_workflow.py" = ["E402"]
+"tests/test_final_reference_import.py" = ["E402"]
+"tests/test_recovery.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-config --strict-markers -ra"
+filterwarnings = ["error"]

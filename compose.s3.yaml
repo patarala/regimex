@@ -1,0 +1,39 @@
+# Merge with compose.yaml; the external provider must already be provisioned.
+x-s3-environment: &s3-environment
+  REGIMEX_OBJECT_BACKEND: s3
+  REGIMEX_S3_ENDPOINT_URL: ${REGIMEX_S3_ENDPOINT_URL:?Set the verified HTTPS S3 origin}
+  REGIMEX_S3_REGION: ${REGIMEX_S3_REGION:-us-east-1}
+  REGIMEX_S3_BUCKET: ${REGIMEX_S3_BUCKET:?Set the private versioned bucket}
+  REGIMEX_S3_PREFIX: ${REGIMEX_S3_PREFIX:?Set a dedicated nonempty object prefix}
+  REGIMEX_S3_CA_BUNDLE: /run/secrets/s3_ca
+  REGIMEX_S3_CREDENTIAL_PROFILE: regimex
+  REGIMEX_S3_LOCK_ROOT: /coordination
+  AWS_SHARED_CREDENTIALS_FILE: /run/secrets/s3_credentials
+  AWS_CONFIG_FILE: /dev/null
+  AWS_EC2_METADATA_DISABLED: "true"
+
+x-s3-common: &s3-common
+  environment: *s3-environment
+  secrets: [s3_credentials, s3_ca]
+  volumes: [s3-coordination:/coordination]
+  networks: [storage]
+
+services:
+  migrate: *s3-common
+  api: *s3-common
+  analysis-worker: *s3-common
+  admin-worker: *s3-common
+  maintenance-worker: *s3-common
+  ops: *s3-common
+
+secrets:
+  s3_credentials:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/s3-credentials
+  s3_ca:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/s3-ca.crt
+
+networks:
+  storage: {}
+
+volumes:
+  s3-coordination:

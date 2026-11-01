@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model comparison</title>
+  <link rel="stylesheet" href="comparison.css">
+</head>
+<body>
+  <main>
+    <header><h1>Model comparison</h1><p id="population" class="muted"></p></header>
+    <p id="reference-note"></p>
+    <section aria-labelledby="overview-heading">
+      <h2 id="overview-heading">Overall results</h2>
+      <div id="overview" class="table-scroll"></div>
+      <p id="metric-note" class="muted"></p>
+    </section>
+    <section aria-labelledby="paired-heading">
+      <h2 id="paired-heading">Paired differences</h2>
+      <label for="paired-metric">Measure</label>
+      <select id="paired-metric"><option value="segment_macro_f1">Intervals</option><option value="point_macro_f1">Individual steps</option><option value="boundary_f1">Boundary timing</option><option value="typed_boundary_f1">Boundary timing and directions</option></select>
+      <div id="paired" class="table-scroll"></div>
+      <p id="paired-note" class="muted"></p>
+    </section>
+    <section aria-labelledby="directions-heading">
+      <h2 id="directions-heading">Directions</h2>
+      <label for="metric-kind">Measure</label>
+      <select id="metric-kind"><option value="segment_metrics">Intervals</option><option value="point_metrics">Individual steps</option></select>
+      <div id="directions" class="table-scroll"></div>
+    </section>
+    <section aria-labelledby="duration-heading">
+      <h2 id="duration-heading">Interval duration and coverage</h2>
+      <div id="durations" class="table-scroll"></div>
+    </section>
+    <section aria-labelledby="experiments-heading">
+      <h2 id="experiments-heading">Experiments</h2>
+      <label for="experiment">Experiment</label><select id="experiment"></select>
+      <div id="experiment-metrics" class="table-scroll"></div>
+      <p class="muted">Each score averages all three directions; an absent direction contributes zero. Experiment scores are diagnostic and are not averaged to obtain the overall score.</p>
+    </section>
+    <p><a href="evaluations.json" download>Evaluation JSON</a> · <a href="paired-comparisons.json" download>Paired comparison JSON</a></p>
+    <footer><p>Evaluation provenance</p><div id="provenance"></div></footer>
+    <noscript><p>Enable JavaScript to view the comparison tables, or download the complete evaluation JSON above. This report requires no server or network connection.</p></noscript>
+  </main>
+  <script id="comparison-data" type="application/json">__COMPARISON_JSON__</script>
+  <script src="comparison.js"></script>
+</body>
+</html>

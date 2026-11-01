@@ -1,0 +1,27 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: Check Python formatting
+        entry: uv run --locked ruff format --check .
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: ruff
+        name: Lint Python
+        entry: uv run --locked ruff check .
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: mypy
+        name: Check Python types
+        entry: uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test mypy src tests
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: pytest
+        name: Test package behavior
+        entry: uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test pytest
+        language: system
+        types: [python]
+        pass_filenames: false

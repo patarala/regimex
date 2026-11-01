@@ -1,0 +1,35 @@
+# Local configuration and credentials.
+.env
+.env.*
+!.env.example
+/.aws/
+/inputs/
+/var/
+
+# Python environments and caches.
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Build output, release assets and generated datasets/reports.
+/build/
+/dist/
+/release/
+/data/
+/artifacts/
+/models/
+/reports/
+
+# Editor files.
+.idea/
+.vscode/
+.DS_Store
+*.swp

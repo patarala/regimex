@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="@@CSP@@">
+  <title>Regimex analysis @@TITLE@@</title>
+  <style>@@CSS@@</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="report-heading"><h1>Price directions</h1><span class="report-brand">Regimex</span></div>
+    <p class="muted report-kind">Model predictions</p>
+    <p id="dataset-counts" class="dataset-counts muted" aria-label="Dataset totals"></p>
+  </header>
+  <section aria-labelledby="observations">
+    <h2 id="observations">Prices and intervals</h2>
+    <div class="controls">
+      <label>Instrument <select id="instrument"></select></label>
+      <button id="reset" type="button">Reset zoom</button>
+      <label><input id="quotes" type="checkbox" checked> Historical quotes</label>
+      <button id="download" type="button">Download JSON</button>
+    </div>
+    <p id="units" class="muted"></p>
+    <p id="plot-error" role="alert" hidden></p>
+    <div id="price" class="plot" aria-label="Execution price and historical quotes"></div>
+    <div id="timeline" class="plot timeline" aria-label="Direction intervals"></div>
+    <div id="activity" class="plot" aria-label="Execution and accepted order counts"></div>
+    <div id="volume" class="plot" aria-label="Execution and accepted order volumes"></div>
+    <div id="coverage" class="plot availability" aria-label="Unavailable observations" hidden></div>
+    <div id="probability" class="plot" aria-label="Model probabilities"></div>
+    <noscript><p>Enable JavaScript for the plots. Saved statistics and provenance remain visible.</p></noscript>
+  </section>
+  <section aria-labelledby="statistics">
+    <h2 id="statistics">Interval statistics</h2>
+    <p class="muted">Known totals exclude unavailable observations.</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Instrument</th><th>Steps [start, stop)</th><th>Direction / status</th>
+          <th>Price change %</th>
+          <th title="Population standard deviation of adjacent log returns, multiplied by 100">Return standard deviation %</th>
+          <th>Known trades</th><th>Known base volume</th><th>Active %</th>
+          <th>Price known %</th><th>Count known %</th><th>Volume known %</th>
+          <th>Longest zero-trade run (bins)</th>
+        </tr></thead>
+        <tbody>@@INTERVALS@@</tbody>
+      </table>
+    </div>
+  </section>
+  <footer class="provenance" aria-labelledby="provenance-title">
+    <h2 id="provenance-title">Data provenance</h2>
+    <dl>@@PROVENANCE@@</dl>
+  </footer>
+</main>
+<script>@@PLOTLY@@</script>
+<script id="analysis-data" type="application/json">@@PAYLOAD@@</script>
+<script>@@SCRIPT@@</script>
+</body></html>

@@ -1,0 +1,146 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python checks and packaging
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: true
+      - name: Install locked development environment
+        run: uv sync --locked
+      - name: Check formatting
+        run: uv run --locked ruff format --check .
+      - name: Lint
+        run: uv run --locked ruff check .
+      - name: Test
+        run: uv run --locked pytest
+      - name: Build wheel and source distribution
+        run: uv build --no-build-isolation
+      - name: Verify installation outside the source tree
+        shell: bash
+        run: |
+          package_wheels=("$GITHUB_WORKSPACE"/dist/*.whl)
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/regimex-wheel" uv sync --locked --no-default-groups --no-install-project
+          uv pip install --python "$RUNNER_TEMP/regimex-wheel/bin/python" --no-deps "${package_wheels[0]}"
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/regimex-wheel/bin/regimex" --help
+          "$RUNNER_TEMP/regimex-wheel/bin/regimex" --version
+          "$RUNNER_TEMP/regimex-wheel/bin/python" -m regimex --version
+          "$RUNNER_TEMP/regimex-wheel/bin/python" - <<'PY'
+          from importlib.resources import files
+
+          templates = files("regimex").joinpath("templates")
+          for suffix in ("html", "css", "js"):
+              for stem in ("direction-report", "analysis-report", "model-comparison"):
+                  asset = templates.joinpath(f"{stem}.{suffix}")
+                  assert asset.is_file() and asset.read_text(encoding="utf-8").strip(), asset
+          for name in ("index.html", "app.css", "app.js"):
+              asset = files("regimex").joinpath("web", name)
+              assert asset.is_file() and asset.read_bytes(), asset
+          PY
+
+  scientific:
+    name: Scientific and PostgreSQL service checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16.15-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
+        env:
+          POSTGRES_USER: regimex
+          POSTGRES_PASSWORD: regimex-ci
+          POSTGRES_DB: regimex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U regimex -d regimex_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      REGIMEX_TEST_DATABASE_DSN: postgresql://regimex:regimex-ci@127.0.0.1:5432/regimex_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: true
+      - name: Install CPU, service and integration-test dependencies
+        run: uv sync --locked --extra ml --extra viz --extra service --extra s3 --group queue-test --group service-test
+      - name: Verify NumPy, scikit-learn, and CPU PyTorch
+        run: |
+          uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test python - <<'PY'
+          import numpy as np
+          import sklearn
+          import torch
+
+          assert torch.version.cuda is None
+          assert torch.ones(2, device="cpu").sum().item() == 2
+          assert np.arange(3).sum() == 3
+          print(f"numpy={np.__version__} sklearn={sklearn.__version__} torch={torch.__version__}")
+          PY
+      - name: Prepare the pinned native S3 provider and PostgreSQL clients
+        shell: bash
+        run: |
+          provider_dir="$RUNNER_TEMP/regimex-seaweedfs"
+          mkdir -p "$provider_dir"
+          curl --fail --location --retry 3 --output "$provider_dir/provider.tar.gz" https://github.com/seaweedfs/seaweedfs/releases/download/4.48/linux_amd64.tar.gz
+          printf '%s  %s\n' '4a7d108384d044d95212d1342cdda9533fa55842c1c9b41f606ca3c8a9561124' "$provider_dir/provider.tar.gz" | sha256sum --check
+          tar -xzf "$provider_dir/provider.tar.gz" -C "$provider_dir" weed
+          if ! test -x /usr/lib/postgresql/16/bin/pg_dump; then
+            sudo apt-get update
+            sudo apt-get install --no-install-recommends --yes postgresql-client-16
+          fi
+          printf '%s\n' "REGIMEX_TEST_SEAWEEDFS_BIN=$provider_dir/weed" 'PGDUMP_BIN=/usr/lib/postgresql/16/bin/pg_dump' 'PGRESTORE_BIN=/usr/lib/postgresql/16/bin/pg_restore' >> "$GITHUB_ENV"
+      - name: Test with real PostgreSQL and HTTPS S3
+        run: uv run --locked --extra ml --extra viz --extra service --extra s3 --group queue-test --group service-test python tests/support/run_storage_tests.py --binary "$REGIMEX_TEST_SEAWEEDFS_BIN" --tls -- python -m pytest
+      - name: Check types with scientific dependencies
+        run: uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test mypy src tests
+      - name: Check report and workspace JavaScript
+        run: |
+          node --check src/regimex/templates/direction-report.js
+          node --check src/regimex/templates/analysis-report.js
+          node --check src/regimex/templates/model-comparison.js
+          node --check src/regimex/web/app.js
+          node --test tests/web_ui.test.cjs
+
+  service-container:
+    name: Persistent HTTPS service deployment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Verify migrations, health, saved-model analysis and persistent restart
+        run: python tests/support/compose_service_smoke.py

@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Regimex — Market analysis</title>
+    <link rel="stylesheet" href="/assets/app.css" />
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <header class="masthead">
+      <a href="/" class="brand" aria-label="Regimex home">Regimex</a>
+      <div id="account" hidden>
+        <span id="owner"></span>
+        <button id="logout" type="button" class="quiet">Sign out</button>
+      </div>
+    </header>
+    <main>
+      <noscript>Enable JavaScript to upload experiments and view analyses.</noscript>
+      <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+      <section id="login-panel" class="panel login" aria-labelledby="login-title" hidden>
+        <h1 id="login-title">Sign in</h1>
+        <p>Enter the access token provided by your administrator.</p>
+        <form id="login-form">
+          <label for="token">Access token</label>
+          <input
+            id="token"
+            type="password"
+            autocomplete="off"
+            autocapitalize="none"
+            spellcheck="false"
+            required
+            maxlength="1024"
+          />
+          <button id="login-submit" type="submit">Sign in</button>
+        </form>
+      </section>
+      <div id="workspace" hidden>
+        <h1 class="page-title">Market analysis</h1>
+        <div class="workspace-layout">
+          <section class="panel upload-panel" aria-labelledby="upload-title">
+            <h2 id="upload-title">New analysis</h2>
+            <label for="export-file" id="drop-zone" class="drop-zone">
+              <strong>Choose JSON file</strong>
+              <span>or drop a completed experiment here</span>
+              <input
+                id="export-file"
+                type="file"
+                accept="application/json,.json"
+                aria-describedby="file-limits"
+              />
+            </label>
+            <p id="file-limits" class="hint">Up to 16 MiB · 4,096 steps · 2 instruments</p>
+            <div id="file-details" class="file-details" hidden>
+              <strong id="file-name"></strong>
+              <span id="file-summary"></span>
+            </div>
+            <div class="actions">
+              <button id="classify" type="button" disabled>Analyze</button>
+            </div>
+          </section>
+          <section
+            id="analysis-panel"
+            class="panel analysis-panel"
+            aria-labelledby="analysis-title"
+            hidden
+          >
+            <div class="section-heading">
+              <h2 id="analysis-title">Analysis</h2>
+              <span id="job-state" class="job-state"></span>
+            </div>
+            <div
+              id="progress"
+              class="progress"
+              role="progressbar"
+              aria-label="Analysis in progress"
+            >
+              <span></span>
+            </div>
+            <p id="job-detail" role="status" aria-live="polite"></p>
+            <div class="actions job-actions">
+              <button id="retry" type="button" hidden>Retry request</button>
+              <button id="cancel" type="button" class="quiet" hidden>Cancel</button>
+            </div>
+            <div id="result" hidden>
+              <dl id="result-summary" class="summary"></dl>
+              <div class="actions downloads">
+                <a id="download-report" class="button" hidden>Download HTML</a>
+                <button id="download-json" type="button" class="quiet">Download JSON</button>
+              </div>
+              <iframe
+                id="report-preview"
+                title="Analysis report"
+                sandbox="allow-scripts allow-downloads"
+                hidden
+              ></iframe>
+            </div>
+            <details class="analysis-details">
+              <summary>Details</summary>
+              <p id="analysis-identity" class="identity"></p>
+            </details>
+          </section>
+          <section class="panel history" aria-labelledby="history-title">
+            <div class="section-heading">
+              <h2 id="history-title">History</h2>
+              <button id="refresh-history" type="button" class="quiet">Refresh</button>
+            </div>
+            <p id="history-empty">No analyses yet.</p>
+            <ul id="history-list"></ul>
+            <nav
+              id="history-pages"
+              class="history-pages"
+              aria-label="Analysis history pages"
+              hidden
+            >
+              <button id="history-previous" type="button" class="quiet" disabled>Previous</button>
+              <span id="history-range" aria-live="polite"></span>
+              <button id="history-next" type="button" class="quiet" disabled>Next</button>
+            </nav>
+          </section>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>

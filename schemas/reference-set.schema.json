@@ -1,0 +1,290 @@
+{
+  "$defs": {
+    "AnalysisConfig": {
+      "additionalProperties": false,
+      "description": "Versioned analysis scale; thresholds are provisional annotation conventions.\n\nThe fit penalty is boundary_penalty * log(block length) * noise_scale**2,\nwhere noise_scale is the robust scale of adjacent log returns, floored at\nnoise_floor. minimum_relative_change applies to a fitted sustained trend.\nShort missing spans and trading pauses remain inside intervals and lower\ntheir coverage.",
+      "properties": {
+        "boundary_penalty": {
+          "default": 8.0,
+          "exclusiveMinimum": 0,
+          "title": "Boundary Penalty",
+          "type": "number"
+        },
+        "decoder_switch_penalty": {
+          "default": 3.0,
+          "minimum": 0,
+          "title": "Decoder Switch Penalty",
+          "type": "number"
+        },
+        "min_duration": {
+          "default": 32,
+          "maximum": 4096,
+          "minimum": 2,
+          "title": "Min Duration",
+          "type": "integer"
+        },
+        "minimum_directional_fit": {
+          "default": 0.5,
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Minimum Directional Fit",
+          "type": "number"
+        },
+        "minimum_observations": {
+          "default": 4,
+          "maximum": 4096,
+          "minimum": 2,
+          "title": "Minimum Observations",
+          "type": "integer"
+        },
+        "minimum_price_coverage": {
+          "default": 0.8,
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "title": "Minimum Price Coverage",
+          "type": "number"
+        },
+        "minimum_relative_change": {
+          "default": 0.005,
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Minimum Relative Change",
+          "type": "number"
+        },
+        "noise_floor": {
+          "default": 0.001,
+          "exclusiveMinimum": 0,
+          "title": "Noise Floor",
+          "type": "number"
+        },
+        "version": {
+          "const": "2.0",
+          "default": "2.0",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "title": "AnalysisConfig",
+      "type": "object"
+    },
+    "DirectionSemantics": {
+      "additionalProperties": false,
+      "description": "Identity of compatible classes, interval bounds, availability and decoder.\n\nThe profile digest binds the actual interval/availability configuration;\nannotation algorithm and reviewer identity belong to reference provenance.",
+      "properties": {
+        "availability": {
+          "default": [
+            "observed",
+            "no_trades",
+            "insufficient_data"
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "const": "observed",
+              "type": "string"
+            },
+            {
+              "const": "no_trades",
+              "type": "string"
+            },
+            {
+              "const": "insufficient_data",
+              "type": "string"
+            }
+          ],
+          "title": "Availability",
+          "type": "array"
+        },
+        "classes": {
+          "default": [
+            "sideways",
+            "growth",
+            "decline"
+          ],
+          "maxItems": 3,
+          "minItems": 3,
+          "prefixItems": [
+            {
+              "const": "sideways",
+              "type": "string"
+            },
+            {
+              "const": "growth",
+              "type": "string"
+            },
+            {
+              "const": "decline",
+              "type": "string"
+            }
+          ],
+          "title": "Classes",
+          "type": "array"
+        },
+        "decoder_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Decoder Version",
+          "type": "string"
+        },
+        "interval_bounds": {
+          "const": "[start,stop)",
+          "default": "[start,stop)",
+          "title": "Interval Bounds",
+          "type": "string"
+        },
+        "profile_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Profile Sha256",
+          "type": "string"
+        },
+        "version": {
+          "const": "direction-semantics/1.0",
+          "default": "direction-semantics/1.0",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "profile_sha256",
+        "decoder_version"
+      ],
+      "title": "DirectionSemantics",
+      "type": "object"
+    },
+    "ReferenceMember": {
+      "additionalProperties": false,
+      "properties": {
+        "annotations_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Annotations Sha256",
+          "type": "string"
+        },
+        "export_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Export Sha256",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "source_namespace": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Namespace",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_namespace",
+        "snapshot_id",
+        "export_sha256",
+        "annotations_sha256"
+      ],
+      "title": "ReferenceMember",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "analysis_profile": {
+      "$ref": "#/$defs/AnalysisConfig"
+    },
+    "blind_review": {
+      "default": false,
+      "title": "Blind Review",
+      "type": "boolean"
+    },
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "dataset_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Dataset Sha256",
+      "type": "string"
+    },
+    "independent": {
+      "default": false,
+      "title": "Independent",
+      "type": "boolean"
+    },
+    "kind": {
+      "enum": [
+        "automatic",
+        "human"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "members": {
+      "items": {
+        "$ref": "#/$defs/ReferenceMember"
+      },
+      "minItems": 1,
+      "title": "Members",
+      "type": "array"
+    },
+    "partition": {
+      "enum": [
+        "train",
+        "validation",
+        "test"
+      ],
+      "title": "Partition",
+      "type": "string"
+    },
+    "policy": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Policy",
+      "type": "string"
+    },
+    "reference_set_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Reference Set Id",
+      "type": "string"
+    },
+    "reviewer": {
+      "anyOf": [
+        {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reviewer"
+    },
+    "semantics": {
+      "$ref": "#/$defs/DirectionSemantics"
+    },
+    "version": {
+      "const": "reference-set/1.0",
+      "default": "reference-set/1.0",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reference_set_id",
+    "dataset_sha256",
+    "partition",
+    "kind",
+    "policy",
+    "semantics",
+    "analysis_profile",
+    "members",
+    "content_sha256"
+  ],
+  "title": "ReferenceSet",
+  "type": "object"
+}

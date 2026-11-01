@@ -1,0 +1,164 @@
+{
+  "$defs": {
+    "SnapshotMember": {
+      "additionalProperties": false,
+      "properties": {
+        "export_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Export Sha256",
+          "type": "string"
+        },
+        "instrument_ids": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Instrument Ids",
+          "type": "array"
+        },
+        "observation_hashes": {
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "maxItems": 2,
+          "minItems": 1,
+          "title": "Observation Hashes",
+          "type": "array"
+        },
+        "partition": {
+          "enum": [
+            "train",
+            "validation",
+            "test"
+          ],
+          "title": "Partition",
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_namespace": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Namespace",
+          "type": "string"
+        },
+        "split_group": {
+          "$ref": "#/$defs/SplitGroup"
+        },
+        "step_count": {
+          "maximum": 4096,
+          "minimum": 1,
+          "title": "Step Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "source_namespace",
+        "snapshot_id",
+        "source_id",
+        "run_id",
+        "export_sha256",
+        "observation_hashes",
+        "instrument_ids",
+        "step_count",
+        "split_group",
+        "partition"
+      ],
+      "title": "SnapshotMember",
+      "type": "object"
+    },
+    "SplitGroup": {
+      "additionalProperties": false,
+      "description": "Source-controlled dependence group, separate from prediction observations.\n\nA seed is meaningful only within its generator namespace. The namespace must\nremain stable across dataset versions and source aliases. Missing seed means\nan external run, not an observed seed of zero.",
+      "properties": {
+        "group_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Group Id",
+          "type": "string"
+        },
+        "namespace": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Namespace",
+          "type": "string"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        }
+      },
+      "required": [
+        "namespace",
+        "group_id"
+      ],
+      "title": "SplitGroup",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "content_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "dataset_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Dataset Id",
+      "type": "string"
+    },
+    "members": {
+      "items": {
+        "$ref": "#/$defs/SnapshotMember"
+      },
+      "minItems": 3,
+      "title": "Members",
+      "type": "array"
+    },
+    "version": {
+      "const": "raw-dataset/1.0",
+      "default": "raw-dataset/1.0",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "dataset_id",
+    "members",
+    "content_sha256"
+  ],
+  "title": "DatasetManifest",
+  "type": "object"
+}

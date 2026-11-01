@@ -1,0 +1,284 @@
+{
+  "$defs": {
+    "BundleMember": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "enum": [
+            "configuration",
+            "preprocessing",
+            "weights",
+            "validation",
+            "history"
+          ],
+          "title": "Role",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size_bytes": {
+          "maximum": 536870912,
+          "minimum": 1,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "role",
+        "size_bytes",
+        "sha256"
+      ],
+      "title": "BundleMember",
+      "type": "object"
+    },
+    "ReferenceIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Content Sha256",
+          "type": "string"
+        },
+        "direction_semantics_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Direction Semantics Sha256",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "automatic",
+            "human"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "policy": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Policy",
+          "type": "string"
+        },
+        "reference_set_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Reference Set Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference_set_id",
+        "kind",
+        "policy",
+        "content_sha256",
+        "direction_semantics_sha256"
+      ],
+      "title": "ReferenceIdentity",
+      "type": "object"
+    },
+    "TrainingEvidence": {
+      "additionalProperties": false,
+      "properties": {
+        "dataset_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Dataset Sha256",
+          "type": "string"
+        },
+        "labels": {
+          "$ref": "#/$defs/ReferenceIdentity"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "seeds": {
+          "items": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "minItems": 1,
+          "title": "Seeds",
+          "type": "array"
+        },
+        "selected_seed": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Selected Seed",
+          "type": "integer"
+        },
+        "selection_metric": {
+          "const": "decoded_segment_macro_f1/iou-0.50",
+          "title": "Selection Metric",
+          "type": "string"
+        },
+        "split_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Split Manifest Sha256",
+          "type": "string"
+        },
+        "validation_references": {
+          "$ref": "#/$defs/ReferenceIdentity"
+        },
+        "validation_segment_macro_f1": {
+          "maximum": 1,
+          "minimum": 0,
+          "title": "Validation Segment Macro F1",
+          "type": "number"
+        }
+      },
+      "required": [
+        "run_id",
+        "dataset_sha256",
+        "split_manifest_sha256",
+        "labels",
+        "validation_references",
+        "seeds",
+        "selected_seed",
+        "selection_metric",
+        "validation_segment_macro_f1"
+      ],
+      "title": "TrainingEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "analysis_profile": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Analysis Profile",
+      "type": "string"
+    },
+    "analysis_profile_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Analysis Profile Sha256",
+      "type": "string"
+    },
+    "architecture_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Architecture Id",
+      "type": "string"
+    },
+    "build_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Build Id",
+      "type": "string"
+    },
+    "bundle_version": {
+      "const": "1.0",
+      "title": "Bundle Version",
+      "type": "string"
+    },
+    "class_names": {
+      "maxItems": 3,
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "const": "sideways",
+          "type": "string"
+        },
+        {
+          "const": "growth",
+          "type": "string"
+        },
+        {
+          "const": "decline",
+          "type": "string"
+        }
+      ],
+      "title": "Class Names",
+      "type": "array"
+    },
+    "decoder_version": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Decoder Version",
+      "type": "string"
+    },
+    "environment_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Environment Sha256",
+      "type": "string"
+    },
+    "feature_version": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Feature Version",
+      "type": "string"
+    },
+    "implementation_version": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Implementation Version",
+      "type": "string"
+    },
+    "interface_version": {
+      "const": "1.0",
+      "title": "Interface Version",
+      "type": "string"
+    },
+    "members": {
+      "items": {
+        "$ref": "#/$defs/BundleMember"
+      },
+      "maxItems": 64,
+      "minItems": 5,
+      "title": "Members",
+      "type": "array"
+    },
+    "model_version_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Model Version Id",
+      "type": "string"
+    },
+    "observation_version": {
+      "const": "2.1",
+      "title": "Observation Version",
+      "type": "string"
+    },
+    "preprocessing_version": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Preprocessing Version",
+      "type": "string"
+    },
+    "training": {
+      "$ref": "#/$defs/TrainingEvidence"
+    }
+  },
+  "required": [
+    "bundle_version",
+    "model_version_id",
+    "architecture_id",
+    "implementation_version",
+    "interface_version",
+    "observation_version",
+    "feature_version",
+    "preprocessing_version",
+    "decoder_version",
+    "analysis_profile",
+    "analysis_profile_sha256",
+    "class_names",
+    "training",
+    "build_id",
+    "environment_sha256",
+    "members"
+  ],
+  "title": "ModelBundle",
+  "type": "object"
+}

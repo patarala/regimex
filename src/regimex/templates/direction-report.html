@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Regimex · Direction intervals</title>
+    <link rel="stylesheet" href="report.css" />
+    <script src="plotly.min.js"></script>
+  </head>
+  <body class="direction-report">
+    <main>
+      <header>
+        <div>
+          <div class="report-brand" id="eyebrow">Regimex</div>
+          <h1 id="title">Price and direction</h1>
+          <p id="purpose" class="muted"></p>
+          <p id="dataset-counts" class="small muted" aria-label="Dataset totals"></p>
+        </div>
+        <nav id="downloads" aria-label="Report downloads"></nav>
+      </header>
+      <section class="card" id="sample-section">
+        <h2>Experiment</h2>
+        <div class="report-selectors">
+          <label class="selector-field" for="experiment">
+            <span>Experiment</span>
+            <select id="experiment"></select>
+          </label>
+          <label class="selector-field" for="sample">
+            <span>Instrument</span>
+            <select id="sample"></select>
+          </label>
+        </div>
+        <div class="toolbar">
+          <button id="reset">Reset zoom</button>
+          <label><input id="quotes" type="checkbox" checked /> Best quotes</label>
+        </div>
+        <p id="render-error" role="alert" hidden></p>
+        <p id="sample-meta" class="small muted"></p>
+        <p id="class-summary"></p>
+        <div id="legend" class="legend"></div>
+        <p id="time-guide" class="small muted"></p>
+        <div
+          class="chart-scroll"
+          tabindex="0"
+          role="region"
+          aria-label="Scrollable observations and direction intervals"
+        >
+          <div class="chart-canvas">
+            <div id="timeline" class="timeline" aria-label="Direction intervals"></div>
+            <div id="explorer"></div>
+          </div>
+        </div>
+        <p id="focus-summary" class="focus-summary" aria-live="polite" hidden></p>
+        <div class="table-wrap" id="interval-wrap">
+          <table>
+            <caption>Interval statistics · — unavailable</caption>
+            <thead>
+              <tr>
+                <th>Steps [start, stop)</th>
+                <th>Direction / status</th>
+                <th>Change (%)</th>
+                <th title="Population standard deviation of adjacent log returns, multiplied by 100">Return standard deviation (%)</th>
+                <th>Known trades</th>
+                <th>Active steps (%)</th>
+                <th>Price coverage (%)</th>
+                <th>Trade-count coverage (%)</th>
+              </tr>
+            </thead>
+            <tbody id="intervals"></tbody>
+          </table>
+        </div>
+        <details>
+          <summary>Analysis settings</summary>
+          <pre id="config"></pre>
+        </details>
+      </section>
+      <section class="card" id="reference-instructions" hidden>
+        <h2>Record your decisions</h2>
+        <p>
+          Complete the annotation draft before viewing predictions.
+          Cover every instrument with contiguous [start, stop) intervals and add your reviewer name.
+          Use null direction for no_trades or insufficient_data; interval statistics must match the input export.
+        </p>
+      </section>
+      <footer class="provenance" aria-labelledby="provenance-title">
+        <h2 id="provenance-title">Data provenance</h2>
+        <dl id="provenance"></dl>
+      </footer>
+      <noscript><p>Enable JavaScript to explore the report, or open the JSON downloads.</p></noscript>
+    </main>
+    <script type="application/json" id="report-data">
+      __REPORT_JSON__
+    </script>
+    <script src="report.js" defer></script>
+  </body>
+</html>

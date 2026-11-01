@@ -1,0 +1,15 @@
+# Allowlist: only package sources and locked build inputs enter the context.
+**
+!Dockerfile
+!pyproject.toml
+!uv.lock
+!README.md
+!.python-version
+!src/
+!src/regimex/
+!src/regimex/**
+!deploy/
+!deploy/pg_dump
+!deploy/pg_restore
+src/**/__pycache__/
+src/**/*.pyc

@@ -1,0 +1,2 @@
+#!/bin/sh
+exec env LD_LIBRARY_PATH=/opt/pg16/lib /opt/pg16/bin/pg_dump "$@"

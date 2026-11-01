@@ -1,0 +1,588 @@
+{
+  "$defs": {
+    "ExportInstrument": {
+      "additionalProperties": false,
+      "properties": {
+        "base_asset": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Base Asset",
+          "type": "string"
+        },
+        "initial_price": {
+          "exclusiveMinimum": 0,
+          "title": "Initial Price",
+          "type": "number"
+        },
+        "instrument_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "quote_asset": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Quote Asset",
+          "type": "string"
+        },
+        "units": {
+          "$ref": "#/$defs/InstrumentUnits"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "base_asset",
+        "quote_asset",
+        "initial_price",
+        "units"
+      ],
+      "title": "ExportInstrument",
+      "type": "object"
+    },
+    "ExportObservation": {
+      "additionalProperties": false,
+      "description": "Null quote sides require explicit unknown versus observed-empty states.\n\nA carried price is an available price, but is not evidence of an execution.\nUnknown aggregate values remain distinct from observed zeros.",
+      "properties": {
+        "ask_state": {
+          "enum": [
+            "observed",
+            "empty",
+            "unknown"
+          ],
+          "title": "Ask State",
+          "type": "string"
+        },
+        "best_ask": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Best Ask"
+        },
+        "best_bid": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Best Bid"
+        },
+        "bid_state": {
+          "enum": [
+            "observed",
+            "empty",
+            "unknown"
+          ],
+          "title": "Bid State",
+          "type": "string"
+        },
+        "buy_order_count": {
+          "anyOf": [
+            {
+              "maximum": 2147483647,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Buy Order Count"
+        },
+        "buy_order_volume": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Buy Order Volume"
+        },
+        "instrument_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Instrument Id",
+          "type": "string"
+        },
+        "last_price": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Price"
+        },
+        "price_state": {
+          "enum": [
+            "observed",
+            "carried",
+            "no_execution",
+            "unknown"
+          ],
+          "title": "Price State",
+          "type": "string"
+        },
+        "sell_order_count": {
+          "anyOf": [
+            {
+              "maximum": 2147483647,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sell Order Count"
+        },
+        "sell_order_volume": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Sell Order Volume"
+        },
+        "step": {
+          "maximum": 2147483647,
+          "minimum": 0,
+          "title": "Step",
+          "type": "integer"
+        },
+        "trade_count": {
+          "anyOf": [
+            {
+              "maximum": 2147483647,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trade Count"
+        },
+        "trade_volume": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trade Volume"
+        }
+      },
+      "required": [
+        "instrument_id",
+        "step",
+        "last_price",
+        "trade_count",
+        "trade_volume",
+        "buy_order_count",
+        "buy_order_volume",
+        "sell_order_count",
+        "sell_order_volume",
+        "best_bid",
+        "best_ask",
+        "price_state",
+        "bid_state",
+        "ask_state"
+      ],
+      "title": "ExportObservation",
+      "type": "object"
+    },
+    "HistoricalQuoteCapability": {
+      "additionalProperties": false,
+      "description": "Historical quotes refer to bin closes after all events in that bin.\n\nA present-day book is insufficient. Reconstruction requires an identified,\ncomplete event history and a documented replay policy; its hash is provenance\nrather than proof that the source actually retained every required event.",
+      "properties": {
+        "complete_event_history_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Complete Event History Sha256"
+        },
+        "coverage": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ],
+          "title": "Coverage",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "unavailable",
+            "retained_snapshots",
+            "reconstructed_event_history"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "provenance": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Provenance",
+          "type": "string"
+        },
+        "reconstruction_policy": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reconstruction Policy"
+        }
+      },
+      "required": [
+        "mode",
+        "coverage",
+        "provenance",
+        "complete_event_history_sha256",
+        "reconstruction_policy"
+      ],
+      "title": "HistoricalQuoteCapability",
+      "type": "object"
+    },
+    "InstrumentUnits": {
+      "additionalProperties": false,
+      "description": "Asset identifiers on the instrument determine the actual unit names.",
+      "properties": {
+        "price_decimal_places": {
+          "maximum": 18,
+          "minimum": 0,
+          "title": "Price Decimal Places",
+          "type": "integer"
+        },
+        "price_unit": {
+          "const": "quote_asset_per_base_asset",
+          "title": "Price Unit",
+          "type": "string"
+        },
+        "volume_decimal_places": {
+          "maximum": 18,
+          "minimum": 0,
+          "title": "Volume Decimal Places",
+          "type": "integer"
+        },
+        "volume_unit": {
+          "const": "base_asset",
+          "title": "Volume Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "price_unit",
+        "volume_unit",
+        "price_decimal_places",
+        "volume_decimal_places"
+      ],
+      "title": "InstrumentUnits",
+      "type": "object"
+    },
+    "ModelTimeGrid": {
+      "additionalProperties": false,
+      "description": "Bin k spans [origin + k * width, min(origin + (k + 1) * width, horizon)).\n\nHorizon is an absolute coordinate in the declared model-time unit. Every bin\nis exported, including leading, internal, and trailing inactivity. A partial\nfinal bin is allowed only under the explicit include_partial_bin policy.",
+      "properties": {
+        "bin_width": {
+          "exclusiveMinimum": 0,
+          "title": "Bin Width",
+          "type": "number"
+        },
+        "completed_horizon": {
+          "title": "Completed Horizon",
+          "type": "number"
+        },
+        "interval_bounds": {
+          "const": "[start,stop)",
+          "title": "Interval Bounds",
+          "type": "string"
+        },
+        "origin": {
+          "title": "Origin",
+          "type": "number"
+        },
+        "step_count": {
+          "maximum": 4096,
+          "minimum": 1,
+          "title": "Step Count",
+          "type": "integer"
+        },
+        "terminal_bin": {
+          "enum": [
+            "full_bins_only",
+            "include_partial_bin"
+          ],
+          "title": "Terminal Bin",
+          "type": "string"
+        },
+        "unit": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "origin",
+        "unit",
+        "bin_width",
+        "completed_horizon",
+        "step_count",
+        "interval_bounds",
+        "terminal_bin"
+      ],
+      "title": "ModelTimeGrid",
+      "type": "object"
+    },
+    "Producer": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "title": "Producer",
+      "type": "object"
+    },
+    "SourceCapabilities": {
+      "additionalProperties": false,
+      "description": "Counts and volumes are per-bin totals, never resting order-book depth.\n\nEach partial execution counts once; trade volume sums its base quantity once.\nAccepted-order volumes sum submitted quantities, including immediate fills\nand excluding rejected submissions. Missing totals are null, inactivity zero.",
+      "properties": {
+        "accepted_order_aggregates": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ],
+          "title": "Accepted Order Aggregates",
+          "type": "string"
+        },
+        "execution_prices": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ],
+          "title": "Execution Prices",
+          "type": "string"
+        },
+        "historical_quotes": {
+          "$ref": "#/$defs/HistoricalQuoteCapability"
+        },
+        "order_count_policy": {
+          "const": "accepted_submissions_including_immediate_fills",
+          "title": "Order Count Policy",
+          "type": "string"
+        },
+        "price_policy": {
+          "enum": [
+            "initial_then_carry",
+            "execution_in_bin_only"
+          ],
+          "title": "Price Policy",
+          "type": "string"
+        },
+        "rejected_order_policy": {
+          "const": "excluded",
+          "title": "Rejected Order Policy",
+          "type": "string"
+        },
+        "trade_aggregates": {
+          "enum": [
+            "complete",
+            "partial",
+            "unavailable"
+          ],
+          "title": "Trade Aggregates",
+          "type": "string"
+        },
+        "trade_count_policy": {
+          "const": "one_per_partial_execution",
+          "title": "Trade Count Policy",
+          "type": "string"
+        }
+      },
+      "required": [
+        "execution_prices",
+        "trade_aggregates",
+        "accepted_order_aggregates",
+        "historical_quotes",
+        "price_policy",
+        "trade_count_policy",
+        "order_count_policy",
+        "rejected_order_policy"
+      ],
+      "title": "SourceCapabilities",
+      "type": "object"
+    },
+    "SourceIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "configuration_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Configuration Id",
+          "type": "string"
+        },
+        "consistency": {
+          "const": "atomic_completed_snapshot",
+          "title": "Consistency",
+          "type": "string"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "run_status": {
+          "const": "completed",
+          "title": "Run Status",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Version",
+          "type": "string"
+        },
+        "state_revision": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "State Revision",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_version",
+        "configuration_id",
+        "run_id",
+        "snapshot_id",
+        "state_revision",
+        "run_status",
+        "consistency"
+      ],
+      "title": "SourceIdentity",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "capabilities": {
+      "$ref": "#/$defs/SourceCapabilities"
+    },
+    "content_sha256": {
+      "description": "SHA-256 of validated JSON-mode content without content_sha256, encoded as UTF-8 using json.dumps(sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False), with no trailing newline. This is schema-specific canonicalization.",
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Content Sha256",
+      "type": "string"
+    },
+    "instruments": {
+      "items": {
+        "$ref": "#/$defs/ExportInstrument"
+      },
+      "maxItems": 2,
+      "minItems": 1,
+      "title": "Instruments",
+      "type": "array"
+    },
+    "observations": {
+      "items": {
+        "$ref": "#/$defs/ExportObservation"
+      },
+      "maxItems": 8192,
+      "minItems": 1,
+      "title": "Observations",
+      "type": "array"
+    },
+    "producer": {
+      "$ref": "#/$defs/Producer"
+    },
+    "schema_version": {
+      "const": "2.1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/SourceIdentity"
+    },
+    "time_grid": {
+      "$ref": "#/$defs/ModelTimeGrid"
+    }
+  },
+  "required": [
+    "schema_version",
+    "source",
+    "producer",
+    "time_grid",
+    "capabilities",
+    "instruments",
+    "observations",
+    "content_sha256"
+  ],
+  "title": "ExportV2",
+  "type": "object"
+}

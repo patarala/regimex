@@ -1,0 +1,192 @@
+x-service-environment: &service-environment
+  REGIMEX_DATABASE_DSN_FILE: /run/secrets/database_dsn
+  REGIMEX_DATABASE_SCHEMA: public
+  REGIMEX_PUBLIC_ORIGIN: ${REGIMEX_PUBLIC_ORIGIN:-https://localhost:8443}
+  REGIMEX_OBJECT_BACKEND: local
+  REGIMEX_OBJECT_ROOT: /data/objects
+  REGIMEX_WORK_ROOT: /work
+  REGIMEX_MAX_OBJECT_BYTES: "536870912"
+  REGIMEX_MAX_STORE_BYTES: "4294967296"
+  REGIMEX_CACHE_BUDGET_BYTES: "536870912"
+  REGIMEX_HEARTBEAT_SECONDS: "10"
+  REGIMEX_STALE_SECONDS: "120"
+  REGIMEX_ADMIN_MEMORY_BUDGET_BYTES: "4294967296"
+  REGIMEX_ADMIN_SCRATCH_BUDGET_BYTES: "4294967296"
+  REGIMEX_ANALYSIS_TIME_BUDGET_SECONDS: ${REGIMEX_ANALYSIS_TIME_BUDGET_SECONDS:-120}
+  REGIMEX_ANALYSIS_MEMORY_BUDGET_BYTES: ${REGIMEX_ANALYSIS_MEMORY_BUDGET_BYTES:-4294967296}
+  REGIMEX_ANALYSIS_SCRATCH_BUDGET_BYTES: ${REGIMEX_ANALYSIS_SCRATCH_BUDGET_BYTES:-134217728}
+
+x-service-common: &service-common
+  profiles: [service]
+  user: "10001:10001"
+  init: true
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  networks: [backend]
+  environment: *service-environment
+  secrets: [database_dsn]
+  volumes: [objects:/data]
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+    - /work:rw,nosuid,nodev,size=5368709120,uid=10001,gid=10001,mode=0700
+  pids_limit: 256
+  stop_grace_period: 45s
+  restart: unless-stopped
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+  logging:
+    driver: local
+    options: {max-size: 10m, max-file: "5"}
+
+services:
+  postgres:
+    profiles: [service, ops]
+    image: postgres:16.15-bookworm@sha256:d81f7b51697014367236d07ec58b54153fc28f828b72bf247fe5c7487520bcb0
+    user: "999:999"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [backend]
+    environment:
+      POSTGRES_DB: regimex
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets: [database_password, application_password]
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./deploy/init-db.sh:/docker-entrypoint-initdb.d/10-regimex.sh:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+      - /var/run/postgresql:rw,nosuid,nodev,size=16777216,uid=999,gid=999,mode=0775
+    healthcheck:
+      test: [CMD, pg_isready, -U, postgres, -d, regimex]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    cpus: 1.0
+    mem_limit: 1g
+    pids_limit: 128
+    stop_grace_period: 45s
+    restart: unless-stopped
+    logging:
+      driver: local
+      options: {max-size: 10m, max-file: "5"}
+
+  migrate:
+    <<: *service-common
+    image: regimex-api:${REGIMEX_IMAGE_TAG:-local}
+    build: {context: ., target: api}
+    command: [service, migrate]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+      - /work:rw,nosuid,nodev,size=67108864,uid=10001,gid=10001,mode=0700
+    cpus: 0.5
+    mem_limit: 256m
+
+  api:
+    <<: *service-common
+    image: regimex-api:${REGIMEX_IMAGE_TAG:-local}
+    build: {context: ., target: api}
+    command: [service, serve, --host, 0.0.0.0, --port, "8000", --tls-cert-file, /run/secrets/api_certificate, --tls-key-file, /run/secrets/api_key]
+    secrets: [database_dsn, api_certificate, api_key, api_ca]
+    networks: [backend, frontend]
+    ports: ["${REGIMEX_BIND_ADDRESS:-127.0.0.1}:${REGIMEX_HTTPS_PORT:-8443}:8000"]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+      - /work:rw,nosuid,nodev,size=268435456,uid=10001,gid=10001,mode=0700
+    healthcheck:
+      test: [CMD, regimex, service, health, --component, ready, --port, "8000", --ca-file, /run/secrets/api_ca]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    cpus: 1.0
+    mem_limit: 2g
+
+  analysis-worker:
+    <<: *service-common
+    image: regimex-cpu:${REGIMEX_IMAGE_TAG:-local}
+    build: {context: ., target: worker}
+    command: [service, worker, --queue, analysis]
+    healthcheck:
+      test: [CMD, regimex, service, health, --component, worker, --queue, analysis]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    cpus: 2.0
+    mem_limit: 8g
+
+  admin-worker:
+    <<: *service-common
+    image: regimex-cpu:${REGIMEX_IMAGE_TAG:-local}
+    build: {context: ., target: worker}
+    command: [service, worker, --queue, admin]
+    healthcheck:
+      test: [CMD, regimex, service, health, --component, worker, --queue, admin]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    cpus: 2.0
+    mem_limit: 8g
+
+  maintenance-worker:
+    <<: *service-common
+    image: regimex-api:${REGIMEX_IMAGE_TAG:-local}
+    build: {context: ., target: api}
+    command: [service, worker, --queue, maintenance]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
+      - /work:rw,nosuid,nodev,size=67108864,uid=10001,gid=10001,mode=0700
+    healthcheck:
+      test: [CMD, regimex, service, health, --component, worker, --queue, maintenance]
+      interval: 10s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    cpus: 0.5
+    mem_limit: 256m
+
+  ops:
+    <<: *service-common
+    profiles: [ops]
+    image: regimex-ops:${REGIMEX_IMAGE_TAG:-local}
+    build: {context: ., target: ops}
+    command: [service, --help]
+    restart: "no"
+    depends_on:
+      postgres: {condition: service_healthy}
+    volumes: [objects:/data, operator-output:/operator-output]
+    cpus: 2.0
+    mem_limit: 8g
+
+secrets:
+  database_password:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/database-password
+  application_password:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/application-password
+  database_dsn:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/database-dsn
+  api_certificate:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/api.crt
+  api_key:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/api.key
+  api_ca:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/api-ca.crt
+
+networks:
+  backend: {internal: true}
+  frontend: {}
+
+volumes:
+  objects:
+  postgres-data:
+  operator-output:
