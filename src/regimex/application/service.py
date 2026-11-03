@@ -37,6 +37,7 @@ from regimex.service_contracts import (
     CapacityExceeded,
     Conflict,
     Forbidden,
+    HistoryState,
     ModelRecord,
     NotFound,
     Principal,
@@ -226,6 +227,8 @@ class AnalysisService:
             content_sha256=export.content_sha256,
             object=info,
             created_at=datetime.now(UTC),
+            instrument_ids=tuple(item.instrument_id for item in export.instruments),
+            step_count=export.time_grid.step_count,
         )
         # A failed database commit leaves an unreferenced immutable object. Cleanup
         # requires a separate authorized reconciliation with reference checks.
@@ -257,6 +260,11 @@ class AnalysisService:
             record.source_snapshot_id,
         ):
             raise ObjectIntegrityError("stored snapshot differs from its committed identity")
+        if record.instrument_ids and (
+            record.instrument_ids != tuple(item.instrument_id for item in export.instruments)
+            or record.step_count != export.time_grid.step_count
+        ):
+            raise ObjectIntegrityError("stored snapshot display metadata differs from its content")
         return export
 
     def submit_analysis(
@@ -293,9 +301,17 @@ class AnalysisService:
         return self.repository.get_analysis_summary(principal, analysis_id)
 
     def list_analysis_summaries(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        q: str = "",
+        state: HistoryState | None = None,
     ) -> tuple[AnalysisSummary, ...]:
-        return self.repository.list_analysis_summaries(principal, limit=limit, offset=offset)
+        return self.repository.list_analysis_summaries(
+            principal, limit=limit, offset=offset, q=q, state=state
+        )
 
     def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]:
         record = self.get_analysis(principal, analysis_id)

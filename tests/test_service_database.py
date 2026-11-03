@@ -446,6 +446,138 @@ def test_submission_rollback_removes_both_resource_and_queue_task(
     assert repository.list_analyses(principal) == ()
 
 
+def test_history_filters_precede_pagination_and_preserve_source_scope(
+    repository: DatabaseRepository,
+) -> None:
+    owner, original = _ready(repository)
+    snapshot = repository.add_snapshot(
+        original.model_copy(
+            update={
+                "snapshot_id": uuid4(),
+                "run_id": "Replay_Demo",
+                "source_snapshot_id": "market%close",
+                "instrument_ids": ("BTC/USD", "ETH/USD"),
+                "step_count": 300,
+            }
+        )
+    )
+    active = []
+    failed = []
+    for index in range(30):
+        analysis = repository.submit_analysis(
+            owner,
+            snapshot.snapshot_id,
+            idempotency_key=f"search-{index}",
+            request_sha256="a" * 64,
+            max_pending=64,
+        )
+        if index % 6 == 0:
+            operation = repository.claim_operation(analysis.analysis_id)
+            assert operation is not None and operation.attempt_token is not None
+            repository.fail_operation(
+                operation.operation_id,
+                operation.attempt_token,
+                OperationFailure(code="invalid_data", message="Invalid test input."),
+            )
+            failed.append(analysis.analysis_id)
+        else:
+            active.append(analysis.analysis_id)
+    # Newer nonmatching and out-of-scope records must not consume filtered pages.
+    for index in range(6):
+        repository.submit_analysis(
+            owner,
+            original.snapshot_id,
+            idempotency_key=f"other-{index}",
+            request_sha256="b" * 64,
+            max_pending=64,
+        )
+    hidden = []
+    for index, changes in enumerate(
+        ({"source_id": "foreign-source"}, {"run_id": "foreign-run"}, {"owner_id": "bob"})
+    ):
+        other = repository.add_snapshot(
+            snapshot.model_copy(update={"snapshot_id": uuid4(), **changes})
+        )
+        analysis = repository.submit_analysis(
+            _principal(other.owner_id),
+            other.snapshot_id,
+            idempotency_key=f"hidden-{index}",
+            request_sha256="c" * 64,
+            max_pending=64,
+        )
+        hidden.append(analysis.analysis_id)
+    scoped = Principal(
+        owner_id=owner.owner_id,
+        role="integration",
+        token_id=uuid4(),
+        source_namespace=snapshot.source_id,
+        run_scope=snapshot.run_id,
+    )
+    assert repository.claim_operation(active[0]) is not None
+    assert repository.cancel_operation(owner, active[0]).state == "cancel_requested"
+    assert repository.claim_operation(active[1]) is not None
+    assert [
+        item.analysis_id for item in repository.list_analysis_summaries(scoped, state="running")
+    ] == [active[1]]
+    assert [
+        item.analysis_id
+        for item in repository.list_analysis_summaries(scoped, state="cancel_requested")
+    ] == [active[0]]
+    first = repository.list_analysis_summaries(scoped, q="btc/usd", state="active", limit=20)
+    second = repository.list_analysis_summaries(
+        scoped, q="btc/usd", state="active", limit=20, offset=20
+    )
+    assert [item.analysis_id for item in (*first, *second)] == list(reversed(active))
+    assert len(first) == 20 and len(second) == 5
+    assert first[0].instrument_ids == ("BTC/USD", "ETH/USD")
+    assert first[0].step_count == 300
+    assert first[0].run_id == snapshot.run_id
+    assert first[0].source_snapshot_id == "market%close"
+    assert first[0].source_id == snapshot.source_id
+    assert [
+        item.analysis_id for item in repository.list_analysis_summaries(scoped, state="failed")
+    ] == list(reversed(failed))
+    for text in (
+        "BTC/USD",
+        "eth/usd",
+        "REPLAY_DEMO",
+        "MARKET%CLOSE",
+        "LOCAL-UPLOAD",
+        "BASELINE-1",
+    ):
+        found = repository.list_analysis_summaries(scoped, q=text)
+        assert {item.analysis_id for item in found} == set(active + failed)
+    selected = repository.list_analysis_summaries(scoped, q=str(active[0]).upper())
+    assert [item.analysis_id for item in selected] == [active[0]]
+    for literal, additionally_visible in (("%", hidden[:2]), ("_", hidden[:1])):
+        found = repository.list_analysis_summaries(owner, q=literal)
+        assert {item.analysis_id for item in found} == set(active + failed + additionally_visible)
+    assert repository.list_analysis_summaries(owner, q="' OR 1=1 --") == ()
+    assert repository.list_analysis_summaries(_principal("unrelated"), q="BTC/USD") == ()
+    assert [
+        item.analysis_id
+        for item in repository.list_analysis_summaries(_principal("bob"), q="btc/usd")
+    ] == hidden[2:]
+
+
+def test_history_reads_saved_snapshots_without_display_metadata(
+    repository: DatabaseRepository,
+) -> None:
+    analysis_id = _submit(repository)
+    analysis = repository.get_analysis(_principal(), analysis_id)
+    with repository.connection() as connection:
+        connection.execute(
+            "UPDATE regimex_snapshots SET document=document-'instrument_ids'-'step_count' "
+            "WHERE snapshot_id=%s",
+            (analysis.snapshot_id,),
+        )
+    summary = repository.get_analysis_summary(_principal(), analysis_id)
+    assert summary.run_id == "run-1"
+    assert summary.instrument_ids == ()
+    assert summary.step_count is None
+    assert repository.list_analysis_summaries(_principal(), q="RUN-1") == (summary,)
+
+
 def test_concurrent_idempotency_and_quota_are_serialized(repository: DatabaseRepository) -> None:
     principal, snapshot = _ready(repository)
 

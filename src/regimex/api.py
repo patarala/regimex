@@ -34,6 +34,7 @@ from regimex.service_contracts import (
     AnalysisRecord,
     AnalysisSummary,
     Forbidden,
+    HistoryState,
     ModelRecord,
     NotFound,
     Principal,
@@ -71,7 +72,13 @@ class AnalysisAPIService(Protocol):
     ) -> AnalysisRecord: ...
 
     def list_analysis_summaries(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        q: str = "",
+        state: HistoryState | None = None,
     ) -> tuple[AnalysisSummary, ...]: ...
 
     def get_analysis_summary(self, principal: Principal, analysis_id: UUID) -> AnalysisSummary: ...
@@ -137,6 +144,11 @@ class OperationView(StrictModel):
 class AnalysisView(StrictModel):
     analysis_id: UUID
     snapshot_id: UUID
+    source_id: Identifier
+    run_id: Identifier
+    source_snapshot_id: Identifier
+    instrument_ids: tuple[Identifier, ...] = ()
+    step_count: int | None = None
     job: OperationView
     result_url: str
     result_available: bool
@@ -283,6 +295,11 @@ def _analysis(record: AnalysisSummary, *, prefix: str = "/api/v1") -> AnalysisVi
     return AnalysisView(
         analysis_id=record.analysis_id,
         snapshot_id=record.snapshot_id,
+        source_id=record.source_id,
+        run_id=record.run_id,
+        source_snapshot_id=record.source_snapshot_id,
+        instrument_ids=record.instrument_ids,
+        step_count=record.step_count,
         job=_operation(record.operation, prefix=prefix),
         result_url=f"{prefix}/analyses/{record.analysis_id}/result",
         result_available=record.result_available,
@@ -546,11 +563,19 @@ def create_app(
         )
 
     @app.get("/api/v1/analyses")
-    def list_analyses(identity: Identity, limit: Limit = 100, offset: Offset = 0) -> AnalysisPage:
+    def list_analyses(
+        identity: Identity,
+        limit: Limit = 100,
+        offset: Offset = 0,
+        q: Annotated[str, Query(max_length=128, pattern=r"^[^\x00]*$")] = "",
+        state: HistoryState | None = None,
+    ) -> AnalysisPage:
         return AnalysisPage(
             items=tuple(
                 _analysis(item, prefix=_prefix(identity))
-                for item in service.list_analysis_summaries(identity, limit=limit, offset=offset)
+                for item in service.list_analysis_summaries(
+                    identity, limit=limit, offset=offset, q=q, state=state
+                )
             ),
             limit=limit,
             offset=offset,

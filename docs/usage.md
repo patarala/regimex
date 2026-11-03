@@ -83,8 +83,12 @@ saved resources. `var/work` is temporary computation and cache space.
    identity; it does not intentionally create another analysis.
 5. Read the preview, or use **Download HTML** and **Download JSON**. Technical
    input/model identity is available under **Details**.
-6. Reopen saved work from **History**. **Previous** and **Next** browse pages of
-   20 records; **Refresh** returns to the newest page. **Sign out** ends the session.
+6. Reopen saved work from **History**. Each entry shows its instruments, run,
+   model, date and status. Search by instrument, run, model or analysis ID;
+   choose a status to narrow the list. Search covers all saved analyses, not just
+   the visible page. **Previous** and **Next** browse pages of 20 matches;
+   **Refresh** returns to the newest matches and **Clear** removes the filters.
+   **Sign out** ends the session.
 
 The default session expires after 30 minutes from sign-in. Refreshing the page
 does not extend it. Results survive sign-out and service restarts.

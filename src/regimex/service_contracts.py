@@ -5,12 +5,18 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
-from regimex.contracts import Identifier, StrictModel
+from regimex.contracts import MAX_STEPS, Identifier, StrictModel
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.model_registry import InferenceRuntime
-from regimex.operations import Operation, Sha256
+from regimex.operations import Operation, OperationState, Sha256
 
 Role = Literal["user", "admin", "integration"]
+HistoryState = OperationState | Literal["active"]
+
+
+class AnalysisHistoryFilter(StrictModel):
+    q: Annotated[str, Field(max_length=128, pattern=r"^[^\x00]*$")] = ""
+    state: HistoryState | None = None
 
 
 class Principal(StrictModel):
@@ -38,6 +44,18 @@ class SnapshotRecord(StrictModel):
     content_sha256: Sha256
     object: ObjectInfo
     created_at: AwareDatetime
+    instrument_ids: Annotated[tuple[Identifier, ...], Field(max_length=2)] = ()
+    step_count: Annotated[int, Field(ge=1, le=MAX_STEPS)] | None = None
+
+    @model_validator(mode="after")
+    def complete_display_metadata(self) -> Self:
+        # Earlier saved snapshots have neither field. Their history remains
+        # usable without opening raw objects or inventing instrument metadata.
+        if bool(self.instrument_ids) != (self.step_count is not None):
+            raise ValueError("instrument identifiers and step count must be supplied together")
+        if len(set(self.instrument_ids)) != len(self.instrument_ids):
+            raise ValueError("snapshot instrument identifiers must be unique")
+        return self
 
 
 class ModelRecord(StrictModel):
@@ -64,6 +82,11 @@ class AnalysisSummary(StrictModel):
 
     analysis_id: UUID
     snapshot_id: UUID
+    source_id: Identifier
+    run_id: Identifier
+    source_snapshot_id: Identifier
+    instrument_ids: tuple[Identifier, ...] = ()
+    step_count: Annotated[int, Field(ge=1, le=MAX_STEPS)] | None = None
     operation: Operation
     result_available: bool
     report_available: bool = False

@@ -568,6 +568,63 @@ def test_analysis_intake_replay_conflicts_pagination_and_cancellation(
     assert api.client.get(analysis_url, headers=api.headers()).json()["job"]["state"] == "cancelled"
 
 
+def test_history_search_and_state_filters_expose_safe_experiment_metadata(
+    persistent_api: PersistentAPI,
+) -> None:
+    api = persistent_api
+    model = register_metadata(api, "history-baseline")
+    api.repository.activate_model(
+        api.repository.authenticate(api.tokens["admin"]),
+        model.model_version_id,
+        expected_previous=None,
+    )
+    accepted = []
+    for owner, suffix in (("alice", "-%_needle"), ("alice", "-other"), ("bob", "-%_needle")):
+        snapshot_id = upload(api, owner=owner, suffix=suffix)
+        response = api.client.post(
+            "/api/v1/analyses",
+            json={"snapshot_id": str(snapshot_id)},
+            headers={**api.headers(owner), "Idempotency-Key": suffix},
+        )
+        assert response.status_code == 202, response.text
+        accepted.append(response.json())
+    first = accepted[0]
+    assert first["source_id"] == export_fixture().source.source_id
+    assert first["run_id"].endswith("-%_needle")
+    assert first["source_snapshot_id"].endswith("-%_needle")
+    assert first["instrument_ids"] == ["A/Q"]
+    assert first["step_count"] == export_fixture().time_grid.step_count
+    for text in ("NEEDLE", "%", "_"):
+        response = api.client.get(
+            "/api/v1/analyses", params={"q": text, "state": "active"}, headers=api.headers()
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["items"] == [first]
+    response = api.client.get(
+        "/api/v1/analyses",
+        params={"q": "a/q", "state": "queued", "limit": 1, "offset": 1},
+        headers=api.headers(),
+    )
+    assert response.json()["items"] == [first]
+    assert (
+        api.client.post(first["job"]["polling_url"] + "/cancel", headers=api.headers()).status_code
+        == 200
+    )
+    assert (
+        api.client.get(
+            "/api/v1/analyses", params={"q": "needle", "state": "active"}, headers=api.headers()
+        ).json()["items"]
+        == []
+    )
+    cancelled = api.client.get(
+        "/api/v1/analyses", params={"q": "needle", "state": "cancelled"}, headers=api.headers()
+    ).json()["items"]
+    assert [item["analysis_id"] for item in cancelled] == [first["analysis_id"]]
+    for params in ({"q": "x" * 129}, {"q": "\x00"}, {"state": "unknown"}):
+        response = api.client.get("/api/v1/analyses", params=params, headers=api.headers())
+        assert response.status_code == 422, response.text
+
+
 def test_same_idempotency_key_is_independent_between_authenticated_owners(
     persistent_api: PersistentAPI,
 ) -> None:

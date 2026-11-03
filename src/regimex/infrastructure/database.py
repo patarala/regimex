@@ -39,11 +39,13 @@ from regimex.operations import (
 )
 from regimex.report_contracts import MAX_REPORT_BYTES, REPORT_RENDERER_VERSION, AnalysisReportRecord
 from regimex.service_contracts import (
+    AnalysisHistoryFilter,
     AnalysisRecord,
     AnalysisSummary,
     CapacityExceeded,
     Conflict,
     Forbidden,
+    HistoryState,
     ModelRecord,
     NotFound,
     Principal,
@@ -660,9 +662,15 @@ class DatabaseRepository:
 
     @staticmethod
     def _summary_row(row: tuple[object, ...]) -> AnalysisSummary:
+        snapshot = SnapshotRecord.model_validate_json(json_bytes(row[5]))
         summary = AnalysisSummary(
             analysis_id=cast(UUID, row[0]),
             snapshot_id=cast(UUID, row[1]),
+            source_id=snapshot.source_id,
+            run_id=snapshot.run_id,
+            source_snapshot_id=snapshot.source_snapshot_id,
+            instrument_ids=snapshot.instrument_ids,
+            step_count=snapshot.step_count,
             operation=_read_operation(row[2]),
             result_available=cast(bool, row[3]),
             report_available=cast(bool, row[4]),
@@ -677,7 +685,8 @@ class DatabaseRepository:
     def _summary_query(principal: Principal) -> tuple[str, list[object]]:
         query = (
             "SELECT a.analysis_id,a.snapshot_id,o.document,a.result IS NOT NULL, "
-            "EXISTS(SELECT 1 FROM regimex_analysis_reports r WHERE r.analysis_id=a.analysis_id) "
+            "EXISTS(SELECT 1 FROM regimex_analysis_reports r WHERE r.analysis_id=a.analysis_id), "
+            "s.document "
             "FROM regimex_analyses a JOIN regimex_operations o "
             "ON a.operation_id=o.operation_id JOIN regimex_snapshots s "
             "ON a.snapshot_id=s.snapshot_id WHERE o.owner_id=%s"
@@ -711,11 +720,32 @@ class DatabaseRepository:
             return self._summary(connection, principal, analysis_id)
 
     def list_analysis_summaries(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        q: str = "",
+        state: HistoryState | None = None,
     ) -> tuple[AnalysisSummary, ...]:
         self._page(limit, offset)
+        filters = AnalysisHistoryFilter(q=q, state=state)
         with self.connection() as connection:
             query, parameters = self._summary_query(principal)
+            if filters.state == "active":
+                query += " AND o.state IN ('queued','running','cancel_requested')"
+            elif filters.state is not None:
+                query += " AND o.state=%s"
+                parameters.append(filters.state)
+            if search := filters.q.strip():
+                # Literal substring matching keeps %, _ and backslashes ordinary
+                # search text. Authorization and filters precede pagination.
+                query += (
+                    " AND strpos(lower(concat_ws(' ',s.source_id,s.run_id,s.source_snapshot_id,"
+                    "s.document->>'instrument_ids',a.model_version_id,a.analysis_id::text)),"
+                    "lower(%s)) > 0"
+                )
+                parameters.append(search)
             rows = connection.execute(
                 query + " ORDER BY (o.document->>'created_at')::timestamptz DESC,"
                 "a.analysis_id DESC LIMIT %s OFFSET %s",

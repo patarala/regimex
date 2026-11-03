@@ -44,7 +44,7 @@ class Element {
 }
 
 function response(value, status = 200) {
-  return {ok: status >= 200 && status < 300, status, json: async () => value};
+  return {ok: status >= 200 && status < 300, status, json: async () => structuredClone(await value)};
 }
 
 function workspace(count = 45) {
@@ -65,12 +65,14 @@ function workspace(count = 45) {
   const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
   const state = {holdHistory: false};
   const items = Array.from({length: count}, (_, index) => ({
-    analysis_id: id(index + 1), job: {state: "running", created_at: "2026-01-01T00:00:00Z"},
+    analysis_id: id(index + 1), run_id: `run-${index + 1}`, source_id: "market",
+    instrument_ids: [index % 2 ? "ETH/USD" : "BTC/USD"],
+    job: {state: "running", created_at: "2026-01-01T00:00:00Z", model: {model_version_id: "tcn-1"}},
   }));
   let timerId = 0;
   const context = {
     document: {getElementById: get, createElement: () => new Element()},
-    window: {history, addEventListener() {}}, location, URL, console,
+    window: {history, addEventListener() {}}, location, URL, URLSearchParams, console,
     crypto: {randomUUID: () => "request-key"},
     setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: (number) => timers.delete(number),
@@ -87,14 +89,19 @@ function workspace(count = 45) {
       else if (url.startsWith("/api/v1/analyses?") && !state.holdHistory) {
         const query = new URL(url, location.href).searchParams;
         const offset = Number(query.get("offset"));
-        call.reply({items: items.slice(offset, offset + Number(query.get("limit")))});
+        const term = (query.get("q") || "").toLowerCase();
+        const state = query.get("state");
+        const filtered = items.filter((item) =>
+          [item.run_id, item.source_id, ...item.instrument_ids, item.job.model.model_version_id, item.analysis_id].join(" ").toLowerCase().includes(term)
+          && (!state || (state === "active" ? ["queued", "running", "cancel_requested"].includes(item.job.state) : item.job.state === state)));
+        call.reply({items: filtered.slice(offset, offset + Number(query.get("limit")))});
       }
       return promise;
     },
   };
   vm.runInNewContext(source, context, {filename: "app.js"});
   return {
-    get, calls, state, location, timers,
+    get, calls, state, location, timers, items,
     select: (index) => get("history-list").children[index].children[0].click(),
     pending: (url) => {
       const call = calls.find((item) => item.url === url && !item.settled);
@@ -246,6 +253,89 @@ test("late history pages cannot replace a newer refresh", async () => {
   assert.equal(ui.get("history-empty").hidden, false);
   assert.equal(ui.get("history-next").disabled, true);
   assert.equal(ui.get("history-previous").disabled, true);
+});
+
+test("history shows experiment and model names and filters all pages on the server", async () => {
+  const ui = workspace(60);
+  await flush();
+  const row = ui.get("history-list").children[0].children[0];
+  assert.equal(row.children[0].textContent, "BTC/USD");
+  assert.equal(row.children[1].textContent, "tcn-1");
+  ui.get("history-search").value = "BTC/USD";
+  await ui.get("history-filters").emit("submit", {preventDefault() {}});
+  assert.equal(ui.rows().length, 20);
+  assert.equal(ui.rows()[19], id(39));
+  await ui.get("history-next").click();
+  assert.deepEqual(ui.rows(), Array.from({length: 10}, (_, index) => id(41 + 2 * index)));
+  assert.equal(ui.get("history-range").textContent, "21–30");
+  assert.equal(ui.get("history-next").disabled, true);
+  ui.get("history-state").value = "failed";
+  await ui.get("history-state").emit("change", {preventDefault() {}});
+  assert.deepEqual(ui.rows(), []);
+  assert.equal(ui.get("history-empty").textContent, "No analyses match these filters.");
+  assert.equal(ui.get("history-pages").hidden, true);
+  await ui.get("history-clear").click();
+  assert.equal(ui.rows()[0], id(1));
+  assert.equal(ui.get("history-search").value, "");
+  assert.equal(ui.get("history-state").value, "");
+  assert.equal(ui.get("history-clear").hidden, true);
+});
+
+test("late search responses cannot replace results for a newer query", async () => {
+  const ui = workspace();
+  await flush();
+  ui.state.holdHistory = true;
+  ui.get("history-search").value = "ETH/USD";
+  void ui.get("history-filters").emit("submit", {preventDefault() {}});
+  const stale = ui.pending("/api/v1/analyses?limit=21&offset=0&q=ETH%2FUSD");
+  ui.get("history-search").value = "BTC/USD";
+  void ui.get("history-filters").emit("submit", {preventDefault() {}});
+  ui.pending("/api/v1/analyses?limit=21&offset=0&q=BTC%2FUSD").reply({items: [ui.items[0]]});
+  await flush();
+  stale.reply({items: [ui.items[1]]});
+  await flush();
+  assert.deepEqual(ui.rows(), [id(1)]);
+  assert.equal(ui.get("history-loading").hidden, true);
+  assert.equal(ui.get("history-list")["aria-busy"], "false");
+});
+
+test("a failed selection leaves an active-only history without closing its details", async () => {
+  const ui = workspace(1);
+  await flush();
+  ui.get("history-state").value = "active";
+  await ui.get("history-state").emit("change", {preventDefault() {}});
+  void ui.select(0);
+  ui.items[0].job.state = "failed";
+  const value = metadata("job-A", "failed");
+  value.job.failure = {code: "capacity_limit", message: "Time limit exceeded."};
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(value);
+  await flush();
+  assert.deepEqual(ui.rows(), []);
+  assert.equal(ui.get("analysis-panel").hidden, false);
+  assert.equal(ui.get("job-detail").textContent, "Time limit exceeded.");
+  assert.equal(ui.get("history-empty").textContent, "No analyses match these filters.");
+});
+
+test("an in-flight history response cannot undo a terminal state observed by polling", async () => {
+  const ui = workspace(1);
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A"));
+  await flush();
+  ui.state.holdHistory = true;
+  void ui.get("refresh-history").click();
+  const stale = ui.pending("/api/v1/analyses?limit=21&offset=0");
+  void Array.from(ui.timers.values())[0]();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  const fresh = ui.calls.filter((call) => call.url === "/api/v1/analyses?limit=21&offset=0").at(-1);
+  assert.notEqual(fresh, stale);
+  fresh.reply({items: [{...ui.items[0], job: {...ui.items[0].job, state: "failed"}}]});
+  await flush();
+  stale.reply({items: ui.items});
+  await flush();
+  assert.match(ui.get("history-list").children[0].children[0].children.at(-1).textContent, /^Failed/);
+  assert.equal(ui.get("history-list").children[0].children[0]["aria-current"], "true");
 });
 
 test("an older invalid-file response cannot replace the selected valid file", async () => {

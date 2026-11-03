@@ -152,6 +152,8 @@ class AdminResultCommitter:
                     content_sha256=export.content_sha256,
                     object=info,
                     created_at=datetime.now(UTC),
+                    instrument_ids=tuple(item.instrument_id for item in export.instruments),
+                    step_count=export.time_grid.step_count,
                 )
             )
             bindings.append(binding)

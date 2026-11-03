@@ -26,6 +26,7 @@ body {
 }
 button,
 input,
+select,
 a {
   -webkit-tap-highlight-color: transparent;
 }
@@ -68,6 +69,7 @@ button:disabled {
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
+select:focus-visible,
 summary:focus-visible,
 .drop-zone:focus-within {
   outline: 2px solid var(--accent);
@@ -127,7 +129,7 @@ p {
 }
 .workspace-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 280px;
+  grid-template-columns: minmax(0, 1fr) 320px;
   align-items: start;
   gap: 24px;
 }
@@ -183,6 +185,8 @@ p {
 }
 .section-heading h2 {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .drop-zone {
@@ -363,6 +367,41 @@ iframe {
   padding: 5px 10px;
   font-size: 12px;
 }
+.history-filters {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+.history-filters label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.history-filters input,
+.history-filters select {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  margin-bottom: 6px;
+  padding: 8px;
+  border: 1px solid #abb4bf;
+  border-radius: 4px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+}
+.filter-actions {
+  display: flex;
+  gap: 8px;
+}
+.filter-actions button {
+  min-height: 32px;
+  padding: 5px 12px;
+  font-size: 12px;
+}
+#history-loading {
+  margin: 0 0 12px;
+}
 .history ul {
   max-height: 580px;
   overflow-y: auto;
@@ -394,13 +433,21 @@ iframe {
 .history li button[aria-current="true"] {
   background: #edf3fa;
 }
-.history li button span:first-child {
+.history li button > * {
   overflow-wrap: anywhere;
 }
-.history li button span:last-child {
+.history li button strong {
+  font-size: 13px;
+}
+.history li button time,
+.history li button .history-run,
+.history li button .history-state {
   color: var(--muted);
   font-size: 11px;
   font-weight: 400;
+}
+.history li button .history-state[data-state="failed"] {
+  color: #843e3e;
 }
 #history-empty {
   color: var(--muted);

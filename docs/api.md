@@ -39,6 +39,22 @@ returns `409`. Every resource and download is authorized on the server.
 | `GET /analyses/{id}/report` | Self-contained HTML attachment |
 | `GET /analyses` | Owned history, newest first, with `limit`/`offset` |
 
+History accepts `q` (up to 128 characters) for a case-insensitive, literal search
+across source, run, snapshot, instrument, model and analysis identifiers. `state`
+accepts `queued`, `running`, `cancel_requested`, `cancelled`, `succeeded` or
+`failed`; `active` groups the first three. Filters apply before `limit`/`offset`
+and never expand the caller's owner, source or run permissions. For example:
+
+```text
+GET /api/v1/analyses?q=BTC%2FUSD&state=succeeded&limit=20&offset=0
+```
+
+List entries and individual analysis metadata include the source/run identifiers,
+available instrument identifiers and step count. These endpoints do not read the
+raw export or result payload. A failed job includes `failure.code`, a safe
+`failure.message` and attempt counts. `failure.retryable` describes the type of
+failure; a terminal `failed` job has no automatic retries remaining.
+
 Example analysis body, using the returned snapshot ID:
 
 ```json
