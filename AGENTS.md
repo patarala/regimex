@@ -21,6 +21,10 @@ Use Python from `.python-version` and uv from `pyproject.toml`. Use `uv` and
 and repository documentation in English. Keep commands in the README executable.
 Inspect the current diff before editing and preserve unrelated work.
 
+Use topic branches for ongoing work. Push CI runs quick checks; pull requests
+into `main` and manual full runs also exercise scientific and service integrations.
+A quick CI pass alone does not verify a release. See the README for CI controls.
+
 Prefer small, explicit functions and modules organized by responsibility. Keep
 HTTP and CLI handlers thin. Scientific functions receive data and configuration
 as arguments; they do not read service settings or perform storage operations.

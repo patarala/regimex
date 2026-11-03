@@ -3,12 +3,19 @@ name: CI
 on:
   push:
   pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      full_checks:
+        description: Run scientific, storage and container checks
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ inputs.full_checks || false }}
   cancel-in-progress: true
 
 jobs:
@@ -35,6 +42,13 @@ jobs:
         run: uv run --locked ruff check .
       - name: Test
         run: uv run --locked pytest
+      - name: Check report and workspace JavaScript
+        run: |
+          node --check src/regimex/templates/direction-report.js
+          node --check src/regimex/templates/analysis-report.js
+          node --check src/regimex/templates/model-comparison.js
+          node --check src/regimex/web/app.js
+          node --test tests/web_ui.test.cjs
       - name: Build wheel and source distribution
         run: uv build --no-build-isolation
       - name: Verify installation outside the source tree
@@ -62,6 +76,9 @@ jobs:
 
   scientific:
     name: Scientific and PostgreSQL service checks
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_checks)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
@@ -122,16 +139,12 @@ jobs:
         run: uv run --locked --extra ml --extra viz --extra service --extra s3 --group queue-test --group service-test python tests/support/run_storage_tests.py --binary "$REGIMEX_TEST_SEAWEEDFS_BIN" --tls -- python -m pytest
       - name: Check types with scientific dependencies
         run: uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test mypy src tests
-      - name: Check report and workspace JavaScript
-        run: |
-          node --check src/regimex/templates/direction-report.js
-          node --check src/regimex/templates/analysis-report.js
-          node --check src/regimex/templates/model-comparison.js
-          node --check src/regimex/web/app.js
-          node --test tests/web_ui.test.cjs
 
   service-container:
     name: Persistent HTTPS service deployment
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.full_checks)
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:

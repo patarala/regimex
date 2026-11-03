@@ -88,6 +88,22 @@ different simulator. See [evaluation](docs/quality.md) and
 Production code is in `src/regimex`, behavior tests in `tests`. See
 [AGENTS.md](AGENTS.md) for engineering conventions.
 
+Work on a topic branch, then open a pull request into `main` when ready for full
+verification. CI runs the following checks:
+
+| Event | Checks |
+| --- | --- |
+| Push to any branch or tag | Formatting, lint, core tests, JavaScript tests and packaging |
+| Pull request into `main`, including subsequent pushes | All checks, including ML, type checking, PostgreSQL, HTTPS S3 and Docker deployment |
+| Manual run | All checks by default; clear `full_checks` to run only the quick checks |
+
+To start a manual run, open **Actions → CI → Run workflow**, choose the branch
+and set `full_checks`. This control is available once the workflow is on the
+default branch. Quick push runs do not cancel manual full runs. Direct pushes
+to `main` run only quick checks; request a full manual run before releasing them.
+
+Run the relevant checks locally:
+
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
