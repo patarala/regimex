@@ -206,7 +206,8 @@ def recover_stale(operation: Operation, stale_before: datetime, now: datetime) -
     if operation.state == "cancel_requested":
         return acknowledge_cancel(operation, operation.attempt_token, now)
     failure = OperationFailure(
-        code="attempts_exhausted", message="The worker stopped and the attempt budget is exhausted."
+        code="attempts_exhausted",
+        message="The worker stopped responding and no automatic retries remain.",
     )
     if operation.attempt >= operation.max_attempts:
         return fail(operation, operation.attempt_token, failure, now)

@@ -25,6 +25,33 @@
     committing: "Saving the analysis.",
     retry_wait: "Waiting to retry.",
   };
+  const failureActions = {
+    invalid_data: "Check the export and upload a corrected file.",
+    unsupported_configuration: "Ask your administrator to check the model and worker configuration.",
+    incompatible_artifact: "Ask your administrator to verify or replace the saved model and data.",
+    capacity_limit: "Ask your administrator to check worker and storage capacity before running again.",
+    source_failure: "Check that the source is available before starting a new analysis.",
+    infrastructure_failure: "Try a new analysis once the service is available. Contact your administrator if this continues.",
+    attempts_exhausted: "Ask your administrator to check worker availability before starting a new analysis.",
+  };
+  function requestError(data) {
+    const error = data?.error;
+    const message = error?.message || "The request could not be completed.";
+    if (error?.code !== "invalid_data" || !Array.isArray(error.details)) return message;
+    const details = error.details.slice(0, 5).map((item) => {
+      const path = Array.isArray(item.location)
+        ? item.location.filter((part) => part !== "body").join(".").slice(0, 200)
+        : "";
+      return `${path || "Export"}: ${String(item.message || "Invalid value").slice(0, 300)}`;
+    });
+    if (error.details.length > 5) details.push(`${error.details.length - 5} more validation errors.`);
+    return [message, ...details].join("\n");
+  }
+  function clearFailure() {
+    $("job-detail").classList.remove("failed");
+    $("job-guidance").textContent = "";
+    $("job-guidance").hidden = true;
+  }
   function notice(message = "", error = false) {
     $("notice").textContent = message;
     $("notice").classList.toggle("error", error);
@@ -46,6 +73,7 @@
     clearTimeout(timer);
     clearReport();
     clearCancellation();
+    clearFailure();
     historyGeneration++;
     historyOffset = 0;
     historyHasMore = false;
@@ -101,7 +129,7 @@
         reset();
         throw new Error("Your session has expired. Sign in to reopen your saved analyses.");
       }
-      throw new Error(data.error?.message || "The request could not be completed.");
+      throw new Error(requestError(data));
     }
     return response;
   }
@@ -225,6 +253,7 @@
     result = null;
     clearTimeout(timer);
     clearCancellation();
+    clearFailure();
     $("classify").disabled = true;
     $("analysis-panel").hidden = false;
     $("analysis-title").textContent = "Analysis";
@@ -263,6 +292,7 @@
     clearTimeout(timer);
     clearReport();
     clearCancellation();
+    clearFailure();
     // Object identity also rejects an old response after selecting A, B, then A again.
     const selection = { id, request: 0, job: null, cancelling: false };
     current = selection;
@@ -304,13 +334,26 @@
       $("cancel").disabled = selection.cancelling || selection.job === null;
       $("job-detail").textContent =
         job.failure?.message ||
-        (job.state === "succeeded"
+        (job.state === "failed"
+          ? "The analysis failed before a result could be saved."
+          : job.state === "succeeded"
           ? ""
           : job.state === "cancelled"
             ? "This analysis was cancelled."
             : job.state === "cancel_requested"
               ? "Cancelling the analysis."
               : stages[job.stage] || "Processing the analysis.");
+      const failed = job.state === "failed";
+      $("job-detail").classList.toggle("failed", failed);
+      $("job-guidance").hidden = !failed;
+      $("job-guidance").textContent = failed
+        ? failureActions[job.failure?.code] || "Contact your administrator with the analysis ID under Details."
+        : "";
+      if (failed) {
+        const attempts = Number.isInteger(job.attempt) ? ` · Attempts ${job.attempt}/${job.max_attempts}` : "";
+        $("analysis-identity").textContent +=
+          ` · Failure ${job.failure?.code || "unknown"}${attempts}`;
+      }
       if (pending) timer = setTimeout(() => poll(selection), 1500);
       if (job.state === "succeeded" && value.result_available)
         await showResult(selection, value, active);

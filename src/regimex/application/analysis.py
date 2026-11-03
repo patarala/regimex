@@ -21,14 +21,19 @@ import psycopg
 from pydantic import Field, JsonValue
 
 from regimex.application.service import AnalysisResult, AnalysisService, materialize_bundle
-from regimex.computation_worker import ChildLimits, ComputationFailure, supervise_child
+from regimex.computation_worker import (
+    ChildLimits,
+    ComputationFailure,
+    resource_failure,
+    supervise_child,
+)
 from regimex.contracts import MAX_INPUT_BYTES, StrictModel
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectIntegrityError
 from regimex.model_bundles import ModelBundle, verify_model_bundle
 from regimex.model_registry import RegistryError
 from regimex.operations import Operation, OperationFailure, Sha256
 from regimex.report_contracts import MAX_REPORT_BYTES, AnalysisReportRecord
-from regimex.resource_limits import ResourceBudgetExceeded
+from regimex.resource_limits import TimeBudgetExceeded
 from regimex.service_contracts import ModelRecord, StaleAttempt
 from regimex.storage import json_bytes
 
@@ -174,7 +179,7 @@ class _Heartbeat:
         if self.cancelled.is_set():
             raise _Cancelled()
         if time.monotonic() > self.deadline:
-            raise ResourceBudgetExceeded("Analysis exceeded its wall-time budget.")
+            raise TimeBudgetExceeded("Analysis exceeded its wall-time budget.")
 
     def check(self, stage: str) -> None:
         self.poll()
@@ -324,25 +329,22 @@ def run_analysis(
         # stable public messages; operators can inspect the failed stage and code.
         if isinstance(exc, ComputationFailure):
             failure = exc.failure
-        elif isinstance(exc, (ObjectCapacityError, ResourceBudgetExceeded)):
-            failure = OperationFailure(
-                code="capacity_limit",
-                message="The worker storage or rendering capacity is exhausted.",
-            )
+        elif (capacity := resource_failure(exc)) is not None:
+            failure = capacity
         elif isinstance(exc, RegistryError):
             failure = OperationFailure(
                 code="unsupported_configuration",
-                message="The registered model is unavailable on this worker.",
+                message="This worker cannot load the saved model's backend.",
             )
         elif isinstance(exc, (ObjectIntegrityError, ValueError)):
             failure = OperationFailure(
                 code="incompatible_artifact",
-                message="The committed input or model failed integrity and compatibility checks.",
+                message="The saved experiment or model failed integrity and compatibility checks.",
             )
         else:
             failure = OperationFailure(
                 code="infrastructure_failure",
-                message="The analysis worker could not complete this attempt.",
+                message="The analysis stopped because of a service error.",
                 retryable=isinstance(
                     exc,
                     (

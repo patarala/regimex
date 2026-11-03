@@ -1,6 +1,7 @@
 """Computation limits cover metadata, late output and process descendants."""
 
 import ctypes
+import errno
 import os
 import signal
 import subprocess
@@ -22,7 +23,7 @@ from regimex.computation_worker import (
     ComputationFailure,
     supervise_child,
 )
-from regimex.resource_limits import ResourceBudgetExceeded
+from regimex.resource_limits import ResourceBudgetExceeded, TimeBudgetExceeded
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux child supervision")
 
@@ -138,19 +139,76 @@ while True:
 
 
 @pytest.mark.parametrize(
-    ("failure", "expected_code"),
+    ("failure", "expected_code", "reason", "retryable"),
     [
-        (ResourceBudgetExceeded("private allocation details"), "capacity_limit"),
-        (ValueError("private validation details"), "invalid_data"),
+        (ResourceBudgetExceeded("private allocation details"), "capacity_limit", "resource", False),
+        (TimeBudgetExceeded("private timing details"), "capacity_limit", "time limit", False),
+        (MemoryError("private allocation details"), "capacity_limit", "memory", False),
+        (OSError(errno.ENOMEM, "private allocation"), "capacity_limit", "memory", False),
+        (OSError(errno.ENOSPC, "private path"), "capacity_limit", "disk space", False),
+        (OSError(errno.EDQUOT, "private quota"), "capacity_limit", "disk space", False),
+        (OSError(errno.EFBIG, "private path"), "capacity_limit", "file size", False),
+        (ValueError("private validation details"), "invalid_data", "validation", False),
+        (ImportError("private module path"), "unsupported_configuration", "backend", False),
+        (
+            OSError(errno.EIO, "private provider credentials"),
+            "infrastructure_failure",
+            "service",
+            True,
+        ),
     ],
 )
 def test_budget_failures_remain_distinct_from_invalid_inputs(
-    failure: Exception, expected_code: str
+    failure: Exception, expected_code: str, reason: str, retryable: bool
 ) -> None:
     result = computation_worker._failure_from_exception(failure)
     assert result.code == expected_code
-    assert not result.retryable
+    assert result.retryable == retryable
+    assert reason in result.message
     assert "private" not in result.message
+
+
+def test_memory_failure_wrapped_by_dynamic_loader_is_not_a_missing_backend() -> None:
+    error = ImportError("private library path: failed to map segment from shared object")
+    outer = RuntimeError("private import details")
+    outer.__cause__ = error
+    failure = computation_worker._failure_from_exception(outer)
+    assert failure.code == "capacity_limit" and not failure.retryable
+    assert "memory" in failure.message and "private" not in failure.message
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "reason"),
+    [(72, "memory"), (-signal.SIGXCPU, "CPU time"), (-signal.SIGKILL, "may have been")],
+)
+def test_child_exit_retains_the_known_reason_without_guessing_why_it_was_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exit_code: int, reason: str
+) -> None:
+    original_launch = subprocess.Popen
+
+    def launch(*args: Any, **kwargs: Any) -> Popen[bytes]:
+        script = """
+import os
+import sys
+print('private worker details', flush=True)
+code = int(sys.argv[1])
+if code < 0:
+    os.kill(os.getpid(), -code)
+sys.exit(code)
+"""
+        return cast(
+            Popen[bytes],
+            original_launch([sys.executable, "-c", script, str(exit_code)], **kwargs),
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", launch)
+    with pytest.raises(ComputationFailure) as error:
+        supervise_child(
+            {}, tmp_path, limits=ChildLimits(5, 1024**3, 4096, 1), heartbeat=lambda: None
+        )
+    assert error.value.failure.code == "capacity_limit"
+    assert reason in error.value.failure.message
+    assert "private" not in error.value.failure.message
 
 
 @pytest.mark.parametrize("output_kind", ["file", "directory"])
@@ -291,5 +349,5 @@ for index in range(2):
         with pytest.raises(ComputationFailure) as error:
             supervise_child({}, tmp_path, limits=limits, heartbeat=lambda: None)
         assert error.value.failure.code == "capacity_limit"
-        assert ("scratch" if limit == "scratch" else "wall-time") in str(error.value)
+        assert ("scratch" if limit == "scratch" else "time limit") in str(error.value)
     assert len(children) == 1 and children[0].returncode == 0

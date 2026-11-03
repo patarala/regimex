@@ -1,6 +1,7 @@
 """Real saved baseline analysis, durable results and repeated worker delivery."""
 
 import asyncio
+import errno
 import hashlib
 import json
 import os
@@ -338,6 +339,7 @@ def test_blocking_child_is_stopped_and_the_worker_can_process_the_next_analysis(
                 else:
                     assert result.state == "failed" and result.failure is not None
                     assert result.failure.code == "capacity_limit" and not result.failure.retryable
+                    assert "time limit" in result.failure.message
                 assert probe.processes[0].returncode == -signal.SIGKILL
                 assert not probe.roots[0].exists()
             finally:
@@ -459,6 +461,38 @@ def test_corrupt_cached_model_fails_without_a_committed_result(
     assert failed is not None and failed.state == "failed" and failed.failure is not None
     assert failed.failure.code == "incompatible_artifact"
     assert service.get_analysis(owner, queued.analysis_id).result is None
+
+
+@pytest.mark.parametrize("disk_full", [False, True])
+def test_worker_persists_safe_reasons_and_only_retries_transient_storage_failures(
+    service: AnalysisService,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    disk_full: bool,
+) -> None:
+    published_model(service, tmp_path)
+    owner = principal(service.repository)
+    snapshot = service.create_snapshot(owner, source(2020).export)
+    queued = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key="storage-error")
+
+    def unavailable(*args: object, **kwargs: object) -> object:
+        raise OSError(errno.ENOSPC if disk_full else errno.EIO, "private storage path and token")
+
+    monkeypatch.setattr(analysis_worker, "supervise_child", unavailable)
+    attempts = 1 if disk_full else queued.operation.max_attempts
+    for attempt in range(1, attempts + 1):
+        operation = service.run_analysis(queued.operation.operation_id)
+        assert operation is not None and operation.attempt == attempt
+        assert operation.state == ("failed" if attempt == attempts else "queued")
+    persisted = service.get_analysis(owner, queued.analysis_id)
+    assert persisted.operation.failure is not None
+    failure = persisted.operation.failure
+    assert failure.code == ("capacity_limit" if disk_full else "infrastructure_failure")
+    assert failure.retryable is not disk_full
+    assert ("disk space" if disk_full else "service error") in failure.message
+    assert "private" not in persisted.model_dump_json()
+    assert persisted.result is None
+    assert service.run_analysis(queued.operation.operation_id) is None
 
 
 def test_invalid_numeric_codec_cannot_register_or_activate(

@@ -267,6 +267,48 @@ test("an older invalid-file response cannot replace the selected valid file", as
   assert.equal(ui.get("notice").hidden, true);
 });
 
+test("failed analyses show a reason and next action without offering an exhausted retry", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  const failure = metadata("job-A", "failed");
+  Object.assign(failure.job, {
+    attempt: 3, max_attempts: 3,
+    failure: {code: "infrastructure_failure", message: "Storage was unavailable.", retryable: true},
+  });
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(failure);
+  await flush();
+  assert.equal(ui.get("job-detail").textContent, "Storage was unavailable.");
+  assert.equal(ui.get("job-guidance").hidden, false);
+  assert.match(ui.get("job-guidance").textContent, /new analysis/);
+  assert.match(ui.get("analysis-identity").textContent, /infrastructure_failure.*3\/3/);
+  assert.equal(ui.get("retry").hidden, true);
+  assert.equal(ui.get("cancel").hidden, true);
+  assert.equal(ui.timers.size, 0);
+  void ui.select(1);
+  assert.equal(ui.get("job-guidance").hidden, true);
+  assert.equal(ui.get("job-guidance").textContent, "");
+});
+
+test("validation errors identify the rejected field with bounded readable details", async () => {
+  const ui = workspace();
+  await flush();
+  const file = {name: "bad.json", size: 24, text: async () => '{"schema_version":"2.1"}'};
+  void ui.get("export-file").emit("change", {target: {files: [file]}});
+  await flush();
+  ui.pending("/api/v1/validate").reply({error: {
+    code: "invalid_data", message: "Request validation failed.",
+    details: Array.from({length: 7}, (_, index) => ({
+      location: ["body", "observations", index, "last_price"], message: "Input should be greater than 0",
+    })),
+  }}, 422);
+  await flush();
+  assert.match(ui.get("notice").textContent, /observations\.0\.last_price: Input should be greater than 0/);
+  assert.match(ui.get("notice").textContent, /2 more validation errors/);
+  assert.doesNotMatch(ui.get("notice").textContent, /observations\.5/);
+  assert.equal(ui.get("classify").disabled, true);
+});
+
 test("an old authentication error cannot reset a newly opened session", async () => {
   const ui = workspace();
   await flush();

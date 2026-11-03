@@ -23,7 +23,7 @@ from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.object_store import ObjectCapacityError
 from regimex.model_registry import RegistryError
 from regimex.operations import OperationFailure
-from regimex.resource_limits import ResourceBudgetExceeded
+from regimex.resource_limits import ResourceBudgetExceeded, TimeBudgetExceeded
 from regimex.storage import json_bytes
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
@@ -43,34 +43,81 @@ def _memory_mapping_failure(error: Exception) -> bool:
     return False
 
 
-def _failure_from_exception(error: Exception) -> OperationFailure:
-    """Keep resource exhaustion separate from malformed data and unsafe details."""
-    if (
-        isinstance(error, (ResourceBudgetExceeded, ObjectCapacityError))
-        or _memory_mapping_failure(error)
-        or (
-            isinstance(error, OSError)
-            and error.errno in {errno.ENOMEM, errno.ENOSPC, errno.EDQUOT, errno.EFBIG}
+def resource_failure(error: Exception) -> OperationFailure | None:
+    """Describe a recognized limit without exposing paths or private exception text."""
+    if isinstance(error, TimeBudgetExceeded):
+        return OperationFailure(
+            code="capacity_limit", message="The computation exceeded its time limit."
         )
+    if (
+        isinstance(error, MemoryError)
+        or _memory_mapping_failure(error)
+        or (isinstance(error, OSError) and error.errno == errno.ENOMEM)
     ):
         return OperationFailure(
             code="capacity_limit",
-            message="Computation exceeded its resource budget or available capacity.",
+            message="The worker did not have enough memory to compute a result.",
         )
+    if isinstance(error, OSError) and error.errno in {errno.ENOSPC, errno.EDQUOT}:
+        return OperationFailure(
+            code="capacity_limit", message="The worker ran out of available disk space."
+        )
+    if isinstance(error, OSError) and error.errno == errno.EFBIG:
+        return OperationFailure(
+            code="capacity_limit",
+            message="A computation output exceeded the worker's file size limit.",
+        )
+    if isinstance(error, ObjectCapacityError):
+        return OperationFailure(
+            code="capacity_limit",
+            message="A model, input or result exceeded the configured storage capacity.",
+        )
+    if isinstance(error, ResourceBudgetExceeded):
+        return OperationFailure(
+            code="capacity_limit",
+            message="The computation exceeded its configured resource limit.",
+        )
+    return None
+
+
+def _failure_from_exception(error: Exception) -> OperationFailure:
+    """Keep resource exhaustion separate from malformed data and unsafe details."""
+    capacity = resource_failure(error)
+    if capacity is not None:
+        return capacity
     if isinstance(error, (RegistryError, ImportError)):
         return OperationFailure(
             code="unsupported_configuration",
-            message="The requested backend is unavailable or incompatible.",
+            message="The worker cannot load the requested model backend or its dependencies.",
         )
     if isinstance(error, ValueError):
         return OperationFailure(
             code="invalid_data",
-            message="The computation inputs or saved artifact failed validation.",
+            message="The computation inputs or saved model failed validation.",
         )
     return OperationFailure(
         code="infrastructure_failure",
-        message="The isolated computation could not complete.",
+        message="The computation stopped because of a service error.",
         retryable=isinstance(error, OSError),
+    )
+
+
+def _failure_from_exit(returncode: int) -> OperationFailure:
+    """A killed process cannot report its own failure; do not guess at an OOM kill."""
+    messages = {
+        72: "The worker did not have enough memory to compute a result.",
+        -signal.SIGXCPU: "The computation exceeded its CPU time limit.",
+        -signal.SIGXFSZ: "A computation output exceeded the worker's file size limit.",
+        -signal.SIGKILL: (
+            "The computation process was forcibly stopped. "
+            "A worker resource limit may have been reached."
+        ),
+    }
+    if returncode in messages:
+        return OperationFailure(code="capacity_limit", message=messages[returncode])
+    return OperationFailure(
+        code="infrastructure_failure",
+        message="The computation process stopped unexpectedly before producing a result.",
     )
 
 
@@ -224,14 +271,14 @@ def supervise_child(
             raise ComputationFailure(
                 OperationFailure(
                     code="capacity_limit",
-                    message="Computation exceeded its wall-time budget.",
+                    message="The computation exceeded its time limit.",
                 )
             )
         if _scratch_size(root) > limits.scratch_bytes:
             raise ComputationFailure(
                 OperationFailure(
                     code="capacity_limit",
-                    message="Computation exceeded its scratch budget.",
+                    message="The computation exceeded its temporary storage (scratch) limit.",
                 )
             )
 
@@ -262,23 +309,8 @@ def supervise_child(
                 with failure_path.open("rb") as stream:
                     failure = OperationFailure.model_validate_json(stream.read(8193))
                 raise ComputationFailure(failure)
-            code: Literal["capacity_limit", "infrastructure_failure"] = (
-                "capacity_limit"
-                if child.returncode
-                in {
-                    -signal.SIGKILL,
-                    -signal.SIGXCPU,
-                    -signal.SIGXFSZ,
-                    72,
-                }
-                else "infrastructure_failure"
-            )
-            raise ComputationFailure(
-                OperationFailure(
-                    code=code,
-                    message="The isolated computation process terminated before completion.",
-                )
-            )
+            assert child.returncode is not None
+            raise ComputationFailure(_failure_from_exit(child.returncode))
         result_path = root / "child-result.json"
         if result_path.is_symlink() or not result_path.is_file():
             raise ValueError("computation did not write a regular result manifest")
@@ -328,7 +360,7 @@ def _child_main(
         if task == "analysis" and failure.code == "invalid_data":
             failure = OperationFailure(
                 code="incompatible_artifact",
-                message="The committed input or model failed integrity and compatibility checks.",
+                message="The saved experiment or model failed integrity and compatibility checks.",
             )
         (root / "child-failure.json").write_bytes(json_bytes(failure.model_dump(mode="json")))
         return 65

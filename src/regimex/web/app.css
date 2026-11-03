@@ -252,6 +252,7 @@ p {
   background: #fff9e9;
   color: #64501f;
   overflow-wrap: anywhere;
+  white-space: pre-line;
 }
 .notice.error {
   border-color: #d8b3b3;
@@ -275,6 +276,9 @@ p {
 }
 #job-detail:empty {
   display: none;
+}
+#job-detail.failed {
+  color: #843e3e;
 }
 .progress {
   height: 3px;

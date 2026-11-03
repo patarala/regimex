@@ -138,8 +138,13 @@ at most 12 experiments are displayed, chosen evenly from sorted snapshot IDs;
 | File is rejected | Check export schema 2.1, a completed run, at most two instruments, 4,096 steps and 16 MiB. Changing only a version field does not convert another format. |
 | No active model | An administrator must register/activate a supplied bundle or evaluate/publish a trained candidate. |
 | Analysis remains queued | Check the analysis worker is running with the same database and storage configuration. |
-| Analysis fails | Read its error, check worker logs and capacity settings. A failure does not produce a partial successful report. |
+| Analysis fails | Read the reason and suggested action beside the status. **Details** includes the analysis ID, failure code and attempt count for the administrator. A failure does not produce a partial successful report. |
 | History is empty | Check the signed-in owner; other users' analyses are not visible. |
+
+Rejected exports show the affected fields, such as `time_grid.step_count` or
+`observations.0.last_price`. Correct the file before uploading it again.
+**Retry request** checks an interrupted HTTP request; it does not restart a failed
+analysis. Once an analysis has failed, automatic retries have ended.
 
 For API automation use [API workflows](api.md). For backups and resource cleanup
 use [storage operations](storage.md); deleting files from the object root is not
