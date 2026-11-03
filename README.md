@@ -82,6 +82,17 @@ different simulator. See [evaluation](docs/quality.md) and
 | [Deployment](docs/deployment.md) | Docker, TLS, resources and local/S3 configuration |
 | [Storage](docs/storage.md) | Integrity, retention, backup and restoration |
 | [Integration](docs/integration.md) | External export and delegated access contract |
+| [Release build](docs/releasing.md) | One-command packaging, saved assets and checksums |
+
+Build a release from a committed checkout:
+
+```sh
+uv run --locked python scripts/build_release.py --assets release
+```
+
+This writes `release/build/regimex-0.1.0.zip` with the source, wheel, source
+distribution and checksummed assets, including editable DOCX documents.
+Omit `--assets release` to build from source without an existing asset pack.
 
 ## Development
 

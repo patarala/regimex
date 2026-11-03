@@ -72,7 +72,7 @@ packages = ["src/regimex"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "/src", "/tests", "/schemas", "/docs", "/deploy",
+  "/src", "/tests", "/schemas", "/docs", "/deploy", "/scripts",
   "/README.md", "/AGENTS.md", "/pyproject.toml", "/uv.lock",
   "/.python-version", "/Dockerfile", "/.dockerignore", "/compose.yaml", "/compose.s3.yaml",
 ]
