@@ -69,6 +69,20 @@ The API serves `http://127.0.0.1:8000/`; API documentation is at `/docs`.
 Stop processes with Ctrl+C. Keep `var/objects` and PostgreSQL data: they contain
 saved resources. `var/work` is temporary computation and cache space.
 
+To diagnose the installation, run in another terminal with the same environment:
+
+```sh
+. var/environment.sh
+uv run --locked --all-extras regimex service doctor
+```
+
+Each check prints **PASS**, **FAIL** or **SKIP**, with a reason and next action.
+The command checks the database, migrations, storage, all three worker queues
+and actual restoration of the active model in a separate local process.
+Add `--json` for structured output. A failed or skipped check produces exit code 1.
+Run it in the worker environment to test those installed dependencies; it does
+not execute probes inside remote workers or train a model.
+
 ## Analyze an experiment
 
 1. Open `http://127.0.0.1:8000/`. Paste the content of
@@ -162,12 +176,14 @@ at most 12 experiments are displayed, chosen evenly from sorted snapshot IDs;
 | Sign-in fails | Use the user token's full content, the exact configured origin and a current token. A revoked or expired session needs a new sign-in. |
 | File is rejected | Check export schema 2.1, a completed run, at most two instruments, 4,096 steps and 16 MiB. Changing only a version field does not convert another format. |
 | No active model | An administrator must register/activate a supplied bundle or evaluate/publish a trained candidate. |
-| Analysis remains queued | Check the analysis worker is running with the same database and storage configuration. |
+| Analysis remains queued | Read the queue message. Busy workers need time; an unavailable worker needs administrator attention. Run `service doctor` with the worker configuration to locate the cause. |
 | Analysis fails | Read the reason and suggested action beside the status. **Details** includes the analysis ID, failure code and attempt count for the administrator. A failure does not produce a partial successful report. |
 | History is empty | Check the signed-in owner; other users' analyses are not visible. |
 
 Rejected exports show the affected fields, such as `time_grid.step_count` or
 `observations.0.last_price`. Correct the file before uploading it again.
+Queued analyses show elapsed time and the latest worker availability. A recent
+heartbeat indicates a live worker, not a tested ability to load a particular model.
 **Retry request** checks an interrupted HTTP request; it does not restart a failed
 analysis. Once an analysis has failed, automatic retries have ended. After addressing
 the cause, **Run again** creates a separate analysis using the saved input.

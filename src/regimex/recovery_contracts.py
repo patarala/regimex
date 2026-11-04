@@ -13,8 +13,8 @@ from regimex.contracts import StrictModel
 from regimex.infrastructure.maintenance import ServicesStoppedAttestation
 from regimex.infrastructure.object_store import ObjectInfo
 
-RecoveryRevision = Literal["0001_initial"]
-RECOVERY_REVISION: RecoveryRevision = "0001_initial"
+RecoveryRevision = Literal["0002_worker_queues"]
+RECOVERY_REVISION: RecoveryRevision = "0002_worker_queues"
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 

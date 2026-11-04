@@ -21,7 +21,7 @@ def test_service_help_keeps_optional_runtime_unloaded() -> None:
             "import sys; from typer.testing import CliRunner; from regimex.cli import app; "
             "r=CliRunner().invoke(app,['service','--help']); "
             "assert r.exit_code == 0, r.output; "
-            "assert 'register-model' in r.output and 'worker' in r.output; "
+            "assert all(name in r.output for name in ('register-model','worker','doctor')); "
             "assert not {'fastapi','procrastinate','psycopg','numpy','sklearn','torch'} "
             "& sys.modules.keys()",
         ],
@@ -48,6 +48,37 @@ def test_database_failure_does_not_print_connection_credentials() -> None:
     assert "infrastructure" in result.output
     assert "private-example" not in result.output
     assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_doctor_reports_database_failure_without_credentials(
+    tmp_path: Path, structured: bool
+) -> None:
+    pytest.importorskip("psycopg")
+    pytest.importorskip("sqlalchemy")
+    result = CliRunner().invoke(
+        app,
+        ["service", "doctor", *(["--json"] if structured else [])],
+        env={
+            "REGIMEX_DATABASE_DSN": "postgresql://user:private-doctor-value@127.0.0.1:1/missing",
+            "REGIMEX_OBJECT_ROOT": str(tmp_path / "objects"),
+            "REGIMEX_WORK_ROOT": str(tmp_path / "work"),
+        },
+    )
+    assert result.exit_code == 1
+    if structured:
+        report = json.loads(result.stdout)
+        checks = {item["name"]: item["status"] for item in report["checks"]}
+        assert checks["database"] == "failed"
+        assert checks["schema"] == checks["model_load"] == "skipped"
+        assert checks["storage"] == "passed"
+    else:
+        assert "FAIL database: PostgreSQL is unavailable." in result.stdout
+        assert "PASS storage:" in result.stdout
+        assert "SKIP model_load:" in result.stdout
+    assert "private-doctor-value" not in result.output
+    assert "Traceback" not in result.output
+    assert "Error: 1" not in result.output
 
 
 def test_http_development_server_rejects_a_public_listener() -> None:

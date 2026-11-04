@@ -21,11 +21,10 @@ from procrastinate.manager import JobManager
 from pydantic import AwareDatetime, Field
 
 from regimex.contracts import StrictModel
+from regimex.diagnostic_contracts import QueueName, QueueStatus
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.service_settings import ServiceSettings
 from regimex.storage import json_bytes
-
-QueueName = Literal["analysis", "admin", "maintenance"]
 
 
 class WorkerIdentity(StrictModel):
@@ -145,15 +144,30 @@ class TrackedJobManager(JobManager):
     """Bind the documented queue manager registration to our local health identity."""
 
     def __init__(
-        self, *, connector: BaseConnector, settings: ServiceSettings, queue: QueueName
+        self,
+        *,
+        connector: BaseConnector,
+        settings: ServiceSettings,
+        queue: QueueName,
+        slots: int = 1,
     ) -> None:
         super().__init__(connector=connector)
         self.settings = settings
         self.queue = queue
+        if type(slots) is not int or slots < 1:
+            raise ValueError("worker slots must be a positive integer")
+        self.slots = slots
 
     async def register_worker(self) -> int:
         worker_id = await super().register_worker()
         try:
+            await self.connector.execute_query_async(
+                "INSERT INTO regimex_worker_queues (worker_id,queue_name,slots) "
+                "VALUES (%(worker_id)s,%(queue)s,%(slots)s)",
+                worker_id=worker_id,
+                queue=self.queue,
+                slots=self.slots,
+            )
             write_worker_identity(self.settings, self.queue, worker_id)
         except BaseException:
             await super().unregister_worker(worker_id)
@@ -169,6 +183,56 @@ class TrackedJobManager(JobManager):
             return
         if identity.worker_id == worker_id:
             target.unlink(missing_ok=True)
+
+
+def queue_status(
+    repository: DatabaseRepository, queue: QueueName, *, stale_seconds: int
+) -> QueueStatus:
+    """Use queue-specific heartbeats and delivery occupancy, without exposing other owners."""
+    if type(stale_seconds) is not int or stale_seconds < 1:
+        raise ValueError("heartbeat freshness must be a positive number of seconds")
+    checked_at = datetime.now(UTC)
+    try:
+        with repository.connection() as connection:
+            row = connection.execute(
+                "SELECT count(*), count(*) FILTER (WHERE q.slots > "
+                "(SELECT count(*) FROM procrastinate_jobs j "
+                "WHERE j.worker_id=w.id AND j.status='doing')) "
+                "FROM regimex_worker_queues q JOIN procrastinate_workers w "
+                "ON q.worker_id=w.id WHERE q.queue_name=%s "
+                "AND w.last_heartbeat >= now() - %s * interval '1 second'",
+                (queue, stale_seconds),
+            ).fetchone()
+        assert row is not None
+        if row[0] == 0:
+            return QueueStatus(
+                state="unavailable",
+                checked_at=checked_at,
+                message="No worker has a recent heartbeat. "
+                "Ask an administrator to check the worker.",
+            )
+        if row[1] == 0:
+            return QueueStatus(
+                state="busy",
+                checked_at=checked_at,
+                message="Workers are processing other tasks. Waiting for a free slot.",
+            )
+        return QueueStatus(
+            state="available",
+            checked_at=checked_at,
+            message="A worker has a recent heartbeat and a free slot.",
+        )
+    except OSError, ValueError, psycopg.Error:
+        return QueueStatus(
+            state="unknown",
+            checked_at=checked_at,
+            message="Worker availability could not be checked. "
+            "Try again or contact an administrator.",
+        )
+
+
+def analysis_queue_status(repository: DatabaseRepository, *, stale_seconds: int) -> QueueStatus:
+    return queue_status(repository, "analysis", stale_seconds=stale_seconds)
 
 
 def api_healthy(

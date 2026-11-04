@@ -63,7 +63,10 @@ function workspace(count = 45) {
   const timers = new Map();
   const location = {href: "http://localhost/"};
   const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
-  const state = {holdHistory: false, holdModels: false, activeModelId: "tcn-1"};
+  const state = {
+    holdHistory: false, holdModels: false, activeModelId: "tcn-1",
+    now: Date.parse("2026-01-01T00:00:30Z"),
+  };
   const models = [{model_version_id: "baseline-1"}, {model_version_id: "tcn-1"}];
   const items = Array.from({length: count}, (_, index) => ({
     analysis_id: id(index + 1), snapshot_id: id(1000 + index),
@@ -76,6 +79,7 @@ function workspace(count = 45) {
   const context = {
     document: {getElementById: get, createElement: () => new Element()},
     window: {history, addEventListener() {}}, location, URL, URLSearchParams, console,
+    Date: class extends Date { static now() { return state.now; } },
     crypto: {randomUUID: () => `request-key-${++requestId}`},
     setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: (number) => timers.delete(number),
@@ -582,6 +586,99 @@ test("late comparison lists cannot expose candidates for an earlier selection", 
   await flush();
   assert.equal(ui.get("comparison-target").children.length, 0);
   assert.equal(ui.get("compare").disabled, true);
+});
+
+function queuedMetadata() {
+  const value = metadata("queued-job", "queued");
+  value.job.stage = "queued";
+  value.job.created_at = "2026-01-01T00:00:00Z";
+  value.job.updated_at = "2026-01-01T00:00:10Z";
+  return value;
+}
+
+test("queued analyses show worker availability and elapsed wait with bounded checks", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
+  await flush();
+  assert.match(ui.get("job-detail").textContent, /Waiting to start · 20s/);
+  ui.pending("/api/v1/service-status").reply({state: "busy", message: "Workers are processing other tasks."});
+  await flush();
+  assert.match(ui.get("job-detail").textContent, /Workers are processing other tasks/);
+  ui.state.now += 1500;
+  void ui.timers.values().next().value();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
+  await flush();
+  assert.equal(ui.calls.filter((call) => call.url === "/api/v1/service-status").length, 1);
+  ui.state.now += 5000;
+  void ui.timers.values().next().value();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
+  await flush();
+  assert.equal(ui.calls.filter((call) => call.url === "/api/v1/service-status").length, 2);
+  ui.pending("/api/v1/service-status").reply({state: "unavailable", message: "No worker has a recent heartbeat."});
+  await flush();
+  assert.match(ui.get("job-detail").textContent, /26s.*No worker has a recent heartbeat/);
+});
+
+test("diagnostic failure does not interrupt polling or loading a completed result", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
+  await flush();
+  ui.pending("/api/v1/service-status").reply({error: {message: "Internal diagnostic failure"}}, 503);
+  await flush();
+  assert.match(ui.get("job-detail").textContent, /Worker availability could not be checked/);
+  assert.equal(ui.get("notice").hidden, true);
+  assert.equal(ui.get("retry").hidden, true);
+  void ui.timers.values().next().value();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("queued-job", "succeeded"));
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(1)}/result`).reply({instruments: [], time_grid: {step_count: 12}});
+  await flush();
+  assert.equal(ui.get("job-detail").textContent, "");
+  assert.equal(ui.get("result").hidden, false);
+  assert.equal(ui.get("report-preview").hidden, false);
+});
+
+test("an outstanding diagnostic cannot overwrite a running analysis or a new selection", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
+  await flush();
+  const status = ui.pending("/api/v1/service-status");
+  void ui.timers.values().next().value();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("queued-job", "running"));
+  await flush();
+  assert.equal(ui.get("job-detail").textContent, "Analyzing prices.");
+  void ui.select(1);
+  ui.pending(`/api/v1/analyses/${id(2)}`).reply(metadata("other-job", "running"));
+  await flush();
+  status.reply({state: "unavailable", message: "No worker has a recent heartbeat."});
+  await flush();
+  assert.equal(ui.get("job-detail").textContent, "Analyzing prices.");
+  assert.match(ui.get("analysis-identity").textContent, new RegExp(`^${id(2)}`));
+});
+
+test("an earlier session's diagnostics cannot overwrite a new session", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
+  await flush();
+  const stale = ui.pending("/api/v1/service-status");
+  await ui.get("logout").click();
+  await ui.get("login-form").emit("submit", {preventDefault() {}});
+  void ui.select(1);
+  ui.pending(`/api/v1/analyses/${id(2)}`).reply(queuedMetadata());
+  await flush();
+  stale.reply({state: "unavailable", message: "Old session status"});
+  await flush();
+  assert.equal(ui.calls.filter((call) => call.url === "/api/v1/service-status").length, 2);
+  assert.doesNotMatch(ui.get("job-detail").textContent, /Old session status/);
+  assert.match(ui.get("job-detail").textContent, /Checking worker availability/);
 });
 
 test("offline chart rendering removes the PNG export control", async () => {

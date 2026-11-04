@@ -31,7 +31,7 @@ from typer.testing import CliRunner
 
 from regimex.cli import app
 from regimex.infrastructure.database import DatabaseRepository
-from regimex.service_health import api_healthy, read_worker_identity, worker_healthy
+from regimex.service_health import api_healthy, queue_status, read_worker_identity, worker_healthy
 from regimex.service_logging import RedactingJSONFormatter
 from regimex.service_settings import ServiceSettings
 
@@ -153,6 +153,12 @@ def test_exact_worker_heartbeat_stale_death_unregister_and_database_unavailable(
     with running(tmp_path, env, "worker", "--queue", "analysis") as child:
         healthy_until(value, child)
         identity = read_worker_identity(value, "analysis")
+        with database.connection() as connection:
+            assert connection.execute(
+                "SELECT queue_name,slots FROM regimex_worker_queues WHERE worker_id=%s",
+                (identity.worker_id,),
+            ).fetchone() == ("analysis", 1)
+        assert queue_status(database, "analysis", stale_seconds=3).state == "available"
         assert not worker_healthy(value, "admin")
         # Suspend this exact queue process. A different registered worker cannot
         # satisfy the probe; the actual queue-library heartbeat must become stale.
@@ -162,6 +168,7 @@ def test_exact_worker_heartbeat_stale_death_unregister_and_database_unavailable(
             while worker_healthy(value, "analysis") and time.monotonic() < deadline:
                 time.sleep(0.05)
             assert not worker_healthy(value, "analysis")
+            assert queue_status(database, "analysis", stale_seconds=3).state == "unavailable"
         finally:
             child.send_signal(signal.SIGCONT)
         healthy_until(value, child)
@@ -185,6 +192,7 @@ def test_exact_worker_heartbeat_stale_death_unregister_and_database_unavailable(
         healthy_until(value, child)
     assert child.returncode == 0 and not worker_healthy(value, "analysis")
     with database.connection() as connection:
+        assert connection.execute("SELECT * FROM regimex_worker_queues").fetchall() == []
         assert (
             connection.execute(
                 "SELECT 1 FROM procrastinate_workers WHERE id=%s", (identity.worker_id,)
@@ -205,6 +213,135 @@ def test_exact_worker_heartbeat_stale_death_unregister_and_database_unavailable(
             ).fetchone() == (1,)
     log = (tmp_path / "service.log").read_text()
     assert value.database_dsn.get_secret_value() not in log
+
+
+def test_queue_status_uses_actual_queue_capacity_and_heartbeat_freshness(
+    database: DatabaseRepository,
+) -> None:
+    assert queue_status(database, "analysis", stale_seconds=3).state == "unavailable"
+    with database.connection() as connection:
+        unmanaged = connection.execute(
+            "INSERT INTO procrastinate_workers DEFAULT VALUES RETURNING id"
+        ).fetchone()
+        assert unmanaged is not None
+        connection.execute(
+            "INSERT INTO regimex_worker_queues VALUES (%s,'admin',1)", (unmanaged[0],)
+        )
+    assert queue_status(database, "analysis", stale_seconds=3).state == "unavailable"
+    with database.connection() as connection:
+        worker = connection.execute(
+            "INSERT INTO procrastinate_workers DEFAULT VALUES RETURNING id"
+        ).fetchone()
+        assert worker is not None
+        connection.execute("INSERT INTO regimex_worker_queues VALUES (%s,'analysis',2)", worker)
+        connection.execute(
+            "INSERT INTO procrastinate_jobs (queue_name,task_name,status,worker_id) "
+            "VALUES ('analysis','regimex.analysis','doing',%s)",
+            worker,
+        )
+    assert queue_status(database, "analysis", stale_seconds=3).state == "available"
+    with database.connection() as connection:
+        connection.execute(
+            "INSERT INTO procrastinate_jobs (queue_name,task_name,status,worker_id) "
+            "VALUES ('analysis','regimex.analysis','doing',%s)",
+            worker,
+        )
+    busy = queue_status(database, "analysis", stale_seconds=3)
+    assert busy.state == "busy" and busy.worker_capability == "not_probed"
+    assert str(worker[0]) not in busy.message
+    with database.connection() as connection:
+        free = connection.execute(
+            "INSERT INTO procrastinate_workers DEFAULT VALUES RETURNING id"
+        ).fetchone()
+        assert free is not None
+        connection.execute("INSERT INTO regimex_worker_queues VALUES (%s,'analysis',1)", free)
+    assert queue_status(database, "analysis", stale_seconds=3).state == "available"
+    with database.connection() as connection:
+        connection.execute(
+            "UPDATE procrastinate_workers SET last_heartbeat=now()-interval '5 seconds' "
+            "WHERE id=%s",
+            free,
+        )
+    assert queue_status(database, "analysis", stale_seconds=3).state == "busy"
+    with database.connection() as connection:
+        connection.execute(
+            "UPDATE procrastinate_workers SET last_heartbeat=now()-interval '5 seconds' "
+            "WHERE id=%s",
+            worker,
+        )
+    assert queue_status(database, "analysis", stale_seconds=3).state == "unavailable"
+    with database.connection() as connection:
+        connection.execute("DELETE FROM procrastinate_workers")
+        assert connection.execute("SELECT * FROM regimex_worker_queues").fetchall() == []
+        connection.execute("DELETE FROM regimex_restore_state")
+    assert queue_status(database, "analysis", stale_seconds=3).state == "unknown"
+
+
+def test_queue_registry_migration_preserves_existing_resources_and_is_repeatable(
+    database: DatabaseRepository,
+) -> None:
+    credential = database.create_token("fixture", "user")
+    with database.connection() as connection:
+        connection.execute("DROP TABLE regimex_worker_queues")
+        connection.execute("UPDATE alembic_version SET version_num='0001_initial'")
+    assert not database.readiness()
+    assert queue_status(database, "analysis", stale_seconds=3).state == "unknown"
+    database.migrate()
+    database.migrate()
+    assert database.readiness()
+    assert database.authenticate(credential).owner_id == "fixture"
+
+
+def test_service_status_authenticates_and_exposes_only_safe_queue_evidence(
+    database: DatabaseRepository, tmp_path: Path
+) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx2")
+    from fastapi.testclient import TestClient
+
+    from regimex.api import create_app
+    from regimex.service_bootstrap import create_service
+
+    value = settings(database, tmp_path)
+    credential = database.create_token("private-diagnostic-owner", "user")
+    with TestClient(create_app(create_service(value))) as client:
+        assert client.get("/api/v1/service-status").status_code == 401
+        headers = {"Authorization": f"Bearer {credential}"}
+        absent = client.get("/api/v1/service-status", headers=headers)
+        assert absent.status_code == 200
+        assert absent.json()["state"] == "unavailable"
+        assert absent.headers["Cache-Control"] == "private, no-store"
+        with database.connection() as connection:
+            worker = connection.execute(
+                "INSERT INTO procrastinate_workers DEFAULT VALUES RETURNING id"
+            ).fetchone()
+            assert worker is not None
+            connection.execute("INSERT INTO regimex_worker_queues VALUES (%s,'analysis',1)", worker)
+        available = client.get("/api/v1/service-status", headers=headers)
+        assert available.status_code == 200
+        assert available.json()["state"] == "available"
+        assert available.json()["worker_capability"] == "not_probed"
+        assert set(available.json()) == {"state", "checked_at", "message", "worker_capability"}
+        for private in (credential, "private-diagnostic-owner", database._dsn, str(tmp_path)):
+            assert private not in available.text
+
+
+def test_doctor_reports_missing_model_and_workers_without_private_connection_details(
+    database: DatabaseRepository, tmp_path: Path
+) -> None:
+    value = settings(database, tmp_path)
+    env = environment(value, tmp_path)
+    result = CliRunner().invoke(app, ["service", "doctor", "--json"], env=env)
+    assert result.exit_code == 1, result.output
+    report = json.loads(result.stdout)
+    checks = {item["name"]: item for item in report["checks"]}
+    assert report["healthy"] is False
+    assert checks["database"]["status"] == checks["schema"]["status"] == "passed"
+    assert checks["storage"]["status"] == "passed"
+    assert checks["active_model"]["status"] == checks["analysis_queue"]["status"] == "failed"
+    assert checks["model_load"]["status"] == "skipped"
+    assert value.database_dsn.get_secret_value() not in result.output
+    assert str(value.object_root) not in result.output
 
 
 def certificate(root: Path, name: str) -> tuple[Path, Path]:

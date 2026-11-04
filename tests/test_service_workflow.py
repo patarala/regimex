@@ -114,6 +114,47 @@ def published_model(service: AnalysisService, tmp_path: Path) -> None:
     )
 
 
+def test_doctor_restores_saved_model_in_a_child_and_detects_corrupted_storage(
+    service: AnalysisService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex.service_diagnostics import diagnose
+
+    published_model(service, tmp_path)
+    model = service.repository.get_model("active")
+    settings = ServiceSettings(
+        database_dsn=SecretStr(service.repository._dsn),
+        database_schema=service.repository.schema,
+        object_root=tmp_path / "objects",
+        work_root=tmp_path / "doctor-work",
+    )
+
+    def forbidden_in_process_restore(*args: object, **kwargs: object) -> None:
+        raise AssertionError("model restoration must happen in the bounded child process")
+
+    monkeypatch.setattr(analysis_worker, "load_registered_predictor", forbidden_in_process_restore)
+    first = diagnose(settings)
+    checks = {check.name: check for check in first.checks}
+    assert checks["storage"].status == checks["model_load"].status == "passed"
+    assert first.model_probe_scope == "local_isolated_process"
+    assert checks["analysis_queue"].status == "failed"
+    assert not first.healthy
+    assert not tuple(settings.work_root.glob("doctor-*"))
+    assert service.repository.get_active_model() == model
+    with service.repository.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM regimex_operations").fetchone() == (0,)
+    # Corrupt the authoritative object after a successful restore. A new doctor
+    # must inspect it again rather than trust a successful model cache.
+    key = model.manifest.key
+    committed = tmp_path / "objects" / key
+    committed.chmod(0o600)
+    committed.write_bytes(b"corrupted model: secret-placeholder")
+    second = diagnose(settings)
+    failed = {check.name: check for check in second.checks}
+    assert failed["model_load"].status == "failed"
+    assert "secret-placeholder" not in second.model_dump_json()
+    assert service.repository.get_active_model() == model
+
+
 def test_signed_zero_and_exponent_result_report_and_preview_survive_real_worker(
     service: AnalysisService, tmp_path: Path
 ) -> None:

@@ -32,6 +32,8 @@ def _execute(action: Callable[[], None]) -> None:
         from sqlalchemy.exc import SQLAlchemyError
 
         action()
+    except typer.Exit:
+        raise
     except ModuleNotFoundError as exc:
         typer.echo(
             "Install service dependencies with uv sync --locked --extra service; "
@@ -49,6 +51,34 @@ def _execute(action: Callable[[], None]) -> None:
 
 
 install_storage_commands(app, _execute)
+
+
+@app.command("doctor")
+def doctor(
+    json_output: Annotated[bool, typer.Option("--json", help="Print a structured JSON report.")] = (
+        False
+    ),
+) -> None:
+    """Diagnose database, storage, worker queues and local isolated model loading."""
+
+    def action() -> None:
+        from regimex.service_diagnostics import diagnose
+
+        report = diagnose(ServiceSettings.from_env())
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"healthy": report.healthy, **report.model_dump(mode="json")}, sort_keys=True
+                )
+            )
+        else:
+            labels = {"passed": "PASS", "failed": "FAIL", "skipped": "SKIP"}
+            for check in report.checks:
+                typer.echo(f"{labels[check.status]} {check.name}: {check.message}")
+        if not report.healthy:
+            raise typer.Exit(1)
+
+    _execute(action)
 
 
 @app.command("health")
@@ -289,6 +319,7 @@ def worker(
             service,
             admin_service=create_admin_service(settings, service),
             health_queue=queue,
+            worker_slots=1,
         )
         from regimex.service_health import worker_health_lease
 

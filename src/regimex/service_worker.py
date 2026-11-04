@@ -21,7 +21,12 @@ def create_worker_app(
     *,
     admin_service: AdminService | None = None,
     health_queue: Literal["analysis", "admin", "maintenance"] | None = None,
+    worker_slots: int = 1,
 ) -> procrastinate.App:
+    if type(worker_slots) is not int or worker_slots < 1:
+        raise ValueError("worker slots must be a positive integer")
+    if health_queue is None and worker_slots != 1:
+        raise ValueError("declaring worker slots requires a tracked worker queue")
     connector = procrastinate.PsycopgConnector(
         conninfo=settings.database_dsn.get_secret_value(),
         kwargs={
@@ -38,7 +43,7 @@ def create_worker_app(
         from regimex.service_health import TrackedJobManager
 
         app.job_manager = TrackedJobManager(
-            connector=connector, settings=settings, queue=health_queue
+            connector=connector, settings=settings, queue=health_queue, slots=worker_slots
         )
 
     @app.task(

@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 from pydantic import Field, JsonValue, model_validator
 
 from regimex.contracts import MAX_INPUT_BYTES, MAX_STEPS, Identifier, StrictModel
+from regimex.diagnostic_contracts import QueueStatus
 from regimex.directions import AnalysisConfig, DirectionInterval
 from regimex.exports import (
     ExportInstrument,
@@ -154,6 +155,7 @@ class AnalysisService:
         *,
         max_pending: int = 8,
         heartbeat_seconds: float = 10.0,
+        stale_seconds: int = 120,
         cache_budget_bytes: int = 512 * 1024**2,
         time_budget_seconds: int = 120,
         memory_budget_bytes: int = 4 * 1024**3,
@@ -163,6 +165,8 @@ class AnalysisService:
             max_pending < 1
             or not math.isfinite(heartbeat_seconds)
             or heartbeat_seconds <= 0
+            or type(stale_seconds) is not int
+            or stale_seconds < 3 * heartbeat_seconds
             or cache_budget_bytes < 1
             or any(
                 type(value) is not int or value < 1
@@ -177,6 +181,7 @@ class AnalysisService:
         self.work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.max_pending = max_pending
         self.heartbeat_seconds = heartbeat_seconds
+        self.stale_seconds = stale_seconds
         self.cache_budget_bytes = cache_budget_bytes
         self.time_budget_seconds = time_budget_seconds
         self.memory_budget_bytes = memory_budget_bytes
@@ -191,6 +196,11 @@ class AnalysisService:
             "database": database,
             "active_model": database and self.repository.get_active_model() is not None,
         }
+
+    def get_service_status(self, principal: Principal) -> QueueStatus:
+        from regimex.service_health import analysis_queue_status
+
+        return analysis_queue_status(self.repository, stale_seconds=self.stale_seconds)
 
     def create_snapshot(self, principal: Principal, export: ExportV2) -> SnapshotRecord:
         export = ExportV2.model_validate_json(export.model_dump_json())

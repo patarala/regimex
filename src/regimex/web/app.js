@@ -5,6 +5,7 @@
   const HISTORY_PAGE_SIZE = 20;
   const MODEL_PAGE_SIZE = 100;
   const COMPARISON_PAGE_SIZE = 20;
+  const QUEUE_CHECK_INTERVAL = 5000;
   let session = null;
   let exportText = null;
   let snapshot = null;
@@ -33,6 +34,9 @@
   let comparisonOffset = 0;
   let comparisonHasMore = false;
   let comparisonItems = [];
+  let queueStatus = null;
+  let queueCheckedAt = -Infinity;
+  let queueCheckPending = null;
   const stateLabels = {
     queued: "Queued", running: "Running", cancel_requested: "Cancelling",
     cancelled: "Cancelled", succeeded: "Complete", failed: "Failed",
@@ -134,6 +138,8 @@
     $("rerun-model").replaceChildren();
     $("upload-model").value = $("rerun-model").value = "";
     $("rerun-controls").hidden = true;
+    queueStatus = queueCheckPending = null;
+    queueCheckedAt = -Infinity;
     session = current = snapshot = result = exportText = retryAction = null;
     busy = false;
     $("token").value = "";
@@ -527,6 +533,40 @@
     window.history.replaceState(null, "", url);
     await poll(selection);
   }
+  function queueWait(job) {
+    const since = Date.parse(job.updated_at || job.created_at);
+    const seconds = Math.max(0, Math.floor((Date.now() - since) / 1000));
+    if (!Number.isFinite(seconds)) return "";
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
+  }
+  function showQueueStatus(selection) {
+    if (current !== selection || selection?.metadata?.job.state !== "queued") return;
+    const job = selection.metadata.job;
+    const duration = queueWait(job);
+    const waiting = job.stage === "retry_wait" ? "Waiting to retry" : "Waiting to start";
+    $("job-detail").textContent = `${waiting}${duration ? ` · ${duration}` : ""}. `
+      + (queueStatus?.message || "Checking worker availability…");
+  }
+  function checkQueueStatus(selection) {
+    showQueueStatus(selection);
+    if (queueCheckPending || Date.now() - queueCheckedAt < QUEUE_CHECK_INTERVAL) return;
+    const workspace = epoch;
+    const check = {};
+    queueCheckPending = check;
+    queueCheckedAt = Date.now();
+    // Queue diagnostics are advisory; normal polling and result loading remain independent.
+    void json("/api/v1/service-status").then((value) => {
+      if (workspace === epoch) queueStatus = value;
+    }).catch(() => {
+      if (workspace === epoch)
+        queueStatus = {message: "Worker availability could not be checked."};
+    }).finally(() => {
+      if (queueCheckPending === check) queueCheckPending = null;
+      if (workspace === epoch) showQueueStatus(selection);
+    });
+  }
   async function poll(selection) {
     if (current !== selection || !session) return;
     clearTimeout(timer);
@@ -570,6 +610,7 @@
       $("job-guidance").textContent = failed
         ? failureActions[job.failure?.code] || "Contact your administrator with the analysis ID under Details."
         : "";
+      if (job.state === "queued") checkQueueStatus(selection);
       if (failed) {
         const attempts = Number.isInteger(job.attempt) ? ` · Attempts ${job.attempt}/${job.max_attempts}` : "";
         $("analysis-identity").textContent +=

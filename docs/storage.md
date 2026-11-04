@@ -95,9 +95,12 @@ application sessions. Their locks cannot stop independent filesystem writers.
 
 Install PostgreSQL 16 `pg_dump` and `pg_restore`, or use the Compose `ops` image.
 Set `PGDUMP_BIN`/`PGRESTORE_BIN` or pass `--pg-dump`/`--pg-restore` if needed.
-Archives must use the current database revision, `0008_exact_json`, including its
+Archives must use the current database revision, `0002_worker_queues`, including its
 restore-readiness guard. Use an explicit schema migration before backing up a
 database at another revision; restore does not reinterpret incompatible archives.
+Restore an older archive using its matching application version before upgrading
+and migrating the restored installation. The queue registry is included in the
+coordinated database backup; restarting workers creates their fresh registrations.
 
 With all writers stopped:
 

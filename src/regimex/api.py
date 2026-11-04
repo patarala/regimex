@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from regimex.contracts import MAX_INPUT_BYTES, Identifier, StrictModel
+from regimex.diagnostic_contracts import QueueStatus
 from regimex.exports import ExportV2
 from regimex.infrastructure.object_store import ObjectIntegrityError
 from regimex.model_registry import ArchitectureInfo
@@ -55,6 +56,8 @@ class AnalysisAPIService(Protocol):
     def authenticate(self, raw_token: str) -> Principal: ...
 
     def readiness(self) -> dict[str, JsonValue]: ...
+
+    def get_service_status(self, principal: Principal) -> QueueStatus: ...
 
     def create_snapshot(self, principal: Principal, export: ExportV2) -> SnapshotRecord: ...
 
@@ -652,6 +655,10 @@ def create_app(
         return _operation(
             service.cancel_operation(identity, operation_id), prefix=_prefix(identity)
         )
+
+    @app.get("/api/v1/service-status")
+    def service_status(identity: Identity) -> QueueStatus:
+        return service.get_service_status(identity)
 
     @app.get("/api/v1/models")
     def list_models(

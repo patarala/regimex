@@ -162,6 +162,27 @@ See [storage](storage.md) for native S3 settings, quotas and recovery.
 worker and fresh database heartbeat. A completed saved-model analysis is the
 functional check for backend loading, prediction, report rendering and persistence.
 
+For a combined diagnostic report, run from the operator image with the same
+configuration and storage mounts:
+
+```sh
+docker compose --profile ops run --rm ops service doctor
+```
+
+Native installations use `uv run --locked --extra service --extra ml regimex
+service doctor`; add `--extra s3` when configured. Checks cover connectivity,
+schema/restore readiness, readable storage, the active model, fresh workers for
+each queue and restoration of the model's verified weights/preprocessing in an
+isolated local child. Add `--json` for machine-readable output. A required failed
+or skipped check exits with status 1. The command does not change jobs or
+publication and does not test remote worker environments or prediction quality.
+
+Run `service migrate` when upgrading, then restart API and workers together.
+Worker queue registration requires revision `0002_worker_queues`; workers from
+an earlier installation do not populate the registry. Queue availability uses
+fresh heartbeats and occupied slots, so it can take up to `REGIMEX_STALE_SECONDS`
+to recognize an abruptly lost worker. A busy worker still passes the diagnostic.
+
 Logs are bounded JSON with route templates, status and elapsed time; credentials,
 request bodies and arbitrary query strings are excluded. Docker rotates its local
 logs. Protect logs as operational data.

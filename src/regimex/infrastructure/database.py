@@ -59,7 +59,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0001_initial"
+_REVISION = "0002_worker_queues"
 
 
 def _read_operation(document: object) -> Operation:
@@ -147,7 +147,12 @@ class DatabaseRepository:
                 config.set_main_option("script_location", str(Path(__file__).parent / "migrations"))
                 config.attributes["connection"] = connection
                 config.attributes["schema"] = self.schema
-                command.upgrade(config, "head")
+                if (
+                    connection.exec_driver_sql("SELECT to_regclass('alembic_version')").scalar_one()
+                    is None
+                ):
+                    # Later application migrations may reference queue tables.
+                    command.upgrade(config, "0001_initial")
                 exists: object = connection.exec_driver_sql(
                     "SELECT to_regclass('procrastinate_jobs')"
                 ).scalar_one()
@@ -168,6 +173,7 @@ class DatabaseRepository:
                     ).scalar_one_or_none()
                     if recorded != self._queue_schema_sha256():
                         raise RuntimeError("Queue schema differs from the pinned reviewed schema.")
+                command.upgrade(config, "head")
         finally:
             engine.dispose()
 

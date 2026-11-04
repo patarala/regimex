@@ -39,6 +39,7 @@ returns `409`. Every resource and download is authorized on the server.
 | `GET /analyses/{id}/report` | Self-contained HTML attachment |
 | `GET /analyses/{id}/comparison?other=ANALYSIS_UUID` | Offline HTML comparison of two successful analyses |
 | `GET /analyses` | Owned history, newest first, with `limit`/`offset` |
+| `GET /service-status` | Current analysis-queue availability for signed-in users |
 
 History accepts `q` (up to 128 characters) for a case-insensitive, literal search
 across source, run, snapshot, instrument, model and analysis identifiers. `state`
@@ -214,6 +215,17 @@ datasets, policies or bootstrap settings are rejected. See [metrics](quality.md)
 `/health/live` checks the API process. `/health/ready` checks database schema and
 restore readiness. `/health/models` reports active deployment configuration; it
 does not execute a backend. Workers have a separate heartbeat health command.
+
+Authenticated `GET /service-status` returns `state`, `checked_at` and a safe
+`message`. States are `available` (a worker has a free slot), `busy` (all fresh
+workers are occupied), `unavailable` (no fresh registered worker) and `unknown`
+(the check failed). Responses are private and uncached, and expose no worker IDs,
+process names or other owners' jobs. Freshness uses `REGIMEX_STALE_SECONDS`;
+heartbeat availability is not a model-capability check (`worker_capability` is
+`not_probed`). The browser checks at most once every five seconds while queued.
+
+`service doctor` adds explicit operator checks for storage, all worker queues
+and actual model restoration in a local isolated process. See [usage](usage.md).
 
 Treat `4xx` responses as input, authentication, ownership or state failures.
 Conflict responses include changed idempotent content and outdated publication

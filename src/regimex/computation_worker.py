@@ -196,7 +196,7 @@ def supervise_child(
     *,
     limits: ChildLimits,
     heartbeat: Callable[[], None],
-    task: Literal["administration", "analysis"] = "administration",
+    task: Literal["administration", "analysis", "model_probe"] = "administration",
 ) -> dict[str, JsonValue]:
     """Run one fresh child and terminate it before returning on any parent failure.
 
@@ -328,7 +328,7 @@ def _child_main(
     memory: int,
     seconds: int,
     scratch: int,
-    task: Literal["administration", "analysis"] = "administration",
+    task: Literal["administration", "analysis", "model_probe"] = "administration",
 ) -> int:
     # Set the death signal before importing any scientific implementation, and
     # close the race where the parent dies just before prctl is installed.
@@ -346,6 +346,8 @@ def _child_main(
         ready.rename(root / "child-process.json")
         if task == "analysis":
             from regimex.application.analysis_computation import compute
+        elif task == "model_probe":
+            from regimex.application.model_probe import compute
         else:
             from regimex.application.admin_computation import compute
 
@@ -374,7 +376,9 @@ def main() -> int:
     parser.add_argument("--memory", type=int, required=True)
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--scratch", type=int, required=True)
-    parser.add_argument("--task", choices=("administration", "analysis"), default="administration")
+    parser.add_argument(
+        "--task", choices=("administration", "analysis", "model_probe"), default="administration"
+    )
     args = parser.parse_args()
     return _child_main(
         args.child, args.root, args.parent, args.memory, args.seconds, args.scratch, args.task
