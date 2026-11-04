@@ -9,7 +9,6 @@ const test = require("node:test");
 const vm = require("node:vm");
 
 const root = path.resolve(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "src/regimex/web/app.js"), "utf8");
 const markup = fs.readFileSync(path.join(root, "src/regimex/web/index.html"), "utf8");
 const session = {principal: {owner_id: "test-owner"}, csrf_token: "test-csrf"};
 const id = (number) => `00000000-0000-0000-0000-${String(number).padStart(12, "0")}`;
@@ -47,7 +46,25 @@ function response(value, status = 200) {
   return {ok: status >= 200 && status < 300, status, json: async () => structuredClone(await value)};
 }
 
-function workspace(count = 45) {
+async function loadWorkspace(context) {
+  const directory = path.join(root, "src/regimex/web");
+  const sandbox = vm.createContext(context);
+  const modules = new Map();
+  function load(filename) {
+    assert.equal(path.dirname(filename), directory, "Workspace imports stay within bundled assets");
+    if (!modules.has(filename)) {
+      modules.set(filename, new vm.SourceTextModule(fs.readFileSync(filename, "utf8"), {
+        context: sandbox, identifier: filename,
+      }));
+    }
+    return modules.get(filename);
+  }
+  const entry = load(path.join(directory, "app.js"));
+  await entry.link((specifier, parent) => load(path.resolve(path.dirname(parent.identifier), specifier)));
+  await entry.evaluate();
+}
+
+async function workspace(count = 45) {
   const elements = new Map();
   for (const tag of markup.matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/g)) {
     const node = new Element();
@@ -114,7 +131,7 @@ function workspace(count = 45) {
       return promise;
     },
   };
-  vm.runInNewContext(source, context, {filename: "app.js"});
+  await loadWorkspace(context);
   return {
     get, calls, state, location, timers, items, models,
     select: (index) => get("history-list").children[index].children[0].click(),
@@ -136,7 +153,7 @@ function metadata(job, state = "running") {
 }
 
 test("selection clears cancellation before loading and after a load failure", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A"));
@@ -159,7 +176,7 @@ test("selection clears cancellation before loading and after a load failure", as
 });
 
 test("late cancellation responses cannot change another analysis or its actions", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A"));
@@ -180,7 +197,7 @@ test("late cancellation responses cannot change another analysis or its actions"
 });
 
 test("returning to the same analysis ignores a response from its earlier selection", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   const stale = ui.pending(`/api/v1/analyses/${id(1)}`);
@@ -198,7 +215,7 @@ test("returning to the same analysis ignores a response from its earlier selecti
 });
 
 test("cancellation invalidates an earlier in-flight poll of the same analysis", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A"));
@@ -220,7 +237,7 @@ test("cancellation invalidates an earlier in-flight poll of the same analysis", 
 });
 
 test("a late saved-result response cannot install the previous report", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "succeeded"));
@@ -237,7 +254,7 @@ test("a late saved-result response cannot install the previous report", async ()
 });
 
 test("history pages reach every analysis without accumulating unbounded DOM rows", async () => {
-  const ui = workspace(45);
+  const ui = await workspace(45);
   await flush();
   assert.deepEqual(ui.rows(), Array.from({length: 20}, (_, index) => id(index + 1)));
   assert.equal(ui.get("history-previous").disabled, true);
@@ -255,7 +272,7 @@ test("history pages reach every analysis without accumulating unbounded DOM rows
 });
 
 test("late history pages cannot replace a newer refresh", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   ui.state.holdHistory = true;
   void ui.get("history-next").click();
@@ -272,7 +289,7 @@ test("late history pages cannot replace a newer refresh", async () => {
 });
 
 test("history shows experiment and model names and filters all pages on the server", async () => {
-  const ui = workspace(60);
+  const ui = await workspace(60);
   await flush();
   const row = ui.get("history-list").children[0].children[0];
   assert.equal(row.children[0].textContent, "BTC/USD");
@@ -298,7 +315,7 @@ test("history shows experiment and model names and filters all pages on the serv
 });
 
 test("late search responses cannot replace results for a newer query", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   ui.state.holdHistory = true;
   ui.get("history-search").value = "ETH/USD";
@@ -316,7 +333,7 @@ test("late search responses cannot replace results for a newer query", async () 
 });
 
 test("a failed selection leaves an active-only history without closing its details", async () => {
-  const ui = workspace(1);
+  const ui = await workspace(1);
   await flush();
   ui.get("history-state").value = "active";
   await ui.get("history-state").emit("change", {preventDefault() {}});
@@ -333,7 +350,7 @@ test("a failed selection leaves an active-only history without closing its detai
 });
 
 test("an in-flight history response cannot undo a terminal state observed by polling", async () => {
-  const ui = workspace(1);
+  const ui = await workspace(1);
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A"));
@@ -355,7 +372,7 @@ test("an in-flight history response cannot undo a terminal state observed by pol
 });
 
 test("an older invalid-file response cannot replace the selected valid file", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   const file = (name) => ({name, size: 24, text: async () => '{"schema_version":"2.1"}'});
   void ui.get("export-file").emit("change", {target: {files: [file("old.json")]}});
@@ -374,7 +391,7 @@ test("an older invalid-file response cannot replace the selected valid file", as
 });
 
 test("failed analyses show a reason and next action without offering an exhausted retry", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   const failure = metadata("job-A", "failed");
@@ -397,7 +414,7 @@ test("failed analyses show a reason and next action without offering an exhauste
 });
 
 test("validation errors identify the rejected field with bounded readable details", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   const file = {name: "bad.json", size: 24, text: async () => '{"schema_version":"2.1"}'};
   void ui.get("export-file").emit("change", {target: {files: [file]}});
@@ -416,7 +433,7 @@ test("validation errors identify the rejected field with bounded readable detail
 });
 
 test("an old authentication error cannot reset a newly opened session", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   let finishBody;
@@ -435,7 +452,7 @@ test("an old authentication error cannot reset a newly opened session", async ()
 });
 
 test("upload retries keep the captured model, snapshot and request identity", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   const file = {name: "input.json", size: 24, text: async () => '{"schema_version":"2.1"}'};
   void ui.get("export-file").emit("change", {target: {files: [file]}});
@@ -461,7 +478,7 @@ test("upload retries keep the captured model, snapshot and request identity", as
 });
 
 test("saved experiments rerun without upload and deliberate runs have distinct identities", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
@@ -486,7 +503,7 @@ test("saved experiments rerun without upload and deliberate runs have distinct i
 });
 
 test("the active model is captured as an immutable version before submission", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
@@ -506,7 +523,7 @@ test("the active model is captured as an immutable version before submission", a
 });
 
 test("an old rerun response cannot replace another selected analysis", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
@@ -523,7 +540,7 @@ test("an old rerun response cannot replace another selected analysis", async () 
 });
 
 test("model paging is bounded and preserves a version selected on another page", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   ui.models.splice(0, ui.models.length, ...Array.from({length: 120}, (_, index) => ({model_version_id: `model-${index}`})));
   ui.state.activeModelId = null;
@@ -540,7 +557,7 @@ test("model paging is bounded and preserves a version selected on another page",
 });
 
 test("comparisons page only completed matching snapshots and clear when selection changes", async () => {
-  const ui = workspace(30);
+  const ui = await workspace(30);
   await flush();
   for (const item of ui.items) {
     item.job.state = "succeeded";
@@ -570,7 +587,7 @@ test("comparisons page only completed matching snapshots and clear when selectio
 });
 
 test("late comparison lists cannot expose candidates for an earlier selection", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "succeeded"));
@@ -597,7 +614,7 @@ function queuedMetadata() {
 }
 
 test("queued analyses show worker availability and elapsed wait with bounded checks", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
@@ -622,7 +639,7 @@ test("queued analyses show worker availability and elapsed wait with bounded che
 });
 
 test("diagnostic failure does not interrupt polling or loading a completed result", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
@@ -643,7 +660,7 @@ test("diagnostic failure does not interrupt polling or loading a completed resul
 });
 
 test("an outstanding diagnostic cannot overwrite a running analysis or a new selection", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());
@@ -663,7 +680,7 @@ test("an outstanding diagnostic cannot overwrite a running analysis or a new sel
 });
 
 test("an earlier session's diagnostics cannot overwrite a new session", async () => {
-  const ui = workspace();
+  const ui = await workspace();
   await flush();
   void ui.select(0);
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(queuedMetadata());

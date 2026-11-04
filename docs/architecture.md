@@ -91,6 +91,13 @@ sequenceDiagram
 
 ## Boundaries that matter
 
+The browser uses native JavaScript modules, without a separate frontend build.
+`web/app.js` connects feature controllers; session/request handling, model choices,
+history, analysis execution, comparisons and advisory queue status each own their
+state. Controllers receive explicit callbacks rather than sharing mutable globals.
+Every asynchronous response checks its session and current selection before
+changing the page. Browser tests exercise the same modules shipped in the wheel.
+
 Backends receive observations, timing, units and missingness. Labels, reference
 boundaries, generator settings and seeds are absent from prediction inputs.
 Installed descriptors are lightweight; each worker separately checks its actual

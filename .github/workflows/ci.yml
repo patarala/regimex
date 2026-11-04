@@ -48,8 +48,10 @@ jobs:
           node --check src/regimex/templates/analysis-report.js
           node --check src/regimex/templates/analysis-comparison.js
           node --check src/regimex/templates/model-comparison.js
-          node --check src/regimex/web/app.js
-          node --test tests/web_ui.test.cjs
+          for script in src/regimex/web/*.js; do
+            node --input-type=module --check < "$script"
+          done
+          node --experimental-vm-modules --test tests/web_ui.test.cjs
       - name: Build wheel and source distribution
         run: uv build --no-build-isolation
       - name: Verify installation outside the source tree
@@ -70,7 +72,10 @@ jobs:
               for stem in ("direction-report", "analysis-report", "analysis-comparison", "model-comparison"):
                   asset = templates.joinpath(f"{stem}.{suffix}")
                   assert asset.is_file() and asset.read_text(encoding="utf-8").strip(), asset
-          for name in ("index.html", "app.css", "app.js"):
+          for name in (
+              "index.html", "app.css", "app.js", "ui.js", "session.js", "history.js",
+              "models.js", "analysis.js", "comparison.js", "queue-status.js",
+          ):
               asset = files("regimex").joinpath("web", name)
               assert asset.is_file() and asset.read_bytes(), asset
           PY

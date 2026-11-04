@@ -19,7 +19,17 @@ _HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cache-Control": "no-store",
 }
-_ASSETS = {"app.js": "text/javascript", "app.css": "text/css"}
+_ASSETS = {
+    "app.css": "text/css",
+    "app.js": "text/javascript",
+    "session.js": "text/javascript",
+    "history.js": "text/javascript",
+    "models.js": "text/javascript",
+    "analysis.js": "text/javascript",
+    "comparison.js": "text/javascript",
+    "queue-status.js": "text/javascript",
+    "ui.js": "text/javascript",
+}
 
 
 def install_web_routes(app: FastAPI) -> None:
