@@ -42,6 +42,12 @@ saved models unchanged. It does not train models, rewrite editable documents or
 rerun scientific evaluation. Revalidate affected assets separately when model
 or report behavior changes.
 
+Archives containing both baseline and TCN bundles can be installed or updated
+with [the local service installer](installation.md). Supply the archive digest
+from the generated `.zip.sha256` file through a trusted distribution channel.
+The installer accepts committed releases and verifies all payload checksums
+before staging dependencies or stopping an existing service.
+
 ## Preview and verify
 
 Tracked changes must be committed for a normal release. For a local preview:
