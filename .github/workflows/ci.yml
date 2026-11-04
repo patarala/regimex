@@ -46,6 +46,7 @@ jobs:
         run: |
           node --check src/regimex/templates/direction-report.js
           node --check src/regimex/templates/analysis-report.js
+          node --check src/regimex/templates/analysis-comparison.js
           node --check src/regimex/templates/model-comparison.js
           node --check src/regimex/web/app.js
           node --test tests/web_ui.test.cjs
@@ -66,7 +67,7 @@ jobs:
 
           templates = files("regimex").joinpath("templates")
           for suffix in ("html", "css", "js"):
-              for stem in ("direction-report", "analysis-report", "model-comparison"):
+              for stem in ("direction-report", "analysis-report", "analysis-comparison", "model-comparison"):
                   asset = templates.joinpath(f"{stem}.{suffix}")
                   assert asset.is_file() and asset.read_text(encoding="utf-8").strip(), asset
           for name in ("index.html", "app.css", "app.js"):

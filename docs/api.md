@@ -37,12 +37,14 @@ returns `409`. Every resource and download is authorized on the server.
 | `POST /jobs/{id}/cancel` | Cancels queued work or prevents a running commit |
 | `GET /analyses/{id}/result` | Saved JSON after success |
 | `GET /analyses/{id}/report` | Self-contained HTML attachment |
+| `GET /analyses/{id}/comparison?other=ANALYSIS_UUID` | Offline HTML comparison of two successful analyses |
 | `GET /analyses` | Owned history, newest first, with `limit`/`offset` |
 
 History accepts `q` (up to 128 characters) for a case-insensitive, literal search
 across source, run, snapshot, instrument, model and analysis identifiers. `state`
 accepts `queued`, `running`, `cancel_requested`, `cancelled`, `succeeded` or
-`failed`; `active` groups the first three. Filters apply before `limit`/`offset`
+`failed`; `active` groups the first three. `snapshot_id` restricts the list to one
+saved snapshot. Filters apply before `limit`/`offset`
 and never expand the caller's owner, source or run permissions. For example:
 
 ```text
@@ -67,6 +69,11 @@ unknown versions, invalid grids and inconsistent values are rejected; inputs are
 never truncated or resampled. `active` is pinned to an immutable version/policy
 at intake. Retrying the same request preserves that choice after a model change.
 
+To run again, submit the existing `snapshot_id` with a new idempotency key and
+the desired published `model_version_id`. This creates a separate analysis; no
+re-upload or retraining occurs. Explicit versions also keep a browser selection
+stable if publication changes before the first accepted request.
+
 A successful job has both a complete JSON result and HTML report. Partial
 uploads and cancelled/stale attempts cannot publish either. Invalid stored
 contracts return `409` after authorization; reads do not silently regenerate them.
@@ -75,6 +82,19 @@ A missing model or failed analysis never triggers training or publication.
 `GET /models`, `/models/{id}` and `/metrics` expose allowed model metadata and
 the evaluation attached to the active publication. `/architectures` is an
 administrator catalog of installed backend schemas, not a worker capability test.
+
+`GET /models?published_only=true` lists published choices, including for
+administrators, with `limit`/`offset` pagination. Every page includes
+`active_model_version_id`, or `null` when no version is active. The ordinary
+administrator list still includes unpublished candidates.
+
+Comparisons require two distinct successful analyses of the exact same owned
+snapshot. Both resources are authorized before their compatibility is checked.
+The server verifies saved results against the original observations and renders
+aligned prices and intervals without loading a model. The attachment is private,
+uncached and self-contained. Comparing separately uploaded snapshots returns
+`409`, even when their contents are identical. Differences are prediction
+disagreements, not accuracy measurements.
 
 ## Administration
 

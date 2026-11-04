@@ -2,7 +2,9 @@
 
 Regimex analyses completed market experiments and marks intervals of price growth,
 decline and sideways movement. Upload a JSON export, run a saved model, and view
-or download an interactive report. Reports also work offline.
+or download an interactive report. Run the same saved experiment with another
+published model and compare its intervals on a shared price chart. Reports and
+comparisons also work offline.
 
 The service includes a baseline model, a temporal convolutional network (TCN),
 a reproducible market generator and an administrative API for training,

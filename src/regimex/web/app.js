@@ -3,10 +3,11 @@
   const $ = (id) => document.getElementById(id);
   const MAX_BYTES = 16 * 1024 * 1024;
   const HISTORY_PAGE_SIZE = 20;
+  const MODEL_PAGE_SIZE = 100;
+  const COMPARISON_PAGE_SIZE = 20;
   let session = null;
   let exportText = null;
   let snapshot = null;
-  let intakeKey = null;
   let current = null;
   let result = null;
   let timer = null;
@@ -21,6 +22,17 @@
   let historyState = "";
   let historyItems = [];
   let historyPendingOffset = null;
+  let models = [];
+  let activeModelId = null;
+  let modelOffset = 0;
+  let modelHasMore = false;
+  let modelGeneration = 0;
+  let modelsReady = false;
+  let modelsLoading = false;
+  let comparisonGeneration = 0;
+  let comparisonOffset = 0;
+  let comparisonHasMore = false;
+  let comparisonItems = [];
   const stateLabels = {
     queued: "Queued", running: "Running", cancel_requested: "Cancelling",
     cancelled: "Cancelled", succeeded: "Complete", failed: "Failed",
@@ -70,6 +82,23 @@
     $("report-preview").hidden = true;
     $("download-report").hidden = true;
     $("download-report").removeAttribute("href");
+    clearComparison();
+    $("comparison-controls").hidden = true;
+    $("comparison-controls").open = false;
+    comparisonGeneration++;
+    comparisonOffset = 0;
+    comparisonHasMore = false;
+    comparisonItems = [];
+    $("comparison-target").replaceChildren();
+    $("comparison-target").disabled = true;
+    $("compare").disabled = true;
+    $("comparison-status").textContent = "";
+  }
+  function clearComparison() {
+    $("comparison-preview").removeAttribute("src");
+    $("comparison-preview").hidden = true;
+    $("comparison-actions").hidden = true;
+    $("download-comparison").removeAttribute("href");
   }
   function clearCancellation() {
     $("cancel").hidden = true;
@@ -96,7 +125,16 @@
     $("history-next").disabled = true;
     $("history-range").textContent = "";
     $("history-pages").hidden = true;
-    session = current = snapshot = result = exportText = intakeKey = retryAction = null;
+    modelGeneration++;
+    models = [];
+    activeModelId = null;
+    modelOffset = 0;
+    modelHasMore = modelsReady = modelsLoading = false;
+    $("upload-model").replaceChildren();
+    $("rerun-model").replaceChildren();
+    $("upload-model").value = $("rerun-model").value = "";
+    $("rerun-controls").hidden = true;
+    session = current = snapshot = result = exportText = retryAction = null;
     busy = false;
     $("token").value = "";
     $("export-file").value = "";
@@ -112,6 +150,7 @@
     $("file-name").textContent = "";
     $("file-summary").textContent = "";
     $("classify").disabled = true;
+    updateActions();
   }
   async function request(path, { method = "GET", body = undefined, headers = {} } = {}) {
     const requestEpoch = epoch;
@@ -163,9 +202,79 @@
     $("workspace").hidden = false;
     $("account").hidden = false;
     notice();
+    void loadModels();
     await history();
     const selected = new URL(location.href).searchParams.get("analysis");
     if (selected && /^[0-9a-f-]{36}$/.test(selected)) await openAnalysis(selected);
+  }
+  function option(value, label) {
+    const item = document.createElement("option");
+    item.value = value;
+    item.textContent = label;
+    return item;
+  }
+  function fillModelSelect(name, preferred = null) {
+    const select = $(name);
+    const selected = preferred ?? select.value;
+    const choices = models.map((model) => [model.model_version_id, model.model_version_id]);
+    // A previously selected published version remains selectable while browsing another page.
+    if (selected && selected !== "active" && !choices.some(([id]) => id === selected))
+      choices.unshift([selected, selected]);
+    if (activeModelId) choices.unshift(["active", `Active model · ${activeModelId}`]);
+    select.replaceChildren(option("", "Choose a published model"));
+    choices.forEach(([id, label]) => select.append(option(id, label)));
+    select.value = choices.some(([id]) => id === selected)
+      ? selected : activeModelId ? "active" : "";
+  }
+  function updateActions() {
+    $("classify").disabled = busy || !session || !exportText || !modelsReady || !$("upload-model").value;
+    $("export-file").disabled = busy;
+    $("upload-model").disabled = busy || modelsLoading || !modelsReady;
+    $("rerun-model").disabled = busy || modelsLoading || !modelsReady;
+    const saved = current?.metadata;
+    const terminal = saved && ["succeeded", "failed", "cancelled"].includes(saved.job.state);
+    $("rerun-controls").hidden = !terminal || !saved.snapshot_id;
+    $("rerun").disabled = busy || !terminal || !modelsReady || !$("rerun-model").value;
+    ["models-previous", "rerun-models-previous"].forEach((id) => {
+      $(id).hidden = modelOffset === 0;
+      $(id).disabled = busy || modelsLoading;
+    });
+    ["models-next", "rerun-models-next"].forEach((id) => {
+      $(id).hidden = !modelHasMore;
+      $(id).disabled = busy || modelsLoading;
+    });
+    $("models-refresh").disabled = busy || modelsLoading;
+  }
+  function modelStatus(message) {
+    $("model-status").textContent = $("rerun-model-status").textContent = message;
+  }
+  async function loadModels(offset = 0) {
+    const workspace = epoch;
+    const generation = ++modelGeneration;
+    modelsLoading = true;
+    modelStatus("Loading models…");
+    updateActions();
+    try {
+      const data = await json(`/api/v1/models?published_only=true&limit=${MODEL_PAGE_SIZE}&offset=${offset}`);
+      if (workspace !== epoch || generation !== modelGeneration || !session) return;
+      models = data.items;
+      activeModelId = data.active_model_version_id;
+      modelOffset = offset;
+      modelHasMore = models.length === MODEL_PAGE_SIZE;
+      modelsReady = true;
+      fillModelSelect("upload-model");
+      fillModelSelect("rerun-model", $("rerun-model").value || current?.metadata?.job.model?.model_version_id);
+      modelStatus(models.length || activeModelId ? "" : offset
+        ? "No more models. Return to the previous page."
+        : "No published models are available. Ask your administrator to publish a model.");
+    } catch (error) {
+      if (workspace === epoch && generation === modelGeneration) modelStatus(error.message);
+    } finally {
+      if (workspace === epoch && generation === modelGeneration) {
+        modelsLoading = false;
+        updateActions();
+      }
+    }
   }
   async function history(offset = historyOffset) {
     const generation = ++historyGeneration;
@@ -283,7 +392,7 @@
         "Wait for the current request to be accepted before choosing another export.",
       );
     const selection = ++fileEpoch;
-    exportText = snapshot = intakeKey = null;
+    exportText = snapshot = null;
     $("classify").disabled = true;
     $("file-details").hidden = true;
     notice();
@@ -305,12 +414,11 @@
       const validated = await json("/api/v1/validate", { method: "POST", body: text });
       if (selection !== fileEpoch || !session) return;
       exportText = text;
-      intakeKey = crypto.randomUUID();
       $("file-name").textContent = file.name;
       $("file-summary").textContent =
         `${validated.step_count.toLocaleString()} steps · ${validated.instrument_ids.join(", ")}`;
       $("file-details").hidden = false;
-      $("classify").disabled = false;
+      updateActions();
     } catch (error) {
       if (selection === fileEpoch && session) throw error;
     }
@@ -319,8 +427,33 @@
     retryAction = action;
     $("retry").hidden = !action;
   }
+  function selectedModel(name) {
+    return $(name).value === "active" ? activeModelId : $(name).value;
+  }
   async function submit() {
-    if (busy || !exportText) return;
+    if (busy || !exportText || !modelsReady || !$("upload-model").value) return;
+    return submitRequest({
+      snapshotId: snapshot?.snapshot_id || null,
+      exportText,
+      model: selectedModel("upload-model"),
+      key: crypto.randomUUID(),
+      workspace: epoch,
+    });
+  }
+  async function rerun() {
+    const saved = current?.metadata;
+    if (busy || !saved?.snapshot_id || !modelsReady || !$("rerun-model").value
+      || !["succeeded", "failed", "cancelled"].includes(saved.job.state)) return;
+    return submitRequest({
+      snapshotId: saved.snapshot_id,
+      exportText: null,
+      model: selectedModel("rerun-model"),
+      key: crypto.randomUUID(),
+      workspace: epoch,
+    });
+  }
+  async function submitRequest(submission) {
+    if (busy || !session || submission.workspace !== epoch) return;
     busy = true;
     const workspace = epoch;
     const selection = { id: null, request: 0, job: null, cancelling: false };
@@ -329,37 +462,42 @@
     clearTimeout(timer);
     clearCancellation();
     clearFailure();
-    $("classify").disabled = true;
+    updateActions();
     $("analysis-panel").hidden = false;
     $("analysis-title").textContent = "Analysis";
     $("analysis-identity").textContent = "";
     $("job-state").textContent = "";
-    $("job-detail").textContent = "Uploading the experiment.";
+    $("job-detail").textContent = submission.snapshotId
+      ? "Starting a new analysis of the saved experiment." : "Uploading the experiment.";
     $("progress").hidden = false;
     $("result").hidden = true;
     retry(null);
     clearReport();
     notice();
     try {
-      if (!snapshot)
-        snapshot = await json("/api/v1/snapshots", { method: "POST", body: exportText });
+      if (!submission.snapshotId) {
+        const uploaded = await json("/api/v1/snapshots", { method: "POST", body: submission.exportText });
+        submission.snapshotId = uploaded.snapshot_id;
+        if (workspace === epoch && exportText === submission.exportText) snapshot = uploaded;
+      }
       const analysis = await json("/api/v1/analyses", {
         method: "POST",
-        body: { snapshot_id: snapshot.snapshot_id, model_version_id: "active" },
-        headers: { "Idempotency-Key": intakeKey },
+        body: { snapshot_id: submission.snapshotId, model_version_id: submission.model },
+        headers: { "Idempotency-Key": submission.key },
       });
       if (current === selection) await openAnalysis(analysis.analysis_id);
-      await history(0);
+      if (workspace === epoch) await history(0).catch((error) => notice(error.message, true));
     } catch (error) {
       if (current !== selection || workspace !== epoch) return;
       $("progress").hidden = true;
       $("job-detail").textContent = "The request was not confirmed. Retry to check or continue it.";
-      retry(submit);
+      // Retry the captured request, even if the visible model selector later changes.
+      retry(() => submitRequest(submission));
       notice(error.message, true);
     } finally {
       if (workspace === epoch) {
         busy = false;
-        $("classify").disabled = !session || !exportText;
+        updateActions();
       }
     }
   }
@@ -371,6 +509,8 @@
     // Object identity also rejects an old response after selecting A, B, then A again.
     const selection = { id, request: 0, job: null, cancelling: false };
     current = selection;
+    $("rerun-model").value = "";
+    updateActions();
     result = null;
     retry(null);
     $("result").hidden = true;
@@ -397,6 +537,10 @@
       const value = await json(`/api/v1/analyses/${id}`);
       if (!active()) return;
       const job = value.job;
+      if (!selection.metadata && modelsReady)
+        fillModelSelect("rerun-model", job.model?.model_version_id);
+      selection.metadata = value;
+      updateActions();
       $("analysis-title").textContent = value.instrument_ids?.length
         ? value.instrument_ids.join(", ") : "Analysis";
       $("analysis-identity").textContent =
@@ -466,14 +610,76 @@
     if (!metadata.report_available) {
       $("job-detail").textContent =
         "The HTML report is unavailable. You can download the JSON result.";
-      return;
+    } else {
+      clearReport();
+      $("download-report").href = `/api/v1/analyses/${id}/report`;
+      $("download-report").download = `regimex-analysis-${id}.html`;
+      $("download-report").hidden = false;
+      $("report-preview").src = `/api/v1/analyses/${id}/report/preview`;
+      $("report-preview").hidden = false;
     }
-    clearReport();
-    $("download-report").href = `/api/v1/analyses/${id}/report`;
-    $("download-report").download = `regimex-analysis-${id}.html`;
-    $("download-report").hidden = false;
-    $("report-preview").src = `/api/v1/analyses/${id}/report/preview`;
-    $("report-preview").hidden = false;
+    $("comparison-controls").hidden = !metadata.snapshot_id;
+  }
+  async function comparisonPage(offset = 0) {
+    const selection = current;
+    if (!session || selection?.metadata?.job.state !== "succeeded"
+      || !selection.metadata.snapshot_id) return;
+    const generation = ++comparisonGeneration;
+    const workspace = epoch;
+    const active = () => workspace === epoch && current === selection
+      && generation === comparisonGeneration;
+    $("comparison-target").disabled = $("compare").disabled = true;
+    $("comparison-previous").disabled = $("comparison-next").disabled = true;
+    $("comparison-status").textContent = "Loading completed analyses…";
+    try {
+      const query = new URLSearchParams({
+        snapshot_id: selection.metadata.snapshot_id,
+        state: "succeeded", limit: COMPARISON_PAGE_SIZE + 1, offset,
+      });
+      const data = await json(`/api/v1/analyses?${query}`);
+      if (!active()) return;
+      comparisonOffset = offset;
+      comparisonHasMore = data.items.length > COMPARISON_PAGE_SIZE;
+      comparisonItems = data.items.slice(0, COMPARISON_PAGE_SIZE).filter((item) =>
+        item.analysis_id !== selection.id && item.snapshot_id === selection.metadata.snapshot_id
+        && item.job.state === "succeeded" && item.result_available);
+      const picker = $("comparison-target");
+      picker.replaceChildren(option("", "Choose an analysis"));
+      comparisonItems.forEach((item) => {
+        const date = new Date(item.job.created_at).toLocaleString();
+        picker.append(option(item.analysis_id,
+          `${item.job.model?.model_version_id || "Model unavailable"} · ${date} · ${item.analysis_id.slice(-8)}`));
+      });
+      picker.value = "";
+      $("comparison-status").textContent = comparisonItems.length ? "" : offset || comparisonHasMore
+        ? "No other completed analyses on this page."
+        : "No other completed analyses of this experiment yet. Run it again to compare results.";
+      $("comparison-previous").hidden = offset === 0;
+      $("comparison-next").hidden = !comparisonHasMore;
+      picker.disabled = comparisonItems.length === 0;
+      selection.comparisonLoaded = true;
+    } catch (error) {
+      if (active()) $("comparison-status").textContent = error.message;
+    } finally {
+      if (active()) {
+        $("comparison-previous").disabled = comparisonOffset === 0;
+        $("comparison-next").disabled = !comparisonHasMore;
+      }
+    }
+  }
+  function compare() {
+    const selection = current;
+    const other = comparisonItems.find((item) => item.analysis_id === $("comparison-target").value);
+    if (!selection?.metadata || !other || other.snapshot_id !== selection.metadata.snapshot_id
+      || selection.metadata.job.state !== "succeeded") return;
+    const path = `/api/v1/analyses/${selection.id}/comparison`;
+    const query = `other=${encodeURIComponent(other.analysis_id)}`;
+    $("comparison-preview").src = `${path}/preview?${query}`;
+    $("comparison-preview").hidden = false;
+    $("report-preview").hidden = true;
+    $("download-comparison").href = `${path}?${query}`;
+    $("download-comparison").download = `regimex-comparison-${selection.id}-${other.analysis_id}.html`;
+    $("comparison-actions").hidden = false;
   }
   $("login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -523,6 +729,30 @@
     chooseFile(event.dataTransfer.files[0]).catch((error) => notice(error.message, true));
   });
   $("classify").addEventListener("click", submit);
+  $("rerun").addEventListener("click", rerun);
+  $("upload-model").addEventListener("change", updateActions);
+  $("rerun-model").addEventListener("change", updateActions);
+  ["models-previous", "rerun-models-previous"].forEach((id) =>
+    $(id).addEventListener("click", () => loadModels(Math.max(0, modelOffset - MODEL_PAGE_SIZE))));
+  ["models-next", "rerun-models-next"].forEach((id) =>
+    $(id).addEventListener("click", () => loadModels(modelOffset + MODEL_PAGE_SIZE)));
+  $("models-refresh").addEventListener("click", () => loadModels());
+  $("comparison-controls").addEventListener("toggle", () => {
+    if ($("comparison-controls").open && !current?.comparisonLoaded) return comparisonPage();
+  });
+  $("comparison-target").addEventListener("change", () => {
+    $("compare").disabled = !comparisonItems.some((item) => item.analysis_id === $("comparison-target").value);
+  });
+  $("comparison-previous").addEventListener("click", () =>
+    comparisonPage(Math.max(0, comparisonOffset - COMPARISON_PAGE_SIZE)));
+  $("comparison-next").addEventListener("click", () =>
+    comparisonPage(comparisonOffset + COMPARISON_PAGE_SIZE));
+  $("comparison-refresh").addEventListener("click", () => comparisonPage());
+  $("compare").addEventListener("click", compare);
+  $("close-comparison").addEventListener("click", () => {
+    clearComparison();
+    $("report-preview").hidden = !current?.metadata?.report_available;
+  });
   $("retry").addEventListener("click", () => {
     notice();
     const action = retryAction;

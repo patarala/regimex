@@ -435,12 +435,17 @@ class DatabaseRepository:
             return None
 
     def list_models(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        published_only: bool = False,
     ) -> tuple[ModelRecord, ...]:
         self._page(limit, offset)
         with self.connection() as connection:
             query = "SELECT document FROM regimex_models m"
-            if principal.role != "admin":
+            if published_only or principal.role != "admin":
                 query += (
                     " WHERE EXISTS (SELECT 1 FROM regimex_publication_audit p "
                     "WHERE p.model_version_id=m.model_version_id)"
@@ -727,11 +732,15 @@ class DatabaseRepository:
         offset: int = 0,
         q: str = "",
         state: HistoryState | None = None,
+        snapshot_id: UUID | None = None,
     ) -> tuple[AnalysisSummary, ...]:
         self._page(limit, offset)
         filters = AnalysisHistoryFilter(q=q, state=state)
         with self.connection() as connection:
             query, parameters = self._summary_query(principal)
+            if snapshot_id is not None:
+                query += " AND a.snapshot_id=%s"
+                parameters.append(snapshot_id)
             if filters.state == "active":
                 query += " AND o.state IN ('queued','running','cancel_requested')"
             elif filters.state is not None:

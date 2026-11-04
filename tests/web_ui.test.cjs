@@ -63,17 +63,20 @@ function workspace(count = 45) {
   const timers = new Map();
   const location = {href: "http://localhost/"};
   const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
-  const state = {holdHistory: false};
+  const state = {holdHistory: false, holdModels: false, activeModelId: "tcn-1"};
+  const models = [{model_version_id: "baseline-1"}, {model_version_id: "tcn-1"}];
   const items = Array.from({length: count}, (_, index) => ({
-    analysis_id: id(index + 1), run_id: `run-${index + 1}`, source_id: "market",
+    analysis_id: id(index + 1), snapshot_id: id(1000 + index),
+    run_id: `run-${index + 1}`, source_id: "market", result_available: false,
     instrument_ids: [index % 2 ? "ETH/USD" : "BTC/USD"],
     job: {state: "running", created_at: "2026-01-01T00:00:00Z", model: {model_version_id: "tcn-1"}},
   }));
   let timerId = 0;
+  let requestId = 0;
   const context = {
     document: {getElementById: get, createElement: () => new Element()},
     window: {history, addEventListener() {}}, location, URL, URLSearchParams, console,
-    crypto: {randomUUID: () => "request-key"},
+    crypto: {randomUUID: () => `request-key-${++requestId}`},
     setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: (number) => timers.delete(number),
     fetch: (url, options) => {
@@ -86,13 +89,21 @@ function workspace(count = 45) {
       }};
       calls.push(call);
       if (url === "/api/v1/session") call.reply(session);
+      else if (url.startsWith("/api/v1/models?") && !state.holdModels) {
+        const query = new URL(url, location.href).searchParams;
+        assert.equal(query.get("published_only"), "true");
+        const offset = Number(query.get("offset"));
+        call.reply({items: models.slice(offset, offset + Number(query.get("limit"))), active_model_version_id: state.activeModelId});
+      }
       else if (url.startsWith("/api/v1/analyses?") && !state.holdHistory) {
         const query = new URL(url, location.href).searchParams;
         const offset = Number(query.get("offset"));
         const term = (query.get("q") || "").toLowerCase();
         const state = query.get("state");
+        const snapshot = query.get("snapshot_id");
         const filtered = items.filter((item) =>
           [item.run_id, item.source_id, ...item.instrument_ids, item.job.model.model_version_id, item.analysis_id].join(" ").toLowerCase().includes(term)
+          && (!snapshot || item.snapshot_id === snapshot)
           && (!state || (state === "active" ? ["queued", "running", "cancel_requested"].includes(item.job.state) : item.job.state === state)));
         call.reply({items: filtered.slice(offset, offset + Number(query.get("limit")))});
       }
@@ -101,7 +112,7 @@ function workspace(count = 45) {
   };
   vm.runInNewContext(source, context, {filename: "app.js"});
   return {
-    get, calls, state, location, timers, items,
+    get, calls, state, location, timers, items, models,
     select: (index) => get("history-list").children[index].children[0].click(),
     pending: (url) => {
       const call = calls.find((item) => item.url === url && !item.settled);
@@ -114,6 +125,7 @@ function workspace(count = 45) {
 
 function metadata(job, state = "running") {
   return {
+    snapshot_id: id(1000),
     result_available: state === "succeeded", report_available: state === "succeeded",
     job: {operation_id: job, state, stage: "predicting", failure: null, model: {model_version_id: "test-model"}},
   };
@@ -416,6 +428,160 @@ test("an old authentication error cannot reset a newly opened session", async ()
   assert.equal(ui.get("login-panel").hidden, true);
   assert.equal(ui.get("owner").textContent, "test-owner");
   assert.equal(ui.get("notice").hidden, true);
+});
+
+test("upload retries keep the captured model, snapshot and request identity", async () => {
+  const ui = workspace();
+  await flush();
+  const file = {name: "input.json", size: 24, text: async () => '{"schema_version":"2.1"}'};
+  void ui.get("export-file").emit("change", {target: {files: [file]}});
+  await flush();
+  ui.pending("/api/v1/validate").reply({step_count: 12, instrument_ids: ["BTC/USD"]});
+  await flush();
+  ui.get("upload-model").value = "baseline-1";
+  await ui.get("upload-model").emit("change");
+  void ui.get("classify").click();
+  assert.equal(ui.get("upload-model").disabled, true);
+  ui.get("upload-model").value = "tcn-1";
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2000)});
+  await flush();
+  const original = ui.pending("/api/v1/analyses");
+  assert.deepEqual(JSON.parse(original.options.body), {snapshot_id: id(2000), model_version_id: "baseline-1"});
+  original.reply({error: {message: "Connection lost after submission."}}, 503);
+  await flush();
+  void ui.get("retry").click();
+  const repeated = ui.pending("/api/v1/analyses");
+  assert.equal(repeated.options.body, original.options.body);
+  assert.equal(repeated.options.headers["Idempotency-Key"], original.options.headers["Idempotency-Key"]);
+  assert.equal(ui.calls.filter((call) => call.url === "/api/v1/snapshots").length, 1);
+});
+
+test("saved experiments rerun without upload and deliberate runs have distinct identities", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  assert.equal(ui.get("rerun-controls").hidden, false);
+  ui.get("rerun-model").value = "baseline-1";
+  await ui.get("rerun-model").emit("change");
+  void ui.get("rerun").click();
+  const first = ui.pending("/api/v1/analyses");
+  assert.deepEqual(JSON.parse(first.options.body), {snapshot_id: id(1000), model_version_id: "baseline-1"});
+  assert.equal(ui.calls.filter((call) => call.url === "/api/v1/snapshots").length, 0);
+  first.reply({analysis_id: id(3000)}, 202);
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(3000)}`).reply(metadata("new-job", "queued"));
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  void ui.get("rerun").click();
+  const second = ui.pending("/api/v1/analyses");
+  assert.notEqual(first.options.headers["Idempotency-Key"], second.options.headers["Idempotency-Key"]);
+});
+
+test("the active model is captured as an immutable version before submission", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  ui.get("rerun-model").value = "active";
+  void ui.get("rerun").click();
+  const submission = ui.pending("/api/v1/analyses");
+  assert.equal(JSON.parse(submission.options.body).model_version_id, "tcn-1");
+  submission.reply({error: {message: "Response unavailable"}}, 503);
+  await flush();
+  ui.state.activeModelId = "baseline-1";
+  await ui.get("models-refresh").click();
+  void ui.get("retry").click();
+  const repeated = ui.pending("/api/v1/analyses");
+  assert.equal(repeated.options.body, submission.options.body);
+  assert.equal(repeated.options.headers["Idempotency-Key"], submission.options.headers["Idempotency-Key"]);
+});
+
+test("an old rerun response cannot replace another selected analysis", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  void ui.get("rerun").click();
+  const submission = ui.pending("/api/v1/analyses");
+  void ui.select(1);
+  ui.pending(`/api/v1/analyses/${id(2)}`).reply(metadata("job-B", "running"));
+  await flush();
+  submission.reply({analysis_id: id(3000)}, 202);
+  await flush();
+  assert.match(ui.get("analysis-identity").textContent, new RegExp(`^${id(2)}`));
+  assert.equal(ui.calls.some((call) => call.url === `/api/v1/analyses/${id(3000)}`), false);
+});
+
+test("model paging is bounded and preserves a version selected on another page", async () => {
+  const ui = workspace();
+  await flush();
+  ui.models.splice(0, ui.models.length, ...Array.from({length: 120}, (_, index) => ({model_version_id: `model-${index}`})));
+  ui.state.activeModelId = null;
+  await ui.get("models-refresh").click();
+  assert.equal(ui.get("upload-model").value, "");
+  assert.equal(ui.get("models-next").hidden, false);
+  ui.get("upload-model").value = "model-9";
+  await ui.get("upload-model").emit("change");
+  await ui.get("models-next").click();
+  assert.equal(ui.get("upload-model").value, "model-9");
+  assert.equal(ui.get("upload-model").children.length, 22);
+  assert.equal(ui.get("models-next").hidden, true);
+  assert.ok(ui.calls.some((call) => call.url === "/api/v1/models?published_only=true&limit=100&offset=100"));
+});
+
+test("comparisons page only completed matching snapshots and clear when selection changes", async () => {
+  const ui = workspace(30);
+  await flush();
+  for (const item of ui.items) {
+    item.job.state = "succeeded";
+    item.result_available = true;
+    item.snapshot_id = id(1000);
+  }
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "succeeded"));
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(1)}/result`).reply({instruments: [{instrument_id: "BTC/USD"}], time_grid: {step_count: 12}});
+  await flush();
+  ui.get("comparison-controls").open = true;
+  await ui.get("comparison-controls").emit("toggle");
+  assert.equal(ui.get("comparison-target").children.length, 20);
+  assert.equal(ui.get("comparison-target").children.some((item) => item.value === id(1)), false);
+  await ui.get("comparison-next").click();
+  assert.equal(ui.get("comparison-target").children.length, 11);
+  ui.get("comparison-target").value = id(21);
+  await ui.get("comparison-target").emit("change");
+  await ui.get("compare").click();
+  assert.equal(ui.get("comparison-preview").src, `/api/v1/analyses/${id(1)}/comparison/preview?other=${id(21)}`);
+  assert.equal(ui.get("download-comparison").href, `/api/v1/analyses/${id(1)}/comparison?other=${id(21)}`);
+  assert.equal(ui.get("report-preview").hidden, true);
+  void ui.select(1);
+  assert.equal(ui.get("comparison-preview").src, undefined);
+  assert.equal(ui.get("comparison-actions").hidden, true);
+});
+
+test("late comparison lists cannot expose candidates for an earlier selection", async () => {
+  const ui = workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "succeeded"));
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(1)}/result`).reply({instruments: [], time_grid: {step_count: 12}});
+  await flush();
+  ui.state.holdHistory = true;
+  ui.get("comparison-controls").open = true;
+  void ui.get("comparison-controls").emit("toggle");
+  const stale = ui.pending(`/api/v1/analyses?snapshot_id=${id(1000)}&state=succeeded&limit=21&offset=0`);
+  void ui.select(1);
+  stale.reply({items: [{...ui.items[0], snapshot_id: id(1000), result_available: true, job: {...ui.items[0].job, state: "succeeded"}}]});
+  await flush();
+  assert.equal(ui.get("comparison-target").children.length, 0);
+  assert.equal(ui.get("compare").disabled, true);
 });
 
 test("offline chart rendering removes the PNG export control", async () => {

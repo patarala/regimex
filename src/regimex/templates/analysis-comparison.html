@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="@@CSP@@">
+  <title>Regimex — Analysis comparison</title>
+  <style>@@CSS@@</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="heading"><h1>Analysis comparison</h1><span class="brand">Regimex</span></div>
+    <p class="run">Run @@RUN@@</p>
+    <div class="models"><p><strong>A</strong> <span>@@FIRST@@</span></p><p><strong>B</strong> <span>@@SECOND@@</span></p></div>
+    <p id="policy-note" class="muted" hidden></p>
+  </header>
+  <section aria-labelledby="chart-title">
+    <h2 id="chart-title">Prices and direction intervals</h2>
+    <div class="controls">
+      <label>Instrument <select id="instrument"></select></label>
+      <label>Start step <input id="range-start" type="number" min="0" step="1" value="0"></label>
+      <label>Stop step <input id="range-stop" type="number" min="1" step="1"></label>
+      <button id="apply-range" type="button">Apply range</button>
+      <button id="reset-range" type="button">Reset zoom</button>
+    </div>
+    <p id="range-error" class="error" role="alert" hidden></p>
+    <p id="units" class="muted"></p>
+    <p class="legend">↑ Growth · ↓ Decline · → Sideways · Ø No trades · ? Insufficient data</p>
+    <p class="muted guidance">Solid price: observed · dashed price: carried · gaps: unavailable. Drag across the chart to zoom.</p>
+    <div class="chart-scroll" tabindex="0" aria-label="Comparison chart; scroll horizontally on small screens">
+      <svg id="chart" viewBox="0 0 1000 416" role="img" aria-labelledby="svg-title svg-description">
+        <title id="svg-title">Shared prices and two predicted interval timelines</title>
+        <desc id="svg-description">A and B use the same original time axis. The differences row distinguishes direction disagreement from availability disagreement.</desc>
+      </svg>
+    </div>
+    <div class="inspector">
+      <label for="inspect-step">Inspect step</label>
+      <input id="inspect-step" type="range" min="0" step="1" value="0">
+      <output id="inspection" for="inspect-step"></output>
+    </div>
+    <p id="difference-summary" class="summary" aria-live="polite"></p>
+    <p class="muted">Amber: different directions · hatched: different availability. Differences do not measure accuracy.</p>
+    <noscript><p>Enable JavaScript to inspect the embedded observations and saved predictions.</p></noscript>
+  </section>
+  <section aria-labelledby="differences-title">
+    <h2 id="differences-title">Differences in the displayed range</h2>
+    <p id="differences-empty" hidden>No differences in this range.</p>
+    <div class="table-scroll" id="differences-table">
+      <table><thead><tr><th>Steps [start, stop)</th><th>A</th><th>B</th><th>Difference</th></tr></thead><tbody id="differences"></tbody></table>
+    </div>
+  </section>
+  <footer><h2>Data provenance</h2><dl id="provenance"></dl></footer>
+</main>
+<script id="comparison-data" type="application/json">@@PAYLOAD@@</script>
+<script>@@SCRIPT@@</script>
+</body>
+</html>

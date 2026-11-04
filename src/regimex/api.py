@@ -79,6 +79,7 @@ class AnalysisAPIService(Protocol):
         offset: int = 0,
         q: str = "",
         state: HistoryState | None = None,
+        snapshot_id: UUID | None = None,
     ) -> tuple[AnalysisSummary, ...]: ...
 
     def get_analysis_summary(self, principal: Principal, analysis_id: UUID) -> AnalysisSummary: ...
@@ -87,12 +88,19 @@ class AnalysisAPIService(Protocol):
 
     def read_report(self, principal: Principal, analysis_id: UUID) -> bytes: ...
 
+    def compare_analyses(self, principal: Principal, first_id: UUID, second_id: UUID) -> bytes: ...
+
     def get_operation(self, principal: Principal, operation_id: UUID) -> Operation: ...
 
     def cancel_operation(self, principal: Principal, operation_id: UUID) -> Operation: ...
 
     def list_models(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        published_only: bool = False,
     ) -> tuple[ModelRecord, ...]: ...
 
     def get_model(self, principal: Principal, model_version_id: str) -> ModelRecord: ...
@@ -176,6 +184,7 @@ class ModelPage(StrictModel):
     items: tuple[ModelView, ...]
     limit: int
     offset: int
+    active_model_version_id: str | None = None
 
 
 class ArchitecturePage(StrictModel):
@@ -186,6 +195,23 @@ class ArchitecturePage(StrictModel):
 
 def _error(code: str, message: str) -> dict[str, JsonValue]:
     return {"error": {"code": code, "message": message}}
+
+
+def _html_report(payload: bytes, *, filename: str | None = None) -> Response:
+    headers = {
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+    }
+    if filename is not None:
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    else:
+        # A separate document can use its own embedded CSP; srcdoc would inherit
+        # the workspace policy, which intentionally excludes inline scripts.
+        headers["Content-Security-Policy"] = (
+            "sandbox allow-scripts allow-downloads; frame-ancestors 'self'"
+        )
+    return Response(payload, media_type="text/html", headers=headers)
 
 
 class BoundedJSONBody:
@@ -569,12 +595,13 @@ def create_app(
         offset: Offset = 0,
         q: Annotated[str, Query(max_length=128, pattern=r"^[^\x00]*$")] = "",
         state: HistoryState | None = None,
+        snapshot_id: UUID | None = None,
     ) -> AnalysisPage:
         return AnalysisPage(
             items=tuple(
                 _analysis(item, prefix=_prefix(identity))
                 for item in service.list_analysis_summaries(
-                    identity, limit=limit, offset=offset, q=q, state=state
+                    identity, limit=limit, offset=offset, q=q, state=state, snapshot_id=snapshot_id
                 )
             ),
             limit=limit,
@@ -596,35 +623,25 @@ def create_app(
 
     @app.get("/api/v1/analyses/{analysis_id}/report")
     def get_report(analysis_id: UUID, identity: Identity) -> Response:
-        return Response(
+        return _html_report(
             service.read_report(identity, analysis_id),
-            media_type="text/html",
-            headers={
-                "Content-Disposition": (
-                    f'attachment; filename="regimex-analysis-{analysis_id}.html"'
-                ),
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-                "Referrer-Policy": "no-referrer",
-            },
+            filename=f"regimex-analysis-{analysis_id}.html",
         )
 
     @app.get("/api/v1/analyses/{analysis_id}/report/preview", include_in_schema=False)
     def preview_report(analysis_id: UUID, identity: Identity) -> Response:
-        # A separate document keeps its own strict embedded CSP. Blob/srcdoc
-        # documents inherit the workspace policy, which excludes inline scripts.
-        return Response(
-            service.read_report(identity, analysis_id),
-            media_type="text/html",
-            headers={
-                "Cache-Control": "private, no-store",
-                "X-Content-Type-Options": "nosniff",
-                "Referrer-Policy": "no-referrer",
-                "Content-Security-Policy": (
-                    "sandbox allow-scripts allow-downloads; frame-ancestors 'self'"
-                ),
-            },
+        return _html_report(service.read_report(identity, analysis_id))
+
+    @app.get("/api/v1/analyses/{analysis_id}/comparison")
+    def compare_analyses(analysis_id: UUID, other: UUID, identity: Identity) -> Response:
+        return _html_report(
+            service.compare_analyses(identity, analysis_id, other),
+            filename=f"regimex-comparison-{analysis_id}-{other}.html",
         )
+
+    @app.get("/api/v1/analyses/{analysis_id}/comparison/preview", include_in_schema=False)
+    def preview_comparison(analysis_id: UUID, other: UUID, identity: Identity) -> Response:
+        return _html_report(service.compare_analyses(identity, analysis_id, other))
 
     @app.get("/api/v1/jobs/{operation_id}")
     def get_job(operation_id: UUID, identity: Identity) -> OperationView:
@@ -637,13 +654,26 @@ def create_app(
         )
 
     @app.get("/api/v1/models")
-    def list_models(identity: Identity, limit: Limit = 100, offset: Offset = 0) -> ModelPage:
+    def list_models(
+        identity: Identity,
+        limit: Limit = 100,
+        offset: Offset = 0,
+        published_only: bool = False,
+    ) -> ModelPage:
+        try:
+            active = service.get_model(identity, "active").model_version_id
+        except NotFound:
+            active = None
         return ModelPage(
             items=tuple(
-                _model(item) for item in service.list_models(identity, limit=limit, offset=offset)
+                _model(item)
+                for item in service.list_models(
+                    identity, limit=limit, offset=offset, published_only=published_only
+                )
             ),
             limit=limit,
             offset=offset,
+            active_model_version_id=active,
         )
 
     @app.get("/api/v1/models/{model_version_id}")
@@ -688,6 +718,8 @@ def create_app(
             "/api/v1/analyses/{analysis_id}/result",
             "/api/v1/analyses/{analysis_id}/report",
             "/api/v1/analyses/{analysis_id}/report/preview",
+            "/api/v1/analyses/{analysis_id}/comparison",
+            "/api/v1/analyses/{analysis_id}/comparison/preview",
             "/api/v1/jobs/{operation_id}",
             "/api/v1/jobs/{operation_id}/cancel",
         }

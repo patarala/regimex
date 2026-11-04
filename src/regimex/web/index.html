@@ -56,6 +56,16 @@
               <strong id="file-name"></strong>
               <span id="file-summary"></span>
             </div>
+            <div class="model-picker">
+              <label for="upload-model">Model</label>
+              <select id="upload-model" disabled></select>
+              <div class="picker-pages">
+                <button id="models-previous" type="button" class="quiet" hidden>Previous models</button>
+                <button id="models-next" type="button" class="quiet" hidden>More models</button>
+                <button id="models-refresh" type="button" class="quiet">Refresh models</button>
+              </div>
+              <p id="model-status" class="hint" role="status"></p>
+            </div>
             <div class="actions">
               <button id="classify" type="button" disabled>Analyze</button>
             </div>
@@ -84,12 +94,39 @@
               <button id="retry" type="button" hidden>Retry request</button>
               <button id="cancel" type="button" class="quiet" hidden>Cancel</button>
             </div>
+            <div id="rerun-controls" class="model-picker rerun-controls" hidden>
+              <label for="rerun-model">Analyze this experiment again</label>
+              <select id="rerun-model" disabled></select>
+              <div class="actions">
+                <button id="rerun" type="button" disabled>Run again</button>
+                <button id="rerun-models-previous" type="button" class="quiet" hidden>Previous models</button>
+                <button id="rerun-models-next" type="button" class="quiet" hidden>More models</button>
+              </div>
+              <p id="rerun-model-status" class="hint" role="status"></p>
+            </div>
             <div id="result" hidden>
               <dl id="result-summary" class="summary"></dl>
               <div class="actions downloads">
                 <a id="download-report" class="button" hidden>Download HTML</a>
                 <button id="download-json" type="button" class="quiet">Download JSON</button>
               </div>
+              <details id="comparison-controls" class="comparison-controls" hidden>
+                <summary>Compare with another analysis</summary>
+                <label for="comparison-target">Completed analysis of this experiment</label>
+                <select id="comparison-target" disabled></select>
+                <p id="comparison-status" class="hint" role="status"></p>
+                <div class="actions">
+                  <button id="compare" type="button" disabled>Compare</button>
+                  <button id="comparison-previous" type="button" class="quiet" hidden>Newer results</button>
+                  <button id="comparison-next" type="button" class="quiet" hidden>Earlier results</button>
+                  <button id="comparison-refresh" type="button" class="quiet">Refresh</button>
+                </div>
+              </details>
+              <div id="comparison-actions" class="actions" hidden>
+                <a id="download-comparison" class="button">Download comparison</a>
+                <button id="close-comparison" type="button" class="quiet">Back to analysis</button>
+              </div>
+              <iframe id="comparison-preview" title="Analysis comparison" sandbox="allow-scripts allow-downloads" hidden></iframe>
               <iframe
                 id="report-preview"
                 title="Analysis report"

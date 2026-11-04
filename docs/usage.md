@@ -76,8 +76,10 @@ saved resources. `var/work` is temporary computation and cache space.
    The token is cleared after it is exchanged for a session.
 2. Under **New analysis**, select **Choose JSON file**, or drop the file there.
    For a demonstration, use `release/examples/input-1.json` or `input-2.json`.
-3. Check the run and instrument summary, then select **Analyze**. The server
-   resolves the active published model when it accepts the request.
+3. Check the run and instrument summary, choose a published model, then select
+   **Analyze**. The default choice shows the active version; the request keeps
+   that version even if the administrator changes the active model later.
+   **More models** browses additional versions; **Refresh models** updates the list.
 4. Wait for the result. **Cancel** stops queued work or prevents a running
    attempt from publishing. **Retry request** reuses an interrupted request's
    identity; it does not intentionally create another analysis.
@@ -92,6 +94,25 @@ saved resources. `var/work` is temporary computation and cache space.
 
 The default session expires after 30 minutes from sign-in. Refreshing the page
 does not extend it. Results survive sign-out and service restarts.
+
+## Run again and compare
+
+Open a completed, failed or cancelled analysis from **History**. Under
+**Analyze this experiment again**, choose a published model and select **Run again**.
+This creates a new analysis from the same saved snapshot; no file upload is needed
+and the previous result remains available. To compare the supplied models, an
+administrator must register both bundles and publish or activate each at least once.
+
+After a successful analysis, expand **Compare with another analysis** and choose
+another successful analysis of that snapshot. Use **Earlier results** to browse
+older matches, then **Compare**. A file uploaded separately is a different snapshot,
+even if its content is identical; use **Run again** to retain the shared identity.
+
+The comparison shows one price chart and two aligned rows of intervals. The table
+separates direction disagreements from availability disagreements. Select an
+instrument, drag to zoom or enter a range; **Reset zoom** restores the full horizon.
+**Download comparison** saves a self-contained HTML file that works offline.
+Disagreements describe how the predictions differ, not which model is correct.
 
 ## Read a report
 
@@ -148,7 +169,8 @@ at most 12 experiments are displayed, chosen evenly from sorted snapshot IDs;
 Rejected exports show the affected fields, such as `time_grid.step_count` or
 `observations.0.last_price`. Correct the file before uploading it again.
 **Retry request** checks an interrupted HTTP request; it does not restart a failed
-analysis. Once an analysis has failed, automatic retries have ended.
+analysis. Once an analysis has failed, automatic retries have ended. After addressing
+the cause, **Run again** creates a separate analysis using the saved input.
 
 For API automation use [API workflows](api.md). For backups and resource cleanup
 use [storage operations](storage.md); deleting files from the object root is not

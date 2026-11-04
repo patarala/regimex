@@ -1,4 +1,4 @@
-"""Validated, self-contained HTML rendering, called only inside the analysis worker."""
+"""Shared result validation and worker-side self-contained analysis rendering."""
 
 import base64
 import hashlib

@@ -308,10 +308,45 @@ class AnalysisService:
         offset: int = 0,
         q: str = "",
         state: HistoryState | None = None,
+        snapshot_id: UUID | None = None,
     ) -> tuple[AnalysisSummary, ...]:
         return self.repository.list_analysis_summaries(
-            principal, limit=limit, offset=offset, q=q, state=state
+            principal, limit=limit, offset=offset, q=q, state=state, snapshot_id=snapshot_id
         )
+
+    def compare_analyses(self, principal: Principal, first_id: UUID, second_id: UUID) -> bytes:
+        # Authorize both resources before loading input or exposing pair compatibility.
+        first = self.get_analysis_summary(principal, first_id)
+        second = self.get_analysis_summary(principal, second_id)
+        if first_id == second_id:
+            raise Conflict("Choose two different analyses to compare.")
+        if first.snapshot_id != second.snapshot_id:
+            raise Conflict("Comparison requires analyses of the same saved experiment.")
+        if not first.result_available or not second.result_available:
+            raise Conflict("Both analyses must have successful saved results.")
+        export = self.read_snapshot(principal, first.snapshot_id)
+        first_result = AnalysisResult.model_validate_json(
+            json_bytes(self.get_result(principal, first_id))
+        )
+        second_result = AnalysisResult.model_validate_json(
+            json_bytes(self.get_result(principal, second_id))
+        )
+        assert first.operation.result_sha256 is not None
+        assert second.operation.result_sha256 is not None
+        from regimex.application.analysis_comparison import render_analysis_comparison
+
+        try:
+            return render_analysis_comparison(
+                export,
+                first_result,
+                second_result,
+                first_sha256=first.operation.result_sha256,
+                second_sha256=second.operation.result_sha256,
+            ).html
+        except ValueError as exc:
+            raise ObjectIntegrityError(
+                "Saved analyses failed comparison integrity checks."
+            ) from exc
 
     def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]:
         record = self.get_analysis(principal, analysis_id)
@@ -384,9 +419,16 @@ class AnalysisService:
         return self.repository.cancel_operation(principal, operation_id)
 
     def list_models(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        published_only: bool = False,
     ) -> tuple[ModelRecord, ...]:
-        return self.repository.list_models(principal, limit=limit, offset=offset)
+        return self.repository.list_models(
+            principal, limit=limit, offset=offset, published_only=published_only
+        )
 
     def get_model(self, principal: Principal, model_version_id: str) -> ModelRecord:
         return self.repository.get_model_for_principal(principal, model_version_id)

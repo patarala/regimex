@@ -324,7 +324,9 @@ def register_metadata(api: PersistentAPI, version: str = "http-fixture") -> Mode
         ),
         members={},
         inference_runtime=InferenceRuntime(),
-        inference_policy_sha256="b" * 64,
+        inference_policy_sha256=hashlib.sha256(
+            json_bytes(InferenceRuntime().model_dump(mode="json"))
+        ).hexdigest(),
         created_at=datetime.now(UTC),
     )
     admin = api.repository.authenticate(api.tokens["admin"])
@@ -527,6 +529,99 @@ def test_models_and_architectures_enforce_role_and_publication_visibility(
     assert api.client.get("/api/v1/models?offset=1", headers=api.headers()).json()["items"] == []
 
 
+def test_analysis_model_choices_exclude_unpublished_candidates_even_for_admin(
+    persistent_api: PersistentAPI,
+) -> None:
+    api = persistent_api
+    first = register_metadata(api, "baseline-published")
+    second = register_metadata(api, "tcn-published")
+    register_metadata(api, "candidate-private")
+    admin = api.repository.authenticate(api.tokens["admin"])
+    api.repository.activate_model(admin, first.model_version_id, expected_previous=None)
+    api.repository.activate_model(
+        admin, second.model_version_id, expected_previous=first.model_version_id
+    )
+    assert len(api.client.get("/api/v1/models", headers=api.headers("admin")).json()["items"]) == 3
+    for owner in ("alice", "admin"):
+        pages = [
+            api.client.get(
+                "/api/v1/models",
+                params={"published_only": True, "limit": 1, "offset": offset},
+                headers=api.headers(owner),
+            ).json()
+            for offset in (0, 1)
+        ]
+        assert [page["items"][0]["model_version_id"] for page in pages] == [
+            first.model_version_id,
+            second.model_version_id,
+        ]
+        assert all(page["active_model_version_id"] == second.model_version_id for page in pages)
+
+
+def test_saved_snapshot_reruns_keep_new_and_retried_requests_distinct(
+    persistent_api: PersistentAPI,
+) -> None:
+    api = persistent_api
+    snapshot_id = upload(api)
+    first, second = register_metadata(api, "first"), register_metadata(api, "second")
+    admin = api.repository.authenticate(api.tokens["admin"])
+    api.repository.activate_model(admin, first.model_version_id, expected_previous=None)
+    api.repository.activate_model(admin, second.model_version_id, expected_previous="first")
+    initial = api.client.post(
+        "/api/v1/analyses",
+        json={"snapshot_id": str(snapshot_id), "model_version_id": "first"},
+        headers={**api.headers(), "Idempotency-Key": "original"},
+    )
+    assert initial.status_code == 202
+    body = {"snapshot_id": str(snapshot_id), "model_version_id": "second"}
+    headers = {**api.headers(), "Idempotency-Key": "rerun"}
+    rerun = api.client.post("/api/v1/analyses", json=body, headers=headers)
+    assert rerun.status_code == 202
+    assert rerun.json()["analysis_id"] != initial.json()["analysis_id"]
+    assert rerun.json()["snapshot_id"] == initial.json()["snapshot_id"]
+    assert rerun.json()["job"]["model"]["model_version_id"] == "second"
+    assert api.client.post("/api/v1/analyses", json=body, headers=headers).json() == rerun.json()
+    assert (
+        api.client.post(
+            "/api/v1/analyses", json={**body, "model_version_id": "first"}, headers=headers
+        ).status_code
+        == 409
+    )
+    assert (
+        api.client.post(
+            "/api/v1/analyses",
+            json=body,
+            headers={**api.headers("bob"), "Idempotency-Key": "foreign"},
+        ).status_code
+        == 404
+    )
+    other_snapshot = upload(api, suffix="-different")
+    api.client.post(
+        "/api/v1/analyses",
+        json={"snapshot_id": str(other_snapshot)},
+        headers={**api.headers(), "Idempotency-Key": "different"},
+    )
+    matching = api.client.get(
+        "/api/v1/analyses",
+        params={"snapshot_id": str(snapshot_id), "limit": 1, "offset": 1},
+        headers=api.headers(),
+    )
+    assert matching.status_code == 200
+    assert [item["analysis_id"] for item in matching.json()["items"]] == [
+        initial.json()["analysis_id"]
+    ]
+    assert (
+        api.client.get(
+            "/api/v1/analyses", params={"snapshot_id": str(snapshot_id)}, headers=api.headers("bob")
+        ).json()["items"]
+        == []
+    )
+    assert (
+        api.client.get("/api/v1/analyses?snapshot_id=wrong", headers=api.headers()).status_code
+        == 422
+    )
+
+
 def test_analysis_intake_replay_conflicts_pagination_and_cancellation(
     persistent_api: PersistentAPI,
 ) -> None:
@@ -648,32 +743,16 @@ def test_same_idempotency_key_is_independent_between_authenticated_owners(
     assert identities[0] != identities[1]
 
 
-def test_committed_result_survives_application_recreation_and_download_is_private(
-    persistent_api: PersistentAPI, tmp_path: Path
-) -> None:
-    api = persistent_api
-    snapshot_id = upload(api)
-    model = register_metadata(api)
-    api.repository.activate_model(
-        api.repository.authenticate(api.tokens["admin"]),
-        model.model_version_id,
-        expected_previous=None,
-    )
-    accepted = api.client.post(
-        "/api/v1/analyses",
-        json={"snapshot_id": str(snapshot_id)},
-        headers={**api.headers(), "Idempotency-Key": "result-fixture"},
-    ).json()
-    operation_id = UUID(accepted["job"]["operation_id"])
-    claimed = api.repository.claim_operation(operation_id)
-    assert claimed is not None and claimed.attempt_token is not None and claimed.model is not None
-    export = export_fixture()
-    result = AnalysisResult(
-        analysis_id=UUID(accepted["analysis_id"]),
+def analysis_result_fixture(
+    export: ExportV2, snapshot_id: UUID, operation: Operation
+) -> AnalysisResult:
+    assert operation.model is not None
+    return AnalysisResult(
+        analysis_id=UUID(operation.resource_id),
         snapshot_id=snapshot_id,
         snapshot_sha256=export.content_sha256,
         source=export.source,
-        model=claimed.model,
+        model=operation.model,
         architecture_id="baseline",
         implementation_version="0.1.0",
         decoder_version="duration-viterbi/1.0",
@@ -702,6 +781,29 @@ def test_committed_result_survives_application_recreation_and_download_is_privat
             ),
         ),
     )
+
+
+def test_committed_result_survives_application_recreation_and_download_is_private(
+    persistent_api: PersistentAPI, tmp_path: Path
+) -> None:
+    api = persistent_api
+    snapshot_id = upload(api)
+    model = register_metadata(api)
+    api.repository.activate_model(
+        api.repository.authenticate(api.tokens["admin"]),
+        model.model_version_id,
+        expected_previous=None,
+    )
+    accepted = api.client.post(
+        "/api/v1/analyses",
+        json={"snapshot_id": str(snapshot_id)},
+        headers={**api.headers(), "Idempotency-Key": "result-fixture"},
+    ).json()
+    operation_id = UUID(accepted["job"]["operation_id"])
+    claimed = api.repository.claim_operation(operation_id)
+    assert claimed is not None and claimed.attempt_token is not None and claimed.model is not None
+    export = export_fixture()
+    result = analysis_result_fixture(export, snapshot_id, claimed)
     result_payload = result.model_dump(mode="json")
     assert result_payload["result_version"] == "2.0"
     for previous_shape in (
@@ -741,6 +843,114 @@ def test_committed_result_survives_application_recreation_and_download_is_privat
         assert replay.json() == status.json()
         assert replay.json()["result_available"] is True
         assert replay.json()["report_available"] is True
+
+
+def test_comparison_authorizes_both_saved_analyses_and_serves_offline_html(
+    persistent_api: PersistentAPI, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = persistent_api
+    snapshot_id = upload(api)
+    model = register_metadata(api)
+    api.repository.activate_model(
+        api.repository.authenticate(api.tokens["admin"]),
+        model.model_version_id,
+        expected_previous=None,
+    )
+    saved = []
+    for key in ("first-comparison", "second-comparison"):
+        response = api.client.post(
+            "/api/v1/analyses",
+            json={"snapshot_id": str(snapshot_id)},
+            headers={**api.headers(), "Idempotency-Key": key},
+        )
+        assert response.status_code == 202
+        analysis_id = UUID(response.json()["analysis_id"])
+        operation = api.repository.claim_operation(analysis_id)
+        assert operation is not None and operation.attempt_token is not None
+        result = analysis_result_fixture(export_fixture(), snapshot_id, operation)
+        payload = result.model_dump(mode="json")
+        report = report_metadata_fixture(
+            api,
+            tmp_path,
+            analysis_id=analysis_id,
+            snapshot_id=snapshot_id,
+            operation=operation,
+            result=payload,
+        )
+        api.repository.complete_analysis(
+            analysis_id, operation.attempt_token, payload, report=report
+        )
+        saved.append(analysis_id)
+    path = f"/api/v1/analyses/{saved[0]}/comparison"
+    download = api.client.get(path, params={"other": str(saved[1])}, headers=api.headers())
+    assert download.status_code == 200, download.text
+    assert "Analysis comparison" in download.text
+    assert all(str(item) in download.text for item in saved)
+    assert download.headers["Content-Type"].startswith("text/html")
+    assert download.headers["Cache-Control"] == "private, no-store"
+    assert "attachment" in download.headers["Content-Disposition"]
+    preview = api.client.get(
+        path + "/preview", params={"other": str(saved[1])}, headers=api.headers()
+    )
+    assert preview.content == download.content
+    assert "sandbox allow-scripts allow-downloads" in preview.headers["Content-Security-Policy"]
+    assert "Content-Disposition" not in preview.headers
+    assert api.client.get(path, params={"other": str(saved[1])}).status_code == 401
+    assert (
+        api.client.get(path, params={"other": "invalid"}, headers=api.headers()).status_code == 422
+    )
+    candidates = api.client.get(
+        "/api/v1/analyses",
+        params={"snapshot_id": str(snapshot_id), "state": "succeeded"},
+        headers=api.headers(),
+    )
+    assert {item["analysis_id"] for item in candidates.json()["items"]} == {
+        str(item) for item in saved
+    }
+    foreign_snapshot = upload(api, owner="bob")
+    foreign = api.client.post(
+        "/api/v1/analyses",
+        json={"snapshot_id": str(foreign_snapshot)},
+        headers={**api.headers("bob"), "Idempotency-Key": "foreign"},
+    ).json()["analysis_id"]
+    different = api.client.post(
+        "/api/v1/analyses",
+        json={"snapshot_id": str(upload(api, suffix="-other"))},
+        headers={**api.headers(), "Idempotency-Key": "other"},
+    ).json()["analysis_id"]
+    pending = api.client.post(
+        "/api/v1/analyses",
+        json={"snapshot_id": str(snapshot_id)},
+        headers={**api.headers(), "Idempotency-Key": "pending"},
+    ).json()["analysis_id"]
+
+    def forbidden_read(*_args: object, **_kwargs: object) -> Never:
+        raise AssertionError("Invalid or unauthorized comparison read snapshot bytes")
+
+    with monkeypatch.context() as guard:
+        guard.setattr(api.service, "read_snapshot", forbidden_read)
+        for other, owner, status in (
+            (saved[1], "bob", 404),
+            (foreign, "alice", 404),
+            (different, "alice", 409),
+            (pending, "alice", 409),
+            (saved[0], "alice", 409),
+        ):
+            response = api.client.get(
+                path, params={"other": str(other)}, headers=api.headers(owner)
+            )
+            assert response.status_code == status, response.text
+
+    with api.repository.connection() as connection:
+        connection.execute(
+            "UPDATE regimex_analyses SET result=jsonb_set(result::jsonb,'{architecture_id}', "
+            "'\"tampered\"'::jsonb)::json WHERE analysis_id=%s",
+            (saved[1],),
+        )
+    corrupted = api.client.get(path, params={"other": str(saved[1])}, headers=api.headers())
+    assert corrupted.status_code == 409
+    assert corrupted.json()["error"]["code"] == "conflict"
+    assert "tampered" not in corrupted.text
 
 
 def test_status_and_lists_read_metadata_without_loading_large_committed_results(
