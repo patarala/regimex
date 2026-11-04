@@ -79,8 +79,13 @@ export function createComparison({session, getSelection}) {
   function compare() {
     const selection = getSelection();
     const other = comparisonItems.find((item) => item.analysis_id === $("comparison-target").value);
-    if (!selection?.metadata || !other || other.snapshot_id !== selection.metadata.snapshot_id
-      || selection.metadata.job.state !== "succeeded") return;
+    show(selection, other);
+  }
+  function show(selection, other) {
+    if (getSelection() !== selection || !selection?.metadata || !other
+      || other.analysis_id === selection.id || other.snapshot_id !== selection.metadata.snapshot_id
+      || selection.metadata.job.state !== "succeeded" || other.job.state !== "succeeded"
+      || !selection.metadata.result_available || !other.result_available) return;
     const path = `/api/v1/analyses/${selection.id}/comparison`;
     const query = `other=${encodeURIComponent(other.analysis_id)}`;
     $("comparison-preview").src = `${path}/preview?${query}`;
@@ -106,5 +111,5 @@ export function createComparison({session, getSelection}) {
     clearComparison();
     $("report-preview").hidden = !getSelection()?.metadata?.report_available;
   });
-  return {reset};
+  return {reset, show};
 }

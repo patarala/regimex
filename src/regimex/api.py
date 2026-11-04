@@ -22,6 +22,12 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from regimex.contracts import MAX_INPUT_BYTES, Identifier, StrictModel
 from regimex.diagnostic_contracts import QueueStatus
 from regimex.exports import ExportV2
+from regimex.history_contracts import (
+    ExperimentMetadata,
+    ExperimentName,
+    ExperimentNameUpdate,
+    ExperimentSummary,
+)
 from regimex.infrastructure.object_store import ObjectIntegrityError
 from regimex.model_registry import ArchitectureInfo
 from regimex.operations import (
@@ -92,6 +98,20 @@ class AnalysisAPIService(Protocol):
     def read_report(self, principal: Principal, analysis_id: UUID) -> bytes: ...
 
     def compare_analyses(self, principal: Principal, first_id: UUID, second_id: UUID) -> bytes: ...
+
+    def list_experiments(
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        q: str = "",
+        state: HistoryState | None = None,
+    ) -> tuple[ExperimentSummary, ...]: ...
+
+    def rename_experiment(
+        self, principal: Principal, snapshot_id: UUID, update: ExperimentNameUpdate
+    ) -> ExperimentName: ...
 
     def get_operation(self, principal: Principal, operation_id: UUID) -> Operation: ...
 
@@ -170,6 +190,16 @@ class AnalysisView(StrictModel):
 
 class AnalysisPage(StrictModel):
     items: tuple[AnalysisView, ...]
+    limit: int
+    offset: int
+
+
+class ExperimentView(ExperimentMetadata):
+    latest_analysis: AnalysisView
+
+
+class ExperimentPage(StrictModel):
+    items: tuple[ExperimentView, ...]
     limit: int
     offset: int
 
@@ -419,7 +449,7 @@ def create_app(
         ),
     )
     app.add_middleware(BoundedJSONBody)
-    app.state.request_models = (ExportV2, AnalysisRequest)
+    app.state.request_models = (ExportV2, AnalysisRequest, ExperimentNameUpdate)
     bearer = HTTPBearer(auto_error=False)
 
     @app.exception_handler(ServiceError)
@@ -521,6 +551,7 @@ def create_app(
     Identity = Annotated[Principal, Depends(principal)]
     Export = Annotated[ExportV2, Depends(_json_dependency(ExportV2))]
     Intake = Annotated[AnalysisRequest, Depends(_json_dependency(AnalysisRequest))]
+    NameUpdate = Annotated[ExperimentNameUpdate, Depends(_json_dependency(ExperimentNameUpdate))]
     Limit = Annotated[int, Query(ge=1, le=100)]
     Offset = Annotated[int, Query(ge=0, le=1_000_000)]
 
@@ -610,6 +641,39 @@ def create_app(
             limit=limit,
             offset=offset,
         )
+
+    @app.get("/api/v1/experiments")
+    def list_experiments(
+        identity: Identity,
+        limit: Limit = 100,
+        offset: Offset = 0,
+        q: Annotated[str, Query(max_length=128, pattern=r"^[^\x00]*$")] = "",
+        state: HistoryState | None = None,
+    ) -> ExperimentPage:
+        items = service.list_experiments(identity, limit=limit, offset=offset, q=q, state=state)
+        return ExperimentPage(
+            items=tuple(
+                ExperimentView.model_validate(
+                    {
+                        **item.model_dump(exclude={"latest_analysis"}),
+                        "latest_analysis": _analysis(
+                            item.latest_analysis, prefix=_prefix(identity)
+                        ),
+                    }
+                )
+                for item in items
+            ),
+            limit=limit,
+            offset=offset,
+        )
+
+    @app.patch(
+        "/api/v1/experiments/{snapshot_id}/name", openapi_extra=_request_body(ExperimentNameUpdate)
+    )
+    def rename_experiment(
+        snapshot_id: UUID, payload: NameUpdate, identity: Identity
+    ) -> ExperimentName:
+        return service.rename_experiment(identity, snapshot_id, payload)
 
     @app.get("/api/v1/analyses/{analysis_id}")
     def get_analysis(analysis_id: UUID, identity: Identity) -> AnalysisView:
@@ -721,6 +785,8 @@ def create_app(
             "/api/v1/snapshots/{snapshot_id}",
             "/api/v1/snapshots/{snapshot_id}/export",
             "/api/v1/analyses",
+            "/api/v1/experiments",
+            "/api/v1/experiments/{snapshot_id}/name",
             "/api/v1/analyses/{analysis_id}",
             "/api/v1/analyses/{analysis_id}/result",
             "/api/v1/analyses/{analysis_id}/report",

@@ -23,6 +23,8 @@ from regimex.exports import (
     SourceIdentity,
     parse_export_v2,
 )
+from regimex.history_contracts import ExperimentName, ExperimentNameUpdate, ExperimentSummary
+from regimex.infrastructure.history_repository import HistoryRepository
 from regimex.infrastructure.object_store import (
     ObjectCapacityError,
     ObjectInfo,
@@ -357,6 +359,24 @@ class AnalysisService:
             raise ObjectIntegrityError(
                 "Saved analyses failed comparison integrity checks."
             ) from exc
+
+    def list_experiments(
+        self,
+        principal: Principal,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        q: str = "",
+        state: HistoryState | None = None,
+    ) -> tuple[ExperimentSummary, ...]:
+        return HistoryRepository(self.repository).list_experiments(
+            principal, limit=limit, offset=offset, q=q, state=state
+        )
+
+    def rename_experiment(
+        self, principal: Principal, snapshot_id: UUID, update: ExperimentNameUpdate
+    ) -> ExperimentName:
+        return HistoryRepository(self.repository).rename(principal, snapshot_id, update)
 
     def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]:
         record = self.get_analysis(principal, analysis_id)

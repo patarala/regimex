@@ -24,6 +24,7 @@ _ASSETS = {
     "app.js": "text/javascript",
     "session.js": "text/javascript",
     "history.js": "text/javascript",
+    "experiment-history.js": "text/javascript",
     "models.js": "text/javascript",
     "analysis.js": "text/javascript",
     "comparison.js": "text/javascript",

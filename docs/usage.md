@@ -99,11 +99,15 @@ not execute probes inside remote workers or train a model.
    identity; it does not intentionally create another analysis.
 5. Read the preview, or use **Download HTML** and **Download JSON**. Technical
    input/model identity is available under **Details**.
-6. Reopen saved work from **History**. Each entry shows its instruments, run,
-   model, date and status. Search by instrument, run, model or analysis ID;
-   choose a status to narrow the list. Search covers all saved analyses, not just
-   the visible page. **Previous** and **Next** browse pages of 20 matches;
-   **Refresh** returns to the newest matches and **Clear** removes the filters.
+6. Reopen saved work from **Experiments**. Each entry represents one saved experiment;
+   selecting it opens the latest matching analysis. **Show analyses** expands
+   that experiment's runs, including their models, dates and statuses.
+   **Rename** gives the experiment a name; save an empty name to restore its default.
+   Names support Unicode and remain separate from the original export and results.
+7. Search by name, instrument, run, model or analysis ID, or choose a status.
+   Filters apply to all saved runs and the expanded list. **Previous** and **Next**
+   browse pages of experiments; **Newer** and **Earlier** browse runs within one
+   experiment. **Refresh** reloads the list and **Clear** removes filters.
    **Sign out** ends the session.
 
 The default session expires after 30 minutes from sign-in. Refreshing the page
@@ -111,16 +115,21 @@ does not extend it. Results survive sign-out and service restarts.
 
 ## Run again and compare
 
-Open a completed, failed or cancelled analysis from **History**. Under
+Open a completed, failed or cancelled analysis from **Experiments**. Under
 **Analyze this experiment again**, choose a published model and select **Run again**.
 This creates a new analysis from the same saved snapshot; no file upload is needed
 and the previous result remains available. To compare the supplied models, an
 administrator must register both bundles and publish or activate each at least once.
 
-After a successful analysis, expand **Compare with another analysis** and choose
-another successful analysis of that snapshot. Use **Earlier results** to browse
-older matches, then **Compare**. A file uploaded separately is a different snapshot,
-even if its content is identical; use **Run again** to retain the shared identity.
+In the expanded history entry, select two successful analyses and use
+**Compare selected**. Selection can span that experiment's run pages.
+Alternatively, open a successful analysis, expand **Compare with another analysis**
+and choose another successful result, then **Compare**.
+
+Comparison requires the same saved snapshot. Uploading an export with the same
+source/run/snapshot identity and unchanged content reuses that snapshot, including
+its name and history. Different snapshot identities remain separate experiments,
+even if their observations match. **Run again** retains the saved snapshot identity.
 
 The comparison shows one price chart and two aligned rows of intervals. The table
 separates direction disagreements from availability disagreements. Select an

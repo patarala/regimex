@@ -24,6 +24,7 @@ from pydantic import JsonValue, TypeAdapter
 from sqlalchemy import create_engine
 
 from regimex.contracts import MAX_INPUT_BYTES
+from regimex.infrastructure.history_repository import analysis_filters, analysis_scope
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.operations import (
     OPERATION_VERSION,
@@ -59,7 +60,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0002_worker_queues"
+_REVISION = "0003_experiment_names"
 
 
 def _read_operation(document: object) -> Operation:
@@ -694,22 +695,13 @@ class DatabaseRepository:
 
     @staticmethod
     def _summary_query(principal: Principal) -> tuple[str, list[object]]:
-        query = (
+        scope, parameters = analysis_scope(principal)
+        return (
             "SELECT a.analysis_id,a.snapshot_id,o.document,a.result IS NOT NULL, "
             "EXISTS(SELECT 1 FROM regimex_analysis_reports r WHERE r.analysis_id=a.analysis_id), "
-            "s.document "
-            "FROM regimex_analyses a JOIN regimex_operations o "
-            "ON a.operation_id=o.operation_id JOIN regimex_snapshots s "
-            "ON a.snapshot_id=s.snapshot_id WHERE o.owner_id=%s"
+            "s.document " + scope,
+            parameters,
         )
-        parameters: list[object] = [principal.owner_id]
-        if principal.role == "integration":
-            query += " AND s.source_id=%s"
-            parameters.append(principal.source_namespace)
-            if principal.run_scope is not None:
-                query += " AND s.run_id=%s"
-                parameters.append(principal.run_scope)
-        return query, parameters
 
     @classmethod
     def _summary(
@@ -741,26 +733,14 @@ class DatabaseRepository:
         snapshot_id: UUID | None = None,
     ) -> tuple[AnalysisSummary, ...]:
         self._page(limit, offset)
-        filters = AnalysisHistoryFilter(q=q, state=state)
+        predicate, filter_parameters = analysis_filters(AnalysisHistoryFilter(q=q, state=state))
         with self.connection() as connection:
             query, parameters = self._summary_query(principal)
             if snapshot_id is not None:
                 query += " AND a.snapshot_id=%s"
                 parameters.append(snapshot_id)
-            if filters.state == "active":
-                query += " AND o.state IN ('queued','running','cancel_requested')"
-            elif filters.state is not None:
-                query += " AND o.state=%s"
-                parameters.append(filters.state)
-            if search := filters.q.strip():
-                # Literal substring matching keeps %, _ and backslashes ordinary
-                # search text. Authorization and filters precede pagination.
-                query += (
-                    " AND strpos(lower(concat_ws(' ',s.source_id,s.run_id,s.source_snapshot_id,"
-                    "s.document->>'instrument_ids',a.model_version_id,a.analysis_id::text)),"
-                    "lower(%s)) > 0"
-                )
-                parameters.append(search)
+            query += " AND " + predicate
+            parameters.extend(filter_parameters)
             rows = connection.execute(
                 query + " ORDER BY (o.document->>'created_at')::timestamptz DESC,"
                 "a.analysis_id DESC LIMIT %s OFFSET %s",

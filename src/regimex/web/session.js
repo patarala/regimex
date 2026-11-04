@@ -59,7 +59,9 @@ export function createSession({onActivate, onReset}) {
         reset();
         throw new Error("Your session has expired. Sign in to reopen your saved analyses.");
       }
-      throw new Error(requestError(data));
+      const error = new Error(requestError(data));
+      error.status = response.status;
+      throw error;
     }
     return response;
   }

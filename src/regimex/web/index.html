@@ -141,12 +141,12 @@
           </section>
           <section class="panel history" aria-labelledby="history-title">
             <div class="section-heading">
-              <h2 id="history-title">History</h2>
+              <h2 id="history-title">Experiments</h2>
               <button id="refresh-history" type="button" class="quiet">Refresh</button>
             </div>
             <form id="history-filters" class="history-filters" role="search">
-              <label for="history-search">Search analyses</label>
-              <input id="history-search" type="search" maxlength="128" placeholder="Instrument, run or model" />
+              <label for="history-search">Search experiments</label>
+              <input id="history-search" type="search" maxlength="128" placeholder="Name, instrument or model" />
               <label for="history-state">Status</label>
               <select id="history-state">
                 <option value="">All statuses</option>
@@ -161,12 +161,12 @@
               </div>
             </form>
             <p id="history-loading" class="hint" role="status" hidden>Loading history…</p>
-            <p id="history-empty">No analyses yet.</p>
+            <p id="history-empty">No experiments yet.</p>
             <ul id="history-list"></ul>
             <nav
               id="history-pages"
               class="history-pages"
-              aria-label="Analysis history pages"
+              aria-label="Experiment history pages"
               hidden
             >
               <button id="history-previous" type="button" class="quiet" disabled>Previous</button>

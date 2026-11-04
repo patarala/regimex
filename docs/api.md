@@ -39,10 +39,14 @@ returns `409`. Every resource and download is authorized on the server.
 | `GET /analyses/{id}/report` | Self-contained HTML attachment |
 | `GET /analyses/{id}/comparison?other=ANALYSIS_UUID` | Offline HTML comparison of two successful analyses |
 | `GET /analyses` | Owned history, newest first, with `limit`/`offset` |
+| `GET /experiments` | Owned history grouped by saved snapshot, with `limit`/`offset` |
+| `PATCH /experiments/{snapshot_id}/name` | Rename an experiment with a revision check |
 | `GET /service-status` | Current analysis-queue availability for signed-in users |
 
 History accepts `q` (up to 128 characters) for a case-insensitive, literal search
-across source, run, snapshot, instrument, model and analysis identifiers. `state`
+across experiment names and source, run, snapshot, instrument, model and analysis
+identifiers. Name search uses Unicode normalization/casefolding independently of
+the database locale. `state`
 accepts `queued`, `running`, `cancel_requested`, `cancelled`, `succeeded` or
 `failed`; `active` groups the first three. `snapshot_id` restricts the list to one
 saved snapshot. Filters apply before `limit`/`offset`
@@ -57,6 +61,22 @@ available instrument identifiers and step count. These endpoints do not read the
 raw export or result payload. A failed job includes `failure.code`, a safe
 `failure.message` and attempt counts. `failure.retryable` describes the type of
 failure; a terminal `failed` job has no automatic retries remaining.
+
+`GET /experiments` accepts the same `q` and `state` filters. Each item contains
+`snapshot_id`, source/run identifiers, instruments, `display_name`, `name_revision`,
+`analysis_count`, `successful_analysis_count`, `matching_analysis_count` and
+`latest_analysis`. Counts cover authorized runs of that saved snapshot; the latest
+analysis is the newest matching the current filter. Grouping precedes pagination,
+so a large experiment never splits across group pages. Expand it through
+`GET /analyses?snapshot_id=...`, retaining the same filters and independent pagination.
+
+Rename with `{"display_name":"Experiment A","expected_revision":0}`. Names have at
+most 120 Unicode characters after normalization; control characters and empty
+strings are rejected. Use `null` to restore the default. The response contains
+`snapshot_id`, `display_name` and the new `revision`. A stale revision returns `409`;
+refresh before deciding whether to save again. Ownership/source/run checks precede
+revision checks. Browser mutations require CSRF as usual. Names are separate
+metadata: renaming never changes export/result hashes or the identity of a re-upload.
 
 Example analysis body, using the returned snapshot ID:
 
@@ -93,8 +113,9 @@ Comparisons require two distinct successful analyses of the exact same owned
 snapshot. Both resources are authorized before their compatibility is checked.
 The server verifies saved results against the original observations and renders
 aligned prices and intervals without loading a model. The attachment is private,
-uncached and self-contained. Comparing separately uploaded snapshots returns
-`409`, even when their contents are identical. Differences are prediction
+uncached and self-contained. Comparing different saved snapshot identities returns
+`409`, even when their observations are identical. Re-uploading unchanged content
+with the same source/run/snapshot identity reuses the existing snapshot. Differences are prediction
 disagreements, not accuracy measurements.
 
 ## Administration

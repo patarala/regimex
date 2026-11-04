@@ -30,6 +30,8 @@ class Element {
   replaceChildren(...children) { this.children = children; }
   removeAttribute(name) { delete this[name]; }
   setAttribute(name, value) { this[name] = value; }
+  focus() {}
+  contains(node) { return this === node || this.children.some((child) => child.contains(node)); }
   addEventListener(name, handler) {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
     this.listeners.get(name).push(handler);
@@ -82,7 +84,7 @@ async function workspace(count = 45) {
   const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
   const state = {
     holdHistory: false, holdModels: false, activeModelId: "tcn-1",
-    now: Date.parse("2026-01-01T00:00:30Z"),
+    now: Date.parse("2026-01-01T00:00:30Z"), names: new Map(),
   };
   const models = [{model_version_id: "baseline-1"}, {model_version_id: "tcn-1"}];
   const items = Array.from({length: count}, (_, index) => ({
@@ -91,6 +93,25 @@ async function workspace(count = 45) {
     instrument_ids: [index % 2 ? "ETH/USD" : "BTC/USD"],
     job: {state: "running", created_at: "2026-01-01T00:00:00Z", model: {model_version_id: "tcn-1"}},
   }));
+  function groups(values = items) {
+    const grouped = new Map();
+    for (const item of values) {
+      if (!grouped.has(item.snapshot_id)) {
+        const all = items.filter((candidate) => candidate.snapshot_id === item.snapshot_id);
+        const name = state.names.get(item.snapshot_id);
+        grouped.set(item.snapshot_id, {
+          snapshot_id: item.snapshot_id, source_id: item.source_id, run_id: item.run_id,
+          instrument_ids: item.instrument_ids, step_count: 12, created_at: item.job.created_at,
+          display_name: name?.display_name ?? null, name_revision: name?.revision ?? 0,
+          analysis_count: all.length,
+          successful_analysis_count: all.filter((candidate) => candidate.job.state === "succeeded").length,
+          matching_analysis_count: 0, latest_analysis: item,
+        });
+      }
+      grouped.get(item.snapshot_id).matching_analysis_count++;
+    }
+    return [...grouped.values()];
+  }
   let timerId = 0;
   let requestId = 0;
   const context = {
@@ -116,24 +137,25 @@ async function workspace(count = 45) {
         const offset = Number(query.get("offset"));
         call.reply({items: models.slice(offset, offset + Number(query.get("limit"))), active_model_version_id: state.activeModelId});
       }
-      else if (url.startsWith("/api/v1/analyses?") && !state.holdHistory) {
+      else if ((url.startsWith("/api/v1/analyses?") || url.startsWith("/api/v1/experiments?")) && !state.holdHistory) {
         const query = new URL(url, location.href).searchParams;
         const offset = Number(query.get("offset"));
         const term = (query.get("q") || "").toLowerCase();
-        const state = query.get("state");
+        const status = query.get("state");
         const snapshot = query.get("snapshot_id");
         const filtered = items.filter((item) =>
-          [item.run_id, item.source_id, ...item.instrument_ids, item.job.model.model_version_id, item.analysis_id].join(" ").toLowerCase().includes(term)
+          [state.names.get(item.snapshot_id)?.display_name, item.run_id, item.source_id, ...item.instrument_ids, item.job.model.model_version_id, item.analysis_id].join(" ").toLowerCase().includes(term)
           && (!snapshot || item.snapshot_id === snapshot)
-          && (!state || (state === "active" ? ["queued", "running", "cancel_requested"].includes(item.job.state) : item.job.state === state)));
-        call.reply({items: filtered.slice(offset, offset + Number(query.get("limit")))});
+          && (!status || (status === "active" ? ["queued", "running", "cancel_requested"].includes(item.job.state) : item.job.state === status)));
+        const result = url.startsWith("/api/v1/experiments?") ? groups(filtered) : filtered;
+        call.reply({items: result.slice(offset, offset + Number(query.get("limit")))});
       }
       return promise;
     },
   };
   await loadWorkspace(context);
   return {
-    get, calls, state, location, timers, items, models,
+    get, calls, state, location, timers, items, models, groups,
     select: (index) => get("history-list").children[index].children[0].click(),
     pending: (url) => {
       const call = calls.find((item) => item.url === url && !item.settled);
@@ -276,9 +298,9 @@ test("late history pages cannot replace a newer refresh", async () => {
   await flush();
   ui.state.holdHistory = true;
   void ui.get("history-next").click();
-  const stale = ui.pending("/api/v1/analyses?limit=21&offset=20");
+  const stale = ui.pending("/api/v1/experiments?limit=21&offset=20");
   void ui.get("refresh-history").click();
-  ui.pending("/api/v1/analyses?limit=21&offset=0").reply({items: []});
+  ui.pending("/api/v1/experiments?limit=21&offset=0").reply({items: []});
   await flush();
   stale.reply({items: [{analysis_id: id(21), job: {state: "running", created_at: "2026-01-01"}}]});
   await flush();
@@ -305,7 +327,7 @@ test("history shows experiment and model names and filters all pages on the serv
   ui.get("history-state").value = "failed";
   await ui.get("history-state").emit("change", {preventDefault() {}});
   assert.deepEqual(ui.rows(), []);
-  assert.equal(ui.get("history-empty").textContent, "No analyses match these filters.");
+  assert.equal(ui.get("history-empty").textContent, "No experiments match these filters.");
   assert.equal(ui.get("history-pages").hidden, true);
   await ui.get("history-clear").click();
   assert.equal(ui.rows()[0], id(1));
@@ -320,12 +342,12 @@ test("late search responses cannot replace results for a newer query", async () 
   ui.state.holdHistory = true;
   ui.get("history-search").value = "ETH/USD";
   void ui.get("history-filters").emit("submit", {preventDefault() {}});
-  const stale = ui.pending("/api/v1/analyses?limit=21&offset=0&q=ETH%2FUSD");
+  const stale = ui.pending("/api/v1/experiments?limit=21&offset=0&q=ETH%2FUSD");
   ui.get("history-search").value = "BTC/USD";
   void ui.get("history-filters").emit("submit", {preventDefault() {}});
-  ui.pending("/api/v1/analyses?limit=21&offset=0&q=BTC%2FUSD").reply({items: [ui.items[0]]});
+  ui.pending("/api/v1/experiments?limit=21&offset=0&q=BTC%2FUSD").reply({items: ui.groups([ui.items[0]])});
   await flush();
-  stale.reply({items: [ui.items[1]]});
+  stale.reply({items: ui.groups([ui.items[1]])});
   await flush();
   assert.deepEqual(ui.rows(), [id(1)]);
   assert.equal(ui.get("history-loading").hidden, true);
@@ -346,7 +368,7 @@ test("a failed selection leaves an active-only history without closing its detai
   assert.deepEqual(ui.rows(), []);
   assert.equal(ui.get("analysis-panel").hidden, false);
   assert.equal(ui.get("job-detail").textContent, "Time limit exceeded.");
-  assert.equal(ui.get("history-empty").textContent, "No analyses match these filters.");
+  assert.equal(ui.get("history-empty").textContent, "No experiments match these filters.");
 });
 
 test("an in-flight history response cannot undo a terminal state observed by polling", async () => {
@@ -357,15 +379,15 @@ test("an in-flight history response cannot undo a terminal state observed by pol
   await flush();
   ui.state.holdHistory = true;
   void ui.get("refresh-history").click();
-  const stale = ui.pending("/api/v1/analyses?limit=21&offset=0");
+  const stale = ui.pending("/api/v1/experiments?limit=21&offset=0");
   void Array.from(ui.timers.values())[0]();
   ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
   await flush();
-  const fresh = ui.calls.filter((call) => call.url === "/api/v1/analyses?limit=21&offset=0").at(-1);
+  const fresh = ui.calls.filter((call) => call.url === "/api/v1/experiments?limit=21&offset=0").at(-1);
   assert.notEqual(fresh, stale);
-  fresh.reply({items: [{...ui.items[0], job: {...ui.items[0].job, state: "failed"}}]});
+  fresh.reply({items: ui.groups([{...ui.items[0], job: {...ui.items[0].job, state: "failed"}}])});
   await flush();
-  stale.reply({items: ui.items});
+  stale.reply({items: ui.groups()});
   await flush();
   assert.match(ui.get("history-list").children[0].children[0].children.at(-1).textContent, /^Failed/);
   assert.equal(ui.get("history-list").children[0].children[0]["aria-current"], "true");
@@ -612,6 +634,206 @@ function queuedMetadata() {
   value.job.updated_at = "2026-01-01T00:00:10Z";
   return value;
 }
+
+function byClass(node, className) {
+  if ((node.className || "").split(" ").includes(className)) return node;
+  for (const child of node.children) {
+    const match = byClass(child, className);
+    if (match) return match;
+  }
+  return null;
+}
+
+async function groupedWorkspace() {
+  const ui = await workspace(55);
+  await flush();
+  for (const item of ui.items.slice(0, 30)) {
+    item.snapshot_id = id(1000);
+    item.job.state = "succeeded";
+    item.result_available = true;
+  }
+  await ui.get("refresh-history").click();
+  return ui;
+}
+
+test("history pages experiments before expanding a bounded list of their analyses", async () => {
+  const ui = await groupedWorkspace();
+  assert.equal(ui.rows().length, 20);
+  assert.equal(ui.rows()[0], id(1));
+  assert.equal(ui.rows()[1], id(31));
+  const card = ui.get("history-list").children[0];
+  assert.match(byClass(card, "experiment-expand").textContent, /30 analyses/);
+  await byClass(card, "experiment-expand").click();
+  const runs = byClass(card, "experiment-runs");
+  const list = byClass(card, "experiment-run-list");
+  assert.equal(list.children.length, 20);
+  await byClass(runs, "experiment-run-pages").children[1].click();
+  assert.equal(list.children.length, 10);
+  assert.equal(list.children[0].children[1].dataset.analysisId, id(21));
+  assert.equal(byClass(runs, "experiment-run-pages").children[1].hidden, true);
+  assert.ok(ui.calls.some((call) => call.url === `/api/v1/analyses?snapshot_id=${id(1000)}&limit=21&offset=20`));
+  await ui.get("history-next").click();
+  assert.equal(ui.rows().length, 6);
+  assert.equal(ui.get("history-range").textContent, "21–26");
+});
+
+test("two completed runs from different pages of one experiment can be compared", async () => {
+  const ui = await groupedWorkspace();
+  const card = ui.get("history-list").children[0];
+  await byClass(card, "experiment-expand").click();
+  const list = byClass(card, "experiment-run-list");
+  list.children[0].children[0].checked = true;
+  await list.children[0].children[0].emit("change");
+  const runs = byClass(card, "experiment-runs");
+  await byClass(runs, "experiment-run-pages").children[1].click();
+  list.children[0].children[0].checked = true;
+  await list.children[0].children[0].emit("change");
+  assert.equal(list.children[1].children[0].disabled, true);
+  const compare = byClass(card, "experiment-compare");
+  assert.equal(compare.disabled, false);
+  void compare.click();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("first-job", "succeeded"));
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(1)}/result`).reply({instruments: [], time_grid: {step_count: 12}});
+  await flush();
+  assert.equal(ui.get("comparison-preview").src, `/api/v1/analyses/${id(1)}/comparison/preview?other=${id(21)}`);
+  assert.equal(ui.get("comparison-actions").hidden, false);
+});
+
+test("group comparison cannot replace an analysis selected while its first result loads", async () => {
+  const ui = await groupedWorkspace();
+  const card = ui.get("history-list").children[0];
+  await byClass(card, "experiment-expand").click();
+  const list = byClass(card, "experiment-run-list");
+  for (const row of list.children.slice(0, 2)) {
+    row.children[0].checked = true;
+    await row.children[0].emit("change");
+  }
+  void byClass(card, "experiment-compare").click();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("first-job", "succeeded"));
+  await flush();
+  const stale = ui.pending(`/api/v1/analyses/${id(1)}/result`);
+  void ui.select(1);
+  ui.pending(`/api/v1/analyses/${id(31)}`).reply(metadata("new-job", "running"));
+  await flush();
+  stale.reply({instruments: [], time_grid: {step_count: 12}});
+  await flush();
+  assert.equal(ui.get("comparison-preview").src, undefined);
+  assert.match(ui.get("analysis-identity").textContent, new RegExp(`^${id(31)}`));
+});
+
+test("unfinished runs cannot be selected and child lists retain the current filters", async () => {
+  const ui = await workspace(2);
+  await flush();
+  ui.state.names.set(id(1000), {display_name: "Morning market", revision: 1});
+  ui.get("history-search").value = "Morning";
+  ui.get("history-state").value = "active";
+  await ui.get("history-filters").emit("submit", {preventDefault() {}});
+  const card = ui.get("history-list").children[0];
+  assert.equal(card.children[0].children[0].textContent, "Morning market");
+  await byClass(card, "experiment-expand").click();
+  assert.ok(ui.calls.some((call) => call.url === `/api/v1/analyses?snapshot_id=${id(1000)}&limit=21&offset=0&q=Morning&state=active`));
+  assert.equal(byClass(card, "experiment-run-list").children[0].children[0].disabled, true);
+  assert.equal(byClass(card, "experiment-compare").disabled, true);
+});
+
+test("late child pages cannot populate a different experiment page", async () => {
+  const ui = await groupedWorkspace();
+  const card = ui.get("history-list").children[0];
+  ui.state.holdHistory = true;
+  void byClass(card, "experiment-expand").click();
+  const stale = ui.pending(`/api/v1/analyses?snapshot_id=${id(1000)}&limit=21&offset=0`);
+  void ui.get("history-next").click();
+  ui.pending("/api/v1/experiments?limit=21&offset=20").reply({items: ui.groups().slice(20)});
+  await flush();
+  stale.reply({items: ui.items.slice(0, 21)});
+  await flush();
+  assert.equal(byClass(card, "experiment-run-list").children.length, 0);
+  assert.equal(ui.rows()[0], id(50));
+});
+
+test("renames freeze the submitted name and revision and can clear a custom name", async () => {
+  const ui = await workspace(1);
+  await flush();
+  const card = ui.get("history-list").children[0];
+  await byClass(card, "experiment-rename").click();
+  const editor = byClass(card, "experiment-name");
+  const input = editor.children[0].children[0];
+  input.value = "  Morning market  ";
+  void editor.emit("submit", {preventDefault() {}});
+  const request = ui.pending(`/api/v1/experiments/${id(1000)}/name`);
+  assert.deepEqual(JSON.parse(request.options.body), {display_name: "Morning market", expected_revision: 0});
+  assert.equal(request.options.headers["X-CSRF-Token"], "test-csrf");
+  assert.equal(input.disabled, true);
+  input.value = "Changed after submit";
+  ui.state.names.set(id(1000), {display_name: "Morning market", revision: 1});
+  request.reply({snapshot_id: id(1000), display_name: "Morning market", revision: 1});
+  await flush();
+  assert.equal(card.children[0].children[0].textContent, "Morning market");
+  assert.equal(editor.hidden, true);
+  await byClass(card, "experiment-rename").click();
+  input.value = "  ";
+  void editor.emit("submit", {preventDefault() {}});
+  assert.deepEqual(JSON.parse(ui.pending(`/api/v1/experiments/${id(1000)}/name`).options.body),
+    {display_name: null, expected_revision: 1});
+});
+
+test("rename conflicts refresh the server name and preserve the draft for explicit resubmission", async () => {
+  const ui = await workspace(1);
+  await flush();
+  const card = ui.get("history-list").children[0];
+  await byClass(card, "experiment-rename").click();
+  const editor = byClass(card, "experiment-name");
+  const input = editor.children[0].children[0];
+  input.value = "My name";
+  void editor.emit("submit", {preventDefault() {}});
+  ui.state.names.set(id(1000), {display_name: "Other editor's name", revision: 1});
+  ui.pending(`/api/v1/experiments/${id(1000)}/name`).reply({error: {message: "Conflict"}}, 409);
+  await flush();
+  assert.equal(card.children[0].children[0].textContent, "Other editor's name");
+  assert.equal(input.value, "My name");
+  assert.equal(editor.hidden, false);
+  assert.match(editor.children[2].textContent, /changed elsewhere/);
+  assert.equal(ui.calls.filter((call) => call.options.method === "PATCH").length, 1);
+  void editor.emit("submit", {preventDefault() {}});
+  assert.deepEqual(JSON.parse(ui.pending(`/api/v1/experiments/${id(1000)}/name`).options.body),
+    {display_name: "My name", expected_revision: 1});
+});
+
+test("a late rename cannot alter another session's experiment cards", async () => {
+  const ui = await workspace(1);
+  await flush();
+  const old = ui.get("history-list").children[0];
+  await byClass(old, "experiment-rename").click();
+  const editor = byClass(old, "experiment-name");
+  editor.children[0].children[0].value = "Old session name";
+  void editor.emit("submit", {preventDefault() {}});
+  const stale = ui.pending(`/api/v1/experiments/${id(1000)}/name`);
+  await ui.get("logout").click();
+  await ui.get("login-form").emit("submit", {preventDefault() {}});
+  stale.reply({snapshot_id: id(1000), display_name: "Old session name", revision: 1});
+  await flush();
+  assert.equal(ui.get("history-list").children[0].children[0].children[0].textContent, "BTC/USD");
+});
+
+test("experiment name length counts normalized Unicode characters", async () => {
+  const ui = await workspace(1);
+  await flush();
+  const card = ui.get("history-list").children[0];
+  await byClass(card, "experiment-rename").click();
+  const editor = byClass(card, "experiment-name");
+  const input = editor.children[0].children[0];
+  input.value = "🪙".repeat(121);
+  await editor.emit("submit", {preventDefault() {}});
+  assert.equal(ui.calls.filter((call) => call.options.method === "PATCH").length, 0);
+  assert.match(editor.children[2].textContent, /120 characters/);
+  input.value = "🪙".repeat(119) + "e\u0301";
+  void editor.emit("submit", {preventDefault() {}});
+  assert.equal(JSON.parse(ui.pending(`/api/v1/experiments/${id(1000)}/name`).options.body).display_name,
+    "🪙".repeat(119) + "é");
+  assert.equal(input.dir, "auto");
+  assert.equal(card.children[0].children[0].dir, "auto");
+});
 
 test("queued analyses show worker availability and elapsed wait with bounded checks", async () => {
   const ui = await workspace();

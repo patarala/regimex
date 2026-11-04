@@ -458,17 +458,17 @@ iframe {
 #history-loading {
   margin: 0 0 12px;
 }
-.history ul {
+#history-list {
   max-height: 580px;
   overflow-y: auto;
   list-style: none;
   padding: 0;
   margin: 0;
 }
-.history li {
+.history-experiment {
   border-top: 1px solid #e8ebee;
 }
-.history li button {
+.history .history-entry {
   display: flex;
   flex-direction: column;
   align-items: stretch;
@@ -483,27 +483,85 @@ iframe {
   font-size: 12px;
   font-weight: 500;
 }
-.history li button:hover {
+.history .history-entry:hover {
   background: #f5f7fa;
 }
-.history li button[aria-current="true"] {
+.history .history-entry[aria-current="true"] {
   background: #edf3fa;
 }
-.history li button > * {
+.history .history-entry > * {
   overflow-wrap: anywhere;
 }
-.history li button strong {
+.history .history-entry strong {
   font-size: 13px;
 }
-.history li button time,
-.history li button .history-run,
-.history li button .history-state {
+.history .history-entry time,
+.history .history-entry .history-run,
+.history .history-entry .history-state {
   color: var(--muted);
   font-size: 11px;
   font-weight: 400;
 }
-.history li button .history-state[data-state="failed"] {
+.history .history-entry .history-state[data-state="failed"] {
   color: #843e3e;
+}
+.experiment-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 12px;
+}
+.history .experiment-tools button {
+  min-height: 30px;
+  padding: 4px 7px;
+}
+.experiment-name {
+  margin: 12px 0;
+}
+.experiment-name label {
+  display: block;
+  font-size: 12px;
+}
+.experiment-name input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  margin: 6px 0;
+  padding: 8px;
+  border: 1px solid #abb4bf;
+  border-radius: 4px;
+  font: inherit;
+}
+.experiment-runs {
+  border-left: 2px solid var(--border);
+  padding: 0 0 8px 10px;
+  margin-bottom: 12px;
+}
+.experiment-run-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.experiment-run {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  align-items: start;
+  gap: 5px;
+}
+.experiment-run input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 14px 0 0;
+  accent-color: var(--accent);
+}
+.comparison-selection {
+  overflow-wrap: anywhere;
+  margin: 6px 0 10px;
+}
+.history-instruments:empty {
+  display: none;
 }
 #history-empty {
   color: var(--muted);
@@ -531,7 +589,7 @@ iframe {
     grid-column: 1;
     grid-row: auto;
   }
-  .history ul {
+  #history-list {
     max-height: 360px;
   }
   .history-pages {

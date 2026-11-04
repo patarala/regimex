@@ -283,6 +283,10 @@ def test_queue_registry_migration_preserves_existing_resources_and_is_repeatable
     credential = database.create_token("fixture", "user")
     with database.connection() as connection:
         connection.execute("DROP TABLE regimex_worker_queues")
+        connection.execute(
+            "ALTER TABLE regimex_snapshots DROP COLUMN display_name_search, "
+            "DROP COLUMN display_name, DROP COLUMN name_revision"
+        )
         connection.execute("UPDATE alembic_version SET version_num='0001_initial'")
     assert not database.readiness()
     assert queue_status(database, "analysis", stale_seconds=3).state == "unknown"

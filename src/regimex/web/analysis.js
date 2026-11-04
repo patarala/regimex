@@ -211,6 +211,7 @@ export function createAnalysis({session, models, history, comparison}) {
     url.searchParams.set("analysis", id);
     window.history.replaceState(null, "", url);
     await poll(selection);
+    return selection;
   }
 
   async function poll(selection) {
