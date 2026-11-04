@@ -12,12 +12,20 @@ evaluation and model publication. It runs independently of an external simulator
 
 ## Start here
 
+- [Install or update the local service](docs/installation.md)
 - [Run the service and analyse a file](docs/usage.md)
 - [Architecture and design decisions](docs/architecture.md)
 - [API and model administration](docs/api.md)
 - [Deployment](docs/deployment.md)
 
 ## Installation
+
+For a persistent Linux service, the [local installer](docs/installation.md) stages
+locked dependencies, provisions PostgreSQL, imports the supplied models and
+starts the API/workers with one command. It also updates an existing installation
+while preserving its data and credentials.
+
+For development or a manual setup:
 
 Use Python **3.14.4** and uv **0.13.0**:
 
