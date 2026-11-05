@@ -38,6 +38,7 @@ class ServiceSettings(StrictModel):
     max_generation_experiments: Annotated[int, Field(ge=3, le=1000)] = 128
     max_training_seeds: Annotated[int, Field(ge=1, le=64)] = 8
     max_training_epochs: Annotated[int, Field(ge=1, le=1000)] = 1000
+    max_training_updates: Annotated[int, Field(ge=1, le=32_000)] = 32_000
     admin_time_budget_seconds: Annotated[int, Field(ge=1, le=86400)] = 3600
     admin_memory_budget_bytes: Annotated[int, Field(ge=128 * 1024**2)] = 4 * 1024**3
     admin_scratch_budget_bytes: Annotated[int, Field(ge=1)] = 4 * 1024**3
@@ -145,6 +146,7 @@ class ServiceSettings(StrictModel):
             "max_generation_experiments",
             "max_training_seeds",
             "max_training_epochs",
+            "max_training_updates",
             "admin_time_budget_seconds",
             "admin_memory_budget_bytes",
             "admin_scratch_budget_bytes",

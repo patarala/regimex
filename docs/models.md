@@ -104,6 +104,20 @@ known training targets. The four bins on each side of an internal training
 direction change have twice the classification weight; neighborhoods stop at
 gaps/edges and do not compound when overlapping. Inference needs none of those labels.
 
+TCN training accepts either an epoch policy or an explicit optimizer-update policy.
+The default uses epoch-based training with early stopping. An update policy
+sets `budget: "updates"`, an AdamW learning rate and weight decay, a batch size,
+seeds, an exact update count per seed, and increasing `validation_updates` ending
+at that count. It has no epoch limit or early-stopping settings. Complete sequences
+are shuffled in passes; batches without known training targets do not consume an
+update. Each seed completes its budget, and validation chooses the first best
+scheduled checkpoint across seeds. A common runtime limit covers the entire fit.
+
+Update histories record successful updates, pass and batch positions, training
+loss, sequence and row counts, and scheduled validation scores. The bundle records
+the selected seed and update. At most 32,000 history entries across all seeds are
+accepted; service limits may further restrict the update count per seed.
+
 Whole experiments or seed groups are split before windows; both instruments stay
 together. Decoded validation segment F1 selects settings, seeds and checkpoints,
 with first-win ties. Final data is reserved before selection and opened after
@@ -129,9 +143,13 @@ estimator pickles and uploaded Python implementations are not accepted.
 | Direction annotations / automatic policy | `3.0` / `retrospective-directions/3.0` |
 | Analysis profile / decoder | `direction-32/2.0` / `duration-viterbi/1.0` |
 | Raw snapshot, dataset, reference set, bundle envelope | `1.0` |
-| Baseline / TCN codecs | `aggregate-logistic/1.0` / `temporal-tcn/2.0` |
+| Baseline codec | `aggregate-logistic/1.0` |
+| TCN codecs | `temporal-tcn/2.0` (epoch history), `temporal-tcn/3.0` (update history) |
 | TCN features / preprocessing | `temporal-price-shape/1.0` / `temporal-standardization/1.0` |
 | Evaluation / comparison report | `2.2` / `model-comparison/2.0` |
+
+Both TCN codecs restore the same inference implementation, features and decoder.
+Epoch-trained bundles can also be loaded for explicit rollback.
 
 Artifact identity includes ordered dataset content and split assignments. Raw
 snapshots, training labels and evaluation references have separate identities.

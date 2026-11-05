@@ -13,7 +13,7 @@ from regimex.directions import AnalysisConfig
 from regimex.exports import ExportInstrument, ExportObservation, InstrumentUnits, ModelTimeGrid
 from regimex.features import DoubleArray, IntArray
 from regimex.model_bundles import TrainingEvidence
-from regimex.model_registry import InferenceRuntime, TrainingPolicy, TrainingRuntime
+from regimex.model_registry import InferenceRuntime, TrainingPolicySpec, TrainingRuntime
 from regimex.operations import Sha256
 from regimex.prediction_inputs import PredictionSequenceInfo
 
@@ -182,7 +182,7 @@ class ModelBackend(Protocol):
         validation: ObservationInputs,
         *,
         parameters: StrictModel,
-        policy: TrainingPolicy,
+        policy: TrainingPolicySpec,
         analysis: AnalysisConfig,
         runtime: TrainingRuntime,
         evaluator: SelectionEvaluator,

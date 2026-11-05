@@ -1,6 +1,13 @@
 {
   "$defs": {
     "JsonValue": {},
+    "TrainingBudget": {
+      "enum": [
+        "epochs",
+        "updates"
+      ],
+      "type": "string"
+    },
     "TrainingPolicy": {
       "additionalProperties": false,
       "properties": {
@@ -184,6 +191,16 @@
         "type": "string"
       },
       "title": "Supported Optimizers",
+      "type": "array"
+    },
+    "supported_training_budgets": {
+      "default": [
+        "epochs"
+      ],
+      "items": {
+        "$ref": "#/$defs/TrainingBudget"
+      },
+      "title": "Supported Training Budgets",
       "type": "array"
     }
   },

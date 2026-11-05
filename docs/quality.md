@@ -1,73 +1,95 @@
 # Model quality
 
-These results measure agreement with automatic reference policy
-`retrospective-directions/3.0`. Independent human accuracy and transfer to another
-market simulator have not been measured. The current models are an aggregate
-logistic baseline and a temporal convolutional network (TCN).
+The `tcn-0.2.0` reference model reaches **0.7129 interval macro-F1** and
+**0.8932 point macro-F1** on 384 held-out synthetic experiments. These results
+measure agreement with automatic reference policy `retrospective-directions/3.0`.
+Independent human accuracy and transfer to another market simulator have not
+been measured. The logistic baseline is also available; the measurements below
+apply to this TCN bundle.
 
 ## Evaluation protocol
 
-Both models use 128 training experiments and 32 validation experiments, with
-whole experiment/seed groups kept together and preprocessing fitted on training
-only. A separate 64-experiment final dataset was reserved before fitting. Model
-settings, runtime and evaluation rules were fixed before it was opened. All
-64 experiments were scored: 32 with one instrument and 32 with two, totaling
-96 instrument series and 49,152 original-grid rows. No cases were discarded or
-resampled to balance classes. The selected TCN is validation epoch 1, seed 11.
+Training uses 512 experiments with 512 steps, totaling 769 instrument sequences.
+Preprocessing is fitted on training data only. Validation contains 192 experiments,
+with 64 each at lengths 256, 512 and 1,024. Whole experiments and related seed groups
+stay in one partition, including both instruments of a shared market.
 
-The primary metric is interval macro-F1. Intervals of the same direction match
-one-to-one at intersection-over-union of at least 0.50, maximizing the number of
-matches. F1 is averaged across all three directions; undefined class F1 is zero.
-Pointwise macro-F1 is separate. Boundary F1 matches internal transition times
-within four steps; typed boundary F1 additionally requires the correct directions
-on both sides. Availability edges are excluded.
+Each training run performs 1,200 successful optimizer updates and is scored at
+updates 300, 600, 900 and 1,200. Batches without known targets do not consume an
+update. Decoded validation interval F1 selects the checkpoint; the reference
+bundle uses seed 29 and update 900. Its history records the full completed budget.
+
+The final population was reserved before fitting, independently of prior exposed
+data. The model, inference policy and evaluation code were frozen before final
+observations or labels were opened. All 384 experiments were processed: 128 per
+length, with 64 one-instrument and 64 two-instrument experiments in each group.
+This gives 576 instrument sequences and 344,064 original-grid rows. No case was
+discarded or resampled to balance directions. Final scores did not choose a
+different model, seed or checkpoint.
+
+Intervals of the same direction match one-to-one at intersection-over-union of at
+least 0.50, maximizing the number of matches. Macro-F1 averages all three
+directions, including zero for an undefined class F1. Point macro-F1 evaluates
+individual eligible steps separately. Pooled scores combine counts rather than
+averaging length-specific scores.
 
 ## Results
 
-| Model | Interval macro-F1 | Point macro-F1 | Boundary F1 | Typed boundary F1 |
-| --- | ---: | ---: | ---: | ---: |
-| Baseline | 0.470017 | 0.740093 | 0.055172 | 0.013793 |
-| TCN | 0.639593 | 0.856032 | 0.030534 | 0.015267 |
-
-The TCN's interval macro-F1 exceeds the baseline by **0.1695767011** on these
-experiments.
-
-Whole-experiment bootstrap 95% intervals are [0.376219, 0.565661] for baseline and
-[0.562198, 0.731333] for TCN. The paired difference interval is
-[0.076998, 0.265089], using 1,000 repetitions with seed 1729. Both models receive
-the same sampled experiment identities; F1 is calculated from pooled counts.
-These intervals measure experiment sampling variation conditional on these
-models/references, not label correctness or training-seed variation. They do not
-guarantee a population score.
-
-Boundary placement is weak. TCN matches two of 84 transition times and only one
-with the correct directions on both sides. It predicts 132 intervals against
-169 references, with median duration 344 versus 207 steps. It covers all 40,870
-eligible steps and produces no one- or two-step fragments; coverage does not
-establish correct boundaries.
-
-## Processing time
-
-| Measurement | Baseline | TCN |
+| Sequence length | Interval macro-F1 | Point macro-F1 |
 | --- | ---: | ---: |
-| Maximum over all 64 final experiments, 512 steps, including first prediction | 0.317374 s | 1.938387 s |
-| Maximum of separate warm repetitions, 512 steps | 0.258489 s | 0.140134 s |
-| Maximum of 4,096-step, two-instrument stress repetitions | 4.383598 s | 2.969163 s |
+| 256 steps | 0.8334 | 0.9130 |
+| 512 steps | 0.7124 | 0.9026 |
+| 1,024 steps | 0.6288 | 0.8808 |
+| All lengths, pooled counts | 0.7129 | 0.8932 |
 
-Times include input construction, features, prediction, probability validation,
-decoding and interval statistics **after model loading**. They exclude backend
-import, loading, queue delay, HTML, HTTP and file transfer. Warm timings do not
-replace the first-use measurement.
+| Direction | Interval precision | Interval recall | Interval F1 |
+| --- | ---: | ---: | ---: |
+| Sideways | 0.6469 | 0.6547 | 0.6508 |
+| Growth | 0.8121 | 0.7883 | 0.8000 |
+| Decline | 0.7454 | 0.6389 | 0.6880 |
 
-The measurements used Python 3.14.4, NumPy 2.5.4, PyTorch 2.14.1 CPU and
-scikit-learn 1.9.1, with four threads and a 4 GiB process address-space limit.
-Execution time depends on the deployment environment; the recorded software
-versions and limits do not guarantee reproducible timings. Saved-model
-restoration and release-asset inference matched the recorded probabilities
-exactly during verification.
+Every step eligible for direction classification is covered. On 1,024-step
+sequences, the model produces 372 classified intervals against 412 references;
+their median durations are 285.5 and 193.5 steps respectively. This indicates
+missed structure despite strong pointwise agreement. Full coverage alone does
+not establish correct directions or boundaries.
 
-The release's `evaluation/` directory holds current metrics, data identities and
-reproduction instructions. Bundle training metadata remains `validation_only`;
-final evaluation is a separate record. Publication does not establish independent
-predictive accuracy. Additional model selection requires a newly reserved final
-dataset; an opened test set cannot serve as fresh held-out evaluation data.
+## Boundary sensitivity
+
+Typed boundary F1 requires the correct direction on both sides of an internal
+transition. Matching is one-to-one within a common available block; availability
+edges are excluded. The model predicts 414 transitions against 454 references.
+
+| Allowed displacement, steps | Typed boundary F1 |
+| --- | ---: |
+| 0 | 0.0392 |
+| 4 | 0.1613 |
+| 8 | 0.2327 |
+| 16 | 0.3203 |
+| 32 | 0.4124 |
+| 64 | 0.4724 |
+
+Precise placement remains weak. These tolerances describe agreement with the
+automatic reference convention; they are not confidence intervals for the true
+boundaries. Larger tolerances can pair distinct missed and extra transitions.
+Boundary sensitivity is descriptive and does not select a preferred tolerance.
+
+## Verification and limits
+
+The native bundle preserves the selected weights and preprocessing without
+retraining. After serialization, all probabilities match the frozen model exactly
+on the complete 192-experiment validation and 384-experiment final populations.
+The decoder, feature representation and availability rules are shared throughout.
+Final metric reports were also recomputed from the saved probabilities.
+
+Verification used Python 3.14.4, NumPy 2.5.4 and PyTorch 2.14.1 CPU, with four
+inference threads and batches of at most 16 complete instrument sequences.
+Different library versions, devices or batching can change floating-point results.
+No service-latency claim follows from this scientific evaluation: queueing,
+loading, rendering and HTTP are separate work.
+
+Automatic agreement does not establish human annotation accuracy, financial
+forecasting quality or transfer to another simulator. Model status therefore
+is `validation_only`; publication is an operational decision. Further model
+selection requires a fresh reserved benchmark, since an opened final population
+cannot be reused as independent test data.

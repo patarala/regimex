@@ -7,7 +7,7 @@ from uuid import UUID, uuid4
 
 import psycopg
 from psycopg.types.json import Json, Jsonb
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue, RootModel, TypeAdapter
 
 from regimex.admin_contracts import (
     AdminKind,
@@ -42,7 +42,7 @@ from regimex.service_contracts import (
 )
 from regimex.storage import json_bytes
 
-_SPEC: TypeAdapter[AdminSpec] = TypeAdapter(AdminSpec)
+_SPEC = RootModel[AdminSpec]
 _JSON = TypeAdapter(dict[str, JsonValue])
 Connection = psycopg.Connection[tuple[object, ...]]
 
@@ -478,7 +478,7 @@ class AdminRepository:
         result = AdminRunRecord(
             run_id=run_id,
             operation=operation,
-            spec=_SPEC.validate_json(json_bytes(row[0])),
+            spec=_SPEC.model_validate_json(json_bytes(row[0])).root,
             output=None if row[1] is None else _JSON.validate_python(row[1], strict=True),
         )
         if (
@@ -632,7 +632,7 @@ class AdminRepository:
         max_pending: int = 8,
     ) -> AdminRunRecord:
         self.database._admin(principal)
-        spec = _SPEC.validate_json(json_bytes(spec.model_dump(mode="json")))
+        spec = _SPEC.model_validate_json(json_bytes(spec.model_dump(mode="json"))).root
         self._bounded(spec.model_dump(mode="json"))
         digest = (
             request_sha256 or hashlib.sha256(json_bytes(spec.model_dump(mode="json"))).hexdigest()

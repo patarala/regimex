@@ -60,7 +60,7 @@ from regimex.directions import AnalysisConfig, DirectionAnnotations
 from regimex.exports import ExportV2
 from regimex.infrastructure.intake_repository import IntakeRequest
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectInfo
-from regimex.model_registry import RegistryError
+from regimex.model_registry import FixedUpdatePolicy, RegistryError
 from regimex.operations import OperationFailure
 from regimex.service_contracts import (
     CapacityExceeded,
@@ -202,7 +202,11 @@ class AdminService:
             spec.training_runtime.time_budget_seconds > self.settings.admin_time_budget_seconds
             or spec.training_runtime.memory_budget_bytes > self.settings.admin_memory_budget_bytes
             or len(spec.policy.seeds) > self.settings.max_training_seeds
-            or spec.policy.epochs > self.settings.max_training_epochs
+            or (
+                spec.policy.updates > self.settings.max_training_updates
+                if isinstance(spec.policy, FixedUpdatePolicy)
+                else spec.policy.epochs > self.settings.max_training_epochs
+            )
         ):
             raise CapacityExceeded("Training exceeds the allowed computation budget.")
         if self.authorize_selection is None:

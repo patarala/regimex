@@ -36,6 +36,7 @@ from regimex.model_registry import (
     InferenceRuntime,
     LogisticParameters,
     TrainingPolicy,
+    TrainingPolicySpec,
     TrainingRuntime,
 )
 from regimex.prediction_inputs import PredictionInputs, PreparedPredictionInputs
@@ -274,7 +275,7 @@ class BaselineBackend:
         validation: ObservationInputs,
         *,
         parameters: StrictModel,
-        policy: TrainingPolicy,
+        policy: TrainingPolicySpec,
         analysis: AnalysisConfig,
         runtime: TrainingRuntime,
         evaluator: SelectionEvaluator,
@@ -285,6 +286,8 @@ class BaselineBackend:
         LogisticParameters.model_validate(parameters.model_dump())
         TrainingRuntime.model_validate(runtime.model_dump())
         AnalysisConfig.model_validate(analysis.model_dump())
+        if not isinstance(policy, TrainingPolicy):
+            raise ValueError("baseline does not support fixed-update training")
         _validate_policy(policy)
         if {item.experiment_id for item in training.observations.info} & {
             item.experiment_id for item in validation.info

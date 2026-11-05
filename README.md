@@ -72,10 +72,11 @@ provides a self-contained HTML download for each saved analysis.
 
 ## Models and limitations
 
-Both models restore saved preprocessing and weights. Their evaluation uses whole
-experiment splits and interval macro-F1. The current TCN scores **0.640**, versus
-**0.470** for the baseline on 64 held-out experiments with automatic references.
-Boundary placement remains a weakness.
+Both models restore saved preprocessing and weights. Evaluation uses whole
+experiment splits and interval macro-F1. The reference TCN scores **0.713**
+interval macro-F1 and **0.893** point macro-F1 on 384 held-out experiments spanning
+256, 512 and 1,024 steps. Longer sequences and precise boundary placement remain
+weaknesses.
 These measurements do not establish independent human accuracy or transfer to a
 different simulator. See [evaluation](docs/quality.md) and
 [model and interval definitions](docs/models.md).

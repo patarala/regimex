@@ -32,7 +32,12 @@ from regimex.api import OperationView, _json_dependency, _operation, _request_bo
 from regimex.contracts import Identifier, StrictModel
 from regimex.data_catalog import DatasetManifest, ReferenceSet
 from regimex.directions import AnalysisConfig, DirectionAnnotations
-from regimex.model_registry import ArchitectureId, InferenceRuntime, TrainingPolicy, TrainingRuntime
+from regimex.model_registry import (
+    ArchitectureId,
+    InferenceRuntime,
+    TrainingPolicySpec,
+    TrainingRuntime,
+)
 from regimex.service_contracts import NotFound, Principal
 from regimex.storage import json_bytes
 
@@ -226,7 +231,7 @@ class TrainingRunRequest(StrictModel):
     validation_reference_set_id: Identifier
     architecture_id: ArchitectureId
     parameters: dict[str, JsonValue]
-    policy: TrainingPolicy
+    policy: TrainingPolicySpec
     training_runtime: TrainingRuntime = Field(default_factory=TrainingRuntime)
     inference_runtime: InferenceRuntime = Field(default_factory=InferenceRuntime)
     analysis_profile_id: Identifier = "direction-32/2.0"

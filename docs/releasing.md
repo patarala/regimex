@@ -29,11 +29,11 @@ uv run --locked python scripts/build_release.py --assets release
 The input directory must contain `SHA256SUMS` in the standard
 `<sha256><two spaces><relative filename>` format. Every listed file is required
 and must match its checksum. Supported content includes models, examples, model
-comparison reports, evaluation data and documentation in DOCX/PDF. Files absent
-from the checksum list are not included. Links, unsafe paths and unapproved file
-types are rejected. A partial pack is supported: the builder verifies exactly
-the listed content and does not claim that missing models or documents are
-present. Do not put credentials in an asset pack.
+comparison reports, evaluation data and editable DOCX documents, with PDF copies
+when available. Files absent from the checksum list are not included. Links,
+unsafe paths and unapproved file types are rejected. A partial pack is supported:
+the builder verifies exactly the listed content and does not claim that missing
+models or documents are present. Do not put credentials in an asset pack.
 
 The verified assets appear under `release/` in the archive. Their existing
 reports, measurements and verification evidence retain their original scope;

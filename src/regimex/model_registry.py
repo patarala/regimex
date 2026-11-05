@@ -106,6 +106,39 @@ class TrainingPolicy(StrictModel):
         return self
 
 
+class FixedUpdatePolicy(StrictModel):
+    """Train every seed for an exact number of successful optimizer updates."""
+
+    budget: Literal["updates"] = "updates"
+    optimizer: Literal["adamw"] = "adamw"
+    seeds: Annotated[tuple[Seed, ...], Field(min_length=1)] = (11, 23, 47)
+    updates: Annotated[int, Field(ge=1, le=32_000)]
+    validation_updates: Annotated[
+        tuple[Annotated[int, Field(ge=1, le=32_000)], ...], Field(min_length=1, max_length=1000)
+    ]
+    batch_size: Annotated[int, Field(ge=1, le=128)] = 16
+    learning_rate: Annotated[float, Field(gt=0)] = 0.001
+    weight_decay: Annotated[float, Field(ge=0)] = 0.0001
+    selection_metric: Literal["validation_segment_macro_f1"] = "validation_segment_macro_f1"
+
+    @model_validator(mode="after")
+    def coherent_budget(self) -> Self:
+        if len(set(self.seeds)) != len(self.seeds):
+            raise ValueError("training seeds must be unique")
+        if len(self.seeds) * self.updates > 32_000:
+            raise ValueError("fixed-update history exceeds its 32000-record artifact budget")
+        if (
+            tuple(sorted(set(self.validation_updates))) != self.validation_updates
+            or self.validation_updates[-1] != self.updates
+        ):
+            raise ValueError("validation updates must increase uniquely and end at the budget")
+        return self
+
+
+TrainingPolicySpec = TrainingPolicy | FixedUpdatePolicy
+type TrainingBudget = Literal["epochs", "updates"]
+
+
 class TrainingRuntime(StrictModel):
     device: Device = "cpu"
     threads: Annotated[int, Field(ge=1, le=256)] = 4
@@ -130,6 +163,7 @@ class ArchitectureInfo(StrictModel):
     parameter_schema: dict[str, JsonValue]
     default_training_policy: TrainingPolicy
     supported_optimizers: tuple[Optimizer, ...]
+    supported_training_budgets: tuple[TrainingBudget, ...] = ("epochs",)
     required_observation_fields: tuple[ObservationField, ...]
     missing_value_policy: Literal["explicit_masks"]
     supported_devices: tuple[Device, ...]
@@ -156,6 +190,9 @@ class ArchitectureDescriptor(StrictModel):
     parameters_model: type[StrictModel] = Field(exclude=True)
     default_training_policy: TrainingPolicy
     supported_optimizers: Annotated[tuple[Optimizer, ...], Field(min_length=1)]
+    supported_training_budgets: Annotated[tuple[TrainingBudget, ...], Field(min_length=1)] = (
+        "epochs",
+    )
     required_observation_fields: Annotated[tuple[ObservationField, ...], Field(min_length=1)]
     missing_value_policy: Literal["explicit_masks"] = "explicit_masks"
     supported_devices: Annotated[tuple[Device, ...], Field(min_length=1)] = ("cpu",)
@@ -178,6 +215,7 @@ class ArchitectureDescriptor(StrictModel):
         self.parameters_model.model_json_schema()
         for values in (
             self.supported_optimizers,
+            self.supported_training_budgets,
             self.required_observation_fields,
             self.supported_devices,
             self.dependency_modules,
@@ -196,7 +234,13 @@ class ArchitectureDescriptor(StrictModel):
         # JSON arrays are accepted as tuples without accepting coerced scalar types.
         return self.parameters_model.model_validate_json(json.dumps(values, allow_nan=False))
 
-    def validate_training_policy(self, policy: TrainingPolicy) -> None:
+    def validate_training_policy(self, policy: TrainingPolicySpec) -> None:
+        budget = "updates" if isinstance(policy, FixedUpdatePolicy) else "epochs"
+        if budget not in self.supported_training_budgets:
+            raise RegistryError(
+                f"architecture {self.architecture_id!r} "
+                f"does not support {budget!r} training budgets"
+            )
         if policy.optimizer not in self.supported_optimizers:
             raise RegistryError(
                 f"architecture {self.architecture_id!r} "
@@ -221,6 +265,7 @@ class ArchitectureDescriptor(StrictModel):
             parameter_schema=self.parameters_model.model_json_schema(),
             default_training_policy=self.default_training_policy,
             supported_optimizers=self.supported_optimizers,
+            supported_training_budgets=self.supported_training_budgets,
             required_observation_fields=self.required_observation_fields,
             missing_value_policy=self.missing_value_policy,
             supported_devices=self.supported_devices,
@@ -386,6 +431,7 @@ def tcn_descriptor() -> ArchitectureDescriptor:
         parameters_model=TCNParameters,
         default_training_policy=TrainingPolicy(optimizer="adamw"),
         supported_optimizers=("adamw",),
+        supported_training_budgets=("epochs", "updates"),
         required_observation_fields=("last_price",),
         dependency_modules=("numpy", "torch"),
         backend_factory="regimex.backends.tcn:create_backend",

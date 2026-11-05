@@ -8,13 +8,18 @@ import zipfile
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Literal, cast
+from typing import Annotated, Literal, cast
 
 import numpy as np
 import torch
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, RootModel
 from torch import Tensor, nn
 
+from regimex.backends.tcn_update_records import (
+    UpdateHistoryRecord,
+    UpdateValidationRecord,
+    validate_update_selection,
+)
 from regimex.contracts import Seed, StrictModel
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig
 from regimex.features import DoubleArray, compute_features
@@ -28,9 +33,11 @@ from regimex.model_contracts import (
     require_observation_inputs,
 )
 from regimex.model_registry import (
+    FixedUpdatePolicy,
     InferenceRuntime,
     TCNParameters,
     TrainingPolicy,
+    TrainingPolicySpec,
     TrainingRuntime,
 )
 from regimex.prediction_inputs import PredictionInputs, PreparedPredictionInputs
@@ -48,6 +55,7 @@ from regimex.temporal import (
     predict_tcn,
     temporal_features,
 )
+from regimex.temporal_updates import fit_tcn_updates
 
 ARCHITECTURE_ID = "tcn"
 IMPLEMENTATION_VERSION = "0.2.0"
@@ -64,14 +72,12 @@ _MEMBERS: dict[BundleRole, str] = {
 }
 
 
-class TCNConfiguration(StrictModel):
-    codec_version: Literal["temporal-tcn/2.0"] = CODEC_VERSION
+class _TCNConfigurationBase(StrictModel):
     loss_version: Literal["direction-cross-entropy/2.0"]
     smoothing_scope: Literal["equal_adjacent_targets"]
     boundary_weight_radius: Literal[4]
     boundary_weight_multiplier: Literal[2]
     parameters: TCNParameters
-    training_policy: TrainingPolicy
     training_runtime: TrainingRuntime
     analysis: AnalysisConfig
     feature_names: tuple[str, ...] = TEMPORAL_NAMES
@@ -81,6 +87,22 @@ class TCNConfiguration(StrictModel):
     smoothing_change_clip: Literal[16] = 16
     selection_batch_size: Literal[16] = SELECTION_BATCH_SIZE
     environment: dict[str, JsonValue]
+
+
+class TCNConfiguration(_TCNConfigurationBase):
+    codec_version: Literal["temporal-tcn/2.0"] = CODEC_VERSION
+    training_policy: TrainingPolicy
+
+
+class FixedUpdateTCNConfiguration(_TCNConfigurationBase):
+    codec_version: Literal["temporal-tcn/3.0"] = "temporal-tcn/3.0"
+    training_policy: FixedUpdatePolicy
+    training_sequence_count: int = Field(ge=1)
+
+
+type NativeTCNConfiguration = Annotated[
+    TCNConfiguration | FixedUpdateTCNConfiguration, Field(discriminator="codec_version")
+]
 
 
 class EpochRecord(StrictModel):
@@ -101,8 +123,11 @@ class ValidationRecord(StrictModel):
     selected_epoch: int = Field(ge=1, le=1000)
 
 
-def _validate_policy(policy: TrainingPolicy) -> None:
-    TrainingPolicy.model_validate(policy.model_dump())
+def _validate_policy(policy: TrainingPolicySpec) -> None:
+    if isinstance(policy, FixedUpdatePolicy):
+        FixedUpdatePolicy.model_validate(policy.model_dump())
+    else:
+        TrainingPolicy.model_validate(policy.model_dump())
     if policy.optimizer != "adamw":
         raise ValueError("TCN supports only the AdamW optimizer")
     if len(policy.seeds) > 32:
@@ -214,13 +239,13 @@ def _validate_state(state: object, parameters: TCNParameters) -> dict[str, Tenso
 class TCNPredictor:
     preprocessor: TemporalPreprocessor
     model: TCNClassifier
-    configuration: TCNConfiguration
+    configuration: NativeTCNConfiguration
     architecture_id: str = ARCHITECTURE_ID
     implementation_version: str = IMPLEMENTATION_VERSION
     class_names: tuple[str, ...] = DIRECTION_NAMES
 
     def __post_init__(self) -> None:
-        TCNConfiguration.model_validate_json(self.configuration.model_dump_json())
+        RootModel[NativeTCNConfiguration].model_validate_json(self.configuration.model_dump_json())
         if (
             self.configuration.feature_names != TEMPORAL_NAMES
             or self.configuration.context_sizes != CONTEXT_SIZES
@@ -283,6 +308,14 @@ def _load_json[T: StrictModel](path: Path, model: type[T]) -> T:
     if len(data) > _JSON_LIMIT:
         raise ValueError("TCN JSON member exceeds its codec size limit")
     return model.model_validate_json(data)
+
+
+def _load_configuration(path: Path) -> NativeTCNConfiguration:
+    with path.open("rb") as stream:
+        data = stream.read(_JSON_LIMIT + 1)
+    if len(data) > _JSON_LIMIT:
+        raise ValueError("TCN JSON member exceeds its codec size limit")
+    return RootModel[NativeTCNConfiguration].model_validate_json(data).root
 
 
 def _read_preprocessing(path: Path) -> TemporalPreprocessor:
@@ -377,7 +410,7 @@ class TCNBackend:
         validation: ObservationInputs,
         *,
         parameters: StrictModel,
-        policy: TrainingPolicy,
+        policy: TrainingPolicySpec,
         analysis: AnalysisConfig,
         runtime: TrainingRuntime,
         evaluator: SelectionEvaluator,
@@ -439,39 +472,64 @@ class TCNBackend:
         )
         prepared_validation = _prepared(validation, preprocessing)
         check_budget()
-        model, history, selected_seed = fit_tcn(
-            prepared_training,
-            training.targets,
-            prepared_validation,
-            parameters=parameters,
-            policy=policy,
-            runtime=runtime,
-            scorer=evaluate,
-            check_budget=check_budget,
-        )
+        if isinstance(policy, FixedUpdatePolicy):
+            model, history, selected_seed = fit_tcn_updates(
+                prepared_training,
+                training.targets,
+                prepared_validation,
+                parameters=parameters,
+                policy=policy,
+                runtime=runtime,
+                scorer=evaluate,
+                check_budget=check_budget,
+            )
+        else:
+            model, history, selected_seed = fit_tcn(
+                prepared_training,
+                training.targets,
+                prepared_validation,
+                parameters=parameters,
+                policy=policy,
+                runtime=runtime,
+                scorer=evaluate,
+                check_budget=check_budget,
+            )
         check_budget()
         selected = max(
             (entry for entry in history if "validation_segment_macro_f1" in entry),
             key=lambda entry: cast(float, entry["validation_segment_macro_f1"]),
         )
         environment = _environment()
-        configuration = TCNConfiguration(
+        common = _TCNConfigurationBase(
             loss_version="direction-cross-entropy/2.0",
             smoothing_scope="equal_adjacent_targets",
             boundary_weight_radius=4,
             boundary_weight_multiplier=2,
             parameters=parameters,
-            training_policy=policy,
             training_runtime=runtime,
             analysis=analysis,
             environment=environment,
         )
+        if isinstance(policy, FixedUpdatePolicy):
+            configuration: NativeTCNConfiguration = FixedUpdateTCNConfiguration.model_validate(
+                {
+                    **common.model_dump(),
+                    "training_policy": policy,
+                    "training_sequence_count": len(training.observations.info),
+                }
+            )
+            selected_settings = {"update": selected["update"]}
+        else:
+            configuration = TCNConfiguration.model_validate(
+                {**common.model_dump(), "training_policy": policy}
+            )
+            selected_settings = {"epoch": selected["epoch"]}
         return FitResult(
             predictor=TCNPredictor(preprocessing, model, configuration),
             history=tuple(history),
             selected_seed=selected_seed,
             validation_score=cast(float, selected["validation_segment_macro_f1"]),
-            selected_settings={"epoch": selected["epoch"]},
+            selected_settings=selected_settings,
             environment=environment,
         )
 
@@ -537,8 +595,12 @@ class TCNBackend:
         if not isinstance(result.predictor, TCNPredictor):
             raise TypeError("TCN bundles require a fitted TCN predictor")
         predictor = result.predictor
-        if set(result.selected_settings) != {"epoch"}:
-            raise ValueError("TCN selected settings must identify exactly one checkpoint epoch")
+        configuration = predictor.configuration
+        selected_unit = (
+            "update" if isinstance(configuration, FixedUpdateTCNConfiguration) else "epoch"
+        )
+        if set(result.selected_settings) != {selected_unit}:
+            raise ValueError("TCN selected settings must identify its configured checkpoint unit")
         analysis_sha256 = hashlib.sha256(json_bytes(analysis.model_dump(mode="json"))).hexdigest()
         environment_sha256 = hashlib.sha256(json_bytes(result.environment)).hexdigest()
         if (
@@ -551,13 +613,29 @@ class TCNBackend:
             or predictor.configuration.training_policy.seeds != provenance.training.seeds
         ):
             raise ValueError("TCN bundle provenance differs from its fitted configuration")
-        validation = ValidationRecord(
-            score=result.validation_score,
-            selected_seed=result.selected_seed,
-            selected_epoch=cast(int, result.selected_settings.get("epoch")),
-        )
-        history = HistoryRecord.model_validate({"epochs": result.history})
-        self._validate_selection(predictor.configuration, validation, history)
+        validation: ValidationRecord | UpdateValidationRecord
+        history: HistoryRecord | UpdateHistoryRecord
+        if isinstance(configuration, FixedUpdateTCNConfiguration):
+            validation = UpdateValidationRecord(
+                score=result.validation_score,
+                selected_seed=result.selected_seed,
+                selected_update=cast(int, result.selected_settings["update"]),
+            )
+            history = UpdateHistoryRecord.model_validate({"updates": result.history})
+            validate_update_selection(
+                configuration.training_policy,
+                configuration.training_sequence_count,
+                validation,
+                history,
+            )
+        else:
+            validation = ValidationRecord(
+                score=result.validation_score,
+                selected_seed=result.selected_seed,
+                selected_epoch=cast(int, result.selected_settings["epoch"]),
+            )
+            history = HistoryRecord.model_validate({"epochs": result.history})
+            self._validate_selection(configuration, validation, history)
         with output_directory(root) as output:
             write_json(
                 output / _MEMBERS["configuration"], predictor.configuration.model_dump(mode="json")
@@ -624,9 +702,22 @@ class TCNBackend:
             or bundle.decoder_version != DECODER_VERSION
         ):
             raise ValueError("TCN bundle uses an incompatible codec or scientific contract")
-        configuration = _load_json(root / _MEMBERS["configuration"], TCNConfiguration)
-        validation = _load_json(root / _MEMBERS["validation"], ValidationRecord)
-        history = _load_json(root / _MEMBERS["history"], HistoryRecord)
+        configuration = _load_configuration(root / _MEMBERS["configuration"])
+        validation: ValidationRecord | UpdateValidationRecord
+        history: HistoryRecord | UpdateHistoryRecord
+        if isinstance(configuration, FixedUpdateTCNConfiguration):
+            validation = _load_json(root / _MEMBERS["validation"], UpdateValidationRecord)
+            history = _load_json(root / _MEMBERS["history"], UpdateHistoryRecord)
+            validate_update_selection(
+                configuration.training_policy,
+                configuration.training_sequence_count,
+                validation,
+                history,
+            )
+        else:
+            validation = _load_json(root / _MEMBERS["validation"], ValidationRecord)
+            history = _load_json(root / _MEMBERS["history"], HistoryRecord)
+            self._validate_selection(configuration, validation, history)
         if (
             configuration.feature_names != TEMPORAL_NAMES
             or configuration.context_sizes != CONTEXT_SIZES
@@ -641,7 +732,6 @@ class TCNBackend:
             or bundle.training.validation_segment_macro_f1 != validation.score
         ):
             raise ValueError("TCN bundle configuration and manifest provenance disagree")
-        self._validate_selection(configuration, validation, history)
         if (
             _state_bytes(configuration.parameters) + 3 * len(TEMPORAL_NAMES) * 8
             > runtime.model_cache_budget_bytes

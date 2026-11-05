@@ -36,7 +36,7 @@ from regimex.model_registry import (
     ArchitectureRegistry,
     InferenceRuntime,
     RegistryError,
-    TrainingPolicy,
+    TrainingPolicySpec,
     TrainingRuntime,
 )
 from regimex.operations import Sha256
@@ -50,7 +50,7 @@ class TrainingRequest(StrictModel):
     model_version_id: Identifier
     architecture_id: ArchitectureId
     parameters: dict[str, JsonValue]
-    policy: TrainingPolicy
+    policy: TrainingPolicySpec
     training_runtime: TrainingRuntime
     verification_runtime: InferenceRuntime
     analysis_profile_id: Identifier

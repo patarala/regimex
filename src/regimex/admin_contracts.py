@@ -13,7 +13,7 @@ from regimex.market_config import MarketConfig
 from regimex.model_registry import (
     ArchitectureId,
     InferenceRuntime,
-    TrainingPolicy,
+    TrainingPolicySpec,
     TrainingRuntime,
 )
 from regimex.operations import Operation, Sha256
@@ -174,7 +174,7 @@ class TrainingSpec(StrictModel):
     model_version_id: Identifier
     architecture_id: ArchitectureId
     parameters: dict[str, JsonValue]
-    policy: TrainingPolicy
+    policy: TrainingPolicySpec
     training_runtime: TrainingRuntime
     inference_runtime: InferenceRuntime
     analysis_profile_id: Identifier

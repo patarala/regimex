@@ -8,7 +8,7 @@ from typing import cast
 from uuid import NAMESPACE_URL, uuid5
 
 import numpy as np
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue, RootModel, TypeAdapter
 
 from regimex.admin_contracts import (
     AdminSpec,
@@ -70,7 +70,7 @@ from regimex.segmentation import DECODER_VERSION, annotate
 from regimex.service_contracts import ModelRecord
 from regimex.storage import json_bytes
 
-_SPEC: TypeAdapter[AdminSpec] = TypeAdapter(AdminSpec)
+_SPEC = RootModel[AdminSpec]
 _DICT = TypeAdapter(dict[str, JsonValue])
 
 
@@ -332,7 +332,7 @@ def _predictor(
 
 
 def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
-    spec = _SPEC.validate_json(json_bytes(payload["spec"]))
+    spec = _SPEC.model_validate_json(json_bytes(payload["spec"])).root
     owner = payload["owner_id"]
     if not isinstance(owner, str):
         raise ValueError("computation requires an owner identity")

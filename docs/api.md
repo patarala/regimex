@@ -198,6 +198,24 @@ operator never inspected external files or discover unknown data exposures.
    `expected_previous`. Publication checks the bundle again and changes the
    active pointer atomically. An outdated expectation conflicts.
 
+Architecture descriptors list `supported_training_budgets`. The TCN accepts
+`epochs` and `updates`; baseline accepts `epochs`. Both default to an epoch policy.
+For a fixed budget, send the following `policy` object; epoch-only fields such as
+`epochs`, `patience` and `validation_interval` are rejected:
+
+```json
+{
+  "budget": "updates",
+  "optimizer": "adamw",
+  "seeds": [11],
+  "updates": 1200,
+  "validation_updates": [300, 600, 900, 1200],
+  "batch_size": 16,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001
+}
+```
+
 The resulting quality status remains `validation_only`. Publication does not
 establish independent predictive accuracy. Managed training candidates require
 this evaluation/publication workflow; CLI bootstrap activation cannot bypass it.
