@@ -357,6 +357,90 @@ def evaluated(
     return record
 
 
+def test_evaluation_preserves_large_per_experiment_metrics(repository: AdminRepository) -> None:
+    dataset, model = trained(repository)
+    metrics: dict[str, JsonValue] = {
+        "experiment_count": 192,
+        "segment_macro_f1": 0.75,
+        "point_macro_f1": 0.875,
+        "experiment_statistics": [
+            {
+                "experiment_id": f"experiment-{index:04d}",
+                "reference_grid_sha256": hashlib.sha256(str(index).encode()).hexdigest(),
+                "segment_counts": [[2, 0, 0], [3, 1, 1], [1, 1, 1]],
+                "point_counts": [[32, 0, 0], [64, 16, 16], [32, 16, 16]],
+                "boundary_counts": [3, 1, 1],
+                "typed_boundary_counts": [3, 2, 2],
+                "typed_boundary_lags": [-2, 0, 2],
+                "segment_macro_f1": 0.75,
+                "point_macro_f1": 0.875,
+                "boundary_f1": 0.75,
+                "typed_boundary_f1": 0.6,
+            }
+            for index in range(192)
+        ],
+    }
+    expected = json_bytes(metrics)
+    assert 64 * 1024 < len(expected) < 16 * 1024 * 1024
+    record = evaluated(repository, dataset, model, metrics=metrics)
+    saved = repository.get_evaluation(principal(), record.run_id)
+    assert json_bytes(saved.metrics) == expected
+    assert repository.get_run(principal(), record.run_id).operation.state == "succeeded"
+    assert repository.database.get_active_model() is None
+
+
+def test_oversized_evaluation_metrics_cannot_commit(repository: AdminRepository) -> None:
+    dataset, model = trained(repository)
+    previous = evaluated(repository, dataset, model)
+    spec = EvaluationSpec(
+        model_version_id=model.model_version_id,
+        dataset_id=dataset.dataset_id,
+        reference_set_id="references-validation",
+    )
+    run = repository.submit(principal(), spec, idempotency_key="oversized-evaluation")
+    token = claim(repository, run.run_id)
+    metrics: dict[str, JsonValue] = {"details": "x" * (16 * 1024 * 1024)}
+    record = previous.model_copy(
+        update={
+            "run_id": run.run_id,
+            "metrics": metrics,
+            "report": object_info(f"evaluations/{run.run_id}/report.json", json_bytes(metrics)),
+        }
+    )
+    with pytest.raises(CapacityExceeded, match=r"Evaluation metrics.*16777216"):
+        repository.complete_evaluation(run.run_id, token, record)
+    assert repository.get_run(principal(), run.run_id).operation.state == "running"
+    with pytest.raises(NotFound):
+        repository.get_evaluation(principal(), run.run_id)
+    assert repository.get_evaluation(principal(), previous.run_id) == previous
+    with repository.database.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT 1 FROM regimex_objects WHERE object_key=%s", (record.report.key,)
+            ).fetchone()
+            is None
+        )
+
+
+def test_administrative_requests_and_run_outputs_keep_small_bound(
+    repository: AdminRepository,
+) -> None:
+    _, spec = ready_training(repository)
+    oversized = spec.model_copy(update={"parameters": {"description": "x" * (64 * 1024)}})
+    with pytest.raises(CapacityExceeded, match=r"Administrative metadata.*65536"):
+        repository.submit(principal(), oversized, idempotency_key="oversized-request")
+    run = repository.submit(principal(), spec, idempotency_key="small-request")
+    token = claim(repository, run.run_id)
+    with (
+        pytest.raises(CapacityExceeded, match=r"Administrative metadata.*65536"),
+        repository.database.connection() as connection,
+    ):
+        active = repository._active(connection, run.run_id, token, "training")
+        repository._finish(connection, active, token, {"details": "x" * (64 * 1024)})
+    saved = repository.get_run(principal(), run.run_id)
+    assert saved.operation.state == "running" and saved.output is None
+
+
 def test_numeric_requests_documents_metrics_and_output_preserve_identity(
     repository: AdminRepository, monkeypatch: pytest.MonkeyPatch
 ) -> None:

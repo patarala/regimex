@@ -29,6 +29,7 @@ from regimex.directions import DIRECTION_POLICY
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
 from regimex.operations import Operation, ResolvedModel, succeed
+from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.service_contracts import (
     CapacityExceeded,
     Conflict,
@@ -70,10 +71,15 @@ class AdminRepository:
             raise NotFound()
 
     @staticmethod
-    def _bounded(value: dict[str, JsonValue], *, limit: int = 64 * 1024) -> dict[str, JsonValue]:
+    def _bounded(
+        value: dict[str, JsonValue],
+        *,
+        limit: int = 64 * 1024,
+        description: str = "Administrative metadata",
+    ) -> dict[str, JsonValue]:
         checked = _JSON.validate_python(value, strict=True)
         if len(json_bytes(checked)) > limit:
-            raise CapacityExceeded("Administrative metadata exceeds its configured size bound.")
+            raise CapacityExceeded(f"{description} must not exceed {limit} bytes.")
         return checked
 
     def _binding(self, connection: Connection, owner_id: str, snapshot_id: UUID) -> CatalogBinding:
@@ -906,7 +912,8 @@ class AdminRepository:
         self, run_id: UUID, token: UUID, evaluation: EvaluationRecord
     ) -> AdminRunRecord:
         evaluation = EvaluationRecord.model_validate_json(evaluation.model_dump_json())
-        self._bounded(evaluation.metrics)
+        # Per-experiment statistics use the report budget, not the small run-metadata budget.
+        self._bounded(evaluation.metrics, limit=MAX_REPORT_BYTES, description="Evaluation metrics")
         with self.database.connection() as connection:
             run = self._active(connection, run_id, token, "evaluation")
             assert isinstance(run.spec, EvaluationSpec)

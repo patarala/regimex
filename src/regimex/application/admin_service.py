@@ -882,7 +882,9 @@ class AdminService:
         except Exception as exc:
             if isinstance(exc, ComputationFailure):
                 failure = exc.failure
-            elif isinstance(exc, (CapacityExceeded, ObjectCapacityError)):
+            elif isinstance(exc, CapacityExceeded):
+                failure = OperationFailure(code="capacity_limit", message=exc.message[:1024])
+            elif isinstance(exc, ObjectCapacityError):
                 failure = OperationFailure(
                     code="capacity_limit",
                     message="The administrative computation exceeds its configured budget.",

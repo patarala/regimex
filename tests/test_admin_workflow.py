@@ -52,7 +52,7 @@ from regimex.directions import (
 )
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
-from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
+from regimex.infrastructure.object_store import LocalObjectStore, ObjectCapacityError, ObjectInfo
 from regimex.market import VIRTUAL_BASE_ASSETS
 from regimex.model_registry import (
     ArchitectureRegistry,
@@ -61,7 +61,7 @@ from regimex.model_registry import (
     TrainingRuntime,
 )
 from regimex.operations import Operation, OperationFailure
-from regimex.service_contracts import Forbidden, NotFound, Principal
+from regimex.service_contracts import CapacityExceeded, Forbidden, NotFound, Principal
 from regimex.service_settings import ServiceSettings
 
 
@@ -482,6 +482,50 @@ def test_wall_budget_kills_generation_before_any_dataset_is_committed(
     assert result.operation.failure.code == "capacity_limit"
     with pytest.raises(NotFound):
         service.get_dataset(principal, "timed-generation")
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_message"),
+    [
+        (
+            CapacityExceeded("Evaluation metrics must not exceed 16777216 bytes."),
+            "Evaluation metrics must not exceed 16777216 bytes.",
+        ),
+        (CapacityExceeded("Public limit detail. " * 100), ("Public limit detail. " * 100)[:1024]),
+        (
+            ObjectCapacityError("private provider path and credential details"),
+            "The administrative computation exceeds its configured budget.",
+        ),
+    ],
+)
+def test_capacity_failure_preserves_public_reason_and_sanitizes_provider_errors(
+    admin: tuple[AdminService, Principal],
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    expected_message: str,
+) -> None:
+    service, principal = admin
+    run = service.submit_generation(
+        principal,
+        GenerationSpec(
+            dataset_id="capacity-failure",
+            plan=RawGenerationPlan(seed=46, experiment_count=3, step_count=64),
+        ),
+        idempotency_key="capacity-failure",
+    )
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(service, "_materialize_inputs", fail)
+    result = service.run_admin(run.run_id)
+    assert result is not None and result.operation.state == "failed"
+    failure = result.operation.failure
+    assert failure is not None and failure.code == "capacity_limit"
+    assert failure.message == expected_message and not failure.retryable
+    assert service.repository.get_run(principal, run.run_id).operation.failure == failure
+    with pytest.raises(NotFound):
+        service.get_dataset(principal, "capacity-failure")
 
 
 def test_computation_child_dies_when_supervising_parent_is_killed(tmp_path: Path) -> None:
