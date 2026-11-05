@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+from importlib.metadata import distribution
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -129,6 +130,15 @@ def test_comparison_is_offline_and_preserves_missing_carried_prices_and_safe_lab
     assert "window.untrusted=true</script>" not in document
     assert "connect-src &#x27;none&#x27;" in document
     assert not re.search(r'<(?:script|link)[^>]+(?:src|href)=["\']https?://', document)
+    notices = re.search(r"<!-- Software licenses\n(.*?)\n  -->", document, re.S)
+    assert notices is not None
+    license_text = distribution("regimex").read_text("licenses/LICENSE")
+    assert license_text and license_text in notices[1]
+    assert "# Plotly" not in notices[1]
+    script = (
+        Path(__file__).parents[1] / "src/regimex/templates/analysis-comparison.js"
+    ).read_bytes()
+    assert b"<script>" + script + b"</script>" in report
     assert "Differences do not measure accuracy." in document
     assert len(report) < MAX_REPORT_BYTES
 

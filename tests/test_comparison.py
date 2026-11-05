@@ -4,6 +4,7 @@ import copy
 import json
 import shutil
 import subprocess
+from importlib.metadata import distribution
 from pathlib import Path
 from typing import cast
 
@@ -56,9 +57,14 @@ def test_comparison_preserves_downloads_and_escapes_embedded_script(tmp_path: Pa
     assert "</script><script>alert(1)</script>" not in html
     assert "\\u003c/script\\u003e" in html
     manifest = json.loads((target / "report-manifest.json").read_text())
+    notices = (target / "LICENSES.md").read_text()
+    license_text = distribution("regimex").read_text("licenses/LICENSE")
+    assert license_text and license_text in notices
+    assert "# Plotly" not in notices
     assert manifest["files"] == {
         name: digest(target / name)
         for name in (
+            "LICENSES.md",
             "index.html",
             "comparison.js",
             "comparison.css",

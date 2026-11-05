@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from regimex.application.service import AnalysisResult
 
 from regimex.report_contracts import MAX_REPORT_BYTES, REPORT_RENDERER_VERSION
+from regimex.report_licenses import license_notices
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +213,7 @@ def render_analysis_report(
         + " ".join(_hash_source(item) for item in (plotly_js, payload, script))
     )
     replacements = {
+        "@@LICENSES@@": license_notices(include_plotly=True),
         "@@CSP@@": html.escape(csp, quote=True),
         "@@CSS@@": css,
         "@@TITLE@@": html.escape(str(result.analysis_id)),

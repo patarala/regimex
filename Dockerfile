@@ -2,7 +2,7 @@ FROM python:3.14.4-slim-bookworm@sha256:fc74d22ffd0d5ac395a4b7bdda75a4539758862c
 COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /usr/local/bin/uv
 ENV UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never UV_NO_CACHE=1
 WORKDIR /build
-COPY pyproject.toml uv.lock README.md .python-version ./
+COPY pyproject.toml uv.lock README.md LICENSE .python-version ./
 RUN uv sync --locked --only-group build --no-install-project
 COPY src ./src
 RUN uv build --no-build-isolation --wheel
@@ -11,7 +11,7 @@ FROM python:3.14.4-slim-bookworm@sha256:fc74d22ffd0d5ac395a4b7bdda75a4539758862c
 COPY --from=ghcr.io/astral-sh/uv:0.13.0@sha256:cdc6093146eb3ff6a40107b38f008b789e050e77ad87865e381d9917da55a168 /uv /usr/local/bin/uv
 ENV UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never UV_NO_CACHE=1 UV_PROJECT_ENVIRONMENT=/opt/venv
 WORKDIR /build
-COPY pyproject.toml uv.lock README.md .python-version ./
+COPY pyproject.toml uv.lock README.md LICENSE .python-version ./
 
 FROM locked-environment AS api-environment
 RUN uv sync --locked --no-default-groups --extra service --extra s3 --no-install-project

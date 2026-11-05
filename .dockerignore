@@ -4,6 +4,7 @@
 !pyproject.toml
 !uv.lock
 !README.md
+!LICENSE
 !.python-version
 !src/
 !src/regimex/

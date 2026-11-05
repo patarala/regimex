@@ -18,6 +18,7 @@ from regimex.inspection import (
     Inspection,
     inspect_snapshots,
 )
+from regimex.report_licenses import license_notices
 from regimex.storage import digest, output_directory, write_json
 
 if TYPE_CHECKING:
@@ -43,6 +44,7 @@ def _script_json(value: object) -> str:
 
 def _write_direction_assets(target: Path, payload: Mapping[str, object]) -> None:
     templates = files("regimex").joinpath("templates")
+    (target / "LICENSES.md").write_bytes(license_notices(include_plotly=True).encode("utf-8"))
     (target / "plotly.min.js").write_text(get_plotlyjs(), encoding="utf-8")
     (target / "index.html").write_text(
         templates.joinpath("direction-report.html")

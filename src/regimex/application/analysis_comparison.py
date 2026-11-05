@@ -11,6 +11,7 @@ from regimex.directions import DirectionInterval
 from regimex.exports import ExportV2
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectIntegrityError
 from regimex.report_contracts import MAX_REPORT_BYTES
+from regimex.report_licenses import license_notices
 from regimex.storage import json_bytes
 
 if TYPE_CHECKING:
@@ -145,6 +146,7 @@ def render_analysis_comparison(
         + " ".join(_hash_source(item) for item in (payload, script))
     )
     replacements = {
+        "@@LICENSES@@": license_notices(),
         "@@CSP@@": html.escape(csp, quote=True),
         "@@CSS@@": css,
         "@@PAYLOAD@@": payload,

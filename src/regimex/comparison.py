@@ -12,6 +12,7 @@ from regimex.contracts import Identifier
 from regimex.data_catalog import content_hash
 from regimex.directions import DIRECTION_NAMES
 from regimex.operations import Sha256
+from regimex.report_licenses import license_notices
 from regimex.storage import digest, output_directory, write_json
 
 COMPARISON_VERSION = "model-comparison/2.0"
@@ -492,6 +493,7 @@ def render_model_comparison(evaluations: tuple[dict[str, JsonValue], ...], outpu
     )
     templates = files("regimex").joinpath("templates")
     with output_directory(output) as target:
+        (target / "LICENSES.md").write_bytes(license_notices().encode("utf-8"))
         (target / "index.html").write_text(
             templates.joinpath("model-comparison.html")
             .read_text(encoding="utf-8")

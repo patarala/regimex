@@ -3,6 +3,7 @@
 import hashlib
 import json
 import re
+from importlib.metadata import distribution
 from pathlib import Path
 from uuid import uuid4
 
@@ -163,6 +164,13 @@ def test_report_is_offline_escaped_and_preserves_original_zero_and_missing_value
     assert "window.untrusted=true</script>" not in document
     assert "default-src &#x27;none&#x27;" in document and "connect-src &#x27;none&#x27;" in document
     assert not re.search(r'<(?:script|link)[^>]+(?:src|href)=["\']https?://', document)
+    notices = re.search(r"<!-- Software licenses\n(.*?)\n  -->", document, re.S)
+    assert notices is not None
+    for package, filename in (("regimex", "licenses/LICENSE"), ("plotly", "licenses/LICENSE.txt")):
+        license_text = distribution(package).read_text(filename)
+        assert license_text and license_text in notices[1]
+    plotly_js = Path(str(distribution("plotly").locate_file("plotly/package_data/plotly.min.js")))
+    assert b"<script>" + plotly_js.read_bytes() + b"</script>" in rendered.html
     payload = embedded_data(rendered.html)
     sequences = payload["sequences"]
     assert isinstance(sequences, list)

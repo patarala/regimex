@@ -1,6 +1,7 @@
 """Current immutable snapshots, complete diagnostics, and blind offline review."""
 
 import json
+from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
@@ -315,6 +316,13 @@ def test_offline_report_preserves_source_identity_and_canonical_symbols(tmp_path
     assert record["version"] == "report-manifest/1.0"
     assert record["source_sha256"] == inspection.summary["source_content_sha256"]
     assert all(digest(output / name) == checksum for name, checksum in record["files"].items())
+    notices = (output / "LICENSES.md").read_text()
+    for package, filename in (("regimex", "licenses/LICENSE"), ("plotly", "licenses/LICENSE.txt")):
+        license_text = distribution(package).read_text(filename)
+        assert license_text and license_text in notices
+    assert record["files"]["LICENSES.md"] == digest(output / "LICENSES.md")
+    plotly_js = Path(str(distribution("plotly").locate_file("plotly/package_data/plotly.min.js")))
+    assert (output / "plotly.min.js").read_bytes() == plotly_js.read_bytes()
     assert not tuple(output.glob("*.png"))
     assert "matplotlib_version" not in record
     assert json.loads((output / "results.json").read_text()) == [

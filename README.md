@@ -138,3 +138,11 @@ PostgreSQL and queue tests additionally require `--group queue-test` and a
 disposable `REGIMEX_TEST_DATABASE_DSN`. The real S3 and restoration test setup is
 described in [storage](docs/storage.md). Tests requiring unavailable services are
 reported as skipped; they do not verify those integrations.
+
+## License
+
+Regimex is licensed under the [MIT License](LICENSE). Third-party dependencies
+retain their own licenses.
+
+Standalone HTML reports include software notices. Keep `LICENSES.md` with
+exported report directories.
