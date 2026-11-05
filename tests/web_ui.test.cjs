@@ -950,3 +950,61 @@ test("offline chart rendering removes the PNG export control", async () => {
   assert.ok(Array.from(configurations[0].modeBarButtonsToRemove).includes("toImage"));
   assert.equal(configurations[0].toImageButtonOptions, undefined);
 });
+
+test("analysis report reset restores the full extent after repeated linked drag zooms", async () => {
+  const elements = new Map();
+  const get = (name) => {
+    if (!elements.has(name)) {
+      const node = new Element();
+      node.on = (event, handler) => node.addEventListener(event, handler);
+      node.removeAllListeners = (event) => node.listeners.delete(event);
+      elements.set(name, node);
+    }
+    return elements.get(name);
+  };
+  get("instrument").value = "BTC/USD";
+  get("quotes").checked = true;
+  get("analysis-data").textContent = JSON.stringify({
+    export: {
+      instruments: [{instrument_id: "BTC/USD", base_asset: "BTC", quote_asset: "USD"}],
+      time_grid: {origin: 100, completed_horizon: 116, bin_width: 4, unit: "model-second"},
+    },
+    result: {class_names: ["sideways", "growth", "decline"]},
+    observation_fields: ["step", "last_price", "trade_count", "trade_volume", "buy_order_count",
+      "buy_order_volume", "sell_order_count", "sell_order_volume", "best_bid", "best_ask"],
+    observations: [{instrument_id: "BTC/USD", rows: [
+      [0, 100, 1, 1, 0, 0, 1, 1, null, 101], [1, 101, 1, 1, 0, 0, 1, 1, 100, 102],
+      [2, 102, 1, 1, 0, 0, 1, 1, 101, 103], [3, 103, 1, 1, 0, 0, 1, 1, 102, 104],
+    ]}],
+    sequences: [{instrument_id: "BTC/USD", intervals: [{start: 0, stop: 4, direction: "growth"}],
+      probabilities: Array.from({length: 4}, () => [.1, .8, .1])}],
+  });
+  const plots = [];
+  vm.runInNewContext(fs.readFileSync(path.join(root, "src/regimex/templates/analysis-report.js"), "utf8"), {
+    document: {getElementById: get, createElement: () => new Element()},
+    Plotly: {
+      react: async (node, _traces, layout) => {
+        node.layout = layout;
+        plots.push(node);
+      },
+      relayout: async (node, change) => {
+        node.layout.xaxis.range = change["xaxis.range"];
+        await node.emit("plotly_relayout", change);
+      },
+    },
+  });
+  await flush();
+  assert.equal(plots.length, 6);
+  for (const [name, zoom] of [["price", [104, 112]], ["probability", [106, 110]]]) {
+    const node = get(name);
+    // Plotly drag handling mutates the supplied axis range before emitting the event.
+    node.layout.xaxis.range[0] = zoom[0];
+    node.layout.xaxis.range[1] = zoom[1];
+    await node.emit("plotly_relayout", {"xaxis.range[0]": zoom[0], "xaxis.range[1]": zoom[1]});
+    await flush();
+    for (const plot of plots) assert.deepEqual(Array.from(plot.layout.xaxis.range), zoom);
+    await get("reset").click();
+    await flush();
+    for (const plot of plots) assert.deepEqual(Array.from(plot.layout.xaxis.range), [100, 116]);
+  }
+});

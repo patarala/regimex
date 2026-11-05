@@ -54,7 +54,8 @@
       font: { family: "system-ui, sans-serif", color: "#17283d" },
       xaxis: {
         title: { text: escape(grid.unit.length > 24 ? grid.unit.slice(0, 24) + "…" : grid.unit) },
-        range: extent, showgrid: true, gridcolor: "#e7edf4",
+        // Plotly mutates axis ranges during interactive zoom.
+        range: [...extent], showgrid: true, gridcolor: "#e7edf4",
       },
       yaxis: {
         title: { text: unit.length > 36 ? unit.slice(0, 36) + "…" : unit },
@@ -191,7 +192,7 @@
         if (!range) return;
         synchronizing = true;
         Promise.all(activeNodes.filter((other) => other !== node)
-          .map((other) => Plotly.relayout(other, { "xaxis.range": range })))
+          .map((other) => Plotly.relayout(other, { "xaxis.range": [...range] })))
           .catch(failed).finally(() => { synchronizing = false; });
       });
     }
@@ -209,7 +210,7 @@
   quotes.addEventListener("change", refresh);
   $("reset").addEventListener("click", () => {
     synchronizing = true;
-    Promise.all(activeNodes.map((node) => Plotly.relayout(node, { "xaxis.range": extent })))
+    Promise.all(activeNodes.map((node) => Plotly.relayout(node, { "xaxis.range": [...extent] })))
       .catch(failed).finally(() => { synchronizing = false; });
   });
   // JSON.stringify normalizes -0 to 0. Preserve its sign for the content digest.
