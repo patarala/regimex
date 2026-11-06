@@ -351,13 +351,31 @@ def test_analysis_history_is_recent_before_pagination_with_owner_source_and_run_
 
     owner, snapshot = _ready(repository)
     foreign_source = repository.add_snapshot(
-        snapshot.model_copy(update={"snapshot_id": uuid4(), "source_id": "another-source"})
+        snapshot.model_copy(
+            update={
+                "snapshot_id": uuid4(),
+                "source_id": "another-source",
+                "object": _object("snapshots/alice/another-source"),
+            }
+        )
     )
     other_run = repository.add_snapshot(
-        snapshot.model_copy(update={"snapshot_id": uuid4(), "run_id": "another-run"})
+        snapshot.model_copy(
+            update={
+                "snapshot_id": uuid4(),
+                "run_id": "another-run",
+                "object": _object("snapshots/alice/another-run"),
+            }
+        )
     )
     other_owner = repository.add_snapshot(
-        snapshot.model_copy(update={"snapshot_id": uuid4(), "owner_id": "bob"})
+        snapshot.model_copy(
+            update={
+                "snapshot_id": uuid4(),
+                "owner_id": "bob",
+                "object": _object("snapshots/bob"),
+            }
+        )
     )
     current_time = datetime(2026, 1, 1, tzinfo=UTC)
     next_id = UUID(int=1, version=4)
@@ -456,6 +474,7 @@ def test_history_filters_precede_pagination_and_preserve_source_scope(
                 "snapshot_id": uuid4(),
                 "run_id": "Replay_Demo",
                 "source_snapshot_id": "market%close",
+                "object": _object("snapshots/alice/replay-demo"),
                 "instrument_ids": ("BTC/USD", "ETH/USD"),
                 "step_count": 300,
             }
@@ -496,7 +515,13 @@ def test_history_filters_precede_pagination_and_preserve_source_scope(
         ({"source_id": "foreign-source"}, {"run_id": "foreign-run"}, {"owner_id": "bob"})
     ):
         other = repository.add_snapshot(
-            snapshot.model_copy(update={"snapshot_id": uuid4(), **changes})
+            snapshot.model_copy(
+                update={
+                    "snapshot_id": uuid4(),
+                    "object": _object(f"snapshots/history-hidden-{index}"),
+                    **changes,
+                }
+            )
         )
         analysis = repository.submit_analysis(
             _principal(other.owner_id),
