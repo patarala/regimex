@@ -209,7 +209,10 @@ def test_backend_matches_numeric_fit_and_training_only_preprocessing() -> None:
         actual = fitted.predict(
             validation, runtime=InferenceRuntime(threads=1, max_batch_size=batch_limit)
         )
-        np.testing.assert_array_equal(actual, expected.predict(prepared_validation))
+        # BLAS reductions may round differently for different prediction batch sizes.
+        np.testing.assert_allclose(
+            actual, expected.predict(prepared_validation), rtol=1e-13, atol=1e-15
+        )
     altered = inputs("validation", (9, 12, 7))
     prior = fitted.preprocessor.mean.copy()
     fitted.predict(altered, runtime=InferenceRuntime(threads=1))
@@ -229,7 +232,7 @@ def test_original_grid_and_no_cross_sequence_context() -> None:
         )
         separate.append(result.predictor.predict(one, runtime=InferenceRuntime(threads=1)))
     assert full.shape == (sum(info.step_count for info in validation.info), 3)
-    np.testing.assert_array_equal(full, np.concatenate(separate))
+    np.testing.assert_allclose(full, np.concatenate(separate), rtol=1e-13, atol=1e-15)
     np.testing.assert_allclose(full.sum(axis=1), 1, atol=1e-12)
 
 
