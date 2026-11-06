@@ -432,19 +432,17 @@ def test_delegated_history_and_names_respect_subject_source_and_run(
             assert client.patch(path, json=body, headers=outside).status_code == 404
             response = client.get("/api/v1/integration/experiments", headers=outside)
             assert response.status_code == 200 and response.json()["items"] == []
-        owner = api.repository.get_snapshot_internal(snapshot_id).owner_id
+        integration = api.repository.authenticate(api.tokens["integration"])
         other_source_token = api.repository.create_token(
-            owner, "integration", source_namespace="another-source"
+            integration.owner_id, "integration", source_namespace="another-source"
         )
-        other_source_headers = authorization(other_source_token)
-        response = client.get("/api/v1/experiments", headers=other_source_headers)
+        other_source_headers = {**headers, **authorization(other_source_token)}
+        response = client.get("/api/v1/integration/experiments", headers=other_source_headers)
         assert response.status_code == 200 and response.json()["items"] == []
-        assert (
-            client.patch(
-                f"/api/v1/experiments/{snapshot_id}/name", json=body, headers=other_source_headers
-            ).status_code
-            == 404
-        )
+        assert client.patch(path, json=body, headers=other_source_headers).status_code == 404
+        unchanged = client.get("/api/v1/integration/experiments", headers=headers)
+        assert unchanged.status_code == 200
+        assert unchanged.json()["items"][0]["display_name"] == "Scoped title"
 
 
 @pytest.mark.parametrize(
