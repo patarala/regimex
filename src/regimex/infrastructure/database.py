@@ -54,13 +54,12 @@ from regimex.service_contracts import (
     ServiceError,
     SnapshotRecord,
     StaleAttempt,
-    Unauthorized,
     UnsupportedContract,
 )
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0003_experiment_names"
+_REVISION = "0005_integration_limits"
 
 
 def _read_operation(document: object) -> Operation:
@@ -216,8 +215,16 @@ class DatabaseRepository:
         )
         if (role == "integration") != (source_namespace is not None):
             raise ValueError("only integration credentials require a bound source namespace")
+        if role == "integration":
+            from regimex.infrastructure.integration_repository import provision_integration_token
+
+            assert source_namespace is not None
+            return provision_integration_token(self, owner_id, source_namespace)
         token = "rgx_" + secrets.token_urlsafe(32)
         with self.connection() as connection:
+            from regimex.infrastructure.identity_namespaces import reserve_local_owner
+
+            reserve_local_owner(connection, owner_id)
             connection.execute(
                 "INSERT INTO regimex_tokens "
                 "(token_id,token_sha256,owner_id,role,source_namespace,created_at) "
@@ -234,29 +241,15 @@ class DatabaseRepository:
         return token
 
     def authenticate(self, token: str) -> Principal:
-        if not token.startswith("rgx_") or len(token) != 47 or not token.isascii():
-            raise Unauthorized()
+        from regimex.infrastructure.integration_repository import authenticate_token
+
         with self.connection() as connection:
-            row = connection.execute(
-                "SELECT token_id,owner_id,role,source_namespace FROM regimex_tokens "
-                "WHERE token_sha256=%s AND revoked_at IS NULL",
-                (hashlib.sha256(token.encode()).hexdigest(),),
-            ).fetchone()
-        if row is None:
-            raise Unauthorized()
-        return Principal.model_validate(
-            dict(zip(("token_id", "owner_id", "role", "source_namespace"), row, strict=True))
-        )
+            return authenticate_token(connection, token)
 
     def revoke_token(self, token_id: UUID) -> None:
-        with self.connection() as connection:
-            row = connection.execute(
-                "UPDATE regimex_tokens SET revoked_at=COALESCE(revoked_at,clock_timestamp()) "
-                "WHERE token_id=%s RETURNING token_id",
-                (token_id,),
-            ).fetchone()
-            if row is None:
-                raise NotFound()
+        from regimex.infrastructure.integration_repository import revoke_token
+
+        revoke_token(self, token_id)
 
     def issue_token(
         self, owner_id: str, role: Role, *, source_namespace: str | None = None
@@ -566,10 +559,17 @@ class DatabaseRepository:
         idempotency_key: str,
         request_sha256: str,
         max_pending: int = 8,
+        integration_max_pending: int = 32,
     ) -> AnalysisRecord:
-        if max_pending < 1:
-            raise ValueError("pending quota must be positive")
+        if max_pending < 1 or not 1 <= integration_max_pending <= 1000:
+            raise ValueError("pending quotas must be positive and integration quota at most 1000")
         with self.connection() as connection:
+            if principal.role == "integration":
+                from regimex.infrastructure.integration_limits import lock_integration
+                from regimex.infrastructure.integration_repository import require_integration
+
+                lock_integration(self, connection, principal)
+                require_integration(connection, principal, scope="analyze")
             # Serialize every intake for this owner: different keys must not race
             # the pending quota, and a replay must precede active resolution.
             self._lock(connection, f"owner:{principal.owner_id}")
@@ -594,6 +594,10 @@ class DatabaseRepository:
             assert count is not None
             if cast(int, count[0]) >= max_pending:
                 raise CapacityExceeded()
+            if principal.role == "integration":
+                from regimex.infrastructure.integration_limits import check_pending
+
+                check_pending(connection, principal, integration_max_pending)
             model = self._model(connection, model_version_id)
             if not self._published(connection, model.model_version_id):
                 raise NotFound("Analysis requires an explicitly published model version.")

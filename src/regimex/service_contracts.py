@@ -5,6 +5,7 @@ from uuid import UUID
 
 from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
+from regimex.access_contracts import IntegrationScope
 from regimex.contracts import MAX_STEPS, Identifier, StrictModel
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.model_registry import InferenceRuntime
@@ -25,9 +26,17 @@ class Principal(StrictModel):
     token_id: UUID
     source_namespace: Identifier | None = None
     run_scope: Annotated[str, Field(pattern=r"^[A-Za-z0-9._:@-]{1,128}$")] | None = None
+    integration_id: UUID | None = None
+    integration_scopes: tuple[IntegrationScope, ...] = ()
 
     @model_validator(mode="after")
     def trusted_run_scope(self) -> Self:
+        if self.role != "integration" and (self.integration_id or self.integration_scopes):
+            raise ValueError("Only integration principals can carry integration permissions.")
+        if self.integration_id is not None and (
+            self.source_namespace is None or not self.integration_scopes
+        ):
+            raise ValueError("Managed integrations require a source and explicit permissions.")
         if self.run_scope is not None and (
             self.role != "integration" or self.source_namespace is None
         ):
@@ -98,6 +107,8 @@ class ServiceError(ValueError):
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.integration_id: UUID | None = None
+        self.token_id: UUID | None = None
 
 
 class NotFound(ServiceError):

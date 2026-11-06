@@ -115,6 +115,10 @@ Record the printed manifest SHA-256 separately. The backup contains the database
 dump, every registered object, checksums and table evidence. Protect it like
 credentials because it includes authentication hashes and private metadata.
 A failed backup is not usable. Database metadata alone is not a complete backup.
+Keep the matching application release with the backup. Restore with the schema
+revision that created it; after a successful restore, apply any application upgrade
+and its migrations while the service remains stopped. Create a new backup after
+upgrading the schema.
 
 Restore into a **new empty database** and a **fresh empty local root or S3 prefix**.
 Keep the original schema name, configure the target environment, and stop every

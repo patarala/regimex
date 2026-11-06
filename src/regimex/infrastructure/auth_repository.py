@@ -10,13 +10,22 @@ from uuid import UUID, uuid4
 import psycopg
 from pydantic import SecretStr, TypeAdapter
 
+from regimex.access_contracts import IntegrationScope
 from regimex.auth_contracts import ExternalIdentifier, IssuedSession, SessionRecord
 from regimex.data_catalog import content_hash
 from regimex.infrastructure.database import DatabaseRepository
-from regimex.service_contracts import CapacityExceeded, Forbidden, Principal, Unauthorized
+from regimex.infrastructure.identity_namespaces import new_subject_owner
+from regimex.infrastructure.integration_limits import IntegrationLimitsRepository, lock_integration
+from regimex.infrastructure.integration_repository import authenticate_token, require_integration
+from regimex.service_contracts import (
+    CapacityExceeded,
+    Forbidden,
+    Principal,
+    ServiceError,
+    Unauthorized,
+)
 
 Connection = psycopg.Connection[tuple[object, ...]]
-_TOKEN = re.compile(r"rgx_[A-Za-z0-9_-]{43}\Z")
 SESSION = re.compile(r"rgxs_[A-Za-z0-9_-]{43}\Z")
 _EXTERNAL = TypeAdapter(ExternalIdentifier)
 
@@ -39,19 +48,7 @@ class AuthRepository:
 
     @staticmethod
     def _parent(connection: Connection, raw_token: str, *, lock: bool) -> Principal:
-        if _TOKEN.fullmatch(raw_token) is None:
-            raise Unauthorized()
-        query = (
-            "SELECT token_id,owner_id,role,source_namespace FROM regimex_tokens "
-            "WHERE token_sha256=%s AND revoked_at IS NULL"
-        )
-        row = connection.execute(
-            query + (" FOR UPDATE" if lock else ""),
-            (hashlib.sha256(raw_token.encode("ascii")).hexdigest(),),
-        ).fetchone()
-        if row is None:
-            raise Unauthorized()
-        return AuthRepository._principal(row)
+        return authenticate_token(connection, raw_token, lock=lock)
 
     def issue_session(
         self, raw_token: str, *, ttl_seconds: int = 1800, maximum_sessions: int = 8
@@ -108,7 +105,8 @@ class AuthRepository:
                 "t.token_id,t.owner_id,t.role,t.source_namespace "
                 "FROM regimex_sessions s JOIN regimex_tokens t ON s.token_id=t.token_id "
                 "WHERE s.session_sha256=%s AND s.expires_at>clock_timestamp() "
-                "AND t.revoked_at IS NULL",
+                "AND t.revoked_at IS NULL "
+                "AND (t.expires_at IS NULL OR t.expires_at>clock_timestamp())",
                 (checksum,),
             ).fetchone()
         if row is None:
@@ -130,7 +128,14 @@ class AuthRepository:
             )
 
     def bind_subject(
-        self, raw_token: str, subject: str, run_id: str, *, maximum_subjects: int = 100_000
+        self,
+        raw_token: str,
+        subject: str,
+        run_id: str,
+        *,
+        maximum_subjects: int = 100_000,
+        required_scope: IntegrationScope | None = None,
+        limits: IntegrationLimitsRepository | None = None,
     ) -> Principal:
         subject = _EXTERNAL.validate_python(subject, strict=True)
         run_id = _EXTERNAL.validate_python(run_id, strict=True)
@@ -138,44 +143,50 @@ class AuthRepository:
             raise ValueError("The integration subject bound must be between one and one million.")
         subject_sha256 = content_hash({"version": "external-subject/1.0", "subject": subject})
         with self.database.connection() as connection:
-            principal = self._parent(connection, raw_token, lock=False)
-            if principal.role != "integration" or principal.source_namespace is None:
-                raise Forbidden(
-                    "Only a registered integration backend can assert an external subject."
-                )
-            self.database._lock(
-                connection,
-                "integration:" + content_hash([principal.owner_id, principal.source_namespace]),
-            )
-            row = connection.execute(
-                "SELECT effective_owner_id FROM regimex_integration_subjects "
-                "WHERE integration_owner_id=%s AND source_namespace=%s AND subject_sha256=%s",
-                (principal.owner_id, principal.source_namespace, subject_sha256),
-            ).fetchone()
-            if row is None:
-                count = connection.execute(
-                    "SELECT count(*) FROM regimex_integration_subjects "
-                    "WHERE integration_owner_id=%s AND source_namespace=%s",
-                    (principal.owner_id, principal.source_namespace),
-                ).fetchone()
-                assert count is not None
-                if cast(int, count[0]) >= maximum_subjects:
-                    raise CapacityExceeded(
-                        "The integration has reached its registered subject limit."
+            principal = authenticate_token(connection, raw_token, touch=False)
+            try:
+                if principal.role != "integration" or principal.source_namespace is None:
+                    raise Forbidden(
+                        "Only a registered integration backend can assert an external subject."
                     )
-                owner_id = "external_" + uuid4().hex
-                connection.execute(
-                    "INSERT INTO regimex_integration_subjects "
-                    "(integration_owner_id,source_namespace,subject_sha256,effective_owner_id) "
-                    "VALUES (%s,%s,%s,%s)",
-                    (principal.owner_id, principal.source_namespace, subject_sha256, owner_id),
+                lock_integration(self.database, connection, principal, token_update=True)
+                principal = authenticate_token(connection, raw_token)
+                require_integration(connection, principal, scope=required_scope)
+                self.database._lock(
+                    connection,
+                    "integration:" + content_hash([principal.owner_id, principal.source_namespace]),
                 )
-            else:
-                owner_id = cast(str, row[0])
-            return Principal(
-                owner_id=owner_id,
-                role="integration",
-                token_id=principal.token_id,
-                source_namespace=principal.source_namespace,
-                run_scope=run_id,
-            )
+                row = connection.execute(
+                    "SELECT effective_owner_id FROM regimex_integration_subjects "
+                    "WHERE integration_owner_id=%s AND source_namespace=%s AND subject_sha256=%s",
+                    (principal.owner_id, principal.source_namespace, subject_sha256),
+                ).fetchone()
+                if row is None:
+                    count = connection.execute(
+                        "SELECT count(*) FROM regimex_integration_subjects "
+                        "WHERE integration_owner_id=%s AND source_namespace=%s",
+                        (principal.owner_id, principal.source_namespace),
+                    ).fetchone()
+                    assert count is not None
+                    if cast(int, count[0]) >= maximum_subjects:
+                        raise CapacityExceeded(
+                            "The integration has reached its registered subject limit."
+                        )
+                    owner_id = new_subject_owner(connection)
+                    connection.execute(
+                        "INSERT INTO regimex_integration_subjects "
+                        "(integration_owner_id,source_namespace,subject_sha256,effective_owner_id) "
+                        "VALUES (%s,%s,%s,%s)",
+                        (principal.owner_id, principal.source_namespace, subject_sha256, owner_id),
+                    )
+                else:
+                    owner_id = cast(str, row[0])
+                bound = principal.model_copy(update={"owner_id": owner_id, "run_scope": run_id})
+                if limits is not None:
+                    limits.consume_in_transaction(connection, bound)
+                return bound
+            except ServiceError as error:
+                if principal.role == "integration":
+                    error.integration_id = principal.integration_id
+                    error.token_id = principal.token_id
+                raise

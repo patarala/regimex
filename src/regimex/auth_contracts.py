@@ -47,9 +47,13 @@ class AuthPolicy(StrictModel):
     session_ttl_seconds: Annotated[int, Field(ge=60, le=8 * 3600)] = 1800
     max_sessions_per_token: Annotated[int, Field(ge=1, le=32)] = 8
     max_subjects_per_integration: Annotated[int, Field(ge=1, le=1_000_000)] = 100_000
+    integration_requests_per_minute: Annotated[int, Field(ge=1, le=1_000_000)] = 600
+    integration_subject_requests_per_minute: Annotated[int, Field(ge=1, le=1_000_000)] = 120
 
     @model_validator(mode="after")
     def transport(self) -> Self:
+        if self.integration_subject_requests_per_minute > self.integration_requests_per_minute:
+            raise ValueError("The subject request limit cannot exceed the integration limit.")
         origin = canonical_origin(self.public_origin)
         parsed = urlsplit(origin)
         if parsed.scheme == "http":

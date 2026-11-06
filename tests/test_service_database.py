@@ -740,7 +740,17 @@ def test_result_limits_reject_nonfinite_without_partial_commit(
 def test_integration_source_scope_applies_to_reads_lists_replays_and_cancellation(
     repository: DatabaseRepository,
 ) -> None:
-    user, first = _ready(repository)
+    integration = repository.authenticate(
+        repository.create_token("platform", "integration", source_namespace="local-upload")
+    )
+    other_source = repository.authenticate(
+        repository.create_token("platform", "integration", source_namespace="other-source")
+    )
+    model = _model(repository)
+    repository.activate_model(
+        _principal("admin", "admin"), model.model_version_id, expected_previous=None
+    )
+    first = _snapshot(repository, integration.owner_id)
     second = repository.add_snapshot(
         first.model_copy(
             update={
@@ -751,13 +761,7 @@ def test_integration_source_scope_applies_to_reads_lists_replays_and_cancellatio
         )
     )
     analysis = repository.submit_analysis(
-        user, second.snapshot_id, idempotency_key="foreign-source", request_sha256="d" * 64
-    )
-    integration = Principal(
-        owner_id=user.owner_id,
-        role="integration",
-        token_id=uuid4(),
-        source_namespace=first.source_id,
+        other_source, second.snapshot_id, idempotency_key="foreign-source", request_sha256="d" * 64
     )
     assert repository.list_snapshots(integration) == (first,)
     assert repository.list_analyses(integration) == ()

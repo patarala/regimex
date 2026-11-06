@@ -23,6 +23,25 @@ Queued submissions and synchronous administrative imports require an
 with identical canonical content returns the original resource; changed content
 returns `409`. Every resource and download is authorized on the server.
 
+## Manage platform connections
+
+Administrator routes under `/admin/integrations` manage platform connections:
+
+| Request | Result |
+| --- | --- |
+| `POST /admin/integrations` | Register an integration account/source |
+| `GET /admin/integrations` | Paginated connection list |
+| `GET /admin/integrations/{id}` | Connection state and revision |
+| `PATCH /admin/integrations/{id}` | Rename, pause or resume with `expected_revision` |
+| `POST /admin/integrations/{id}/keys` | Issue a named, scoped key with an expiry; secret returned once |
+| `GET /admin/integrations/{id}/keys` | Paginated key metadata, never secrets |
+| `POST /admin/integrations/{id}/keys/{token_id}/revoke` | Permanently revoke a key |
+| `GET /admin/integrations/{id}/events` | Paginated access-change history |
+
+These routes require a current administrator credential; browser mutations retain
+Origin and CSRF checks. See [platform access](access.md) for capabilities, rotation
+and shared request/queue limits.
+
 ## Analyze an export
 
 | Request | Result |

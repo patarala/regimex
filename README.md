@@ -93,6 +93,7 @@ different simulator. See [evaluation](docs/quality.md) and
 | [Deployment](docs/deployment.md) | Docker, TLS, resources and local/S3 configuration |
 | [Storage](docs/storage.md) | Integrity, retention, backup and restoration |
 | [Integration](docs/integration.md) | External export and delegated access contract |
+| [Platform access](docs/access.md) | Connections, scoped keys, rotation, limits and access history |
 | [Release build](docs/releasing.md) | One-command packaging, saved assets and checksums |
 
 Build a release from a committed checkout:

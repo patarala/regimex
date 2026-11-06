@@ -13,6 +13,7 @@
       <a href="/" class="brand" aria-label="Regimex home">Regimex</a>
       <div id="account" hidden>
         <span id="owner"></span>
+        <button id="open-connections" type="button" class="quiet" hidden>Connections</button>
         <button id="logout" type="button" class="quiet">Sign out</button>
       </div>
     </header>
@@ -176,6 +177,98 @@
           </section>
         </div>
       </div>
+      <section id="connections" aria-labelledby="connections-title" hidden>
+        <div class="section-heading">
+          <h1 id="connections-title">Connections</h1>
+          <button id="close-connections" type="button" class="quiet">Back to analyses</button>
+        </div>
+        <p id="connection-notice" class="notice" role="status" aria-live="polite" hidden></p>
+        <div class="connections-layout">
+          <section class="panel" aria-labelledby="connection-list-title">
+            <div class="section-heading">
+              <h2 id="connection-list-title">Platforms</h2>
+              <button id="connections-refresh" type="button" class="quiet">Refresh</button>
+            </div>
+            <p id="connections-empty" class="hint" hidden>No connections yet.</p>
+            <ul id="connection-list" class="connection-list"></ul>
+            <nav id="connections-pages" class="history-pages" aria-label="Connection pages" hidden>
+              <button id="connections-previous" type="button" class="quiet" disabled>Previous</button>
+              <button id="connections-next" type="button" class="quiet" disabled>Next</button>
+            </nav>
+            <details id="connection-create-details" class="connection-create">
+              <summary>Add connection</summary>
+              <form id="connection-create" class="connection-form">
+                <label for="connection-new-name">Name</label>
+                <input id="connection-new-name" maxlength="120" required />
+                <label for="connection-new-owner">Integration account</label>
+                <input id="connection-new-owner" maxlength="128" required autocomplete="off" spellcheck="false" />
+                <label for="connection-new-source">Export source ID</label>
+                <input id="connection-new-source" maxlength="128" required autocomplete="off" spellcheck="false" />
+                <button type="submit">Add connection</button>
+              </form>
+            </details>
+          </section>
+          <section id="connection-detail" class="panel" aria-labelledby="connection-title" hidden>
+            <div class="section-heading">
+              <h2 id="connection-title"></h2>
+              <span id="connection-state" class="job-state"></span>
+            </div>
+            <p id="connection-identity" class="identity"></p>
+            <form id="connection-edit" class="connection-form connection-name-form">
+              <label for="connection-name">Name</label>
+              <input id="connection-name" maxlength="120" required />
+              <button type="submit" class="quiet">Save name</button>
+            </form>
+            <div class="actions">
+              <button id="connection-toggle" type="button" class="quiet"></button>
+              <button id="connection-refresh" type="button" class="quiet">Refresh connection</button>
+            </div>
+            <div class="connection-section">
+              <h2>Service keys</h2>
+              <p id="connection-keys-empty" class="hint" hidden>No service keys.</p>
+              <ul id="connection-keys" class="connection-records"></ul>
+              <nav id="connection-keys-pages" class="history-pages" aria-label="Service key pages" hidden>
+                <button id="connection-keys-previous" type="button" class="quiet" disabled>Previous</button>
+                <button id="connection-keys-next" type="button" class="quiet" disabled>Next</button>
+              </nav>
+              <details id="connection-key-details">
+                <summary>Create service key</summary>
+                <form id="connection-key-create" class="connection-form">
+                  <label for="connection-key-name">Key name</label>
+                  <input id="connection-key-name" maxlength="120" required />
+                  <label for="connection-key-days">Expires in days</label>
+                  <input id="connection-key-days" type="number" min="1" max="365" value="30" required />
+                  <fieldset class="connection-scopes">
+                    <legend>Permissions</legend>
+                    <label><input id="connection-scope-read" type="checkbox" checked /> Read results</label>
+                    <label><input id="connection-scope-upload" type="checkbox" checked /> Upload exports</label>
+                    <label><input id="connection-scope-analyze" type="checkbox" checked /> Run analyses</label>
+                  </fieldset>
+                  <button type="submit">Create key</button>
+                </form>
+              </details>
+              <div id="connection-secret" class="connection-secret" hidden>
+                <label for="connection-secret-value">New service key</label>
+                <input id="connection-secret-value" type="password" readonly autocomplete="off" spellcheck="false" />
+                <p class="hint">Save this key on the platform backend. It is shown only once.</p>
+                <div class="actions">
+                  <button id="connection-secret-copy" type="button">Copy key</button>
+                  <button id="connection-secret-clear" type="button" class="quiet">Done</button>
+                </div>
+              </div>
+            </div>
+            <div class="connection-section">
+              <h2>Access changes</h2>
+              <p id="connection-events-empty" class="hint" hidden>No access changes.</p>
+              <ul id="connection-events" class="connection-records"></ul>
+              <nav id="connection-events-pages" class="history-pages" aria-label="Access change pages" hidden>
+                <button id="connection-events-previous" type="button" class="quiet" disabled>Newer</button>
+                <button id="connection-events-next" type="button" class="quiet" disabled>Older</button>
+              </nav>
+            </div>
+          </section>
+        </div>
+      </section>
     </main>
   </body>
 </html>

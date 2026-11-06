@@ -27,6 +27,9 @@ class ServiceSettings(StrictModel):
     session_ttl_seconds: Annotated[int, Field(ge=60, le=8 * 3600)] = 1800
     max_sessions_per_token: Annotated[int, Field(ge=1, le=32)] = 8
     max_subjects_per_integration: Annotated[int, Field(ge=1, le=1_000_000)] = 100_000
+    integration_requests_per_minute: Annotated[int, Field(ge=1, le=1_000_000)] = 600
+    integration_subject_requests_per_minute: Annotated[int, Field(ge=1, le=1_000_000)] = 120
+    integration_max_pending: Annotated[int, Field(ge=1, le=1000)] = 32
     max_object_bytes: Annotated[int, Field(ge=1)] = 512 * 1024**2
     max_store_bytes: Annotated[int, Field(ge=1)] = 4 * 1024**3
     max_pending_per_owner: Annotated[int, Field(ge=1, le=1000)] = 8
@@ -71,6 +74,8 @@ class ServiceSettings(StrictModel):
             session_ttl_seconds=self.session_ttl_seconds,
             max_sessions_per_token=self.max_sessions_per_token,
             max_subjects_per_integration=self.max_subjects_per_integration,
+            integration_requests_per_minute=self.integration_requests_per_minute,
+            integration_subject_requests_per_minute=self.integration_subject_requests_per_minute,
         )
 
     @classmethod
@@ -138,6 +143,9 @@ class ServiceSettings(StrictModel):
             "session_ttl_seconds",
             "max_sessions_per_token",
             "max_subjects_per_integration",
+            "integration_requests_per_minute",
+            "integration_subject_requests_per_minute",
+            "integration_max_pending",
             "cache_budget_bytes",
             "analysis_time_budget_seconds",
             "analysis_memory_budget_bytes",

@@ -51,7 +51,7 @@ jobs:
           for script in src/regimex/web/*.js; do
             node --input-type=module --check < "$script"
           done
-          node --experimental-vm-modules --test tests/web_ui.test.cjs
+          node --experimental-vm-modules --test tests/*.test.cjs
       - name: Build wheel and source distribution
         run: uv build --no-build-isolation
       - name: Verify installation outside the source tree

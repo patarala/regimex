@@ -451,12 +451,18 @@ def create_app(
     app.add_middleware(BoundedJSONBody)
     app.state.request_models = (ExportV2, AnalysisRequest, ExperimentNameUpdate)
     bearer = HTTPBearer(auto_error=False)
+    integration_limits = None if auth_service is None else auth_service.integration_limits
 
     @app.exception_handler(ServiceError)
-    async def service_error(_request: Request, error: ServiceError) -> JSONResponse:
+    async def service_error(request: Request, error: ServiceError) -> JSONResponse:
+        request.state.integration_id = error.integration_id
+        request.state.token_id = error.token_id
         headers = {"Cache-Control": "private, no-store"}
         if error.status_code == 401:
             headers["WWW-Authenticate"] = "Bearer"
+        retry_after = getattr(error, "retry_after_seconds", None)
+        if isinstance(retry_after, int) and retry_after > 0:
+            headers["Retry-After"] = str(retry_after)
         return JSONResponse(_error(error.code, error.message), error.status_code, headers=headers)
 
     @app.exception_handler(DatabaseError)
@@ -522,30 +528,45 @@ def create_app(
     ) -> Principal:
         response.headers["Cache-Control"] = "private, no-store"
         if auth_service is not None:
+            from regimex.application.integration_access import required_scope
             from regimex.auth_api import request_auth
 
-            return auth_service.resolve(
+            delegated = request.url.path.startswith("/api/v1/integration/")
+            route_path = getattr(request.scope.get("route"), "path", "")
+            identity = auth_service.resolve(
                 request_auth(request),
-                delegated=request.url.path.startswith("/api/v1/integration/"),
+                delegated=delegated,
+                integration_scope=required_scope(request.method, route_path) if delegated else None,
             )
-        if credentials is None or credentials.scheme.lower() != "bearer":
-            raise Unauthorized
-        token = credentials.credentials
-        if len(token) > 1024 or not token or any(character.isspace() for character in token):
-            raise Unauthorized
-        identity = service.authenticate(token)
-        if any(
-            name in request.headers
-            for name in (
-                "x-external-user-id",
-                "x-external-owner-id",
-                "x-owner-id",
-                "x-source-namespace",
-                "x-regimex-subject",
-                "x-regimex-run-id",
-            )
-        ):
-            raise Forbidden("External owner or source headers are unsupported by this endpoint.")
+        else:
+            if credentials is None or credentials.scheme.lower() != "bearer":
+                raise Unauthorized
+            token = credentials.credentials
+            if len(token) > 1024 or not token or any(character.isspace() for character in token):
+                raise Unauthorized
+            identity = service.authenticate(token)
+            if any(
+                name in request.headers
+                for name in (
+                    "x-external-user-id",
+                    "x-external-owner-id",
+                    "x-owner-id",
+                    "x-source-namespace",
+                    "x-regimex-subject",
+                    "x-regimex-run-id",
+                )
+            ):
+                raise Forbidden(
+                    "External owner or source headers are unsupported by this endpoint."
+                )
+        request.state.principal = identity
+        if identity.role == "integration":
+            from regimex.application.integration_access import authorize_request
+
+            route = request.scope.get("route")
+            authorize_request(identity, request.method, getattr(route, "path", ""))
+            if integration_limits is not None and identity.run_scope is None:
+                integration_limits.consume(identity)
         return identity
 
     Identity = Annotated[Principal, Depends(principal)]
@@ -608,6 +629,7 @@ def create_app(
     def submit_analysis(
         identity: Identity,
         intake: Intake,
+        request: Request,
         response: Response,
         idempotency_key: Annotated[Identifier, Header(alias="Idempotency-Key")],
     ) -> AnalysisView:
@@ -617,6 +639,7 @@ def create_app(
             model_version_id=intake.model_version_id,
             idempotency_key=idempotency_key,
         )
+        request.state.operation_id = record.operation.operation_id
         response.headers["Location"] = f"{_prefix(identity)}/analyses/{record.analysis_id}"
         return _analysis(
             service.get_analysis_summary(identity, record.analysis_id), prefix=_prefix(identity)
@@ -777,8 +800,13 @@ def create_app(
         install_benchmark_routes(app, benchmark_service, admin_service, authenticate=principal)
     if auth_service is not None:
         from regimex.auth_api import install_session_routes
+        from regimex.infrastructure.integration_repository import IntegrationRepository
+        from regimex.integration_api import install_integration_routes
 
         install_session_routes(app, auth_service)
+        install_integration_routes(
+            app, IntegrationRepository(auth_service.repository.database), authenticate=principal
+        )
         delegated_paths = {
             "/api/v1/validate",
             "/api/v1/snapshots",

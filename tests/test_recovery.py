@@ -191,6 +191,115 @@ def test_custom_schema_recovery_preserves_identity_and_rotates_storage(
     assert minimal.source._dsn.encode() not in (minimal.directory / "manifest.json").read_bytes()
 
 
+def test_recovery_preserves_integration_access_subjects_and_request_budgets(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+) -> None:
+    from regimex.access_contracts import IntegrationKeyCreate, IntegrationUpdate
+    from regimex.infrastructure.auth_repository import AuthRepository
+    from regimex.infrastructure.integration_limits import (
+        IntegrationLimitsRepository,
+        IntegrationRateLimited,
+    )
+    from regimex.infrastructure.integration_repository import IntegrationRepository
+    from regimex.service_contracts import Unauthorized
+
+    source = minimal.source
+    admin_token = source.create_token("recovery-admin", "admin")
+    admin = source.authenticate(admin_token)
+    export = minimal.service.read_snapshot(source.authenticate(minimal.token), minimal.snapshot_id)
+    raw_key = source.create_token(
+        "recovery-platform", "integration", source_namespace=export.source.source_id
+    )
+    delegated = AuthRepository(source).bind_subject(raw_key, "alice", export.source.run_id)
+    assert delegated.integration_id is not None
+    integration_id = delegated.integration_id
+    snapshot = minimal.service.create_snapshot(delegated, export)
+    management = IntegrationRepository(source)
+    revoked = management.issue_key(
+        admin, integration_id, IntegrationKeyCreate(name="Retired", scopes=("read",))
+    )
+    management.revoke_key(admin, integration_id, revoked.key.token_id)
+    limits = IntegrationLimitsRepository(
+        source, requests_per_minute=1, subject_requests_per_minute=1
+    )
+    limits.consume(delegated)
+    integration = management.get(admin, integration_id)
+    paused = management.update(
+        admin,
+        integration_id,
+        IntegrationUpdate(expected_revision=integration.revision, enabled=False),
+    )
+    keys = management.list_keys(admin, integration_id)
+    events = management.events(admin, integration_id)
+    directory = tmp_path / "integration-backup"
+    backup = recovery.backup_service(
+        SecretStr(source._dsn),
+        source.schema,
+        minimal.store,
+        directory,
+        tools=tools,
+        attestation=stopped(),
+    )
+    for table in (
+        "regimex_integrations",
+        "regimex_integration_subjects",
+        "regimex_access_events",
+        "regimex_integration_request_windows",
+    ):
+        assert backup.manifest.tables[table].rows > 0
+
+    target = databases(source.schema)
+    store = local(tmp_path / "integration-target")
+    receipt = recovery.restore_service(
+        SecretStr(target._dsn),
+        store,
+        directory,
+        expected_manifest_sha256=backup.manifest_sha256,
+        assert_empty_store=store.assert_empty_store,
+        tools=tools,
+        attestation=stopped(),
+    )
+    assert receipt.table_evidence == backup.manifest.tables
+    target_admin = target.authenticate(admin_token)
+    restored_management = IntegrationRepository(target)
+    assert restored_management.get(target_admin, integration_id) == paused
+    assert restored_management.list_keys(target_admin, integration_id) == keys
+    assert restored_management.events(target_admin, integration_id) == events
+    with pytest.raises(Unauthorized):
+        target.authenticate(raw_key)
+    restored_management.update(
+        target_admin,
+        integration_id,
+        IntegrationUpdate(expected_revision=paused.revision, enabled=True),
+    )
+    with pytest.raises(Unauthorized):
+        target.authenticate(revoked.token.get_secret_value())
+    restored_principal = AuthRepository(target).bind_subject(raw_key, "alice", export.source.run_id)
+    assert restored_principal == delegated
+    assert (
+        analysis_service(target, store, tmp_path / "integration-work").read_snapshot(
+            restored_principal, snapshot.snapshot_id
+        )
+        == export
+    )
+    with target.connection() as connection:
+        assert connection.execute(
+            "SELECT count(*),sum(request_count) FROM regimex_integration_request_windows"
+        ).fetchone() == (2, 2)
+        # Restore duration is unrelated to the rate-limit behavior being checked.
+        # Advance the restored window's test clock without changing its spent budget.
+        connection.execute(
+            "UPDATE regimex_integration_request_windows SET started_at=clock_timestamp()"
+        )
+    with pytest.raises(IntegrationRateLimited):
+        IntegrationLimitsRepository(
+            target, requests_per_minute=1, subject_requests_per_minute=1
+        ).consume(restored_principal)
+
+
 def test_backup_evidence_distinguishes_signed_zero_and_float_integer_types(
     minimal: MinimalBackup,
     databases: DatabaseFactory,

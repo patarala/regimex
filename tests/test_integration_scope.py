@@ -28,7 +28,7 @@ from regimex.infrastructure.auth_repository import AuthRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import LocalObjectStore
 from regimex.model_registry import ArchitectureRegistry, baseline_descriptor
-from regimex.service_contracts import CapacityExceeded, Forbidden, NotFound, Principal
+from regimex.service_contracts import CapacityExceeded, Conflict, Forbidden, NotFound, Principal
 
 ORIGIN = "https://regimex.example"
 PREFIX = "/api/v1/integration"
@@ -249,9 +249,10 @@ def test_delegated_upload_validation_and_reads_are_bound_before_object_access(
     ] == [second]
     # An earlier server-owned snapshot with the same effective owner and a
     # different source must remain hidden from the integration credential.
-    local = context.database.authenticate(
+    with pytest.raises(Conflict, match="reserved"):
         context.database.create_token(context.identity().owner_id, "user")
-    )
+    # Insert a deliberate stored-data fixture without minting a conflicting credential.
+    local = Principal(owner_id=context.identity().owner_id, role="user", token_id=uuid4())
     foreign = context.service.create_snapshot(local, export(source="another-simulator"))
     with pytest.raises(NotFound):
         context.database.get_snapshot(context.identity(), foreign.snapshot_id)
@@ -297,7 +298,9 @@ def test_every_analysis_job_result_and_report_route_hides_other_run_or_subject(
         assert [item["analysis_id"] for item in response.json()["items"]] == [str(expected)]
     # Source filtering must precede pagination even for an older resource that
     # happens to share this delegated effective owner and the same run ID.
-    local = context.database.authenticate(context.database.create_token(identity.owner_id, "user"))
+    with pytest.raises(Conflict, match="reserved"):
+        context.database.create_token(identity.owner_id, "user")
+    local = Principal(owner_id=identity.owner_id, role="user", token_id=uuid4())
     foreign_snapshot = context.service.create_snapshot(local, export(source="foreign-source"))
     foreign = context.service.submit_analysis(
         local, foreign_snapshot.snapshot_id, idempotency_key="foreign-source-analysis"

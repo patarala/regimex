@@ -46,6 +46,7 @@ def create_service(settings: ServiceSettings) -> AnalysisService:
         ArchitectureRegistry.discover(),
         settings.work_root,
         max_pending=settings.max_pending_per_owner,
+        integration_max_pending=settings.integration_max_pending,
         heartbeat_seconds=settings.heartbeat_seconds,
         stale_seconds=settings.stale_seconds,
         cache_budget_bytes=settings.cache_budget_bytes,

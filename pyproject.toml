@@ -106,6 +106,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/test_admin_workflow.py" = ["E402"]
 "tests/test_final_reference_import.py" = ["E402"]
 "tests/test_recovery.py" = ["E402"]
+"tests/test_integration_security.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.14"

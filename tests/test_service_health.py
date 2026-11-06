@@ -1,5 +1,6 @@
 """Real TLS readiness, queue heartbeats, worker death and private operational logs."""
 
+import hashlib
 import json
 import logging
 import os
@@ -279,15 +280,27 @@ def test_queue_status_uses_actual_queue_capacity_and_heartbeat_freshness(
 
 def test_queue_registry_migration_preserves_existing_resources_and_is_repeatable(
     database: DatabaseRepository,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    credential = database.create_token("fixture", "user")
+    from alembic import command
+    from alembic.config import Config
+
+    database = DatabaseRepository(database._dsn, schema="regimex_queue_upgrade")
+    original_upgrade = command.upgrade
+
+    def initial_schema(config: Config, revision: str) -> None:
+        original_upgrade(config, "0001_initial" if revision == "head" else revision)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(command, "upgrade", initial_schema)
+        database.migrate()
+    credential = "rgx_" + "q" * 43
     with database.connection() as connection:
-        connection.execute("DROP TABLE regimex_worker_queues")
         connection.execute(
-            "ALTER TABLE regimex_snapshots DROP COLUMN display_name_search, "
-            "DROP COLUMN display_name, DROP COLUMN name_revision"
+            "INSERT INTO regimex_tokens (token_id,token_sha256,owner_id,role,created_at) "
+            "VALUES (%s,%s,'fixture','user',clock_timestamp())",
+            (uuid4(), hashlib.sha256(credential.encode("ascii")).hexdigest()),
         )
-        connection.execute("UPDATE alembic_version SET version_num='0001_initial'")
     assert not database.readiness()
     assert queue_status(database, "analysis", stale_seconds=3).state == "unknown"
     database.migrate()

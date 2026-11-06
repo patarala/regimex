@@ -6,6 +6,7 @@ from typing import Literal, cast
 
 from pydantic import ValidationError
 
+from regimex.access_contracts import IntegrationScope
 from regimex.auth_contracts import (
     AuthPolicy,
     BrowserPrincipal,
@@ -16,6 +17,7 @@ from regimex.auth_contracts import (
     canonical_origin,
 )
 from regimex.infrastructure.auth_repository import SESSION, AuthRepository, session_hash
+from regimex.infrastructure.integration_limits import IntegrationLimitsRepository
 from regimex.service_contracts import Forbidden, Principal, ServiceError, Unauthorized
 
 _SESSION_NAMES = {"__Host-regimex_session", "regimex_session"}
@@ -40,6 +42,11 @@ class AuthService:
     def __init__(self, repository: AuthRepository, policy: AuthPolicy) -> None:
         self.repository = repository
         self.policy = AuthPolicy.model_validate_json(policy.model_dump_json())
+        self.integration_limits = IntegrationLimitsRepository(
+            repository.database,
+            requests_per_minute=self.policy.integration_requests_per_minute,
+            subject_requests_per_minute=self.policy.integration_subject_requests_per_minute,
+        )
 
     @property
     def cookie_name(self) -> str:
@@ -202,7 +209,13 @@ class AuthService:
         raw_session, _record = self._cookie_session(request)
         self.repository.revoke_session(raw_session)
 
-    def resolve(self, request: RequestAuth, *, delegated: bool = False) -> Principal:
+    def resolve(
+        self,
+        request: RequestAuth,
+        *,
+        delegated: bool = False,
+        integration_scope: IntegrationScope | None = None,
+    ) -> Principal:
         self._transport(request, browser=False)
         raw_token, raw_session = self._credentials(request)
         if delegated:
@@ -222,6 +235,8 @@ class AuthService:
                     subject,
                     run_id,
                     maximum_subjects=self.policy.max_subjects_per_integration,
+                    required_scope=integration_scope,
+                    limits=self.integration_limits,
                 )
             except ValidationError as exc:
                 raise ServiceError(

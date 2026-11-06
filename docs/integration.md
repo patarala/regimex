@@ -26,7 +26,9 @@ market behavior require tests using that simulator's real exports.
 ## Delegated access
 
 The simulator backend authenticates its user and checks ownership of the selected
-completed run. It alone holds a source-bound Regimex integration token:
+completed run. It alone holds a source-bound Regimex integration key. Register and
+manage the connection through **Connections** in the administrator interface or
+the [operator commands](access.md). For initial local provisioning:
 
 ```sh
 uv run --locked --all-extras regimex service token-create \
@@ -48,6 +50,12 @@ stable agreed encoding. The source comes from the credential, not a browser head
 The effective owner binds integration account, source and verified subject. Another
 subject, run, account or source cannot read the resource. Same-account/source token
 rotation preserves that binding.
+
+Keys have explicit `read`, `upload` and `analyze` capabilities. The full gateway
+sequence below needs all three. Keys issued through local provisioning expire after
+30 days; rotate them through the same connection. Request and queue budgets are
+shared by all its keys. A request-rate `429` includes `Retry-After`; see
+[access limits](access.md#request-and-queue-limits).
 
 Integration routes require backend bearer credentials and reject browser sessions
 and Origin/Fetch headers. Ordinary routes reject integration subject/run assertions.

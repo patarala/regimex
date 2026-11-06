@@ -13,6 +13,7 @@ from uuid import UUID
 
 import typer
 
+from regimex.integration_cli import install_integration_commands
 from regimex.service_settings import ServiceSettings
 from regimex.storage_cli import install_storage_commands
 
@@ -51,6 +52,7 @@ def _execute(action: Callable[[], None]) -> None:
 
 
 install_storage_commands(app, _execute)
+install_integration_commands(app, _execute)
 
 
 @app.command("doctor")

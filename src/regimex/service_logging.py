@@ -6,9 +6,11 @@ import os
 import re
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
+from uuid import UUID, uuid4
 
 if TYPE_CHECKING:
     from fastapi import FastAPI, Request, Response
@@ -76,6 +78,10 @@ class RedactingJSONFormatter(logging.Formatter):
             "route",
             "status",
             "duration_ms",
+            "request_id",
+            "integration_id",
+            "token_id",
+            "resource_id",
         ):
             value = getattr(record, name, None)
             if isinstance(value, (str, int, float, bool)):
@@ -111,10 +117,13 @@ def install_http_logging(app: FastAPI) -> None:
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         start = time.monotonic()
+        request_id = uuid4().hex
+        request.state.request_id = request_id
         status = 500
         try:
             response = await call_next(request)
             status = response.status_code
+            response.headers["X-Request-ID"] = request_id
             return response
         finally:
             route = getattr(request.scope.get("route"), "path", "[unmatched]")
@@ -123,13 +132,33 @@ def install_http_logging(app: FastAPI) -> None:
                 if request.method in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
                 else "OTHER"
             )
+            fields: dict[str, str | int | float] = {
+                "action": "request",
+                "method": method,
+                "route": route,
+                "status": status,
+                "duration_ms": round((time.monotonic() - start) * 1000, 3),
+                "request_id": request_id,
+            }
+            principal = getattr(request.state, "principal", None)
+            if principal is not None and principal.role == "integration":
+                fields["token_id"] = str(principal.token_id)
+                if principal.integration_id is not None:
+                    fields["integration_id"] = str(principal.integration_id)
+            for name in ("integration_id", "token_id"):
+                identity = getattr(request.state, name, None)
+                if isinstance(identity, UUID):
+                    fields[name] = str(identity)
+            operation_id = getattr(request.state, "operation_id", None)
+            if isinstance(operation_id, UUID):
+                fields["operation_id"] = str(operation_id)
+            for name in ("analysis_id", "operation_id", "snapshot_id"):
+                value = request.path_params.get(name)
+                if value is not None:
+                    with suppress(ValueError):
+                        fields["resource_id"] = str(UUID(str(value)))
+                    break
             logger.info(
                 "HTTP request completed",
-                extra={
-                    "action": "request",
-                    "method": method,
-                    "route": route,
-                    "status": status,
-                    "duration_ms": round((time.monotonic() - start) * 1000, 3),
-                },
+                extra=fields,
             )

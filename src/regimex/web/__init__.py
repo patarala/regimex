@@ -30,6 +30,7 @@ _ASSETS = {
     "comparison.js": "text/javascript",
     "queue-status.js": "text/javascript",
     "ui.js": "text/javascript",
+    "integrations.js": "text/javascript",
 }
 
 
