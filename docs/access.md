@@ -118,8 +118,19 @@ Request-rate exhaustion returns `429` with code `rate_limit` and `Retry-After` i
 seconds. Pending-operation exhaustion returns `capacity_limit`; retry after
 existing work finishes or is cancelled. An idempotent replay reuses its analysis
 even when the pending quota is full, but remains subject to request limits.
-These limits do not impose per-owner disk quotas; the configured overall object
-storage capacity still applies.
+Snapshots and saved analysis HTML also have separate storage budgets: 1 GiB per
+owner and 2 GiB per connection by default. Operators set
+`REGIMEX_MAX_OWNER_STORAGE_BYTES` and `REGIMEX_MAX_INTEGRATION_STORAGE_BYTES` for
+the API and workers together. All keys and delegated users of a connection share
+its budget; replacing a key does not reset it. The global store capacity still
+applies, including administrator-managed model and dataset assets.
+
+The workspace shows the signed-in owner's usage. **Connections** shows the
+selected platform's total. Both distinguish saved bytes from reservations for
+uploads or cleanup after failed writes. Reservations continue to consume quota
+until registration or verified offline cleanup; retries cannot silently discard
+their cost. A quota refusal preserves existing results. See
+[storage](storage.md) for cleanup and the scope of these limits.
 
 ## History and diagnostics
 

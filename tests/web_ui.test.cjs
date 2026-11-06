@@ -83,7 +83,7 @@ async function workspace(count = 45) {
   const location = {href: "http://localhost/"};
   const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
   const state = {
-    holdHistory: false, holdModels: false, activeModelId: "tcn-1",
+    holdHistory: false, holdModels: false, holdStorage: false, activeModelId: "tcn-1",
     now: Date.parse("2026-01-01T00:00:30Z"), names: new Map(),
   };
   const models = [{model_version_id: "baseline-1"}, {model_version_id: "tcn-1"}];
@@ -131,6 +131,9 @@ async function workspace(count = 45) {
       }};
       calls.push(call);
       if (url === "/api/v1/session") call.reply(session);
+      else if (url === "/api/v1/storage" && !state.holdStorage) call.reply({
+        used_bytes: 1024, reserved_bytes: 0, limit_bytes: 1024 ** 3, available_bytes: 1024 ** 3 - 1024,
+      });
       else if (url.startsWith("/api/v1/models?") && !state.holdModels) {
         const query = new URL(url, location.href).searchParams;
         assert.equal(query.get("published_only"), "true");
@@ -173,6 +176,55 @@ function metadata(job, state = "running") {
     job: {operation_id: job, state, stage: "predicting", failure: null, model: {model_version_id: "test-model"}},
   };
 }
+
+test("storage shows saved and reserved bytes, handles errors and refreshes", async () => {
+  const ui = await workspace();
+  await flush();
+  assert.equal(ui.get("storage-usage").textContent, "Storage: 1 KiB of 1 GiB");
+  assert.equal(ui.get("storage-reserved").hidden, true);
+  ui.state.holdStorage = true;
+  await ui.get("storage-refresh").click();
+  ui.pending("/api/v1/storage").reply({
+    used_bytes: 1024, reserved_bytes: 1024, limit_bytes: 2048, available_bytes: 0,
+  });
+  await flush();
+  assert.equal(ui.get("storage-usage").textContent, "Storage: 2 KiB of 2 KiB");
+  assert.match(ui.get("storage-available").textContent, /limit reached/);
+  assert.match(ui.get("storage-reserved").textContent, /1 KiB reserved/);
+  assert.equal(ui.get("storage-reserved").hidden, false);
+  await ui.get("storage-refresh").click();
+  ui.pending("/api/v1/storage").reply({error: {message: "Unavailable"}}, 503);
+  await flush();
+  assert.equal(ui.get("storage-usage").textContent, "Storage usage unavailable.");
+  assert.equal(ui.get("storage-reserved").hidden, true);
+  ui.state.holdStorage = false;
+  await ui.get("storage-refresh").click();
+  await flush();
+  assert.equal(ui.get("storage-usage").textContent, "Storage: 1 KiB of 1 GiB");
+});
+
+test("outdated storage requests cannot overwrite refreshes or a signed-out workspace", async () => {
+  const ui = await workspace();
+  await flush();
+  ui.state.holdStorage = true;
+  await ui.get("storage-refresh").click();
+  const stale = ui.pending("/api/v1/storage");
+  await ui.get("storage-refresh").click();
+  const latest = ui.calls.filter((call) => call.url === "/api/v1/storage" && !call.settled).at(-1);
+  latest.reply({used_bytes: 2048, reserved_bytes: 0, limit_bytes: 4096, available_bytes: 2048});
+  await flush();
+  stale.reply({used_bytes: 0, reserved_bytes: 0, limit_bytes: 4096, available_bytes: 4096});
+  await flush();
+  assert.equal(ui.get("storage-usage").textContent, "Storage: 2 KiB of 4 KiB");
+  await ui.get("storage-refresh").click();
+  const signedOut = ui.pending("/api/v1/storage");
+  await ui.get("logout").click();
+  await flush();
+  signedOut.reply({used_bytes: 4096, reserved_bytes: 0, limit_bytes: 4096, available_bytes: 0});
+  await flush();
+  assert.equal(ui.get("storage-status").hidden, true);
+  assert.equal(ui.get("storage-usage").textContent, "");
+});
 
 test("selection clears cancellation before loading and after a load failure", async () => {
   const ui = await workspace();

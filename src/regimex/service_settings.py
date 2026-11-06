@@ -32,6 +32,8 @@ class ServiceSettings(StrictModel):
     integration_max_pending: Annotated[int, Field(ge=1, le=1000)] = 32
     max_object_bytes: Annotated[int, Field(ge=1)] = 512 * 1024**2
     max_store_bytes: Annotated[int, Field(ge=1)] = 4 * 1024**3
+    max_owner_storage_bytes: Annotated[int, Field(ge=1, le=2**63 - 1)] = 1024**3
+    max_integration_storage_bytes: Annotated[int, Field(ge=1, le=2**63 - 1)] = 2 * 1024**3
     max_pending_per_owner: Annotated[int, Field(ge=1, le=1000)] = 8
     cache_budget_bytes: Annotated[int, Field(ge=1)] = 512 * 1024**2
     analysis_time_budget_seconds: Annotated[int, Field(ge=1, le=86400)] = 120
@@ -55,6 +57,8 @@ class ServiceSettings(StrictModel):
             raise ValueError("REGIMEX_DATABASE_DSN is required")
         if self.max_store_bytes < self.max_object_bytes:
             raise ValueError("store capacity must be at least the maximum object size")
+        if self.max_owner_storage_bytes > self.max_integration_storage_bytes:
+            raise ValueError("owner storage quota cannot exceed the integration storage quota")
         if self.stale_seconds < 3 * self.heartbeat_seconds:
             raise ValueError("stale timeout must allow at least three heartbeats")
         if (self.object_backend == "s3") != (self.s3 is not None):
@@ -139,6 +143,8 @@ class ServiceSettings(StrictModel):
         for name in (
             "max_object_bytes",
             "max_store_bytes",
+            "max_owner_storage_bytes",
+            "max_integration_storage_bytes",
             "max_pending_per_owner",
             "session_ttl_seconds",
             "max_sessions_per_token",

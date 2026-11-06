@@ -4,10 +4,12 @@ import {createHistory} from "./history.js";
 import {createComparison} from "./comparison.js";
 import {createAnalysis} from "./analysis.js";
 import {createIntegrations} from "./integrations.js";
+import {createStorage} from "./storage.js";
 
 const session = createSession({
   onActivate: async () => {
     integrations.activate();
+    void storage.load();
     void models.load();
     await history.load();
     const selected = new URL(location.href).searchParams.get("analysis");
@@ -15,6 +17,7 @@ const session = createSession({
   },
   onReset: () => {
     integrations.reset();
+    storage.reset();
     history.reset();
     models.reset();
     analysis.reset();
@@ -29,6 +32,8 @@ const history = createHistory({session, getSelection, openAnalysis: (id) => anal
     comparison.show(selection, second);
   }});
 const comparison = createComparison({session, getSelection});
-const analysis = createAnalysis({session, models, history, comparison});
+const storage = createStorage({session});
+const analysis = createAnalysis({session, models, history, comparison,
+  onStorageChange: () => { void storage.load(); }});
 const integrations = createIntegrations({session});
 void session.start();

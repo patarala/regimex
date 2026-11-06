@@ -348,6 +348,27 @@ def _table_evidence(
     revision = _first(connection, "SELECT version_num FROM alembic_version")
     if revision != RECOVERY_REVISION:
         raise ValueError("Offline recovery requires the current database schema revision.")
+    inconsistent = connection.execute(
+        "WITH owned AS (SELECT object_key,owner_id,source_id FROM regimex_snapshots UNION "
+        "SELECT r.object_key,r.owner_id,s.source_id FROM regimex_analysis_reports r "
+        "JOIN regimex_snapshots s ON s.snapshot_id=r.snapshot_id) "
+        "SELECT 1 FROM owned JOIN regimex_objects o USING(object_key) "
+        "LEFT JOIN regimex_storage_reservations q USING(object_key) "
+        "WHERE q.object_key IS NULL OR (q.owner_id,q.source_id,q.sha256,q.size_bytes) "
+        "IS DISTINCT FROM (owned.owner_id,owned.source_id,o.sha256,o.size_bytes) LIMIT 1"
+    ).fetchone()
+    if inconsistent is not None:
+        raise ValueError("Stored resource accounting differs from registered object ownership.")
+    inconsistent = connection.execute(
+        "SELECT 1 FROM regimex_storage_reservations q "
+        "LEFT JOIN regimex_integrations i ON i.source_namespace=q.source_id "
+        "AND (i.owner_id=q.owner_id OR EXISTS ("
+        "SELECT 1 FROM regimex_integration_subjects s WHERE s.effective_owner_id=q.owner_id "
+        "AND s.integration_owner_id=i.owner_id AND s.source_namespace=i.source_namespace)) "
+        "WHERE q.integration_id IS DISTINCT FROM i.integration_id LIMIT 1"
+    ).fetchone()
+    if inconsistent is not None:
+        raise ValueError("Storage accounting differs from its integration owner binding.")
     for table in _tables(connection, schema):
         if table == "regimex_restore_state" and pending_restore:
             if connection.execute("SELECT 1 FROM regimex_restore_state LIMIT 1").fetchone():

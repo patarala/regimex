@@ -191,6 +191,59 @@ def test_custom_schema_recovery_preserves_identity_and_rotates_storage(
     assert minimal.source._dsn.encode() not in (minimal.directory / "manifest.json").read_bytes()
 
 
+def test_recovery_preserves_committed_usage_and_uncertain_upload_reservations(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+) -> None:
+    from regimex.infrastructure.storage_quotas import StorageQuotaRepository
+    from regimex.storage_contracts import StorageQuotaExceeded
+
+    owner = minimal.source.authenticate(minimal.token)
+    committed = minimal.service.storage_usage(owner).used_bytes
+    quota = StorageQuotaRepository(
+        minimal.source,
+        max_owner_storage_bytes=committed + 7,
+        max_integration_storage_bytes=committed + 7,
+    )
+    pending = ObjectInfo(
+        key="interrupted/snapshot", sha256="a" * 64, size_bytes=7, version_id="unwritten"
+    )
+    quota.reserve(owner.owner_id, "simulator", pending)
+    before = quota.owner_usage(owner)
+    directory = tmp_path / "quota-backup"
+    backup = recovery.backup_service(
+        SecretStr(minimal.source._dsn),
+        minimal.source.schema,
+        minimal.store,
+        directory,
+        tools=tools,
+        attestation=stopped(),
+    )
+    assert backup.manifest.tables["regimex_storage_reservations"].rows == 2
+    target = databases(minimal.source.schema)
+    store = local(tmp_path / "quota-target")
+    recovery.restore_service(
+        SecretStr(target._dsn),
+        store,
+        directory,
+        expected_manifest_sha256=backup.manifest_sha256,
+        assert_empty_store=store.assert_empty_store,
+        tools=tools,
+        attestation=stopped(),
+    )
+    restored = StorageQuotaRepository(
+        target,
+        max_owner_storage_bytes=committed + 7,
+        max_integration_storage_bytes=committed + 7,
+    )
+    assert restored.owner_usage(target.authenticate(minimal.token)) == before
+    restored.reserve(owner.owner_id, "simulator", pending)
+    with pytest.raises(StorageQuotaExceeded):
+        restored.reserve(owner.owner_id, "simulator", pending.model_copy(update={"key": "new"}))
+
+
 def test_recovery_preserves_integration_access_subjects_and_request_budgets(
     minimal: MinimalBackup,
     databases: DatabaseFactory,

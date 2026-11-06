@@ -59,7 +59,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0005_integration_limits"
+_REVISION = "0006_storage_quotas"
 
 
 def _read_operation(document: object) -> Operation:
@@ -285,6 +285,9 @@ class DatabaseRepository:
     def _add_snapshot(
         self, connection: psycopg.Connection[tuple[object, ...]], record: SnapshotRecord
     ) -> SnapshotRecord:
+        from regimex.infrastructure.storage_quotas import record_owned_object
+
+        record_owned_object(connection, record.owner_id, record.source_id, record.object)
         self._object(connection, record.object)
         connection.execute(
             "INSERT INTO regimex_snapshots "
@@ -941,6 +944,9 @@ class DatabaseRepository:
                 or report.object.size_bytes > MAX_REPORT_BYTES
             ):
                 raise Conflict("The report identity differs from the fenced analysis result.")
+            from regimex.infrastructure.storage_quotas import record_owned_object
+
+            record_owned_object(connection, report.owner_id, snapshot.source_id, report.object)
             self._object(connection, report.object)
             connection.execute(
                 "INSERT INTO regimex_analysis_reports "

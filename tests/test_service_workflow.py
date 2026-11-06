@@ -155,6 +155,38 @@ def test_doctor_restores_saved_model_in_a_child_and_detects_corrupted_storage(
     assert service.repository.get_active_model() == model
 
 
+def test_report_quota_fails_explicitly_before_upload_and_success_charges_exact_bytes(
+    service: AnalysisService, tmp_path: Path
+) -> None:
+    from regimex.infrastructure.storage_quotas import StorageQuotaRepository
+
+    published_model(service, tmp_path)
+    owner = principal(service.repository)
+    snapshot = service.create_snapshot(owner, source(500).export)
+    size = snapshot.object.size_bytes
+    service.storage_quotas = StorageQuotaRepository(
+        service.repository, max_owner_storage_bytes=size, max_integration_storage_bytes=size
+    )
+    queued = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key="full-storage")
+    failed = service.run_analysis(queued.analysis_id)
+    assert failed is not None and failed.state == "failed" and failed.failure is not None
+    assert failed.failure.code == "capacity_limit"
+    assert "storage limit" in failed.failure.message
+    assert not failed.failure.retryable
+    assert not any(item.key.startswith("reports/") for item in service.store.inventory())
+    assert service.storage_usage(owner).reserved_bytes == 0
+
+    service.storage_quotas = StorageQuotaRepository(service.repository)
+    queued = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key="more-storage")
+    completed = service.run_analysis(queued.analysis_id)
+    assert completed is not None and completed.state == "succeeded"
+    usage = service.storage_usage(owner)
+    report = service.repository.get_analysis_report(owner, queued.analysis_id)
+    assert report is not None
+    assert usage.used_bytes == size + report.object.size_bytes
+    assert usage.reserved_bytes == 0
+
+
 def test_signed_zero_and_exponent_result_report_and_preview_survive_real_worker(
     service: AnalysisService, tmp_path: Path
 ) -> None:

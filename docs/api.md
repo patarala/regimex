@@ -37,6 +37,7 @@ Administrator routes under `/admin/integrations` manage platform connections:
 | `GET /admin/integrations/{id}/keys` | Paginated key metadata, never secrets |
 | `POST /admin/integrations/{id}/keys/{token_id}/revoke` | Permanently revoke a key |
 | `GET /admin/integrations/{id}/events` | Paginated access-change history |
+| `GET /admin/integrations/{id}/storage` | Connection-wide storage usage and limit |
 
 These routes require a current administrator credential; browser mutations retain
 Origin and CSRF checks. See [platform access](access.md) for capabilities, rotation
@@ -61,6 +62,18 @@ and shared request/queue limits.
 | `GET /experiments` | Owned history grouped by saved snapshot, with `limit`/`offset` |
 | `PATCH /experiments/{snapshot_id}/name` | Rename an experiment with a revision check |
 | `GET /service-status` | Current analysis-queue availability for signed-in users |
+| `GET /storage` | The authenticated owner's storage usage and limit |
+
+Storage responses contain `used_bytes`, `reserved_bytes`, `limit_bytes` and
+`available_bytes`. Saved snapshots and analysis HTML count toward the quota;
+reserved bytes include uploads in progress or awaiting offline cleanup after a
+failure. Generated snapshots count toward their administrator owner's quota too.
+Result JSON in PostgreSQL and administrator-managed model, reference and dataset
+metadata objects are outside these object-storage quotas. Those object payloads
+still share the global store capacity. `available_bytes` is the remaining quota,
+not a guarantee of free disk space. Owner usage cannot be queried by supplying
+another owner's identifier.
+Delegated clients use `GET /integration/storage` with the `read` capability.
 
 History accepts `q` (up to 128 characters) for a case-insensitive, literal search
 across experiment names and source, run, snapshot, instrument, model and analysis

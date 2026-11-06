@@ -49,6 +49,7 @@ from regimex.service_contracts import (
     SnapshotRecord,
     Unauthorized,
 )
+from regimex.storage_contracts import StorageUsage
 
 if TYPE_CHECKING:
     from regimex.admin_api import AdminAPIService
@@ -64,6 +65,12 @@ class AnalysisAPIService(Protocol):
     def readiness(self) -> dict[str, JsonValue]: ...
 
     def get_service_status(self, principal: Principal) -> QueueStatus: ...
+
+    def storage_usage(self, principal: Principal) -> StorageUsage: ...
+
+    def integration_storage_usage(
+        self, principal: Principal, integration_id: UUID
+    ) -> StorageUsage: ...
 
     def create_snapshot(self, principal: Principal, export: ExportV2) -> SnapshotRecord: ...
 
@@ -747,6 +754,14 @@ def create_app(
     def service_status(identity: Identity) -> QueueStatus:
         return service.get_service_status(identity)
 
+    @app.get("/api/v1/storage")
+    def storage_usage(identity: Identity) -> StorageUsage:
+        return service.storage_usage(identity)
+
+    @app.get("/api/v1/admin/integrations/{integration_id}/storage")
+    def integration_storage(integration_id: UUID, identity: Identity) -> StorageUsage:
+        return service.integration_storage_usage(identity, integration_id)
+
     @app.get("/api/v1/models")
     def list_models(
         identity: Identity,
@@ -808,6 +823,7 @@ def create_app(
             app, IntegrationRepository(auth_service.repository.database), authenticate=principal
         )
         delegated_paths = {
+            "/api/v1/storage",
             "/api/v1/validate",
             "/api/v1/snapshots",
             "/api/v1/snapshots/{snapshot_id}",

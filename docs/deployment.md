@@ -104,10 +104,11 @@ or ineffective backend settings fail explicitly.
 | `REGIMEX_ADMIN_MEMORY_BUDGET_BYTES` / `REGIMEX_ADMIN_SCRATCH_BUDGET_BYTES` | 4 GiB / 4 GiB |
 | `REGIMEX_HEARTBEAT_SECONDS` / `REGIMEX_STALE_SECONDS` | 10 / 120; stale must allow at least three heartbeats |
 | `REGIMEX_MAX_OBJECT_BYTES` / `REGIMEX_MAX_STORE_BYTES` | 512 MiB / 4 GiB |
+| `REGIMEX_MAX_OWNER_STORAGE_BYTES` / `REGIMEX_MAX_INTEGRATION_STORAGE_BYTES` | 1 GiB per owner / 2 GiB per connection, including reservations |
 | `REGIMEX_CACHE_BUDGET_BYTES` | 512 MiB |
 
 Compose fixes some infrastructure values in its shared environment mapping and
-forwards the three analysis budgets from the shell. Inspect `docker compose
+forwards analysis budgets, integration limits and storage quotas from the shell. Inspect `docker compose
 config` after changing limits. Child memory limits are virtual address space,
 not measured resident memory. Requests must fit both application and container limits.
 

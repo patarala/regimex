@@ -41,7 +41,7 @@ async function workspace(role = "admin") {
   const calls = [];
   const copied = [];
   const events = new Map();
-  const state = {delayIssue: false};
+  const state = {delayIssue: false, delayStorage: false};
   const session = {
     epoch: 1, value: {principal: {role}},
     json(url, options = {}) {
@@ -51,6 +51,10 @@ async function workspace(role = "admin") {
         if (options.method === "POST" && url.endsWith("/keys")) {
           if (!state.delayIssue) resolve({key: {token_id: "key-1"}, token: "rgx_once-only-secret"});
         } else if (url.includes("/keys?") || url.includes("/events?")) resolve({items: []});
+        else if (url.endsWith("/storage")) {
+          if (!state.delayStorage) resolve({used_bytes: 1024, reserved_bytes: 0,
+            limit_bytes: 2 * 1024 ** 3, available_bytes: 2 * 1024 ** 3 - 1024});
+        }
         else if (url.includes("integrations?")) resolve({items: [connection("one"), connection("two")]});
         else if (url.endsWith("/one")) resolve(connection("one"));
         else if (url.endsWith("/two")) resolve(connection("two"));
@@ -174,4 +178,33 @@ test("a pending key cannot reappear after leaving the document", async () => {
   await flush();
   assert.equal(page.get("connection-secret-value").value, "");
   assert.equal(page.get("connection-secret").hidden, true);
+});
+
+test("connection storage follows selection and is cleared when signing out", async () => {
+  const page = await workspace();
+  await page.open();
+  assert.equal(page.get("connection-storage-usage").textContent, "Storage: 1 KiB of 2 GiB");
+  page.state.delayStorage = true;
+  page.get("connection-refresh").fire("click");
+  await flush();
+  const stale = page.calls.filter((call) => call.url.endsWith("/one/storage")).at(-1);
+  page.get("connection-list").children[1].children[0].fire("click");
+  await flush();
+  const latest = page.calls.find((call) => call.url.endsWith("/two/storage"));
+  latest.resolve({used_bytes: 2048, reserved_bytes: 1024, limit_bytes: 4096, available_bytes: 1024});
+  await flush();
+  stale.resolve({used_bytes: 0, reserved_bytes: 0, limit_bytes: 4096, available_bytes: 4096});
+  await flush();
+  assert.equal(page.get("connection-storage-usage").textContent, "Storage: 3 KiB of 4 KiB");
+  assert.match(page.get("connection-storage-reserved").textContent, /1 KiB reserved/);
+  page.get("connection-refresh").fire("click");
+  await flush();
+  const signedOut = page.calls.filter((call) => call.url.endsWith("/two/storage")).at(-1);
+  page.session.epoch++;
+  page.session.value = null;
+  page.controller.reset();
+  signedOut.resolve({used_bytes: 4096, reserved_bytes: 0, limit_bytes: 4096, available_bytes: 0});
+  await flush();
+  assert.equal(page.get("connection-storage-status").hidden, true);
+  assert.equal(page.get("connection-storage-usage").textContent, "");
 });

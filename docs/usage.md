@@ -113,6 +113,12 @@ not execute probes inside remote workers or train a model.
 The default session expires after 30 minutes from sign-in. Refreshing the page
 does not extend it. Results survive sign-out and service restarts.
 
+The upload panel shows your storage usage and remaining quota. **Refresh storage**
+reloads it; uploads and completed analyses also refresh the figures. Reserved
+space covers uploads in progress or awaiting cleanup after a failure. If the
+limit is reached, contact the administrator; retrying an unchanged upload does
+not create another copy. Saved analyses remain readable.
+
 ## Run again and compare
 
 Open a completed, failed or cancelled analysis from **Experiments**. Under

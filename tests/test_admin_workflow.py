@@ -372,6 +372,36 @@ def test_generic_candidate_evaluate_publish_and_saved_analysis(
     assert final_report["independent"] is False
 
 
+def test_generation_cannot_bypass_snapshot_storage_admission(
+    admin: tuple[AdminService, Principal],
+) -> None:
+    from regimex.infrastructure.storage_quotas import StorageQuotaRepository
+
+    service, principal = admin
+    service.analysis_service.storage_quotas = StorageQuotaRepository(
+        service.analysis_service.repository,
+        max_owner_storage_bytes=1,
+        max_integration_storage_bytes=1,
+    )
+    run = service.submit_generation(
+        principal,
+        GenerationSpec(
+            dataset_id="quota-generation",
+            plan=RawGenerationPlan(seed=123456, experiment_count=3, step_count=64),
+        ),
+        idempotency_key="quota-generation",
+    )
+    result = service.run_admin(run.run_id)
+    assert result is not None and result.operation.state == "failed"
+    failure = result.operation.failure
+    assert failure is not None and failure.code == "capacity_limit"
+    assert not failure.retryable
+    with pytest.raises(NotFound):
+        service.get_dataset(principal, "quota-generation")
+    assert service.analysis_service.store.inventory() == ()
+    assert service.analysis_service.storage_usage(principal).reserved_bytes == 0
+
+
 def test_generation_has_separate_references_and_complete_immutable_dataset(
     admin: tuple[AdminService, Principal],
 ) -> None:

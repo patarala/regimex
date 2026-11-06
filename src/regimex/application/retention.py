@@ -18,6 +18,7 @@ from regimex.infrastructure.object_store import (
     ObjectIntegrityError,
 )
 from regimex.infrastructure.retention_repository import Connection, RetentionRepository
+from regimex.infrastructure.storage_quotas import release_absent_reservations
 from regimex.retention_contracts import (
     CleanupEvent,
     CleanupReceipt,
@@ -285,6 +286,26 @@ class RetentionService:
                     identity=upload.upload_id,
                     status=status,
                 )
+            # Reconcile quota only after deletion has finished, with every writer
+            # still stopped. A key with any remaining version or multipart upload
+            # remains charged. Database registration always wins over inventory.
+            inventory = self.store.inventory()
+            multipart = self.store.list_multipart_uploads()
+            if len(inventory) + len(multipart) > self.limits.max_inventory_entries:
+                raise CapacityExceeded("Object inventory exceeds the configured entry limit.")
+            self._check_time(deadline)
+            # Local staging names do not identify their eventual destination.
+            # Until they are gone, no absent reservation is provably unused.
+            if not any(item.upload_id.startswith("local-temporary-v1:") for item in multipart):
+                with self.repository.quiescent_transaction(
+                    connection, maximum_idle_seconds=self.limits.max_wall_seconds
+                ):
+                    release_absent_reservations(
+                        connection,
+                        frozenset(item.key for item in inventory)
+                        | frozenset(item.key for item in multipart),
+                        created_before=plan.cutoff_at,
+                    )
             return self._receipt(connection, plan)
 
     def _receipt(self, connection: Connection, plan: OrphanPlan) -> CleanupReceipt:

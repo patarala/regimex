@@ -70,6 +70,14 @@
             <div class="actions">
               <button id="classify" type="button" disabled>Analyze</button>
             </div>
+            <div id="storage-status" class="storage-summary" role="status" aria-live="polite" hidden>
+              <div class="storage-heading">
+                <span id="storage-usage"></span>
+                <button id="storage-refresh" type="button" class="quiet">Refresh storage</button>
+              </div>
+              <p id="storage-available" class="hint"></p>
+              <p id="storage-reserved" class="hint" hidden></p>
+            </div>
           </section>
           <section
             id="analysis-panel"
@@ -222,6 +230,13 @@
             <div class="actions">
               <button id="connection-toggle" type="button" class="quiet"></button>
               <button id="connection-refresh" type="button" class="quiet">Refresh connection</button>
+            </div>
+            <div class="connection-section">
+              <div id="connection-storage-status" class="storage-summary" role="status" aria-live="polite" hidden>
+                <p id="connection-storage-usage"></p>
+                <p id="connection-storage-available" class="hint"></p>
+                <p id="connection-storage-reserved" class="hint" hidden></p>
+              </div>
             </div>
             <div class="connection-section">
               <h2>Service keys</h2>

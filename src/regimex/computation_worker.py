@@ -25,6 +25,7 @@ from regimex.model_registry import RegistryError
 from regimex.operations import OperationFailure
 from regimex.resource_limits import ResourceBudgetExceeded, TimeBudgetExceeded
 from regimex.storage import json_bytes
+from regimex.storage_contracts import StorageQuotaExceeded
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 
@@ -45,6 +46,8 @@ def _memory_mapping_failure(error: Exception) -> bool:
 
 def resource_failure(error: Exception) -> OperationFailure | None:
     """Describe a recognized limit without exposing paths or private exception text."""
+    if isinstance(error, StorageQuotaExceeded):
+        return OperationFailure(code="capacity_limit", message=error.message)
     if isinstance(error, TimeBudgetExceeded):
         return OperationFailure(
             code="capacity_limit", message="The computation exceeded its time limit."

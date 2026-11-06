@@ -48,6 +48,7 @@ from regimex.service_contracts import (
     UnsupportedContract,
 )
 from regimex.storage import json_bytes
+from regimex.storage_contracts import StorageUsage
 
 if TYPE_CHECKING:
     from regimex.infrastructure.database import DatabaseRepository
@@ -163,6 +164,8 @@ class AnalysisService:
         time_budget_seconds: int = 120,
         memory_budget_bytes: int = 4 * 1024**3,
         scratch_budget_bytes: int = 128 * 1024**2,
+        max_owner_storage_bytes: int = 1024**3,
+        max_integration_storage_bytes: int = 2 * 1024**3,
     ) -> None:
         if (
             max_pending < 1
@@ -191,6 +194,46 @@ class AnalysisService:
         self.time_budget_seconds = time_budget_seconds
         self.memory_budget_bytes = memory_budget_bytes
         self.scratch_budget_bytes = scratch_budget_bytes
+        from regimex.infrastructure.storage_quotas import StorageQuotaRepository
+
+        self.storage_quotas = StorageQuotaRepository(
+            repository,
+            max_owner_storage_bytes=max_owner_storage_bytes,
+            max_integration_storage_bytes=max_integration_storage_bytes,
+        )
+
+    def storage_usage(self, principal: Principal) -> StorageUsage:
+        return self.storage_quotas.owner_usage(principal)
+
+    def integration_storage_usage(self, principal: Principal, integration_id: UUID) -> StorageUsage:
+        return self.storage_quotas.integration_usage(principal, integration_id)
+
+    def store_owned_object(
+        self,
+        owner_id: str,
+        source_id: str,
+        key: str,
+        path: Path,
+        *,
+        expected_sha256: str,
+        principal: Principal | None = None,
+    ) -> ObjectInfo:
+        """Charge an immutable snapshot/report before writing any object bytes."""
+        expected = ObjectInfo(
+            key=key,
+            size_bytes=path.stat().st_size,
+            sha256=expected_sha256,
+            version_id="reservation",
+        )
+        self.storage_quotas.reserve(owner_id, source_id, expected, principal=principal)
+        actual = self.store.put(key, path, expected_sha256=expected_sha256)
+        if (actual.key, actual.sha256, actual.size_bytes) != (
+            expected.key,
+            expected.sha256,
+            expected.size_bytes,
+        ):
+            raise ObjectIntegrityError("Uploaded object differs from its storage reservation.")
+        return actual
 
     def authenticate(self, raw_token: str) -> Principal:
         return self.repository.authenticate(raw_token)
@@ -226,10 +269,13 @@ class AnalysisService:
             path = Path(temporary) / "export.json"
             path.write_bytes(data)
             try:
-                info = self.store.put(
+                info = self.store_owned_object(
+                    principal.owner_id,
+                    export.source.source_id,
                     f"snapshots/{owner_key}/{data_sha256}.json",
                     path,
                     expected_sha256=data_sha256,
+                    principal=principal,
                 )
             except ObjectCapacityError as exc:
                 raise CapacityExceeded("Snapshot storage capacity is exhausted.") from exc

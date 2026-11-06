@@ -300,7 +300,9 @@ def run_analysis(
                 path = root / "analysis-report.html"
                 _read_output(path, MAX_REPORT_BYTES, files.report_sha256)
                 heartbeat.check("committing")
-                report_object = service.store.put(
+                report_object = service.store_owned_object(
+                    operation.owner_id,
+                    snapshot.source_id,
                     f"reports/{analysis.analysis_id}/{token}.html",
                     path,
                     expected_sha256=files.report_sha256,

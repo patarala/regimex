@@ -65,6 +65,10 @@ def test_database_file_and_value_cannot_silently_override_each_other(
         {"object_root": Path("objects"), "work_root": Path("objects/work")},
         {"object_root": Path("work/objects"), "work_root": Path("work")},
         {"max_object_bytes": 10, "max_store_bytes": 1},
+        {"max_owner_storage_bytes": 0},
+        {"max_integration_storage_bytes": 0},
+        {"max_integration_storage_bytes": 2**63},
+        {"max_owner_storage_bytes": 20, "max_integration_storage_bytes": 10},
         {"public_origin": "http://example.invalid"},
         {"public_origin": "http://127.0.0.1:8000"},
         {"public_origin": "https://example.invalid", "allow_loopback_http": True},
@@ -94,10 +98,14 @@ def test_analysis_budgets_reach_the_service(
     monkeypatch.setenv("REGIMEX_ANALYSIS_TIME_BUDGET_SECONDS", "17")
     monkeypatch.setenv("REGIMEX_ANALYSIS_MEMORY_BUDGET_BYTES", str(1024**3))
     monkeypatch.setenv("REGIMEX_ANALYSIS_SCRATCH_BUDGET_BYTES", "123456")
+    monkeypatch.setenv("REGIMEX_MAX_OWNER_STORAGE_BYTES", "1000000")
+    monkeypatch.setenv("REGIMEX_MAX_INTEGRATION_STORAGE_BYTES", "2000000")
     service = create_service(ServiceSettings.from_env())
     assert service.time_budget_seconds == 17
     assert service.memory_budget_bytes == 1024**3
     assert service.scratch_budget_bytes == 123456
+    assert service.storage_quotas.max_owner_storage_bytes == 1000000
+    assert service.storage_quotas.max_integration_storage_bytes == 2000000
 
 
 def test_s3_environment_has_explicit_scope_limits_and_external_credentials(

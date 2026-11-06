@@ -10,6 +10,34 @@ through reads and backups, including signed zero and exponent-form floats. Other
 metadata can use `jsonb`. A content/hash mismatch fails explicitly; it is never
 repaired by replacing the expected digest.
 
+## Owner and connection quotas
+
+Snapshot files and analysis HTML reports count toward the owner's quota and,
+for simulator data, the connection's shared quota. Defaults are 1 GiB per owner
+and 2 GiB per connection. Configure `REGIMEX_MAX_OWNER_STORAGE_BYTES` and
+`REGIMEX_MAX_INTEGRATION_STORAGE_BYTES` consistently on the API and workers.
+The owner limit must not exceed the connection limit. The overall object-store
+capacity remains a separate hard limit shared with administrator-managed models,
+reference sets and other artifacts.
+
+PostgreSQL reserves an immutable object's bytes before an upload. Retrying the
+same object reuses its reservation. Usage includes both registered objects and
+reservations, so concurrent requests, key rotation and interrupted workers do not
+reset the budget. Failed uploads remain reserved because storage may have accepted
+their bytes before the failure became visible. Offline maintenance can release a
+reservation only after proving that its unregistered object is absent.
+
+The workspace shows the current owner's usage; administrators can inspect a
+connection's total in **Connections**. A quota refusal returns `capacity_limit`.
+Existing objects remain readable when a lowered quota is below current usage,
+but new objects cannot increase that usage. Upgrades account for existing snapshots
+and reports without deleting them.
+
+These are object-payload quotas, not whole-disk quotas: database rows, logs,
+temporary computation files and backup archives are outside this accounting.
+Their existing size, queue and execution limits still apply. Registered objects
+remain charged; orphan cleanup is not a way to delete saved experiments or reports.
+
 ## Local storage
 
 The default adapter requires a dedicated Linux/POSIX directory with advisory
@@ -95,7 +123,7 @@ application sessions. Their locks cannot stop independent filesystem writers.
 
 Install PostgreSQL 16 `pg_dump` and `pg_restore`, or use the Compose `ops` image.
 Set `PGDUMP_BIN`/`PGRESTORE_BIN` or pass `--pg-dump`/`--pg-restore` if needed.
-Archives must use the current database revision, `0003_experiment_names`, including its
+Archives must use the current database revision, `0006_storage_quotas`, including its
 restore-readiness guard. Use an explicit schema migration before backing up a
 database at another revision; restore does not reinterpret incompatible archives.
 Restore an older archive using its matching application version before upgrading

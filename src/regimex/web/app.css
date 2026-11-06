@@ -759,6 +759,25 @@ iframe {
     height: 820px;
   }
 }
+.storage-summary {
+  margin-top: 18px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.storage-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+.storage-summary p {
+  margin: 6px 0 0;
+}
+.storage-heading button {
+  padding: 3px 0;
+  font-size: inherit;
+}
 @media (prefers-reduced-motion: reduce) {
   .progress span {
     animation: none;

@@ -20,7 +20,7 @@ const failureActions = {
   attempts_exhausted: "Ask your administrator to check worker availability before starting a new analysis.",
 };
 
-export function createAnalysis({session, models, history, comparison}) {
+export function createAnalysis({session, models, history, comparison, onStorageChange}) {
   let exportText = null;
   let snapshot = null;
   let current = null;
@@ -180,6 +180,7 @@ export function createAnalysis({session, models, history, comparison}) {
       notice(error.message, true);
     } finally {
       if (workspace === session.epoch) {
+        onStorageChange();
         busy = false;
         models.updateActions();
       }
@@ -266,6 +267,7 @@ export function createAnalysis({session, models, history, comparison}) {
       const stateChanged = selection.state !== job.state;
       selection.state = job.state;
       history.update({...value, analysis_id: id}, stateChanged);
+      if (stateChanged && !pending) onStorageChange();
       if (pending) timer = setTimeout(() => poll(selection), 1500);
       if (job.state === "succeeded" && value.result_available)
         await showResult(selection, value, active);

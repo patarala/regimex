@@ -75,7 +75,7 @@ jobs:
           for name in (
               "index.html", "app.css", "app.js", "ui.js", "session.js", "history.js",
               "models.js", "analysis.js", "comparison.js", "queue-status.js",
-              "experiment-history.js",
+              "experiment-history.js", "integrations.js", "storage.js",
           ):
               asset = files("regimex").joinpath("web", name)
               assert asset.is_file() and asset.read_bytes(), asset

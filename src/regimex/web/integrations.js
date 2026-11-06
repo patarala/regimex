@@ -1,4 +1,5 @@
 import {$} from "./ui.js";
+import {clearStorage, renderStorage, storageError} from "./storage.js";
 
 const ROOT = "/api/v1/admin/integrations";
 const PAGE_SIZE = 20;
@@ -74,6 +75,7 @@ export function createIntegrations({session}) {
     mutation++;
     busy = false;
     clearSecret();
+    clearStorage("connection-storage");
     message();
     $("open-connections").hidden = true;
     $("connections").hidden = true;
@@ -197,6 +199,7 @@ export function createIntegrations({session}) {
   async function select(id) {
     generation++;
     clearSecret();
+    clearStorage("connection-storage");
     message();
     selection = null;
     $("connection-detail").hidden = true;
@@ -208,7 +211,18 @@ export function createIntegrations({session}) {
     if (!current(stamp)) return;
     selection = result;
     renderSelection();
-    await Promise.all([loadKeys(), loadEvents(), loadList()]);
+    await Promise.all([loadKeys(), loadEvents(), loadList(), loadStorage()]);
+  }
+
+  async function loadStorage() {
+    const stamp = mark();
+    const id = selection.integration_id;
+    try {
+      const usage = await session.json(`${ROOT}/${id}/storage`);
+      if (current(stamp)) renderStorage("connection-storage", usage);
+    } catch {
+      if (current(stamp)) storageError("connection-storage");
+    }
   }
 
   async function runRead(action) {
