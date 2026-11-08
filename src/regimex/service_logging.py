@@ -86,7 +86,7 @@ class RedactingJSONFormatter(logging.Formatter):
             value = getattr(record, name, None)
             if isinstance(value, (str, int, float, bool)):
                 item[name] = self._redact(value) if isinstance(value, str) else value
-        if record.exc_info is not None and record.exc_info[0] is not None:
+        if record.exc_info and record.exc_info[0] is not None:
             item["exception_type"] = record.exc_info[0].__name__
         return json.dumps(item, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
