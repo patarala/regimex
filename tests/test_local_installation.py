@@ -5,6 +5,8 @@ import json
 import os
 import socket
 import stat
+import subprocess
+import sys
 import time
 from pathlib import Path
 from zipfile import ZipFile, ZipInfo
@@ -43,6 +45,64 @@ def release_zip(root: Path, *, preview: bool = False) -> tuple[Path, str]:
             info.external_attr = (stat.S_IFREG | 0o600) << 16
             output.writestr(info, value)
     return path, archive.digest(path)
+
+
+@pytest.mark.parametrize("journal", ["absent", "file", "dangling_symlink"])
+def test_standalone_installer_checks_existing_data_without_dependencies(
+    tmp_path: Path, journal: str
+) -> None:
+    path, checksum = release_zip(tmp_path)
+    root = tmp_path / "installation"
+    root.mkdir(mode=0o700)
+    objects = root / "objects"
+    objects.mkdir(mode=0o700)
+    payload = objects / "existing"
+    payload.write_bytes(b"preserve existing data")
+    pending = root / "maintenance-state.json"
+    if journal == "file":
+        pending.write_text("deliberately incomplete journal")
+    elif journal == "dangling_symlink":
+        pending.symlink_to(root / "missing-journal")
+
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    for name in ("postgres", "pg_ctl", "initdb", "systemctl"):
+        command = binaries / name
+        body = {
+            "postgres": '[ "$1" = "--version" ] || exit 99\necho "postgres (PostgreSQL) 16.2"',
+            "systemctl": '[ "$*" = "--user show-environment" ] || exit 99',
+        }.get(name, "exit 99")
+        command.write_text("#!/bin/sh\n" + body + "\n")
+        command.chmod(0o700)
+    script = Path(__file__).resolve().parents[1] / "scripts/install_service.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-S",
+            str(script),
+            "--archive",
+            str(path),
+            "--sha256",
+            checksum,
+            "--root",
+            str(root),
+            "--postgres-bin",
+            str(binaries),
+        ],
+        cwd=tmp_path,
+        env={**os.environ, "PATH": str(binaries)},
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "Traceback" not in result.stderr
+    expected = "explicit --adopt" if journal == "absent" else "resume-maintenance first"
+    assert expected in result.stderr
+    assert payload.read_bytes() == b"preserve existing data"
+    assert not (root / "local-installation.json").exists()
 
 
 def test_archive_extracts_once_and_refuses_modified_stage(tmp_path: Path) -> None:

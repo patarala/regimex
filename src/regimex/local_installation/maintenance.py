@@ -16,8 +16,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from regimex.service_contracts import ServiceError
-
 from . import systemd
 from .install import (
     environment_file,
@@ -321,6 +319,8 @@ def _interrupt(signum: int, frame: object) -> None:
 
 
 def main() -> int:
+    from regimex.service_contracts import ServiceError
+
     parser = argparse.ArgumentParser(description="Maintain one installed native Regimex service.")
     parser.add_argument("--root", required=True, type=Path)
     commands = parser.add_subparsers(dest="action", required=True)
