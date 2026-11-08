@@ -5,6 +5,8 @@ decline and sideways movement. Upload a JSON export, run a saved model, and view
 or download an interactive report. Run the same saved experiment with another
 published model and compare its intervals on a shared price chart. Reports and
 comparisons also work offline.
+Saved analyses and experiments can be deleted after reviewing their dependencies
+and storage usage. Interrupted file cleanup remains visible and can be retried.
 
 The service includes a baseline model, a temporal convolutional network (TCN),
 a reproducible market generator and an administrative API for training,

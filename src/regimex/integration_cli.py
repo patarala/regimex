@@ -138,7 +138,8 @@ def install_integration_commands(
         output: Annotated[Path, typer.Option(help="New private file for the one-time secret.")],
         days: Annotated[int, typer.Option(min=1, max=365)] = 30,
         scope: Annotated[
-            list[str] | None, typer.Option(help="Repeat read, upload or analyze; defaults to all.")
+            list[str] | None,
+            typer.Option(help="Repeat read, upload, analyze or delete; deletion is opt-in."),
         ] = None,
     ) -> None:
         """Issue a key with an expiry and explicit capabilities."""

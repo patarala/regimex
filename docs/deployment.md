@@ -7,9 +7,9 @@ The operator image adds PostgreSQL recovery clients. Images build the same wheel
 from the same locked dependencies.
 
 The configured Python, uv and PostgreSQL images are pinned by digest. The current
-PostgreSQL container uses major version 16. Native service/storage execution has
-been verified; Docker image execution remains unverified. Run the container smoke
-below before treating a host installation as validated.
+PostgreSQL container uses major version 16. Full CI runs the container smoke test,
+including saved-model analysis and persistent restart. Run the same check below
+to verify a host's container setup.
 
 ## Secrets and TLS
 

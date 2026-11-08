@@ -217,6 +217,7 @@ class AnalysisService:
         *,
         expected_sha256: str,
         principal: Principal | None = None,
+        snapshot_identity: tuple[str, str] | None = None,
     ) -> ObjectInfo:
         """Charge an immutable snapshot/report before writing any object bytes."""
         expected = ObjectInfo(
@@ -225,8 +226,18 @@ class AnalysisService:
             sha256=expected_sha256,
             version_id="reservation",
         )
-        self.storage_quotas.reserve(owner_id, source_id, expected, principal=principal)
-        actual = self.store.put(key, path, expected_sha256=expected_sha256)
+        from regimex.infrastructure.resource_lifecycle import (
+            owner_payload_lock,
+            require_object_key,
+            require_snapshot_identity,
+        )
+
+        with owner_payload_lock(self.repository, owner_id) as connection:
+            require_object_key(connection, key)
+            if snapshot_identity is not None:
+                require_snapshot_identity(connection, owner_id, source_id, *snapshot_identity)
+            self.storage_quotas.reserve(owner_id, source_id, expected, principal=principal)
+            actual = self.store.put(key, path, expected_sha256=expected_sha256)
         if (actual.key, actual.sha256, actual.size_bytes) != (
             expected.key,
             expected.sha256,
@@ -276,6 +287,7 @@ class AnalysisService:
                     path,
                     expected_sha256=data_sha256,
                     principal=principal,
+                    snapshot_identity=(export.source.run_id, export.source.snapshot_id),
                 )
             except ObjectCapacityError as exc:
                 raise CapacityExceeded("Snapshot storage capacity is exhausted.") from exc

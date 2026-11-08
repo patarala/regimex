@@ -85,6 +85,75 @@ Keep a coordinated database/object backup before upgrading an installation with
 valuable data; see [storage and recovery](storage.md). Old code on disk is not a
 rollback of a migrated database.
 
+## Back up and check restoration
+
+Create a coordinated backup with one command from the directory containing `var/`:
+
+```sh
+var/service.sh backup --output var/backups/backup-001
+```
+
+PostgreSQL must already be running. The helper creates the private `backups/`
+directory when needed. Each backup
+needs a new destination; existing backups are never overwritten. An external
+private directory is also supported. Backups cannot be placed inside the object
+store, work directory, database, credentials or installed runtimes.
+
+The command records which services are active, pauses intake and checks for
+pending work before stopping workers. If work remains, it resumes intake and
+refuses the backup; let the work finish and retry. It never cancels jobs. Once
+all managed writers are stopped, it copies the database and registered objects,
+verifies their checksums, and restores the original service states. PostgreSQL
+stays running. Previously stopped workers and API processes remain stopped; an
+originally running API must pass readiness after resumption.
+Pending resource-deletion cleanup must finish before a backup can proceed.
+
+Successful output contains `status: backup_verified`, the backup identifier and
+`manifest_sha256`. Record that digest separately from the backup. This verifies
+the copied files; check actual restoration separately:
+
+```sh
+var/service.sh verify-backup --input var/backups/backup-001 \
+  --manifest-sha256 RECORDED_MANIFEST_SHA256
+```
+
+This command leaves the running service alone. It creates a new private
+PostgreSQL cluster with a Unix socket and no TCP listener, restores into a fresh
+database and object directory, verifies portable database/object identities and
+readiness, and loads the active model in an isolated process. No API or workers
+are started for the restored copy. Success returns `status: restore_verified`;
+the disposable cluster and copied objects are then removed. The check requires
+an active model, compatible PostgreSQL binaries and the runtime matching the
+backup's schema revision. It does not measure model quality or test prediction.
+Use the corresponding older release to verify backups from an earlier schema.
+
+Verification temporarily needs space for restored objects, database data and
+model loading. Its private socket also requires a short installation path; the
+command checks this before starting PostgreSQL. Raw tokens, environment files
+and the application release are outside the database/object backup; retain the
+matching trusted release and protect credential files separately. Authentication
+hashes and private experiment metadata are included, so keep backups private.
+
+Backup, verification, updates and `service.sh start/stop/restart` share an
+exclusive installation lock. Do not launch additional writers or invoke direct
+`systemctl` commands during a backup. These commands manage only the installed
+native topology; external processes still require the explicit
+[offline procedure](storage.md#stop-writers-before-maintenance).
+
+Ordinary failures resume the original services. A killed process or failed
+restart leaves `maintenance-state.json` for explicit recovery:
+
+```sh
+var/service.sh resume-maintenance
+```
+
+Recovery restores the recorded active service states or stops/removes the owned
+verification cluster. It never resumes a partly migrated installation. Other
+maintenance commands and updates refuse an unfinished journal. Inspect
+`logs/maintenance.log` and `service.sh status` if recovery fails; do not delete
+the journal to bypass it. Partial backup directories are retained for inspection
+and cannot be reused as a new destination.
+
 ## Adopt an existing native installation
 
 An installation previously started using the documented native `var/` layout

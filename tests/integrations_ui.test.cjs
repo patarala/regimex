@@ -118,6 +118,25 @@ test("issued secret can be copied and is cleared when leaving connections", asyn
   assert.equal(page.get("connections").hidden, true);
 });
 
+test("delete permission is opt-in and resets after key creation and sign-out", async () => {
+  const page = await workspace();
+  await page.open();
+  assert.equal(page.get("connection-scope-delete").checked, false);
+  page.issue();
+  await flush();
+  const first = page.calls.find((call) => call.options.method === "POST");
+  assert.deepEqual(Array.from(first.options.body.scopes), ["read", "upload", "analyze"]);
+  page.get("connection-scope-delete").checked = true;
+  page.issue();
+  await flush();
+  const second = page.calls.filter((call) => call.options.method === "POST").at(-1);
+  assert.deepEqual(Array.from(second.options.body.scopes), ["read", "upload", "analyze", "delete"]);
+  assert.equal(page.get("connection-scope-delete").checked, false);
+  page.get("connection-scope-delete").checked = true;
+  page.controller.reset();
+  assert.equal(page.get("connection-scope-delete").checked, false);
+});
+
 test("a key response from a previous connection never appears in the current connection", async () => {
   const page = await workspace();
   await page.open();

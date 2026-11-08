@@ -94,7 +94,9 @@ def create_app() -> FastAPI:
     """Uvicorn factory: construction is lightweight and never auto-migrates."""
     from regimex.api import create_app as api_factory
     from regimex.application.auth import AuthService
+    from regimex.application.deletion import DeletionService
     from regimex.infrastructure.auth_repository import AuthRepository
+    from regimex.infrastructure.deletion_repository import DeletionRepository
 
     settings = ServiceSettings.from_env()
     analysis = create_service(settings)
@@ -104,6 +106,7 @@ def create_app() -> FastAPI:
         admin_service=administration,
         benchmark_service=create_benchmark_service(analysis, administration.repository),
         auth_service=AuthService(AuthRepository(analysis.repository), settings.auth_policy),
+        deletion_service=DeletionService(DeletionRepository(analysis.repository), analysis.store),
     )
 
     from regimex.service_logging import install_http_logging

@@ -42,8 +42,12 @@ Capabilities narrow the existing owner/source/run restrictions:
 | `read` | Read authorized metadata, results and reports, including comparisons |
 | `upload` | Validate/store an export and rename an authorized experiment |
 | `analyze` | Submit an analysis or request cancellation of an authorized job |
+| `delete` | Preview and confirm deletion of owned resources, inspect receipts and resume cleanup |
 
-The usual simulator gateway needs all three. A result reader needs only `read`.
+The usual simulator gateway needs `read`, `upload` and `analyze`; these remain the
+default capabilities. A result reader needs only `read`. Grant `delete` explicitly
+only to a backend that offers an authorized deletion flow. Existing keys are not
+expanded during upgrades, and the browser leaves this capability unchecked.
 No integration key permits browser login, training, model publication or connection
 management.
 
@@ -95,8 +99,9 @@ printed. Use `key-revoke CONNECTION_ID TOKEN_ID` to revoke a key. Use
 A stale revision returns a conflict instead of overwriting another operator's change.
 
 Local `service token-create --role integration` provisions the same connection/key
-records with all three capabilities and a 30-day lifetime. Browser and API
-management provide explicit names and narrower capabilities.
+records with `read`, `upload` and `analyze` and a 30-day lifetime. Browser and API
+management provide explicit names and chosen capabilities. The CLI accepts
+`--scope delete` when issuing a key; omit it to retain the default non-deleting key.
 
 ## Request and queue limits
 
@@ -145,6 +150,11 @@ integration requests also carry public connection/key identifiers; analysis inta
 records the operation identifier. Request bodies, raw URLs, query strings and
 authentication headers are excluded. Management history records access changes;
 HTTP logs diagnose requests and failures.
+
+Pending resource deletion retains its original owner, source and run restrictions.
+If a deletion key expires or is revoked, issue a replacement with `delete` on the
+same connection to resume cleanup for the same delegated subject and run. A new
+connection identity does not inherit those resources or receipts.
 
 Revoking access on the simulator must take effect in its backend before forwarding
 subsequent status or download requests. Regimex cannot independently discover changes

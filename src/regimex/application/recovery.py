@@ -47,7 +47,7 @@ from regimex.recovery_contracts import (
     TableEvidence,
 )
 from regimex.report_contracts import AnalysisReportRecord
-from regimex.service_contracts import ModelRecord, SnapshotRecord
+from regimex.service_contracts import Conflict, ModelRecord, SnapshotRecord
 from regimex.storage import json_bytes
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
@@ -348,6 +348,11 @@ def _table_evidence(
     revision = _first(connection, "SELECT version_num FROM alembic_version")
     if revision != RECOVERY_REVISION:
         raise ValueError("Offline recovery requires the current database schema revision.")
+    if connection.execute(
+        "SELECT 1 FROM regimex_deletion_plans "
+        "WHERE applied_at IS NOT NULL AND completed_at IS NULL LIMIT 1"
+    ).fetchone():
+        raise Conflict("Complete pending resource deletions before backup or restoration.")
     inconsistent = connection.execute(
         "WITH owned AS (SELECT object_key,owner_id,source_id FROM regimex_snapshots UNION "
         "SELECT r.object_key,r.owner_id,s.source_id FROM regimex_analysis_reports r "

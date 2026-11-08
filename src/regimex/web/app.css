@@ -66,6 +66,64 @@ button:disabled {
 .quiet:hover {
   background: #f0f2f5;
 }
+.delete-action {
+  color: #843e3e;
+}
+.danger {
+  border-color: #943d3d;
+  background: #943d3d;
+}
+.danger:hover {
+  background: #7a3030;
+}
+.deletion-dialog {
+  width: min(480px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+.deletion-dialog::backdrop {
+  background: rgb(20 30 40 / 40%);
+}
+.deletion-dialog h2 {
+  margin-bottom: 16px;
+}
+.deletion-dialog p:last-of-type:empty {
+  display: none;
+}
+.deletion-blockers {
+  padding-left: 20px;
+  color: #843e3e;
+}
+.deletion-dialog .actions {
+  justify-content: flex-end;
+}
+.analysis-details .delete-action {
+  margin-top: 12px;
+}
+.pending-deletions {
+  margin-top: 12px;
+  font-size: 13px;
+}
+.pending-deletions summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.pending-deletions ul {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0;
+}
+.pending-deletions li + li {
+  margin-top: 8px;
+}
+.pending-deletions li button {
+  text-align: left;
+  overflow-wrap: anywhere;
+}
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -606,6 +664,10 @@ iframe {
 }
 .history .history-entry:hover {
   background: #f5f7fa;
+}
+.history .history-entry:disabled {
+  opacity: 1;
+  background: none;
 }
 .history .history-entry[aria-current="true"] {
   background: #edf3fa;

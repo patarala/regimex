@@ -66,8 +66,9 @@ and shared request/queue limits.
 
 Storage responses contain `used_bytes`, `reserved_bytes`, `limit_bytes` and
 `available_bytes`. Saved snapshots and analysis HTML count toward the quota;
-reserved bytes include uploads in progress or awaiting offline cleanup after a
-failure. Generated snapshots count toward their administrator owner's quota too.
+reserved bytes include uploads in progress, uncertain failed uploads and files
+awaiting completion of an explicit deletion. Generated snapshots count toward
+their administrator owner's quota too.
 Result JSON in PostgreSQL and administrator-managed model, reference and dataset
 metadata objects are outside these object-storage quotas. Those object payloads
 still share the global store capacity. `available_bytes` is the remaining quota,
@@ -101,6 +102,47 @@ failure; a terminal `failed` job has no automatic retries remaining.
 analysis is the newest matching the current filter. Grouping precedes pagination,
 so a large experiment never splits across group pages. Expand it through
 `GET /analyses?snapshot_id=...`, retaining the same filters and independent pagination.
+Saved snapshots without analyses remain listed with zero counts and
+`latest_analysis: null`. They can be searched by experiment metadata and renamed
+or deleted. An analysis-state filter excludes these empty experiments.
+
+## Delete saved resources
+
+Deletion is restricted to the authenticated owner's resources and the same source
+and run boundaries as downloads. An administrator credential does not bypass
+ownership. Integration keys require the explicit `delete` capability on both
+ordinary and delegated routes; existing and default keys do not include it.
+
+| Request | Result |
+| --- | --- |
+| `POST /analyses/{id}/deletion-preview` | Preview removing one terminal analysis and its saved report |
+| `POST /experiments/{snapshot_id}/deletion-preview` | Preview removing the snapshot and all its analyses |
+| `POST /deletions/{plan_id}` with `{"sha256":"PREVIEW_SHA256"}` | Confirm the reviewed selection, or resume its cleanup |
+| `GET /deletions/{plan_id}` | Read the receipt of an accepted deletion |
+| `GET /deletions?limit=20&offset=0` | List accepted deletions with pending cleanup |
+
+Previews include counts, object bytes, blockers, a plan ID and confirmation digest.
+They expire after 15 minutes. Confirmation checks current references and the
+reviewed resource set again; changed or blocked selections return `409`. Running,
+queued and cancelling analyses must finish first. Experiments registered in the
+model data catalog cannot be deleted through this workflow.
+
+A `200` receipt with `state: completed` confirms cleanup. A `202` receipt with
+`state: pending` means the resources have been removed from history but some
+physical files still need cleanup. Their bytes remain charged. Receipts distinguish
+`reclaimed_bytes`, `pending_bytes` and `pending_objects` and include a safe failure
+message when available. Repeat the same plan ID and digest to resume; the pending
+list also supplies these values after a client restart. If a confirmation response
+is lost, read its receipt before retrying. A `404` receipt means confirmation has
+not been recorded; retry the same reviewed plan if it remains valid.
+
+Deletion cannot be undone through the service. Removing an analysis keeps its
+source snapshot. Removing an experiment retires its original source/run/snapshot
+identity: replaying that original upload returns `409` rather than restoring it.
+Existing downloaded files are unaffected. Browser previews and confirmations
+require the normal session Origin and CSRF checks.
+
+## Experiment names
 
 Rename with `{"display_name":"Experiment A","expected_revision":0}`. Names have at
 most 120 Unicode characters after normalization; control characters and empty

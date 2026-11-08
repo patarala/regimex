@@ -116,8 +116,28 @@ does not extend it. Results survive sign-out and service restarts.
 The upload panel shows your storage usage and remaining quota. **Refresh storage**
 reloads it; uploads and completed analyses also refresh the figures. Reserved
 space covers uploads in progress or awaiting cleanup after a failure. If the
-limit is reached, contact the administrator; retrying an unchanged upload does
-not create another copy. Saved analyses remain readable.
+limit is reached, delete unneeded experiments or contact the administrator;
+retrying an unchanged upload does not create another copy. Saved analyses remain
+readable.
+
+## Delete saved work
+
+Use **Delete experiment** in its history entry to remove the saved export and its
+analyses. To keep the export and other runs, open a finished analysis, expand
+**Details**, and choose **Delete analysis**. Experiments without analyses remain
+in history so their exports can still be renamed or deleted.
+
+The preview shows the affected counts, file size and any dependencies that block
+deletion. Active jobs and experiments used by datasets or evaluation resources
+must be resolved first. Review the preview and select **Delete** to confirm;
+deletion cannot be undone. Download any files you want to keep beforehand.
+
+Storage is released only after the files have been removed. If cleanup fails,
+the removed resources stay unavailable and their remaining files still count
+toward the quota. Use **Retry cleanup** in the dialog, or reopen the receipt under
+**Pending deletions** below the storage summary. **Refresh storage** also refreshes
+that list. If a request's outcome is uncertain, use **Check deletion** to retrieve
+its recorded status before retrying.
 
 ## Run again and compare
 

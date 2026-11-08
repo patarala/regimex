@@ -20,7 +20,8 @@ const failureActions = {
   attempts_exhausted: "Ask your administrator to check worker availability before starting a new analysis.",
 };
 
-export function createAnalysis({session, models, history, comparison, onStorageChange}) {
+export function createAnalysis({session, models, history, comparison, onStorageChange,
+  onSelectionChange, deleteAnalysis}) {
   let exportText = null;
   let snapshot = null;
   let current = null;
@@ -39,6 +40,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     comparison.reset();
   }
   function reset() {
+    onSelectionChange();
     fileEpoch++;
     clearTimeout(timer);
     clearReport();
@@ -50,6 +52,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     $("export-file").value = "";
     $("file-details").hidden = true;
     $("analysis-panel").hidden = true;
+    $("delete-analysis").hidden = true;
     $("result-summary").replaceChildren();
     $("analysis-identity").textContent = "";
     $("job-detail").textContent = "";
@@ -139,6 +142,8 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   async function submitRequest(submission) {
     if (busy || !session.value || submission.workspace !== session.epoch) return;
     busy = true;
+    onSelectionChange();
+    $("delete-analysis").hidden = true;
     const workspace = session.epoch;
     const selection = { id: null, request: 0, job: null, cancelling: false };
     current = selection;
@@ -188,6 +193,8 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   }
 
   async function openAnalysis(id) {
+    onSelectionChange();
+    $("delete-analysis").hidden = true;
     clearTimeout(timer);
     clearReport();
     clearCancellation();
@@ -237,6 +244,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       $("job-state").textContent =
         job.state === "succeeded" ? "Complete" : job.state.replaceAll("_", " ");
       const pending = ["queued", "running", "cancel_requested"].includes(job.state);
+      $("delete-analysis").hidden = pending;
       $("progress").hidden = !pending;
       selection.job = pending && job.state !== "cancel_requested" ? job.operation_id : null;
       $("cancel").hidden = selection.job === null;
@@ -369,7 +377,38 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     link.download = `regimex-analysis-${current.id}.json`;
     link.click();
   });
+  $("delete-analysis").addEventListener("click", () => {
+    if (busy || !current?.metadata || !["succeeded", "failed", "cancelled"].includes(current.metadata.job.state)) return;
+    return deleteAnalysis(current.id, $("analysis-title").textContent);
+  });
+  function forgetDeleted(target) {
+    if (target.kind === "experiment" && snapshot?.snapshot_id === target.id) snapshot = null;
+    const affected = current && (target.kind === "analysis" ? current.id === target.id
+      : current.metadata?.snapshot_id === target.id);
+    if (affected) {
+      clearTimeout(timer);
+      clearReport();
+      clearCancellation();
+      clearFailure();
+      queue.reset();
+      current = result = retryAction = null;
+      $("analysis-panel").hidden = true;
+      $("delete-analysis").hidden = true;
+      $("result-summary").replaceChildren();
+      $("analysis-identity").textContent = "";
+      const url = new URL(location.href);
+      url.searchParams.delete("analysis");
+      window.history.replaceState(null, "", url);
+      models.updateActions();
+      history.markSelected();
+    } else if (current) {
+      comparison.reset();
+      current.comparisonLoaded = false;
+      $("comparison-controls").hidden = !current.metadata?.result_available;
+      $("report-preview").hidden = !current.metadata?.report_available;
+    }
+  }
   window.addEventListener("pagehide", clearReport);
-  return {reset, open: openAnalysis, get current() { return current; },
+  return {reset, open: openAnalysis, forgetDeleted, get current() { return current; },
     get busy() { return busy; }, get exportText() { return exportText; }};
 }

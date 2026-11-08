@@ -32,6 +32,7 @@ _ASSETS = {
     "ui.js": "text/javascript",
     "integrations.js": "text/javascript",
     "storage.js": "text/javascript",
+    "deletion.js": "text/javascript",
 }
 
 

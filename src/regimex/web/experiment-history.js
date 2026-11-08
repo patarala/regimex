@@ -24,7 +24,7 @@ function shortDate(value) {
 }
 
 export function createExperimentHistory({session, experiment, filters, isActive, getSelection,
-  openAnalysis, compareAnalyses, refresh}) {
+  openAnalysis, compareAnalyses, deleteExperiment, refresh}) {
   let value = experiment;
   let requestNumber = 0;
   let offset = 0;
@@ -46,12 +46,18 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   const date = element("time");
   const state = element("span", "history-state");
   latest.append(name, model, instruments, date, state);
-  latest.addEventListener("click", () => openAnalysis(value.latest_analysis.analysis_id));
+  latest.addEventListener("click", () => {
+    if (isActive() && value.latest_analysis) return openAnalysis(value.latest_analysis.analysis_id);
+  });
 
   const tools = element("div", "experiment-tools");
   const expand = button("quiet experiment-expand", "");
   const rename = button("quiet experiment-rename", "Rename");
-  tools.append(expand, rename);
+  const remove = button("quiet delete-action experiment-delete", "Delete experiment");
+  remove.addEventListener("click", () => {
+    if (isActive()) return deleteExperiment(value.snapshot_id, title());
+  });
+  tools.append(expand, rename, remove);
   const editor = element("form", "experiment-name");
   editor.hidden = true;
   const label = element("label", "", "Experiment name");
@@ -99,17 +105,20 @@ export function createExperimentHistory({session, experiment, filters, isActive,
     const analysis = value.latest_analysis;
     name.textContent = title();
     instruments.textContent = value.display_name ? value.instrument_ids.join(", ") : "";
-    model.textContent = analysis.job.model?.model_version_id || "Model unavailable";
-    date.dateTime = analysis.job.created_at;
-    date.textContent = shortDate(analysis.job.created_at);
-    state.dataset.state = analysis.job.state;
-    state.textContent = stateLabels[analysis.job.state] || analysis.job.state;
-    latest.dataset.analysisId = analysis.analysis_id;
-    latest.title = `Open latest analysis · ${value.run_id}`;
-    latest.setAttribute("aria-label", `Open latest analysis of ${title()}`);
+    model.textContent = analysis ? analysis.job.model?.model_version_id || "Model unavailable" : "No analyses";
+    date.dateTime = analysis?.job.created_at || value.created_at;
+    date.textContent = shortDate(date.dateTime);
+    state.dataset.state = analysis?.job.state || "saved";
+    state.textContent = analysis ? stateLabels[analysis.job.state] || analysis.job.state : "Saved";
+    latest.dataset.analysisId = analysis?.analysis_id || "";
+    latest.disabled = !analysis;
+    latest.title = analysis ? `Open latest analysis · ${value.run_id}` : value.run_id;
+    latest.setAttribute("aria-label", analysis ? `Open latest analysis of ${title()}` : title());
     const count = value.matching_analysis_count === value.analysis_count
       ? value.analysis_count : `${value.matching_analysis_count} of ${value.analysis_count}`;
     expand.textContent = `${runs.hidden ? "Show" : "Hide"} ${count} ${value.analysis_count === 1 ? "analysis" : "analyses"}`;
+    expand.hidden = value.analysis_count === 0;
+    if (!analysis) runs.hidden = true;
     markSelected();
   }
   function markSelected() {
@@ -200,7 +209,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
     }
   }
   function observe(analysis) {
-    if (value.latest_analysis.analysis_id === analysis.analysis_id)
+    if (value.latest_analysis?.analysis_id === analysis.analysis_id)
       update({...value, latest_analysis: {...value.latest_analysis, ...analysis}});
     const index = items.findIndex((item) => item.analysis_id === analysis.analysis_id);
     if (index >= 0 && items[index].job.state !== analysis.job.state) {

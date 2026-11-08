@@ -3,7 +3,7 @@ import {clearStorage, renderStorage, storageError} from "./storage.js";
 
 const ROOT = "/api/v1/admin/integrations";
 const PAGE_SIZE = 20;
-const scopes = ["read", "upload", "analyze"];
+const scopes = ["read", "upload", "analyze", "delete"];
 const eventNames = {
   "integration.created": "Connection added",
   "integration.updated": "Connection updated",
@@ -85,7 +85,7 @@ export function createIntegrations({session}) {
     for (const id of ["connection-name", "connection-new-name", "connection-new-owner",
       "connection-new-source", "connection-key-name"]) $(id).value = "";
     $("connection-key-days").value = "30";
-    for (const scope of scopes) $(`connection-scope-${scope}`).checked = true;
+    for (const scope of scopes) $(`connection-scope-${scope}`).checked = scope !== "delete";
     for (const page of Object.values(pages)) {
       page.offset = page.count = 0;
       page.request++;
@@ -339,6 +339,7 @@ export function createIntegrations({session}) {
       $("connection-secret").hidden = false;
       $("connection-key-details").open = false;
       $("connection-key-name").value = "";
+      $("connection-scope-delete").checked = false;
       pages.keys.offset = pages.events.offset = 0;
       await Promise.all([loadKeys(), loadEvents()]);
     });

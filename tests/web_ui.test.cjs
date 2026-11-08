@@ -31,6 +31,8 @@ class Element {
   removeAttribute(name) { delete this[name]; }
   setAttribute(name, value) { this[name] = value; }
   focus() {}
+  showModal() { this.open = true; }
+  close() { this.open = false; }
   contains(node) { return this === node || this.children.some((child) => child.contains(node)); }
   addEventListener(name, handler) {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
@@ -83,7 +85,7 @@ async function workspace(count = 45) {
   const location = {href: "http://localhost/"};
   const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
   const state = {
-    holdHistory: false, holdModels: false, holdStorage: false, activeModelId: "tcn-1",
+    holdHistory: false, holdModels: false, holdStorage: false, holdDeletions: false, activeModelId: "tcn-1",
     now: Date.parse("2026-01-01T00:00:30Z"), names: new Map(),
   };
   const models = [{model_version_id: "baseline-1"}, {model_version_id: "tcn-1"}];
@@ -131,6 +133,7 @@ async function workspace(count = 45) {
       }};
       calls.push(call);
       if (url === "/api/v1/session") call.reply(session);
+      else if (url.startsWith("/api/v1/deletions?") && !state.holdDeletions) call.reply({items: []});
       else if (url === "/api/v1/storage" && !state.holdStorage) call.reply({
         used_bytes: 1024, reserved_bytes: 0, limit_bytes: 1024 ** 3, available_bytes: 1024 ** 3 - 1024,
       });
@@ -176,6 +179,192 @@ function metadata(job, state = "running") {
     job: {operation_id: job, state, stage: "predicting", failure: null, model: {model_version_id: "test-model"}},
   };
 }
+
+function deletionPlan(kind = "experiment", target = id(1000)) {
+  return {plan_id: id(9000), sha256: "a".repeat(64), target_kind: kind, target_id: target,
+    analysis_count: 1, experiment_count: kind === "experiment" ? 1 : 0,
+    object_count: 1, size_bytes: 1024, blockers: [],
+    created_at: "2026-01-01T00:00:00Z", expires_at: "2026-01-01T00:10:00Z"};
+}
+
+function deletionReceipt(plan, state = "completed") {
+  return {deletion_id: plan.plan_id, sha256: plan.sha256, target_kind: plan.target_kind,
+    target_id: plan.target_id, state, analysis_count: plan.analysis_count,
+    experiment_count: plan.experiment_count, reclaimed_bytes: state === "completed" ? 1024 : 0,
+    pending_bytes: state === "completed" ? 0 : 1024, pending_objects: state === "completed" ? 0 : 1,
+    failure: state === "completed" ? null : "Storage is temporarily unavailable."};
+}
+
+test("experiment deletion requires review and blocks referenced data", async () => {
+  const ui = await workspace(2);
+  await flush();
+  const plan = deletionPlan();
+  plan.blockers = [{code: "dataset_reference", count: 1, message: "This experiment belongs to a dataset."}];
+  void byClass(ui.get("history-list").children[0], "experiment-delete").click();
+  assert.equal(ui.get("deletion-dialog").open, true);
+  assert.equal(ui.get("deletion-confirm").disabled, true);
+  ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`).reply(plan);
+  await flush();
+  assert.match(ui.get("deletion-summary").textContent, /1 experiment and 1 analysis/);
+  assert.match(ui.get("deletion-storage").textContent, /1 KiB/);
+  assert.equal(ui.get("deletion-blockers").children[0].textContent, plan.blockers[0].message);
+  await ui.get("deletion-confirm").emit("click");
+  assert.equal(ui.calls.some((call) => call.url === `/api/v1/deletions/${plan.plan_id}`), false);
+  await ui.get("deletion-cancel").click();
+  assert.equal(ui.get("deletion-dialog").open, false);
+  assert.equal(ui.rows().length, 2);
+});
+
+test("deletion keeps quota charged while cleanup is pending and retries the reviewed plan", async () => {
+  const ui = await workspace(2);
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  assert.equal(ui.get("delete-analysis").hidden, false);
+  const plan = deletionPlan("analysis", id(1));
+  void ui.get("delete-analysis").click();
+  ui.pending(`/api/v1/analyses/${id(1)}/deletion-preview`).reply(plan);
+  await flush();
+  ui.state.holdStorage = true;
+  void ui.get("deletion-confirm").click();
+  const apply = ui.pending(`/api/v1/deletions/${plan.plan_id}`);
+  assert.equal(apply.options.method, "POST");
+  assert.deepEqual(JSON.parse(apply.options.body), {sha256: plan.sha256});
+  assert.equal(apply.options.headers["X-CSRF-Token"], "test-csrf");
+  assert.equal(ui.get("storage-usage").textContent, "Storage: 1 KiB of 1 GiB");
+  await ui.get("deletion-confirm").emit("click");
+  assert.equal(ui.calls.filter((call) => call.url === apply.url).length, 1);
+  ui.items.shift();
+  apply.reply(deletionReceipt(plan, "pending"));
+  await flush();
+  assert.equal(ui.get("analysis-panel").hidden, true);
+  assert.equal(new URL(ui.location.href).searchParams.has("analysis"), false);
+  assert.deepEqual(ui.rows(), [id(2)]);
+  assert.equal(ui.get("deletion-dialog").open, true);
+  assert.match(ui.get("deletion-status").textContent, /temporarily unavailable/);
+  assert.match(ui.get("deletion-storage").textContent, /still counts/);
+  assert.equal(ui.get("deletion-confirm").textContent, "Retry cleanup");
+  ui.pending("/api/v1/storage").reply({used_bytes: 0, reserved_bytes: 1024,
+    limit_bytes: 1024 ** 3, available_bytes: 1024 ** 3 - 1024});
+  await flush();
+  assert.equal(ui.get("storage-usage").textContent, "Storage: 1 KiB of 1 GiB");
+  ui.state.now += 60 * 60 * 1000;
+  void ui.get("deletion-confirm").click();
+  const retry = ui.pending(apply.url);
+  assert.deepEqual(JSON.parse(retry.options.body), {sha256: plan.sha256});
+  retry.reply(deletionReceipt(plan));
+  await flush();
+  ui.pending("/api/v1/storage").reply({used_bytes: 0, reserved_bytes: 0,
+    limit_bytes: 1024 ** 3, available_bytes: 1024 ** 3});
+  await flush();
+  assert.equal(ui.get("deletion-dialog").open, false);
+  assert.match(ui.get("notice").textContent, /Deleted 1 analysis. Released 1 KiB/);
+  assert.equal(ui.get("storage-usage").textContent, "Storage: 0 B of 1 GiB");
+});
+
+test("an uncertain deletion checks status before another mutation", async () => {
+  const ui = await workspace(1);
+  await flush();
+  const plan = deletionPlan();
+  void byClass(ui.get("history-list").children[0], "experiment-delete").click();
+  ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`).reply(plan);
+  await flush();
+  void ui.get("deletion-confirm").click();
+  ui.pending(`/api/v1/deletions/${plan.plan_id}`).reply({error: {message: "Connection interrupted."}}, 503);
+  await flush();
+  assert.equal(ui.rows().length, 1);
+  assert.equal(ui.get("deletion-confirm").textContent, "Check deletion");
+  void ui.get("deletion-confirm").click();
+  const check = ui.pending(`/api/v1/deletions/${plan.plan_id}`);
+  assert.equal(check.options.method, "GET");
+  check.reply({error: {message: "Not found."}}, 404);
+  await flush();
+  assert.equal(ui.get("deletion-confirm").disabled, true);
+  assert.equal(ui.get("deletion-refresh").hidden, false);
+  assert.match(ui.get("deletion-status").textContent, /not recorded/);
+  assert.equal(ui.calls.filter((call) => call.url === check.url && call.options.method === "POST").length, 1);
+});
+
+test("late deletion previews cannot replace another target or survive sign-out", async () => {
+  const ui = await workspace(2);
+  await flush();
+  void byClass(ui.get("history-list").children[0], "experiment-delete").click();
+  const stale = ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`);
+  void byClass(ui.get("history-list").children[1], "experiment-delete").click();
+  const latest = ui.pending(`/api/v1/experiments/${id(1001)}/deletion-preview`);
+  latest.reply(deletionPlan("experiment", id(1001)));
+  await flush();
+  const title = ui.get("deletion-summary").textContent;
+  stale.reply(deletionPlan());
+  await flush();
+  assert.equal(ui.get("deletion-summary").textContent, title);
+  void byClass(ui.get("history-list").children[0], "experiment-delete").click();
+  const signedOut = ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`);
+  await ui.get("logout").click();
+  signedOut.reply(deletionPlan());
+  await flush();
+  assert.equal(ui.get("deletion-dialog").open, false);
+  assert.equal(ui.get("deletion-summary").textContent, "");
+  assert.equal(ui.get("pending-deletions").hidden, true);
+});
+
+test("expired previews require a new review before deleting", async () => {
+  const ui = await workspace(1);
+  await flush();
+  void byClass(ui.get("history-list").children[0], "experiment-delete").click();
+  const plan = deletionPlan();
+  ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`).reply(plan);
+  await flush();
+  ui.state.now += 60 * 60 * 1000;
+  await ui.get("deletion-confirm").click();
+  assert.equal(ui.get("deletion-confirm").disabled, true);
+  assert.equal(ui.get("deletion-refresh").hidden, false);
+  assert.match(ui.get("deletion-status").textContent, /expired/);
+  assert.equal(ui.calls.some((call) => call.url === `/api/v1/deletions/${plan.plan_id}`), false);
+});
+
+test("pending deletions survive workspace reload through server receipts", async () => {
+  const ui = await workspace(0);
+  await flush();
+  ui.state.holdDeletions = true;
+  await ui.get("storage-refresh").click();
+  const plan = deletionPlan();
+  const receipt = deletionReceipt(plan, "pending");
+  ui.pending("/api/v1/deletions?limit=21&offset=0").reply({items: [receipt]});
+  await flush();
+  assert.equal(ui.get("pending-deletions").hidden, false);
+  void ui.get("pending-deletion-list").children[0].children[0].click();
+  ui.pending(`/api/v1/deletions/${plan.plan_id}`).reply(receipt);
+  await flush();
+  assert.equal(ui.get("deletion-confirm").textContent, "Retry cleanup");
+  void ui.get("deletion-confirm").click();
+  const apply = ui.pending(`/api/v1/deletions/${plan.plan_id}`);
+  assert.equal(apply.options.method, "POST");
+  assert.deepEqual(JSON.parse(apply.options.body), {sha256: plan.sha256});
+  assert.equal(ui.calls.some((call) => call.url.endsWith("/deletion-preview")), false);
+});
+
+test("empty experiments remain visible and can be renamed or deleted", async () => {
+  const ui = await workspace(1);
+  await flush();
+  const empty = {...ui.groups()[0], latest_analysis: null, analysis_count: 0,
+    successful_analysis_count: 0, matching_analysis_count: 0};
+  ui.state.holdHistory = true;
+  void ui.get("refresh-history").click();
+  ui.pending("/api/v1/experiments?limit=21&offset=0").reply({items: [empty]});
+  await flush();
+  const card = ui.get("history-list").children[0];
+  assert.equal(card.children[0].disabled, true);
+  assert.equal(byClass(card, "experiment-expand").hidden, true);
+  assert.equal(byClass(card, "experiment-rename").hidden, false);
+  assert.equal(byClass(card, "experiment-delete").hidden, false);
+  void byClass(card, "experiment-delete").click();
+  const plan = {...deletionPlan(), analysis_count: 0};
+  ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`).reply(plan);
+  await flush();
+  assert.match(ui.get("deletion-summary").textContent, /1 experiment$/);
+});
 
 test("storage shows saved and reserved bytes, handles errors and refreshes", async () => {
   const ui = await workspace();

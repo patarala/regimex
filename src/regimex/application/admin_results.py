@@ -147,6 +147,7 @@ class AdminResultCommitter:
                 f"{self._prefix}/snapshot-{binding.snapshot_id}.json",
                 path,
                 expected_sha256=digest(path),
+                snapshot_identity=(export.source.run_id, export.source.snapshot_id),
             )
             snapshots.append(
                 SnapshotRecord(

@@ -8,8 +8,9 @@ from pydantic import AwareDatetime, Field, SecretStr, field_validator, model_val
 
 from regimex.contracts import Identifier, StrictModel
 
-IntegrationScope = Literal["read", "upload", "analyze"]
-INTEGRATION_SCOPES: tuple[IntegrationScope, ...] = ("read", "upload", "analyze")
+IntegrationScope = Literal["read", "upload", "analyze", "delete"]
+INTEGRATION_SCOPES: tuple[IntegrationScope, ...] = ("read", "upload", "analyze", "delete")
+DEFAULT_INTEGRATION_SCOPES: tuple[IntegrationScope, ...] = ("read", "upload", "analyze")
 AccessAction = Literal["integration.created", "integration.updated", "key.created", "key.revoked"]
 AccessName = Annotated[str, Field(min_length=1, max_length=120)]
 
@@ -67,8 +68,8 @@ class IntegrationView(StrictModel):
 class IntegrationKeyCreate(StrictModel):
     name: AccessName
     lifetime_days: Annotated[int, Field(ge=1, le=365)] = 30
-    scopes: Annotated[tuple[IntegrationScope, ...], Field(min_length=1, max_length=3)] = (
-        INTEGRATION_SCOPES
+    scopes: Annotated[tuple[IntegrationScope, ...], Field(min_length=1, max_length=4)] = (
+        DEFAULT_INTEGRATION_SCOPES
     )
 
     _name = field_validator("name")(_name)

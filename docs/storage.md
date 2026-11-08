@@ -35,8 +35,46 @@ and reports without deleting them.
 
 These are object-payload quotas, not whole-disk quotas: database rows, logs,
 temporary computation files and backup archives are outside this accounting.
-Their existing size, queue and execution limits still apply. Registered objects
-remain charged; orphan cleanup is not a way to delete saved experiments or reports.
+Their existing size, queue and execution limits still apply. Saved objects remain
+charged until an explicit resource deletion verifies their removal. Orphan cleanup
+is a separate operation and never deletes saved experiments or reports.
+
+## Delete saved resources
+
+Owners can remove an individual terminal analysis or an experiment with its
+terminal analyses. The browser first shows a deletion preview: analysis and
+experiment counts, stored-file bytes and any blocking references. Confirming the
+preview is a permanent action. Removing one analysis keeps its input experiment
+available for another model run; removing the experiment also removes its analyses.
+
+Queued, running and cancelling analyses block deletion. Experiments registered in
+the model data catalog cannot be removed, even if no analysis is currently using
+them. Files referenced by another saved resource are also retained. Administrators
+have no implicit right to delete another owner's experiments. Platform connections
+need the explicit `delete` capability in addition to the same owner/source/run
+authorization used for other resource operations.
+
+A preview expires after 15 minutes and binds the exact reviewed resource set.
+New analyses or changed references require another preview. At most 100 unconfirmed
+previews per owner may remain open; expired unconfirmed previews are removed when
+the owner requests another preview. Confirmed receipts and identity tombstones
+remain durable. Replaying an old analysis request cannot create a replacement;
+reuploading a deleted experiment's original source identity is rejected.
+
+Confirmation removes resources from normal history in one database transaction,
+then removes their exact stored generations. Bytes stay reserved until physical
+absence is verified. If storage fails or the process stops, **Pending deletions**
+shows the remaining bytes and allows **Retry cleanup** after a later sign-in.
+The receipt survives browser closure and retries do not repeat successful work.
+Rotating an integration key does not change ownership; its replacement needs
+`delete` permission to resume cleanup. Unexpected replacement files are retained
+for operator inspection, with their charge still held.
+
+Snapshots, reports and metadata already downloaded by a user are outside the
+service and are not removed. Unregistered files from previously failed uploads
+remain subject to the separate offline orphan-cleanup procedure. Finish pending
+resource deletions before backup: an incomplete deletion cannot produce a complete
+registered-object backup, so the backup command refuses it explicitly.
 
 ## Local storage
 
@@ -121,9 +159,17 @@ application sessions. Their locks cannot stop independent filesystem writers.
 
 ## Backup and restore
 
+Installer-managed native services provide `service.sh backup --output PATH` and
+`service.sh verify-backup --input PATH --manifest-sha256 DIGEST`. The first
+coordinates managed writer shutdown and resumption; the second verifies a full
+restore in a disposable private cluster without stopping the live service. See
+[installation maintenance](installation.md#back-up-and-check-restoration). The
+manual commands below also support other deployments and require explicit
+stopped-writer attestations.
+
 Install PostgreSQL 16 `pg_dump` and `pg_restore`, or use the Compose `ops` image.
 Set `PGDUMP_BIN`/`PGRESTORE_BIN` or pass `--pg-dump`/`--pg-restore` if needed.
-Archives must use the current database revision, `0006_storage_quotas`, including its
+Archives must use the current database revision, `0007_resource_deletion`, including its
 restore-readiness guard. Use an explicit schema migration before backing up a
 database at another revision; restore does not reinterpret incompatible archives.
 Restore an older archive using its matching application version before upgrading

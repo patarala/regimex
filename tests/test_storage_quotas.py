@@ -314,14 +314,67 @@ def test_offline_cleanup_releases_only_absent_old_unregistered_reservations(
 
 def test_previous_schema_upgrade_backfills_existing_payloads(
     database: DatabaseRepository,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Simulate the precise pre-quota schema in this isolated fixture, retaining
-    # real existing objects; the forward migration must not remove any payload.
+    import psycopg
+    from alembic import command
+    from alembic.config import Config
+    from psycopg.types.json import Jsonb
+
+    # Build the actual old schema. Replacing only its recorded revision leaves
+    # later tables/triggers behind and does not exercise a real forward upgrade.
+    with psycopg.connect(database._dsn, autocommit=True) as connection:
+        connection.execute(
+            psycopg.sql.SQL("DROP SCHEMA {} CASCADE").format(
+                psycopg.sql.Identifier(database.schema)
+            )
+        )
+    original_upgrade = command.upgrade
+
+    def old_schema(config: Config, revision: str) -> None:
+        original_upgrade(config, "0005_integration_limits" if revision == "head" else revision)
+
+    with monkeypatch.context() as context:
+        context.setattr(command, "upgrade", old_schema)
+        database.migrate()
     info = object_info("existing/snapshot", 20)
-    saved = register(database, "alice", info)
+    saved = SnapshotRecord(
+        snapshot_id=uuid4(),
+        owner_id="alice",
+        source_id="simulator",
+        run_id="old-run",
+        source_snapshot_id="old-snapshot",
+        content_sha256="b" * 64,
+        object=info,
+        created_at=datetime.now(UTC),
+    )
     with database.connection() as connection:
-        connection.execute("DROP TABLE regimex_storage_reservations")
-        connection.execute("UPDATE alembic_version SET version_num='0005_integration_limits'")
+        connection.execute(
+            "INSERT INTO regimex_objects(object_key,sha256,size_bytes,version_id,document) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (
+                info.key,
+                info.sha256,
+                info.size_bytes,
+                info.version_id,
+                Jsonb(info.model_dump(mode="json")),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO regimex_snapshots "
+            "(snapshot_id,owner_id,source_id,run_id,source_snapshot_id,"
+            "content_sha256,object_key,document) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (
+                saved.snapshot_id,
+                saved.owner_id,
+                saved.source_id,
+                saved.run_id,
+                saved.source_snapshot_id,
+                saved.content_sha256,
+                info.key,
+                Jsonb(saved.model_dump(mode="json")),
+            ),
+        )
     database.migrate()
     assert database.get_snapshot(principal(), saved.snapshot_id) == saved
     usage = quotas(database).owner_usage(principal())

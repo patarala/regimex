@@ -9,6 +9,9 @@ _MUTATIONS: dict[tuple[str, str], IntegrationScope] = {
     ("POST", "/api/v1/analyses"): "analyze",
     ("POST", "/api/v1/jobs/{operation_id}/cancel"): "analyze",
     ("PATCH", "/api/v1/experiments/{snapshot_id}/name"): "upload",
+    ("POST", "/api/v1/analyses/{analysis_id}/deletion-preview"): "delete",
+    ("POST", "/api/v1/experiments/{snapshot_id}/deletion-preview"): "delete",
+    ("POST", "/api/v1/deletions/{plan_id}"): "delete",
 }
 
 
@@ -16,6 +19,8 @@ def required_scope(method: str, route: str) -> IntegrationScope:
     """Reject integration mutations without an explicitly assigned capability."""
     ordinary_route = route.replace("/api/v1/integration/", "/api/v1/", 1)
     if method in {"GET", "HEAD"}:
+        if ordinary_route in {"/api/v1/deletions", "/api/v1/deletions/{plan_id}"}:
+            return "delete"
         return "read"
     permission = _MUTATIONS.get((method, ordinary_route))
     if permission is None:

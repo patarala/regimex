@@ -45,10 +45,10 @@ class ExperimentMetadata(StrictModel):
     created_at: AwareDatetime
     display_name: DisplayName | None
     name_revision: Annotated[int, Field(ge=0)]
-    analysis_count: Annotated[int, Field(ge=1)]
+    analysis_count: Annotated[int, Field(ge=0)]
     successful_analysis_count: Annotated[int, Field(ge=0)]
-    matching_analysis_count: Annotated[int, Field(ge=1)]
+    matching_analysis_count: Annotated[int, Field(ge=0)]
 
 
 class ExperimentSummary(ExperimentMetadata):
-    latest_analysis: AnalysisSummary
+    latest_analysis: AnalysisSummary | None

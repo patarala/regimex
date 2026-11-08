@@ -59,7 +59,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0006_storage_quotas"
+_REVISION = "0007_resource_deletion"
 
 
 def _read_operation(document: object) -> Operation:
@@ -259,6 +259,9 @@ class DatabaseRepository:
 
     @staticmethod
     def _object(connection: psycopg.Connection[tuple[object, ...]], value: ObjectInfo) -> None:
+        from regimex.infrastructure.resource_lifecycle import require_object_key
+
+        require_object_key(connection, value.key)
         connection.execute(
             "INSERT INTO regimex_objects (object_key,sha256,size_bytes,version_id,document) "
             "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (object_key) DO NOTHING",
@@ -285,8 +288,17 @@ class DatabaseRepository:
     def _add_snapshot(
         self, connection: psycopg.Connection[tuple[object, ...]], record: SnapshotRecord
     ) -> SnapshotRecord:
+        from regimex.infrastructure.resource_lifecycle import require_snapshot_identity
         from regimex.infrastructure.storage_quotas import record_owned_object
 
+        self._lock(connection, f"owner:{record.owner_id}")
+        require_snapshot_identity(
+            connection,
+            record.owner_id,
+            record.source_id,
+            record.run_id,
+            record.source_snapshot_id,
+        )
         record_owned_object(connection, record.owner_id, record.source_id, record.object)
         self._object(connection, record.object)
         connection.execute(
@@ -798,6 +810,10 @@ class DatabaseRepository:
             # Establish ownership before reporting an unsupported stored version.
             query += " AND o.owner_id=%s"
             parameters.append(principal.owner_id)
+            query += (
+                " AND NOT EXISTS(SELECT 1 FROM regimex_deleted_analyses d "
+                "WHERE d.analysis_id=o.operation_id)"
+            )
             if principal.role != "admin":
                 query += " AND o.kind='analysis'"
             if principal.role == "integration":
@@ -842,6 +858,11 @@ class DatabaseRepository:
                 raise NotFound()
             self._authorize_operation(connection, principal, operation)
             return operation
+
+    def get_operation_internal(self, operation_id: UUID) -> Operation:
+        """Workers may still unwind after an owner removed a terminal analysis."""
+        with self.connection() as connection:
+            return self._operation(connection, operation_id)
 
     def _authorize_operation(
         self,

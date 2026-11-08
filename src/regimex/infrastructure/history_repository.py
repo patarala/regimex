@@ -71,25 +71,38 @@ class HistoryRepository:
     ) -> tuple[ExperimentSummary, ...]:
         self.database._page(limit, offset)
         predicate, filter_parameters = analysis_filters(AnalysisHistoryFilter(q=q, state=state))
-        scope, scope_parameters = analysis_scope(principal)
+        scope = (
+            "FROM regimex_snapshots s LEFT JOIN regimex_analyses a "
+            "ON a.snapshot_id=s.snapshot_id LEFT JOIN regimex_operations o "
+            "ON a.operation_id=o.operation_id WHERE s.owner_id=%s"
+        )
+        scope_parameters: list[object] = [principal.owner_id]
+        if principal.role == "integration":
+            scope += " AND s.source_id=%s"
+            scope_parameters.append(principal.source_namespace)
+            if principal.run_scope is not None:
+                scope += " AND s.run_id=%s"
+                scope_parameters.append(principal.run_scope)
         # Count all authorized runs before filtering; choose one matching run per
         # snapshot before pagination so a large experiment cannot split a page.
         query = (
-            "WITH candidates AS (SELECT a.analysis_id,a.snapshot_id,o.document AS operation,"
+            "WITH candidates AS (SELECT a.analysis_id,s.snapshot_id,o.document AS operation,"
             "a.result IS NOT NULL AS result_available,"
             "EXISTS(SELECT 1 FROM regimex_analysis_reports r WHERE r.analysis_id=a.analysis_id) "
             "AS report_available,s.document AS snapshot,s.display_name,s.name_revision,"
-            "(o.document->>'created_at')::timestamptz AS created_at,o.state='succeeded' "
+            "COALESCE(o.document->>'created_at',s.document->>'created_at')::timestamptz "
+            "AS created_at,o.state='succeeded' "
             f"AS successful,({predicate}) AS matches {scope}), "
-            "counted AS (SELECT *,count(*) OVER snapshot_group AS analysis_count,"
+            "counted AS (SELECT *,count(analysis_id) OVER snapshot_group AS analysis_count,"
             "count(*) FILTER (WHERE successful) OVER snapshot_group AS successful_count,"
-            "count(*) FILTER (WHERE matches) OVER snapshot_group AS matching_count "
+            "count(analysis_id) FILTER (WHERE matches) OVER snapshot_group AS matching_count "
             "FROM candidates WINDOW snapshot_group AS (PARTITION BY snapshot_id)), "
             "matching AS (SELECT *,row_number() OVER (PARTITION BY snapshot_id "
             "ORDER BY created_at DESC,analysis_id DESC) AS rank FROM counted WHERE matches) "
             "SELECT analysis_id,snapshot_id,operation,result_available,report_available,"
             "snapshot,display_name,name_revision,analysis_count,successful_count,matching_count "
-            "FROM matching WHERE rank=1 ORDER BY created_at DESC,analysis_id DESC "
+            "FROM matching WHERE rank=1 "
+            "ORDER BY created_at DESC,analysis_id DESC NULLS LAST,snapshot_id DESC "
             "LIMIT %s OFFSET %s"
         )
         with self.database.connection() as connection:
@@ -112,7 +125,9 @@ class HistoryRepository:
                         analysis_count=cast(int, row[8]),
                         successful_analysis_count=cast(int, row[9]),
                         matching_analysis_count=cast(int, row[10]),
-                        latest_analysis=self.database._summary_row(row[:6]),
+                        latest_analysis=(
+                            None if row[0] is None else self.database._summary_row(row[:6])
+                        ),
                     )
                 )
             return tuple(summaries)

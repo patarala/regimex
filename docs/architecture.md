@@ -72,6 +72,7 @@ sequenceDiagram
 | `directions.py`, `segmentation.py`, `evaluation.py` | Automatic references, decoding and evaluation |
 | `exports.py`, `data_catalog.py`, `model_bundles.py` | Versioned inputs, datasets and model artifacts |
 | `templates/`, `visualization.py`, `comparison.py` | Offline reports |
+| `local_installation/` | Native installation, coordinated backup and isolated restore checks |
 
 ## Why these choices
 
@@ -106,6 +107,19 @@ dependencies, device and artifact codec. Unsupported settings fail explicitly.
 Repeated job delivery is expected. Attempt tokens and heartbeats prevent stale
 workers from publishing. Idempotency keys are scoped to the authenticated owner
 and operation. Source and run checks also apply to integrations and downloads.
+
+Resource deletion separates the database decision from physical cleanup. A reviewed
+plan binds the exact resource set and object generations. PostgreSQL first removes
+visibility and records permanent identity tombstones; only then can the service
+remove the files. Uploads and deletion share an owner lock, and retired identities
+cannot be recreated by retries. Bytes stay charged until removal is verified.
+This makes partial failures resumable without reporting storage that is not yet free.
+
+Native maintenance shares the installer's exclusive lock and records original
+service states before stopping writers. Backup verifies the copied files; a
+separate restore check uses a fresh private PostgreSQL cluster and object root.
+The journal permits recovery after interruption, and pending file deletion blocks
+backup until its storage state is settled.
 
 The S3 profile currently uses one host with a shared coordination directory.
 Container deployment and operational limits are described in

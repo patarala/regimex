@@ -325,7 +325,7 @@ def run_analysis(
                 )
 
     except StaleAttempt:
-        return service.repository.get_analysis_internal(operation_id).operation
+        return service.repository.get_operation_internal(operation_id)
     except Exception as exc:
         # Error text can include paths, SQL or provider credentials. Persist only
         # stable public messages; operators can inspect the failed stage and code.
@@ -361,4 +361,4 @@ def run_analysis(
         try:
             return service.repository.fail_operation(operation_id, token, failure)
         except StaleAttempt:
-            return service.repository.get_analysis_internal(operation_id).operation
+            return service.repository.get_operation_internal(operation_id)

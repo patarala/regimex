@@ -2,7 +2,7 @@ import {$, notice} from "./ui.js";
 import {createExperimentHistory} from "./experiment-history.js";
 
 const HISTORY_PAGE_SIZE = 20;
-export function createHistory({session, getSelection, openAnalysis, compareAnalyses}) {
+export function createHistory({session, getSelection, openAnalysis, compareAnalyses, deleteExperiment}) {
   let historyGeneration = 0;
   let historyOffset = 0;
   let historyHasMore = false;
@@ -77,7 +77,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
       if (record) record.update(item);
       else {
         record = createExperimentHistory({session, experiment: item,
-          filters: {q: historyQuery, state: historyState}, getSelection, openAnalysis, compareAnalyses,
+          filters: {q: historyQuery, state: historyState}, getSelection, openAnalysis, compareAnalyses, deleteExperiment,
           isActive: () => records.get(item.snapshot_id) === record,
           refresh: () => history(historyOffset),
         });
@@ -117,6 +117,13 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
   function markSelectedHistory() {
     for (const record of records.values()) record.markSelected();
   }
+  function refreshAfterDeletion() {
+    // Drop expanded lists and comparison selections before fetching the new history.
+    records = new Map();
+    historyItems = [];
+    renderHistory();
+    return history(0);
+  }
   $("refresh-history").addEventListener("click", () =>
     history(0).catch((error) => notice(error.message, true)),
   );
@@ -134,5 +141,6 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
   $("history-next").addEventListener("click", () =>
     history(historyOffset + HISTORY_PAGE_SIZE).catch((error) => notice(error.message, true)),
   );
-  return {reset, load: history, update: updateHistory, markSelected: markSelectedHistory};
+  return {reset, load: history, update: updateHistory, markSelected: markSelectedHistory,
+    refreshAfterDeletion};
 }

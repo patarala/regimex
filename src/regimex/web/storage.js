@@ -1,6 +1,6 @@
 import {$} from "./ui.js";
 
-function bytes(value) {
+export function bytes(value) {
   if (value < 1024) return `${value} B`;
   const units = ["KiB", "MiB", "GiB", "TiB"];
   let size = value / 1024;
@@ -25,7 +25,7 @@ export function renderStorage(prefix, usage) {
     `Storage: ${bytes(usage.used_bytes + usage.reserved_bytes)} of ${bytes(usage.limit_bytes)}`;
   $(`${prefix}-available`).textContent = usage.available_bytes > 0
     ? `${bytes(usage.available_bytes)} available`
-    : "Storage limit reached. Contact your administrator before adding data.";
+    : "Storage limit reached. Delete unneeded experiments or contact your administrator.";
   $(`${prefix}-reserved`).hidden = usage.reserved_bytes === 0;
   $(`${prefix}-reserved`).textContent = usage.reserved_bytes > 0
     ? `${bytes(usage.used_bytes)} saved · ${bytes(usage.reserved_bytes)} reserved for uploads or cleanup.` : "";

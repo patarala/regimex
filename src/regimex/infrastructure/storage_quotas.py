@@ -138,6 +138,9 @@ class StorageQuotaRepository:
     ) -> None:
         """Admit one immutable payload; retries reuse its original reservation."""
         with self.database.connection() as connection:
+            from regimex.infrastructure.resource_lifecycle import require_object_key
+
+            require_object_key(connection, info.key)
             integration_id = integration_for_owner(connection, owner_id, source_id)
             if principal is not None and principal.role == "integration":
                 from regimex.infrastructure.integration_limits import lock_integration
@@ -185,7 +188,9 @@ def release_absent_reservations(
     result = connection.execute(
         "DELETE FROM regimex_storage_reservations r WHERE created_at<%s "
         "AND NOT (r.object_key=ANY(%s)) AND NOT EXISTS "
-        "(SELECT 1 FROM regimex_objects o WHERE o.object_key=r.object_key)",
+        "(SELECT 1 FROM regimex_objects o WHERE o.object_key=r.object_key) AND NOT EXISTS "
+        "(SELECT 1 FROM regimex_deletion_objects d WHERE d.object_key=r.object_key "
+        "AND d.state='pending')",
         (created_before, list(existing_keys)),
     )
     return result.rowcount

@@ -80,7 +80,9 @@ def installation_lock(root: Path) -> Iterator[None]:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise ValueError("Another installer is already working on this installation.") from None
+            raise ValueError(
+                "Another installer or maintenance command owns this installation."
+            ) from None
         yield
 
 
@@ -309,11 +311,14 @@ class Installer:
         command = (
             "#!/bin/sh\nset -eu\n"
             'case "${1:-status}" in\n'
-            f'  start|stop|restart) exec systemctl --user "$1" {target} ;;\n'
+            f"  start|stop|restart|backup|verify-backup|resume-maintenance) "
+            f"exec {self.python} -m regimex.local_installation.maintenance "
+            f'--root {self.root} "$@" ;;\n'
             f"  status) exec systemctl --user --no-pager status {target} ;;\n"
             f"  doctor) shift; . {self.root / 'environment.sh'}; "
             f'exec {self.python} -m regimex service doctor "$@" ;;\n'
-            '  *) echo "Usage: service.sh {start|stop|restart|status|doctor [--json]}" '
+            '  *) echo "Usage: service.sh {start|stop|restart|status|doctor [--json]|'
+            'backup|verify-backup|resume-maintenance}" '
             ">&2; exit 2 ;;\n"
             "esac\n"
         )
@@ -453,6 +458,9 @@ class Installer:
         private_directory(self.root)
         private_directory(self.root / "logs")
         with installation_lock(self.root):
+            from .maintenance import pending_maintenance
+
+            pending_maintenance(self.root)
             recorded = self.state_path.exists()
             existing = self.options.adopt
             if recorded:

@@ -78,6 +78,16 @@
               <p id="storage-available" class="hint"></p>
               <p id="storage-reserved" class="hint" hidden></p>
             </div>
+            <details id="pending-deletions" class="pending-deletions" hidden>
+              <summary>Pending deletions</summary>
+              <ul id="pending-deletion-list"></ul>
+              <p id="pending-deletion-status" class="hint" role="status"></p>
+              <div class="picker-pages">
+                <button id="pending-deletions-previous" type="button" class="quiet" hidden>Previous</button>
+                <button id="pending-deletions-next" type="button" class="quiet" hidden>Next</button>
+                <button id="pending-deletions-refresh" type="button" class="quiet">Refresh</button>
+              </div>
+            </details>
           </section>
           <section
             id="analysis-panel"
@@ -146,6 +156,7 @@
             <details class="analysis-details">
               <summary>Details</summary>
               <p id="analysis-identity" class="identity"></p>
+              <button id="delete-analysis" type="button" class="quiet delete-action" hidden>Delete analysis</button>
             </details>
           </section>
           <section class="panel history" aria-labelledby="history-title">
@@ -258,6 +269,7 @@
                     <label><input id="connection-scope-read" type="checkbox" checked /> Read results</label>
                     <label><input id="connection-scope-upload" type="checkbox" checked /> Upload exports</label>
                     <label><input id="connection-scope-analyze" type="checkbox" checked /> Run analyses</label>
+                    <label><input id="connection-scope-delete" type="checkbox" /> Delete saved data</label>
                   </fieldset>
                   <button type="submit">Create key</button>
                 </form>
@@ -284,6 +296,19 @@
           </section>
         </div>
       </section>
+      <dialog id="deletion-dialog" class="deletion-dialog" aria-labelledby="deletion-title" aria-describedby="deletion-summary">
+        <h2 id="deletion-title">Delete saved data</h2>
+        <p id="deletion-summary"></p>
+        <p id="deletion-storage" class="hint" hidden></p>
+        <ul id="deletion-blockers" class="deletion-blockers" hidden></ul>
+        <p id="deletion-warning" hidden>This cannot be undone. Download anything you want to keep first.</p>
+        <p id="deletion-status" class="hint" role="status" aria-live="polite"></p>
+        <div class="actions">
+          <button id="deletion-cancel" type="button" class="quiet" autofocus>Cancel</button>
+          <button id="deletion-refresh" type="button" class="quiet" hidden>Refresh preview</button>
+          <button id="deletion-confirm" type="button" class="danger" disabled>Delete</button>
+        </div>
+      </dialog>
     </main>
   </body>
 </html>

@@ -55,6 +55,7 @@ if TYPE_CHECKING:
     from regimex.admin_api import AdminAPIService
     from regimex.application.auth import AuthService
     from regimex.benchmark_api import BenchmarkAPIService
+    from regimex.deletion_api import DeletionAPIService
 
 
 class AnalysisAPIService(Protocol):
@@ -202,7 +203,7 @@ class AnalysisPage(StrictModel):
 
 
 class ExperimentView(ExperimentMetadata):
-    latest_analysis: AnalysisView
+    latest_analysis: AnalysisView | None
 
 
 class ExperimentPage(StrictModel):
@@ -442,6 +443,7 @@ def create_app(
     admin_service: AdminAPIService | None = None,
     benchmark_service: BenchmarkAPIService | None = None,
     auth_service: AuthService | None = None,
+    deletion_service: DeletionAPIService | None = None,
 ) -> FastAPI:
     """Create an app over configured persistence; startup never auto-migrates."""
     app = _API(
@@ -686,8 +688,10 @@ def create_app(
                 ExperimentView.model_validate(
                     {
                         **item.model_dump(exclude={"latest_analysis"}),
-                        "latest_analysis": _analysis(
-                            item.latest_analysis, prefix=_prefix(identity)
+                        "latest_analysis": (
+                            None
+                            if item.latest_analysis is None
+                            else _analysis(item.latest_analysis, prefix=_prefix(identity))
                         ),
                     }
                 )
@@ -803,6 +807,10 @@ def create_app(
                 return item
         raise NotFound
 
+    if deletion_service is not None:
+        from regimex.deletion_api import install_deletion_routes
+
+        install_deletion_routes(app, deletion_service, authenticate=principal)
     if admin_service is not None:
         from regimex.admin_api import install_admin_routes
 
@@ -831,6 +839,10 @@ def create_app(
             "/api/v1/analyses",
             "/api/v1/experiments",
             "/api/v1/experiments/{snapshot_id}/name",
+            "/api/v1/experiments/{snapshot_id}/deletion-preview",
+            "/api/v1/analyses/{analysis_id}/deletion-preview",
+            "/api/v1/deletions",
+            "/api/v1/deletions/{plan_id}",
             "/api/v1/analyses/{analysis_id}",
             "/api/v1/analyses/{analysis_id}/result",
             "/api/v1/analyses/{analysis_id}/report",
