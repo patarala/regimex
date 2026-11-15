@@ -19,6 +19,7 @@ from pydantic import AwareDatetime, BaseModel, JsonValue, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from regimex.access_contracts import IntegrationConnectionView
 from regimex.contracts import MAX_INPUT_BYTES, Identifier, StrictModel
 from regimex.diagnostic_contracts import QueueStatus
 from regimex.exports import ExportV2
@@ -602,6 +603,20 @@ def create_app(
         configured = state.get("database") is True and state.get("active_model") is True
         response.status_code = 200 if configured else 503
         return {"deployment_configured": configured, "worker_capability": "not_probed"}
+
+    @app.get("/api/v1/connection")
+    def integration_connection(request: Request, identity: Identity) -> IntegrationConnectionView:
+        if (
+            identity.role != "integration"
+            or identity.source_namespace is None
+            or identity.integration_id is None
+            or any(header in request.headers for header in ("origin", "sec-fetch-site", "cookie"))
+        ):
+            raise Forbidden("Connection diagnostics require an integration backend credential.")
+        return IntegrationConnectionView(
+            source_namespace=identity.source_namespace,
+            scopes=identity.integration_scopes,
+        )
 
     @app.post("/api/v1/validate", openapi_extra=_request_body(ExportV2))
     def validate_export(identity: Identity, export: Export) -> ValidationResult:

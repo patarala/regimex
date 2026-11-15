@@ -43,6 +43,15 @@ These routes require a current administrator credential; browser mutations retai
 Origin and CSRF checks. See [platform access](access.md) for capabilities, rotation
 and shared request/queue limits.
 
+A backend can inspect its own connection with `GET /connection` and its integration
+bearer key. The response contains only `source_namespace` and the key's `scopes`.
+This read-only diagnostic does not need delegated subject/run headers or the
+`read` capability, so a backend can detect missing capabilities before sending
+observations. It remains subject to connection authentication and request limits.
+Local user/admin credentials and browser sessions cannot use this route.
+Rejected keys receive the ordinary `401`; the response does not distinguish an
+invalid key from an expired or revoked key or a paused connection.
+
 ## Analyze an export
 
 | Request | Result |

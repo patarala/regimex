@@ -139,6 +139,20 @@ their cost. A quota refusal preserves existing results. See
 
 ## History and diagnostics
 
+The simulator backend can call `GET /api/v1/connection` with its own integration
+bearer key to check its source namespace and granted capabilities. The response
+contains only `source_namespace` and `scopes`; no owner, delegated user, token or
+connection identifiers are returned. Do not send delegated subject/run headers.
+Every valid integration key can inspect itself, including a key without `read`.
+This request consumes the normal connection request budget and does not register
+a delegated user or write an observation. Authentication retains its usual
+accounting. A rejected key returns `401` without disclosing whether it is invalid,
+expired, revoked or attached to a paused connection.
+
+Checking the connection does not establish that a model or worker is available.
+Use the service health checks and an authorized analysis separately for those
+operational checks; a successful request is not evidence of prediction accuracy.
+
 Connection creation, name/state changes and key issuance/revocation are recorded
 in the same transaction as the change. History retains the latest 10,000 events
 per connection, including the actor and the connection's name/state at that event.

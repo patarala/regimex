@@ -65,6 +65,13 @@ class IntegrationView(StrictModel):
     updated_at: AwareDatetime
 
 
+class IntegrationConnectionView(StrictModel):
+    """The caller's connection scope, without account or credential identifiers."""
+
+    source_namespace: Identifier
+    scopes: tuple[IntegrationScope, ...]
+
+
 class IntegrationKeyCreate(StrictModel):
     name: AccessName
     lifetime_days: Annotated[int, Field(ge=1, le=365)] = 30

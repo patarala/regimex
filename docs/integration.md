@@ -37,7 +37,13 @@ uv run --locked --all-extras regimex service token-create \
 ```
 
 Provision the source namespace deliberately. Never send the token to a browser,
-put it in an export, or embed it in a URL. Each backend request supplies:
+put it in an export, or embed it in a URL. Before delegation, a backend can call
+`GET /api/v1/connection` with the bearer key alone and verify the returned
+`source_namespace` and `scopes` against its configuration. This diagnostic does
+not create a delegated user or submit data. It does not check worker or model
+availability. See [connection diagnostics](access.md#history-and-diagnostics).
+
+Each delegated backend request supplies:
 
 | Header | Meaning |
 | --- | --- |

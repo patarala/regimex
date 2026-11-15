@@ -32,5 +32,9 @@ def authorize_request(principal: Principal, method: str, route: str) -> None:
     """Capabilities narrow access; resource ownership checks remain mandatory."""
     if principal.role != "integration":
         return
+    if method == "GET" and route == "/api/v1/connection":
+        # Introspection describes the caller's own key, including absent read
+        # permission. It grants no access to models, subjects or observations.
+        return
     if required_scope(method, route) not in principal.integration_scopes:
         raise Forbidden("This integration key does not allow the requested operation.")
