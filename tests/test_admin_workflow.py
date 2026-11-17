@@ -12,6 +12,7 @@ from pathlib import Path
 from subprocess import Popen
 from threading import Event
 from typing import Any, cast
+from unittest.mock import DEFAULT, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -55,6 +56,7 @@ from regimex.directions import (
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectCapacityError, ObjectInfo
+from regimex.infrastructure.resource_lifecycle import owner_payload_lock
 from regimex.market import VIRTUAL_BASE_ASSETS
 from regimex.model_registry import (
     ArchitectureRegistry,
@@ -62,7 +64,7 @@ from regimex.model_registry import (
     TrainingPolicy,
     TrainingRuntime,
 )
-from regimex.operations import Operation, OperationFailure
+from regimex.operations import OperationFailure
 from regimex.service_contracts import CapacityExceeded, Forbidden, NotFound, Principal
 from regimex.service_settings import ServiceSettings
 
@@ -632,9 +634,12 @@ def test_child_address_space_budget_fails_as_capacity_without_committing(
         service.get_dataset(principal, "memory-limited-generation")
 
 
-def test_transient_parent_database_error_fences_child_then_retries(
+@pytest.mark.parametrize(
+    "failure_stage", ["heartbeat_operation", "get_run_internal", "store_snapshots"]
+)
+def test_transient_admin_failure_retries_claimed_operation(
     admin: tuple[AdminService, Principal],
-    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
 ) -> None:
     service, principal = admin
     run = service.submit_generation(
@@ -645,16 +650,27 @@ def test_transient_parent_database_error_fences_child_then_retries(
         ),
         idempotency_key="database-retry",
     )
-    original = service.analysis_service.repository.heartbeat_operation
-
-    def disconnected(operation_id: UUID, token: UUID, stage: str) -> Operation:
-        raise psycopg.OperationalError("provider-credential-must-not-be-persisted")
-
-    monkeypatch.setattr(service.analysis_service.repository, "heartbeat_operation", disconnected)
-    first = service.run_admin(run.run_id)
+    if failure_stage == "store_snapshots":
+        with owner_payload_lock(service.analysis_service.repository, principal.owner_id):
+            first = service.run_admin(run.run_id)
+    else:
+        repository = (
+            service.repository
+            if failure_stage == "get_run_internal"
+            else service.analysis_service.repository
+        )
+        with patch.object(
+            repository,
+            failure_stage,
+            wraps=getattr(repository, failure_stage),
+            side_effect=[
+                psycopg.OperationalError("provider-credential-must-not-be-persisted"),
+                DEFAULT,
+            ],
+        ):
+            first = service.run_admin(run.run_id)
     assert first is not None and first.operation.state == "queued"
     assert first.operation.attempt == 1
-    monkeypatch.setattr(service.analysis_service.repository, "heartbeat_operation", original)
     completed(service, run.run_id)
     persisted = service.get_run(principal, run.run_id)
     assert persisted.operation.attempt == 2

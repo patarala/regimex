@@ -5,7 +5,7 @@ from typing import Annotated, Self
 from pydantic import Field, model_validator
 
 from regimex.contracts import StrictModel
-from regimex.service_contracts import CapacityExceeded
+from regimex.service_contracts import CapacityExceeded, Conflict
 
 
 class StorageUsage(StrictModel):
@@ -19,6 +19,11 @@ class StorageUsage(StrictModel):
         if self.available_bytes != max(0, self.limit_bytes - self.used_bytes - self.reserved_bytes):
             raise ValueError("Available storage must account for committed and reserved bytes.")
         return self
+
+
+class StorageBusy(Conflict):
+    def __init__(self) -> None:
+        super().__init__("Another storage change is in progress; retry shortly.")
 
 
 class StorageQuotaExceeded(CapacityExceeded):

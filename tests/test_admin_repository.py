@@ -433,9 +433,8 @@ def test_administrative_requests_and_run_outputs_keep_small_bound(
     token = claim(repository, run.run_id)
     with (
         pytest.raises(CapacityExceeded, match=r"Administrative metadata.*65536"),
-        repository.database.connection() as connection,
+        repository._active_run(run.run_id, token, "training") as (connection, active),
     ):
-        active = repository._active(connection, run.run_id, token, "training")
         repository._finish(connection, active, token, {"details": "x" * (64 * 1024)})
     saved = repository.get_run(principal(), run.run_id)
     assert saved.operation.state == "running" and saved.output is None
@@ -510,8 +509,7 @@ def test_numeric_requests_documents_metrics_and_output_preserve_identity(
         idempotency_key="numeric-output",
     )
     token = claim(repository, output_run.run_id)
-    with repository.database.connection() as connection:
-        active = repository._active(connection, output_run.run_id, token, "generation")
+    with repository._active_run(output_run.run_id, token, "generation") as (connection, active):
         repository._finish(connection, active, token, {"zero": -0.0, "large": 1e20})
     assert json_bytes(repository.get_run(principal(), output_run.run_id).output) == json_bytes(
         {"zero": -0.0, "large": 1e20}
@@ -840,6 +838,7 @@ def test_cancelled_generation_cannot_expose_snapshots_or_dataset(
         repository.complete_generation(
             run.run_id, token, dataset=record, snapshots=snapshots, bindings=bindings
         )
+    assert repository.get_run(principal(), run.run_id).operation.state == "cancelled"
     assert repository.list_datasets(principal()) == ()
     assert repository.database.list_snapshots(principal()) == ()
 
@@ -1045,6 +1044,7 @@ def test_publication_requires_matching_evaluation_and_cancelled_job_cannot_publi
     repository.database.cancel_operation(principal(), run.run_id)
     with pytest.raises(StaleAttempt):
         repository.complete_publication(run.run_id, token)
+    assert repository.get_run(principal(), run.run_id).operation.state == "cancelled"
     assert repository.database.get_active_model() is None
 
 

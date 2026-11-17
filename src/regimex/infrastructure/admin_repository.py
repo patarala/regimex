@@ -1,6 +1,8 @@
 """Transactional administrative resources and fenced lifecycle publication."""
 
 import hashlib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
@@ -38,7 +40,6 @@ from regimex.service_contracts import (
     NotFound,
     Principal,
     SnapshotRecord,
-    StaleAttempt,
     UnsupportedContract,
 )
 from regimex.storage import json_bytes
@@ -750,17 +751,12 @@ class AdminRepository:
                 "A different operation already reserved the requested immutable resource."
             )
 
-    def _active(
-        self, connection: Connection, run_id: UUID, token: UUID, kind: AdminKind
-    ) -> AdminRunRecord:
-        operation = self.database._operation(connection, run_id, lock=True)
-        if (
-            operation.kind != kind
-            or operation.state != "running"
-            or operation.attempt_token != token
-        ):
-            raise StaleAttempt()
-        return self._run(connection, run_id)
+    @contextmanager
+    def _active_run(
+        self, run_id: UUID, token: UUID, kind: AdminKind
+    ) -> Iterator[tuple[Connection, AdminRunRecord]]:
+        with self.database.completion_transaction(run_id, token, kind) as (connection, _):
+            yield connection, self._run(connection, run_id)
 
     def _finish(
         self, connection: Connection, run: AdminRunRecord, token: UUID, output: dict[str, JsonValue]
@@ -788,8 +784,7 @@ class AdminRepository:
         snapshots: tuple[SnapshotRecord, ...],
         bindings: tuple[CatalogBinding, ...],
     ) -> AdminRunRecord:
-        with self.database.connection() as connection:
-            run = self._active(connection, run_id, token, "generation")
+        with self._active_run(run_id, token, "generation") as (connection, run):
             assert isinstance(run.spec, GenerationSpec)
             if (
                 dataset.owner_id != run.operation.owner_id
@@ -825,8 +820,7 @@ class AdminRepository:
     def complete_reference(
         self, run_id: UUID, token: UUID, record: ReferenceSetRecord
     ) -> AdminRunRecord:
-        with self.database.connection() as connection:
-            run = self._active(connection, run_id, token, "reference")
+        with self._active_run(run_id, token, "reference") as (connection, run):
             assert isinstance(run.spec, ReferenceGenerationSpec)
             if (
                 record.owner_id != run.operation.owner_id
@@ -849,8 +843,7 @@ class AdminRepository:
             )
 
     def complete_training(self, run_id: UUID, token: UUID, model: ModelRecord) -> AdminRunRecord:
-        with self.database.connection() as connection:
-            run = self._active(connection, run_id, token, "training")
+        with self._active_run(run_id, token, "training") as (connection, run):
             assert isinstance(run.spec, TrainingSpec)
             if (model.model_version_id, model.architecture_id, model.inference_runtime) != (
                 run.spec.model_version_id,
@@ -914,8 +907,7 @@ class AdminRepository:
         evaluation = EvaluationRecord.model_validate_json(evaluation.model_dump_json())
         # Per-experiment statistics use the report budget, not the small run-metadata budget.
         self._bounded(evaluation.metrics, limit=MAX_REPORT_BYTES, description="Evaluation metrics")
-        with self.database.connection() as connection:
-            run = self._active(connection, run_id, token, "evaluation")
+        with self._active_run(run_id, token, "evaluation") as (connection, run):
             assert isinstance(run.spec, EvaluationSpec)
             model = self.database._model(connection, run.spec.model_version_id)
             dataset = self._dataset(connection, run.operation.owner_id, run.spec.dataset_id)
@@ -979,8 +971,7 @@ class AdminRepository:
             )
 
     def complete_publication(self, run_id: UUID, token: UUID) -> AdminRunRecord:
-        with self.database.connection() as connection:
-            run = self._active(connection, run_id, token, "publication")
+        with self._active_run(run_id, token, "publication") as (connection, run):
             assert isinstance(run.spec, PublicationSpec)
             self._validate_spec(connection, run.operation.owner_id, run.spec)
             model = self.database._activate_model(

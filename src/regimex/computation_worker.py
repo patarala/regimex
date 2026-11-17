@@ -26,7 +26,7 @@ from regimex.model_registry import RegistryError
 from regimex.operations import OperationFailure
 from regimex.resource_limits import ResourceBudgetExceeded, TimeBudgetExceeded
 from regimex.storage import json_bytes
-from regimex.storage_contracts import StorageQuotaExceeded
+from regimex.storage_contracts import StorageBusy, StorageQuotaExceeded
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 
@@ -46,7 +46,11 @@ def _memory_mapping_failure(error: Exception) -> bool:
 
 
 def resource_failure(error: Exception) -> OperationFailure | None:
-    """Describe a recognized limit without exposing paths or private exception text."""
+    """Classify temporary resource contention and exhausted budgets."""
+    if isinstance(error, StorageBusy):
+        return OperationFailure(
+            code="infrastructure_failure", message=error.message, retryable=True
+        )
     if isinstance(error, StorageQuotaExceeded):
         return OperationFailure(code="capacity_limit", message=error.message)
     if isinstance(error, TimeBudgetExceeded):
@@ -86,9 +90,9 @@ def resource_failure(error: Exception) -> OperationFailure | None:
 
 def _failure_from_exception(error: Exception) -> OperationFailure:
     """Keep resource exhaustion separate from malformed data and unsafe details."""
-    capacity = resource_failure(error)
-    if capacity is not None:
-        return capacity
+    resource_error = resource_failure(error)
+    if resource_error is not None:
+        return resource_error
     if isinstance(error, (RegistryError, ImportError)):
         return OperationFailure(
             code="unsupported_configuration",

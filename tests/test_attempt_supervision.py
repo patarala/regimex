@@ -76,6 +76,23 @@ def test_exit_waits_for_the_bounded_inflight_refresh_without_late_calls() -> Non
     assert calls == 2
 
 
+def test_loaded_job_budget_includes_time_spent_reading_its_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operation = start_attempt(queued(), uuid4(), datetime.now(UTC))
+    now = 100.0
+    monkeypatch.setattr("regimex.application.attempt_supervision.time.monotonic", lambda: now)
+    with AttemptSupervisor(
+        lambda stage: operation, heartbeat_seconds=10, time_budget_seconds=60
+    ) as supervisor:
+        now += 6
+        supervisor.limit_time_budget(10)
+        assert supervisor.remaining_seconds == 4
+        now += 4
+        with pytest.raises(TimeBudgetExceeded):
+            supervisor.poll()
+
+
 @pytest.mark.parametrize("reason", ["cancel", "stale", "deadline"])
 def test_background_failure_is_propagated_at_the_next_checkpoint(reason: str) -> None:
     operation = start_attempt(queued(), uuid4(), datetime.now(UTC))

@@ -31,7 +31,9 @@ from regimex.operations import (
     OPERATION_VERSION,
     Operation,
     OperationFailure,
+    OperationKind,
     ResolvedModel,
+    acknowledge_cancel,
     fail,
     heartbeat,
     recover_stale,
@@ -928,6 +930,24 @@ class DatabaseRepository:
                 raise UnsupportedContract()
             return AnalysisReportRecord.model_validate_json(json_bytes(row[0]))
 
+    @contextmanager
+    def completion_transaction(
+        self, operation_id: UUID, token: UUID, kind: OperationKind
+    ) -> Iterator[tuple[psycopg.Connection[tuple[object, ...]], Operation]]:
+        """Lock the attempt and settle a pending cancellation before publication."""
+        with self.connection() as connection:
+            operation = self._operation(connection, operation_id, lock=True)
+            if operation.kind != kind or operation.attempt_token != token:
+                raise StaleAttempt()
+            if operation.state == "running":
+                yield connection, operation
+                return
+            if operation.state != "cancel_requested":
+                raise StaleAttempt()
+            self._save(connection, acknowledge_cancel(operation, token, self._now(operation)))
+        # Commit cancellation before telling the worker to discard its output.
+        raise StaleAttempt()
+
     def complete_analysis(
         self,
         operation_id: UUID,
@@ -943,12 +963,11 @@ class DatabaseRepository:
         if len(payload) > MAX_INPUT_BYTES:
             raise ValueError("analysis result exceeds the 16 MiB result limit")
         digest = hashlib.sha256(payload).hexdigest()
-        with self.connection() as connection:
-            operation = self._operation(connection, operation_id, lock=True)
-            try:
-                completed = succeed(operation, token, digest, self._now(operation))
-            except ValueError as exc:
-                raise StaleAttempt() from exc
+        with self.completion_transaction(operation_id, token, "analysis") as (
+            connection,
+            operation,
+        ):
+            completed = succeed(operation, token, digest, self._now(operation))
             report = AnalysisReportRecord.model_validate_json(report.model_dump_json())
             analysis = self._analysis(connection, operation_id)
             snapshot = self._snapshot(connection, analysis.snapshot_id)

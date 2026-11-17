@@ -28,7 +28,8 @@ class AttemptSupervisor:
     ) -> None:
         self._heartbeat = heartbeat
         self._interval = heartbeat_seconds
-        self.deadline = time.monotonic() + time_budget_seconds
+        self._started_at = time.monotonic()
+        self.deadline = self._started_at + time_budget_seconds
         self._stage = stage
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -62,6 +63,11 @@ class AttemptSupervisor:
             if operation.state == "cancel_requested":
                 raise ComputationCancelled()
             self.poll()
+
+    def limit_time_budget(self, seconds: float) -> None:
+        """Count setup time against a limit recorded in the loaded job."""
+        self.deadline = min(self.deadline, self._started_at + seconds)
+        self.poll()
 
     @property
     def remaining_seconds(self) -> int:

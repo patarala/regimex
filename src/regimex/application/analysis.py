@@ -276,8 +276,8 @@ def run_analysis(
         # stable public messages; operators can inspect the failed stage and code.
         if isinstance(exc, ComputationFailure):
             failure = exc.failure
-        elif (capacity := resource_failure(exc)) is not None:
-            failure = capacity
+        elif (resource_error := resource_failure(exc)) is not None:
+            failure = resource_error
         elif isinstance(exc, RegistryError):
             failure = OperationFailure(
                 code="unsupported_configuration",

@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 from regimex.service_contracts import Conflict
+from regimex.storage_contracts import StorageBusy
 
 if TYPE_CHECKING:
     import psycopg
@@ -29,7 +30,7 @@ def owner_payload_lock(
                 (f"regimex:{database.schema}:owner-payload:{owner_id}",),
             )
         except (LockNotAvailable, QueryCanceled) as exc:
-            raise Conflict("Another storage change is in progress; retry shortly.") from exc
+            raise StorageBusy() from exc
         yield connection
 
 

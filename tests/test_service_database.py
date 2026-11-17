@@ -682,16 +682,14 @@ def test_cancelled_and_recovered_attempts_cannot_commit(repository: DatabaseRepo
     assert cancelled.state == "cancel_requested"
     with pytest.raises(StaleAttempt):
         repository.complete_analysis(
+            operation_id, first.attempt_token, {"stale": True}, report=report
+        )
+    assert repository.get_operation(_principal(), operation_id) == cancelled
+    with pytest.raises(StaleAttempt):
+        repository.complete_analysis(
             operation_id, second.attempt_token, {"late": True}, report=report
         )
-    final = repository.fail_operation(
-        operation_id,
-        second.attempt_token,
-        OperationFailure(
-            code="infrastructure_failure", message="Cancelled by owner.", retryable=True
-        ),
-    )
-    assert final.state == "cancelled"
+    assert repository.get_operation(_principal(), operation_id).state == "cancelled"
     assert repository.get_analysis(_principal(), operation_id).result is None
     assert _counts(repository) == (1, 2)
 

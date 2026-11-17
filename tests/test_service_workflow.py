@@ -41,6 +41,7 @@ from regimex.computation_worker import supervise_child
 from regimex.exports import ExportPayloadV2, seal_export
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
+from regimex.infrastructure.resource_lifecycle import owner_payload_lock
 from regimex.model_registry import ArchitectureRegistry, InferenceRuntime, baseline_descriptor
 from regimex.operations import Operation
 from regimex.service_contracts import (
@@ -572,6 +573,22 @@ def test_worker_persists_safe_reasons_and_only_retries_transient_storage_failure
     assert "private" not in persisted.model_dump_json()
     assert persisted.result is None
     assert service.run_analysis(queued.operation.operation_id) is None
+
+
+def test_report_write_retries_after_owner_storage_lock_is_released(
+    service: AnalysisService, tmp_path: Path
+) -> None:
+    published_model(service, tmp_path)
+    owner = principal(service.repository)
+    snapshot = service.create_snapshot(owner, source(2020).export)
+    analysis = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key="busy-storage")
+
+    with owner_payload_lock(service.repository, owner.owner_id):
+        first = service.run_analysis(analysis.analysis_id)
+    assert first is not None and first.state == "queued" and first.attempt == 1
+    assert service.get_report_metadata(owner, analysis.analysis_id) is None
+    second = service.run_analysis(analysis.analysis_id)
+    assert second is not None and second.state == "succeeded" and second.attempt == 2
 
 
 def test_invalid_numeric_codec_cannot_register_or_activate(
