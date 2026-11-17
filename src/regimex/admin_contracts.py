@@ -6,7 +6,7 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
-from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup
+from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup, content_hash
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.market_config import MarketConfig
@@ -17,6 +17,31 @@ from regimex.model_registry import (
     TrainingRuntime,
 )
 from regimex.operations import Operation, Sha256
+
+
+class RequestFingerprint(StrictModel):
+    """Preserve the resolved request digest and recognize earlier profile defaults."""
+
+    sha256: Sha256
+    previous_hashes: tuple[Sha256, ...]
+
+    @classmethod
+    def for_profile_request(cls, request: StrictModel) -> Self:
+        expanded = request.model_dump(mode="json")
+        current = content_hash(expanded)
+        # Versions 2.0 and 2.1 shared every default except the profile ID
+        # and analysis.version. Preserve the earlier expansion for each future
+        # default change and pin a digest from that release in the replay tests.
+        if "analysis_profile_id" not in request.model_fields_set:
+            expanded["analysis_profile_id"] = "direction-32/2.0"
+        analysis = getattr(request, "analysis", None)
+        if isinstance(analysis, AnalysisConfig) and "version" not in analysis.model_fields_set:
+            expanded["analysis"]["version"] = "2.0"
+        previous = content_hash(expanded)
+        return cls(sha256=current, previous_hashes=() if current == previous else (previous,))
+
+
+type RequestDigest = Sha256 | RequestFingerprint
 
 
 class RawGenerationPlan(StrictModel):

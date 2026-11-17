@@ -23,6 +23,7 @@ from regimex.admin_contracts import (
     PublicationSpec,
     ReferenceGenerationSpec,
     ReferenceSetRecord,
+    RequestDigest,
     TrainingSpec,
 )
 from regimex.contracts import MAX_INPUT_BYTES
@@ -252,10 +253,11 @@ class AdminRepository:
             return result
 
     def find_dataset_replay(
-        self, principal: Principal, *, idempotency_key: str, request_sha256: str
+        self, principal: Principal, request: IntakeRequest | None
     ) -> DatasetRecord | None:
         self.database._admin(principal)
-        request = IntakeRequest(idempotency_key=idempotency_key, request_sha256=request_sha256)
+        if request is None:
+            return None
         with self.database.connection() as connection:
             previous = IntakeReceipts.find(
                 connection, principal.owner_id, "dataset_import", request
@@ -378,7 +380,7 @@ class AdminRepository:
         record: ReferenceSetRecord,
         *,
         idempotency_key: str | None = None,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> ReferenceSetRecord:
         self._owner(principal, record.owner_id)
         request = IntakeRequest.optional(idempotency_key, request_sha256)
@@ -401,15 +403,11 @@ class AdminRepository:
             return result
 
     def find_reference_replay(
-        self,
-        principal: Principal,
-        *,
-        idempotency_key: str,
-        request_sha256: str,
-        final: bool = False,
+        self, principal: Principal, request: IntakeRequest | None, *, final: bool = False
     ) -> ReferenceSetRecord | None:
         self.database._admin(principal)
-        request = IntakeRequest(idempotency_key=idempotency_key, request_sha256=request_sha256)
+        if request is None:
+            return None
         with self.database.connection() as connection:
             previous = IntakeReceipts.find(
                 connection,
@@ -439,7 +437,7 @@ class AdminRepository:
         record: ReferenceSetRecord,
         *,
         idempotency_key: str | None = None,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> ReferenceSetRecord:
         self._owner(principal, record.owner_id)
         request = IntakeRequest.optional(idempotency_key, request_sha256)
@@ -507,9 +505,14 @@ class AdminRepository:
         return record
 
     def find_replay(
-        self, principal: Principal, kind: AdminKind, idempotency_key: str, request_sha256: str
+        self,
+        principal: Principal,
+        kind: AdminKind,
+        idempotency_key: str,
+        request_sha256: RequestDigest,
     ) -> AdminRunRecord | None:
         self.database._admin(principal)
+        request = IntakeRequest(idempotency_key=idempotency_key, request_sha256=request_sha256)
         with self.database.connection() as connection:
             row = connection.execute(
                 "SELECT operation_id,request_sha256 FROM regimex_operations "
@@ -518,8 +521,7 @@ class AdminRepository:
             ).fetchone()
             if row is None:
                 return None
-            if row[1] != request_sha256:
-                raise Conflict("The idempotency key was already used for a different request.")
+            request.require_match(row[1])
             return self._run(connection, cast(UUID, row[0]))
 
     def list_runs(
@@ -635,14 +637,16 @@ class AdminRepository:
         spec: AdminSpec,
         *,
         idempotency_key: str,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
         max_pending: int = 8,
     ) -> AdminRunRecord:
         self.database._admin(principal)
         spec = _SPEC.model_validate_json(json_bytes(spec.model_dump(mode="json"))).root
         self._bounded(spec.model_dump(mode="json"))
-        digest = (
-            request_sha256 or hashlib.sha256(json_bytes(spec.model_dump(mode="json"))).hexdigest()
+        request = IntakeRequest(
+            idempotency_key=idempotency_key,
+            request_sha256=request_sha256
+            or hashlib.sha256(json_bytes(spec.model_dump(mode="json"))).hexdigest(),
         )
         if max_pending < 1:
             raise ValueError("pending quota must be positive")
@@ -654,8 +658,7 @@ class AdminRepository:
                 (principal.owner_id, spec.kind, idempotency_key),
             ).fetchone()
             if previous is not None:
-                if previous[1] != digest:
-                    raise Conflict("The idempotency key was already used for a different request.")
+                request.require_match(previous[1])
                 return self._run(connection, cast(UUID, previous[0]))
             count = connection.execute(
                 "SELECT count(*) FROM regimex_operations WHERE owner_id=%s "
@@ -673,7 +676,7 @@ class AdminRepository:
                 owner_id=principal.owner_id,
                 kind=spec.kind,
                 resource_id=str(run_id),
-                request_sha256=digest,
+                request_sha256=request.digest,
                 idempotency_key=idempotency_key,
                 model=model,
                 created_at=now,
@@ -687,7 +690,7 @@ class AdminRepository:
                     principal.owner_id,
                     spec.kind,
                     idempotency_key,
-                    digest,
+                    request.digest,
                     operation.state,
                     Jsonb(operation.model_dump(mode="json")),
                 ),

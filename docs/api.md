@@ -21,7 +21,10 @@ storage or URLs. Roles are `user`, `admin` and source-bound `integration`.
 Queued submissions and synchronous administrative imports require an
 `Idempotency-Key`. Its scope is the authenticated owner and operation. A retry
 with identical canonical content returns the original resource; changed content
-returns `409`. Every resource and download is authorized on the server.
+returns `409`. Reference and training requests that omit the analysis profile
+can be retried after the default changes. A retry returns the first accepted
+resource with its original profile. Every resource and download is authorized
+on the server.
 
 ## Manage platform connections
 

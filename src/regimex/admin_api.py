@@ -25,12 +25,14 @@ from regimex.admin_contracts import (
     ReferenceGenerationSpec,
     ReferenceImportSpec,
     ReferenceSetRecord,
+    RequestDigest,
+    RequestFingerprint,
     SplitPolicy,
     TrainingSpec,
 )
 from regimex.api import OperationView, _json_dependency, _operation, _request_body
 from regimex.contracts import Identifier, StrictModel
-from regimex.data_catalog import DatasetManifest, ReferenceSet
+from regimex.data_catalog import DatasetManifest, ReferenceSet, content_hash
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
 from regimex.model_registry import (
     ArchitectureId,
@@ -49,7 +51,7 @@ class AdminAPIService(Protocol):
         spec: FinalReferenceImportSpec,
         *,
         idempotency_key: str | None = None,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> ReferenceSetRecord: ...
 
     def submit_final_evaluation(
@@ -85,7 +87,7 @@ class AdminAPIService(Protocol):
         spec: ReferenceGenerationSpec,
         *,
         idempotency_key: str,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> AdminRunRecord: ...
 
     def import_references(
@@ -94,7 +96,7 @@ class AdminAPIService(Protocol):
         spec: ReferenceImportSpec,
         *,
         idempotency_key: str | None = None,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> ReferenceSetRecord: ...
 
     def submit_training(
@@ -103,7 +105,7 @@ class AdminAPIService(Protocol):
         spec: TrainingSpec,
         *,
         idempotency_key: str,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> AdminRunRecord: ...
 
     def submit_evaluation(
@@ -300,10 +302,6 @@ class ReferencePage(StrictModel):
     offset: int
 
 
-def _hash_request(value: StrictModel | DatasetRequest | ReferenceRequest) -> str:
-    return hashlib.sha256(json_bytes(value.model_dump(mode="json"))).hexdigest()
-
-
 def _run(record: AdminRunRecord) -> AdminRunView:
     allowed = {
         "dataset_id",
@@ -390,7 +388,7 @@ def install_admin_routes(
         idempotency_key: Key,
     ) -> AdminRunView | DatasetView:
         request = intake.root
-        digest = _hash_request(intake)
+        digest = content_hash(request.model_dump(mode="json"))
         if isinstance(request, GeneratedDatasetRequest):
             record = service.submit_generation(
                 identity,
@@ -446,6 +444,7 @@ def install_admin_routes(
         idempotency_key: Key,
     ) -> AdminRunView | ReferenceView:
         request = intake.root
+        fingerprint = RequestFingerprint.for_profile_request(request)
         if isinstance(request, AutomaticReferenceRequest):
             record = service.generate_references(
                 identity,
@@ -457,7 +456,7 @@ def install_admin_routes(
                     analysis_profile_id=request.analysis_profile_id,
                 ),
                 idempotency_key=idempotency_key,
-                request_sha256=_hash_request(intake),
+                request_sha256=fingerprint,
             )
             response.status_code = 202
             response.headers["Location"] = f"/api/v1/admin-runs/{record.run_id}"
@@ -465,7 +464,7 @@ def install_admin_routes(
         reference_id = (
             "reference-"
             + hashlib.sha256(
-                json_bytes({"owner_id": identity.owner_id, "request": _hash_request(intake)})
+                json_bytes({"owner_id": identity.owner_id, "request": fingerprint.sha256})
             ).hexdigest()[:40]
         )
         references = service.import_references(
@@ -474,7 +473,7 @@ def install_admin_routes(
                 **request.model_dump(exclude={"mode"}), reference_set_id=reference_id
             ),
             idempotency_key=idempotency_key,
-            request_sha256=_hash_request(intake),
+            request_sha256=fingerprint,
         )
         response.status_code = 201
         response.headers["Location"] = (
@@ -524,7 +523,7 @@ def install_admin_routes(
                 benchmark_selection_id=intake.benchmark_selection_id,
             ),
             idempotency_key=idempotency_key,
-            request_sha256=_hash_request(intake),
+            request_sha256=RequestFingerprint.for_profile_request(intake),
         )
         response.headers["Location"] = f"/api/v1/training-runs/{record.run_id}"
         return _run(record)

@@ -7,12 +7,14 @@ from typing import Annotated, Literal, Protocol, Self
 from fastapi import Depends, FastAPI, Header, Response
 from pydantic import Field, model_validator
 
-from regimex.admin_api import AdminRunView, ReferenceView, _hash_request, _reference, _run
+from regimex.admin_api import AdminRunView, ReferenceView, _reference, _run
 from regimex.admin_contracts import (
     AdminRunRecord,
     FinalReferenceImportSpec,
     HumanAnnotation,
     ReferenceSetRecord,
+    RequestDigest,
+    RequestFingerprint,
 )
 from regimex.api import _json_dependency, _request_body
 from regimex.benchmark_contracts import BenchmarkView, RegistryState
@@ -56,7 +58,7 @@ class FinalEvaluationService(Protocol):
         spec: FinalReferenceImportSpec,
         *,
         idempotency_key: str | None = None,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> ReferenceSetRecord: ...
 
     def submit_final_evaluation(
@@ -148,17 +150,18 @@ def install_benchmark_routes(
         response: Response,
         idempotency_key: Key,
     ) -> ReferenceView:
+        fingerprint = RequestFingerprint.for_profile_request(intake)
         reference_id = (
             "reference-"
             + hashlib.sha256(
-                json_bytes({"owner_id": identity.owner_id, "request": _hash_request(intake)})
+                json_bytes({"owner_id": identity.owner_id, "request": fingerprint.sha256})
             ).hexdigest()[:40]
         )
         record = administration.import_final_references(
             identity,
             FinalReferenceImportSpec(**intake.model_dump(), reference_set_id=reference_id),
             idempotency_key=idempotency_key,
-            request_sha256=_hash_request(intake),
+            request_sha256=fingerprint,
         )
         response.headers["Location"] = (
             f"/api/v1/reference-sets/{record.references.reference_set_id}"

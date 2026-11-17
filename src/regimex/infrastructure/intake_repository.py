@@ -5,8 +5,8 @@ from typing import Literal, cast
 import psycopg
 from pydantic import ValidationError
 
+from regimex.admin_contracts import RequestDigest, RequestFingerprint
 from regimex.contracts import Identifier, StrictModel
-from regimex.operations import Sha256
 from regimex.service_contracts import Conflict, ServiceError
 from regimex.storage import json_bytes
 
@@ -16,11 +16,27 @@ Connection = psycopg.Connection[tuple[object, ...]]
 
 class IntakeRequest(StrictModel):
     idempotency_key: Identifier
-    request_sha256: Sha256
+    request_sha256: RequestDigest
+
+    @property
+    def digest(self) -> str:
+        if isinstance(self.request_sha256, RequestFingerprint):
+            return self.request_sha256.sha256
+        return self.request_sha256
+
+    def require_match(self, stored: object) -> None:
+        if stored == self.digest:
+            return
+        if (
+            isinstance(self.request_sha256, RequestFingerprint)
+            and stored in self.request_sha256.previous_hashes
+        ):
+            return
+        raise Conflict("The idempotency key was already used for a different request.")
 
     @classmethod
     def optional(
-        cls, idempotency_key: str | None, request_sha256: str | None
+        cls, idempotency_key: str | None, request_sha256: RequestDigest | None
     ) -> IntakeRequest | None:
         if idempotency_key is None and request_sha256 is None:
             return None
@@ -63,8 +79,7 @@ class IntakeReceipts:
         ).fetchone()
         if row is None:
             return None
-        if row[0] != request.request_sha256:
-            raise Conflict("The idempotency key was already used for a different request.")
+        request.require_match(row[0])
         return cast(str, row[1])
 
     @staticmethod
@@ -83,7 +98,7 @@ class IntakeReceipts:
                 owner_id,
                 kind,
                 request.idempotency_key,
-                request.request_sha256,
+                request.digest,
                 resource_id if kind == "dataset_import" else None,
                 None if kind == "dataset_import" else resource_id,
             ),

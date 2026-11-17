@@ -1,7 +1,7 @@
 """Real transactions bind synchronous retries to the first committed resource."""
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Never
+from typing import TYPE_CHECKING, Literal, Never
 
 import pytest
 
@@ -14,18 +14,28 @@ from test_admin_repository import repository as repository
 from test_final_reference_import import ImportContext, final_spec, payload_paths
 from test_final_reference_import import context as context
 
+from regimex.admin_api import HumanReferenceRequest
 from regimex.admin_contracts import (
     DatasetRecord,
     DatasetSelection,
     DatasetSpec,
+    FinalReferenceImportSpec,
     HumanAnnotation,
     ReferenceImportSpec,
     ReferenceSetRecord,
+    RequestFingerprint,
 )
+from regimex.benchmark_api import FinalReferenceRequest
 from regimex.data_catalog import ReferencePayload, content_hash, seal_dataset, seal_reference_set
-from regimex.directions import DirectionAnnotations, DirectionInterval, summarize_interval
+from regimex.directions import (
+    AnalysisConfig,
+    DirectionAnnotations,
+    DirectionInterval,
+    summarize_interval,
+)
 from regimex.infrastructure.intake_repository import IntakeKind, IntakeReceipts, IntakeRequest
 from regimex.service_contracts import Conflict, Forbidden, NotFound, ServiceError
+from regimex.storage import json_bytes
 
 if TYPE_CHECKING:
     from regimex.infrastructure.admin_repository import AdminRepository, Connection
@@ -92,13 +102,15 @@ def test_receipts_are_scoped_by_owner_and_operation(repository: AdminRepository)
     )
     assert (
         repository.find_reference_replay(
-            principal(), idempotency_key="shared", request_sha256="b" * 64
+            principal(), IntakeRequest(idempotency_key="shared", request_sha256="b" * 64)
         )
         == reference
     )
     assert (
         repository.find_reference_replay(
-            principal(), idempotency_key="shared", request_sha256="b" * 64, final=True
+            principal(),
+            IntakeRequest(idempotency_key="shared", request_sha256="b" * 64),
+            final=True,
         )
         is None
     )
@@ -119,7 +131,7 @@ def test_receipts_are_scoped_by_owner_and_operation(repository: AdminRepository)
         repository.get_dataset(principal("other"), first.dataset_id)
     with pytest.raises(Forbidden):
         repository.find_dataset_replay(
-            principal(admin=False), idempotency_key="shared", request_sha256="a" * 64
+            principal(admin=False), IntakeRequest(idempotency_key="shared", request_sha256="a" * 64)
         )
 
 
@@ -163,6 +175,17 @@ def test_concurrent_reference_retries_return_original_resource(
         records = tuple(pool.map(submit, range(4)))
     assert all(item == records[0] for item in records)
     assert repository.list_reference_sets(principal()) == (records[0],)
+    # An older process can finish this same request between the initial
+    # lookup and the locked admission in the newer process.
+    assert (
+        repository.add_reference_set(
+            principal(),
+            record,
+            idempotency_key="reference-retry",
+            request_sha256=RequestFingerprint(sha256="c" * 64, previous_hashes=("a" * 64,)),
+        )
+        == records[0]
+    )
     with pytest.raises(Conflict):
         repository.add_reference_set(
             principal(),
@@ -313,14 +336,31 @@ def test_ordinary_reference_service_replays_before_payload_reads(
             ),
         ),
     )
-    first = context.admin.import_references(context.principal, spec, idempotency_key="ordinary")
+    wire = {
+        "mode": "human_import",
+        **spec.model_dump(
+            mode="json", exclude={"reference_set_id", "analysis", "analysis_profile_id"}
+        ),
+    }
+    request = HumanReferenceRequest.model_validate_json(json_bytes(wire))
+    first = context.admin.import_references(
+        context.principal,
+        spec,
+        idempotency_key="ordinary",
+        request_sha256=content_hash(request.model_dump(mode="json")),
+    )
 
     def no_read(*_args: object, **_kwargs: object) -> Never:
         raise AssertionError("replay must not re-read reference inputs")
 
     monkeypatch.setattr(context.admin.analysis_service, "read_snapshot", no_read)
     assert (
-        context.admin.import_references(context.principal, spec, idempotency_key="ordinary")
+        context.admin.import_references(
+            context.principal,
+            spec,
+            idempotency_key="ordinary",
+            request_sha256=RequestFingerprint.for_profile_request(request),
+        )
         == first
     )
     with pytest.raises(Conflict):
@@ -331,14 +371,43 @@ def test_ordinary_reference_service_replays_before_payload_reads(
         )
 
 
+@pytest.mark.parametrize("version", ["2.0", "2.1"])
 def test_final_reference_replay_survives_reservation_and_conflicts_before_upload(
-    context: ImportContext, monkeypatch: pytest.MonkeyPatch
+    context: ImportContext, monkeypatch: pytest.MonkeyPatch, version: Literal["2.0", "2.1"]
 ) -> None:
     spec = final_spec(context)
-    checksum = content_hash(spec.model_dump(mode="json", exclude={"reference_set_id"}))
-    first = context.admin.import_final_references(
-        context.principal, spec, idempotency_key="final", request_sha256=checksum
+    profile = AnalysisConfig(version=version)
+    spec = spec.model_copy(
+        update={
+            "analysis": profile,
+            "analysis_profile_id": f"direction-32/{version}",
+            "annotations": tuple(
+                item.model_copy(
+                    update={
+                        "annotation": item.annotation.model_copy(
+                            update={"policy_config": profile.model_dump(mode="json")}
+                        )
+                    }
+                )
+                for item in spec.annotations
+            ),
+        }
     )
+    checksum = content_hash(spec.model_dump(mode="json", exclude={"reference_set_id"}))
+    # Admit the old release's human references under the profile it required.
+    with monkeypatch.context() as old_release:
+
+        def require_original_profile(analysis: AnalysisConfig, identifier: str) -> None:
+            assert analysis == profile and identifier == spec.analysis_profile_id
+
+        old_release.setattr(context.admin, "_profile", require_original_profile)
+        first = context.admin.import_final_references(
+            context.principal, spec, idempotency_key="final", request_sha256=checksum
+        )
+    request = FinalReferenceRequest.model_validate_json(
+        spec.model_dump_json(exclude={"reference_set_id", "analysis", "analysis_profile_id"})
+    )
+    fingerprint = RequestFingerprint.for_profile_request(request)
     context.benchmark.attest(
         context.principal,
         tuple(sorted({member.source_namespace for member in context.dataset.manifest.members})),
@@ -356,9 +425,11 @@ def test_final_reference_replay_survives_reservation_and_conflicts_before_upload
     assert (
         context.admin.import_final_references(
             context.principal,
-            spec.model_copy(update={"reference_set_id": "another-server-generated-id"}),
+            FinalReferenceImportSpec(
+                **request.model_dump(), reference_set_id="another-server-generated-id"
+            ),
             idempotency_key="final",
-            request_sha256=checksum,
+            request_sha256=fingerprint,
         )
         == first
     )

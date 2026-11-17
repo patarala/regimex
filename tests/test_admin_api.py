@@ -7,7 +7,7 @@ import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,12 +21,20 @@ pytest.importorskip("procrastinate")
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
-from regimex.admin_api import AdminAPIService, AdminRunView
+from regimex.admin_api import (
+    AdminAPIService,
+    AdminRunView,
+    AutomaticReferenceRequest,
+    TrainingRunRequest,
+)
+from regimex.admin_contracts import ReferenceGenerationSpec, RequestFingerprint
 from regimex.api import AnalysisAPIService, create_app
 from regimex.application.admin_service import AdminService
 from regimex.application.benchmark_service import BenchmarkService
 from regimex.application.service import AnalysisService
 from regimex.benchmark_api import BenchmarkAPIService
+from regimex.data_catalog import content_hash
+from regimex.directions import AnalysisConfig
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.s3_object_store import S3ObjectStore
@@ -34,6 +42,50 @@ from regimex.model_registry import ArchitectureRegistry
 from regimex.service_bootstrap import create_object_store
 from regimex.service_contracts import Principal
 from regimex.service_settings import ServiceSettings
+from regimex.storage import json_bytes
+
+
+def test_reference_retries_preserve_published_hashes_and_explicit_profile_fields() -> None:
+    body = {"mode": "automatic", "dataset_id": "DATASET_ID", "partition": "train"}
+    current = "3c0ea083342ef7253144818651cba2aeeea838828b5867c09a4c945a5298fdef"
+    previous = "ce2c48baaaaa4d420bf5c12c0d0787e719a2ce0bba97f8cd79b60faaae19f4ed"
+
+    def fingerprint(**fields: object) -> RequestFingerprint:
+        return RequestFingerprint.for_profile_request(
+            AutomaticReferenceRequest.model_validate({**body, **fields})
+        )
+
+    assert fingerprint() == RequestFingerprint(sha256=current, previous_hashes=(previous,))
+    assert fingerprint(analysis={"min_duration": 32}) == fingerprint()
+    for explicit in (
+        fingerprint(analysis={"version": "2.1"}),
+        fingerprint(analysis_profile_id="direction-32/2.1"),
+    ):
+        assert explicit.sha256 == current
+        assert previous not in explicit.previous_hashes
+    changed = fingerprint(analysis={"min_duration": 64})
+    assert previous not in (changed.sha256, *changed.previous_hashes)
+
+
+def test_training_replay_fills_only_an_omitted_profile() -> None:
+    body = {
+        "dataset_id": "dataset",
+        "labels_reference_set_id": "train",
+        "validation_reference_set_id": "valid",
+        "architecture_id": "baseline",
+        "parameters": {"regularization": [1.0]},
+        "policy": {"optimizer": "lbfgs", "seeds": [11]},
+        "benchmark_selection_id": "bench",
+    }
+    request = TrainingRunRequest.model_validate_json(json_bytes(body))
+    original = request.model_dump(mode="json")
+    previous = content_hash({**original, "analysis_profile_id": "direction-32/2.0"})
+    assert RequestFingerprint.for_profile_request(request) == RequestFingerprint(
+        sha256=content_hash(original), previous_hashes=(previous,)
+    )
+    changed = TrainingRunRequest.model_validate_json(json_bytes({**body, "parameters": {}}))
+    fingerprint = RequestFingerprint.for_profile_request(changed)
+    assert previous not in (fingerprint.sha256, *fingerprint.previous_hashes)
 
 
 @pytest.mark.parametrize(
@@ -221,6 +273,61 @@ def administrative_api(
             )
         if isinstance(objects, S3ObjectStore):
             cleanup_owned_test_prefix(objects)
+
+
+@pytest.mark.parametrize("version", ["2.0", "2.1"])
+def test_reference_request_replays_the_original_profile_and_operation_after_upgrade(
+    administrative_api: AdministrativeAPI, version: Literal["2.0", "2.1"]
+) -> None:
+    from test_admin_repository import dataset_records
+
+    context = administrative_api
+    repository = context.service.repository
+    owner = context.analysis.authenticate(context.token)
+    dataset, snapshots, bindings = dataset_records("dataset", owner=owner.owner_id)
+    for snapshot in snapshots:
+        repository.database.add_snapshot(snapshot)
+    repository.add_dataset(owner, dataset, bindings=bindings)
+    body = {"mode": "automatic", "dataset_id": "dataset", "partition": "train"}
+    resolved = AutomaticReferenceRequest.model_validate(
+        {**body, "analysis_profile_id": f"direction-32/{version}", "analysis": {"version": version}}
+    )
+    old_digest = content_hash(resolved.model_dump(mode="json"))
+    spec = ReferenceGenerationSpec(
+        dataset_id="dataset",
+        partition="train",
+        reference_set_id="first",
+        analysis=AnalysisConfig(version=version),
+        analysis_profile_id=resolved.analysis_profile_id,
+    )
+    original = repository.submit(owner, spec, idempotency_key="same", request_sha256=old_digest)
+    headers = {**context.headers, "Idempotency-Key": "same"}
+    response = context.client.post("/api/v1/reference-sets", headers=headers, json=body)
+    assert response.status_code == 202, response.text
+    assert response.json()["run_id"] == str(original.run_id)
+    saved = repository.get_run_internal(original.run_id)
+    assert saved == original and saved.operation.request_sha256 == old_digest
+    # The transactional check must also replay when another submission wins
+    # the race after the application's initial lookup.
+    assert (
+        repository.submit(
+            owner,
+            spec.model_copy(update={"reference_set_id": "concurrent"}),
+            idempotency_key="same",
+            request_sha256=RequestFingerprint.for_profile_request(
+                AutomaticReferenceRequest.model_validate(body)
+            ),
+        )
+        == original
+    )
+    changed = {
+        **body,
+        "analysis_profile_id": "direction-32/" + ("2.1" if version == "2.0" else "2.0"),
+    }
+    assert (
+        context.client.post("/api/v1/reference-sets", headers=headers, json=changed).status_code
+        == 409
+    )
 
 
 def test_administrative_intake_is_strict_authenticated_and_bounded(

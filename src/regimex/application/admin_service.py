@@ -29,6 +29,7 @@ from regimex.admin_contracts import (
     ReferenceGenerationSpec,
     ReferenceImportSpec,
     ReferenceSetRecord,
+    RequestDigest,
     TrainingSpec,
 )
 from regimex.application.admin_results import AdminResultCommitter
@@ -138,7 +139,7 @@ class AdminService:
         spec: AdminSpec,
         *,
         idempotency_key: str,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
         _final_grant: FinalEvaluationGrant | None = None,
     ) -> AdminRunRecord:
         self._admin(principal)
@@ -277,7 +278,7 @@ class AdminService:
         spec: ReferenceGenerationSpec,
         *,
         idempotency_key: str,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> AdminRunRecord:
         return self._submit(
             principal, spec, idempotency_key=idempotency_key, request_sha256=request_sha256
@@ -289,7 +290,7 @@ class AdminService:
         spec: TrainingSpec,
         *,
         idempotency_key: str,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> AdminRunRecord:
         return self._submit(
             principal, spec, idempotency_key=idempotency_key, request_sha256=request_sha256
@@ -420,7 +421,7 @@ class AdminService:
 
     @staticmethod
     def _sync_request(
-        spec: StrictModel, idempotency_key: str | None, request_sha256: str | None
+        spec: StrictModel, idempotency_key: str | None, request_sha256: RequestDigest | None
     ) -> IntakeRequest | None:
         checksum = request_sha256
         if idempotency_key is not None and checksum is None:
@@ -437,10 +438,9 @@ class AdminService:
     ) -> DatasetRecord:
         self._admin(principal)
         request = self._sync_request(spec, idempotency_key, request_sha256)
-        if request is not None:
-            previous = self.repository.find_dataset_replay(principal, **request.model_dump())
-            if previous is not None:
-                return previous
+        previous = self.repository.find_dataset_replay(principal, request)
+        if previous is not None:
+            return previous
         if len(spec.members) > self.settings.max_generation_experiments:
             raise CapacityExceeded("Dataset membership exceeds the server experiment limit.")
         members = []
@@ -472,7 +472,7 @@ class AdminService:
             record,
             bindings=tuple(bindings),
             idempotency_key=None if request is None else request.idempotency_key,
-            request_sha256=None if request is None else request.request_sha256,
+            request_sha256=None if request is None else request.digest,
         )
 
     def _store_json(self, path: Path, value: object, key: str) -> ObjectInfo:
@@ -493,25 +493,30 @@ class AdminService:
         spec: ReferenceImportSpec,
         *,
         idempotency_key: str | None = None,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> ReferenceSetRecord:
         self._admin(principal)
         request = self._sync_request(spec, idempotency_key, request_sha256)
-        if request is not None:
-            previous = self.repository.find_reference_replay(principal, **request.model_dump())
-            if previous is not None:
-                return previous
+        previous = self.repository.find_reference_replay(principal, request)
+        if previous is not None:
+            return previous
         if spec.partition not in {"train", "validation"}:
             raise ServiceError(
                 "invalid_data", "Ordinary reference imports require train or validation.", 422
             )
         spec = _validate_request(ReferenceImportSpec.model_validate_json, spec.model_dump_json())
-        return self.repository.add_reference_set(
-            principal,
-            self._human_reference_record(principal, spec),
-            idempotency_key=None if request is None else request.idempotency_key,
-            request_sha256=None if request is None else request.request_sha256,
-        )
+        try:
+            return self.repository.add_reference_set(
+                principal,
+                self._human_reference_record(principal, spec),
+                idempotency_key=idempotency_key,
+                request_sha256=None if request is None else request.request_sha256,
+            )
+        except ServiceError:
+            accepted = self.repository.find_reference_replay(principal, request)
+            if accepted is not None:
+                return accepted
+            raise
 
     def import_final_references(
         self,
@@ -519,17 +524,14 @@ class AdminService:
         spec: FinalReferenceImportSpec,
         *,
         idempotency_key: str | None = None,
-        request_sha256: str | None = None,
+        request_sha256: RequestDigest | None = None,
     ) -> ReferenceSetRecord:
         """Seal independently supplied final annotations before reservation or exposure."""
         self._admin(principal)
         request = self._sync_request(spec, idempotency_key, request_sha256)
-        if request is not None:
-            previous = self.repository.find_reference_replay(
-                principal, final=True, **request.model_dump()
-            )
-            if previous is not None:
-                return previous
+        previous = self.repository.find_reference_replay(principal, request, final=True)
+        if previous is not None:
+            return previous
         if spec.partition != "test":
             raise ServiceError(
                 "invalid_data", "Final reference imports require the test partition.", 422
@@ -549,12 +551,9 @@ class AdminService:
         except ServiceError:
             # A concurrent request may have committed before reservation made
             # further imports unavailable. Its receipt still replays the result.
-            if request is not None:
-                accepted = self.repository.find_reference_replay(
-                    principal, final=True, **request.model_dump()
-                )
-                if accepted is not None:
-                    return accepted
+            accepted = self.repository.find_reference_replay(principal, request, final=True)
+            if accepted is not None:
+                return accepted
             raise
 
     def _human_reference_record(
