@@ -152,6 +152,57 @@ def embedded_data(report: bytes) -> dict[str, object]:
     return json.loads(match[1])  # type: ignore[no-any-return]
 
 
+@pytest.mark.parametrize(
+    "analysis,status",
+    [(AnalysisConfig(version="2.0"), "observed"), (AnalysisConfig(), "no_trades")],
+)
+def test_saved_results_render_using_their_recorded_availability_profile(
+    analysis: AnalysisConfig, status: str
+) -> None:
+    np = pytest.importorskip("numpy")
+    segmentation = pytest.importorskip("regimex.segmentation")
+    export, result = report_inputs()
+    payload = export.model_dump(mode="json", exclude={"content_sha256"})
+    for row in payload["observations"]:
+        row.update(trade_count=None, trade_volume=0.0, price_state="carried")
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload)))
+    probabilities = np.tile([0.0, 1.0, 0.0], (32, 1))
+    sequences = tuple(
+        PredictionSequence(
+            instrument_id=instrument.instrument_id,
+            probabilities=tuple((0.0, 1.0, 0.0) for _ in range(32)),
+            intervals=segmentation.decode(
+                probabilities,
+                tuple(
+                    row
+                    for row in export.observations
+                    if row.instrument_id == instrument.instrument_id
+                ),
+                analysis,
+            ),
+        )
+        for instrument in export.instruments
+    )
+    result = result.model_copy(
+        update={
+            "snapshot_sha256": export.content_sha256,
+            "analysis": analysis,
+            "analysis_profile_id": f"direction-32/{analysis.version}",
+            "sequences": sequences,
+        }
+    )
+    saved = result.model_dump_json()
+    restored = AnalysisResult.model_validate_json(saved)
+    assert restored.model_dump_json() == saved
+    rendered = render_analysis_report(export, restored, result_sha256=digest(restored))
+    report_result = embedded_data(rendered.html)["result"]
+    assert isinstance(report_result, dict)
+    assert report_result["analysis"] == analysis.model_dump(mode="json")
+    for sequence in restored.sequences:
+        assert sequence.intervals[0].status == status
+        assert sequence.intervals[0].statistics.trade_count is None
+
+
 def test_report_is_offline_escaped_and_preserves_original_zero_and_missing_values() -> None:
     export, result = report_inputs(missing=True)
     rendered = render_analysis_report(export, result, result_sha256=digest(result))

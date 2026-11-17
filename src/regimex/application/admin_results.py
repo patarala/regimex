@@ -97,7 +97,12 @@ class AdminResultCommitter:
 
     def _upload(self, value: JsonValue, key: str) -> ObjectInfo:
         path = _result_path(self.root, value)
-        return self.analysis_service.store.put(key, path, expected_sha256=digest(path))
+        return self.analysis_service.store.put(
+            key,
+            path,
+            expected_sha256=digest(path, checkpoint=self.heartbeat),
+            checkpoint=self.heartbeat,
+        )
 
     def commit(self, result: dict[str, JsonValue]) -> AdminRunRecord:
         spec = self.run.spec
@@ -146,8 +151,9 @@ class AdminResultCommitter:
                 export.source.source_id,
                 f"{self._prefix}/snapshot-{binding.snapshot_id}.json",
                 path,
-                expected_sha256=digest(path),
+                expected_sha256=digest(path, checkpoint=self.heartbeat),
                 snapshot_identity=(export.source.run_id, export.source.snapshot_id),
+                checkpoint=self.heartbeat,
             )
             snapshots.append(
                 SnapshotRecord(
@@ -233,6 +239,7 @@ class AdminResultCommitter:
             annotations=tuple(objects),
             created_at=datetime.now(UTC),
         )
+        self.heartbeat()
         return self.repository.complete_reference(self.run.run_id, self._token, record)
 
     def _training(self, spec: TrainingSpec, result: dict[str, JsonValue]) -> AdminRunRecord:
@@ -258,6 +265,7 @@ class AdminResultCommitter:
             f"{self._prefix}/bundle/manifest.json",
             bundle_root / "manifest.json",
             expected_sha256=candidate.manifest_sha256,
+            checkpoint=self.heartbeat,
         )
         members = {}
         for bundle_member in bundle_manifest.members:
@@ -265,6 +273,7 @@ class AdminResultCommitter:
                 f"{self._prefix}/bundle/{bundle_member.path}",
                 bundle_root / bundle_member.path,
                 expected_sha256=bundle_member.sha256,
+                checkpoint=self.heartbeat,
             )
             self.heartbeat()
         model = ModelRecord(
@@ -277,6 +286,7 @@ class AdminResultCommitter:
             inference_policy_sha256=content_hash(spec.inference_runtime.model_dump(mode="json")),
             created_at=datetime.now(UTC),
         )
+        self.heartbeat()
         return self.repository.complete_training(self.run.run_id, self._token, model)
 
     def _evaluation(self, spec: EvaluationSpec, result: dict[str, JsonValue]) -> AdminRunRecord:
@@ -287,7 +297,9 @@ class AdminResultCommitter:
         )
         metrics = _dict(result["metrics"])
         info = self._upload(result["report_path"], f"{self._prefix}/evaluation.json")
-        if digest(_result_path(self.root, result["report_path"])) != content_hash(metrics):
+        if digest(
+            _result_path(self.root, result["report_path"]), checkpoint=self.heartbeat
+        ) != content_hash(metrics):
             raise ValueError("evaluation report differs from its summary")
         evaluation = EvaluationRecord(
             run_id=self.run.run_id,

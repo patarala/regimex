@@ -1,9 +1,7 @@
 """Administrative lifecycle use cases; scientific imports stay in child processes."""
 
 import hashlib
-import math
 import tempfile
-import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -34,13 +32,14 @@ from regimex.admin_contracts import (
     TrainingSpec,
 )
 from regimex.application.admin_results import AdminResultCommitter
+from regimex.application.attempt_supervision import AttemptSupervisor
 from regimex.application.service import AnalysisService, materialize_bundle, materialize_object
 from regimex.benchmark_contracts import FinalEvaluationGrant
 from regimex.benchmarks import DirectionSemantics
 from regimex.computation_worker import (
     ChildLimits,
-    ComputationCancelled,
     ComputationFailure,
+    resource_failure,
     supervise_child,
 )
 from regimex.contracts import MAX_INPUT_BYTES, StrictModel
@@ -56,7 +55,7 @@ from regimex.data_catalog import (
     seal_reference_set,
     validate_reference_membership,
 )
-from regimex.directions import AnalysisConfig, DirectionAnnotations
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
 from regimex.exports import ExportV2
 from regimex.infrastructure.intake_repository import IntakeRequest
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectInfo
@@ -126,10 +125,10 @@ class AdminService:
 
     @staticmethod
     def _profile(analysis: AnalysisConfig, profile_id: str) -> None:
-        if profile_id != "direction-32/2.0" or analysis != AnalysisConfig():
+        if profile_id != DEFAULT_ANALYSIS_PROFILE or analysis != AnalysisConfig():
             raise ServiceError(
                 "unsupported_configuration",
-                "The service supports the direction-32/2.0 analysis profile.",
+                f"New references and training require the {DEFAULT_ANALYSIS_PROFILE} profile.",
                 422,
             )
 
@@ -789,7 +788,7 @@ class AdminService:
 
         for info, path in plan.copies:
             before_copy(info)
-            materialize_object(self.analysis_service.store, info, path)
+            materialize_object(self.analysis_service.store, info, path, checkpoint=beat)
             beat()
         if plan.model is not None:
             materialize_bundle(
@@ -797,6 +796,7 @@ class AdminService:
                 plan.model,
                 root / "input/model",
                 before_copy=before_copy,
+                checkpoint=beat,
             )
             beat()
 
@@ -808,49 +808,41 @@ class AdminService:
         assert token is not None
         run = self.repository.get_run_internal(operation_id)
         principal = Principal(owner_id=operation.owner_id, role="admin", token_id=UUID(int=0))
-        last_heartbeat = 0.0
-        deadline: float | None = None
-
-        def beat() -> None:
-            nonlocal last_heartbeat
-            now = time.monotonic()
-            if deadline is not None and now > deadline:
-                raise CapacityExceeded("The administrative attempt exceeded its wall-time budget.")
-            if now - last_heartbeat < min(1.0, self.settings.heartbeat_seconds):
-                return
-            current = self.analysis_service.repository.heartbeat_operation(
-                operation_id, token, "administrative-computation"
-            )
-            last_heartbeat = now
-            if current.state == "cancel_requested":
-                raise ComputationCancelled()
-
         try:
-            with tempfile.TemporaryDirectory(
-                prefix=f"admin-{operation_id}-", dir=self.analysis_service.work_root
-            ) as temporary:
+            if isinstance(run.spec, TrainingSpec):
+                runtime = run.spec.training_runtime
+                if (
+                    runtime.time_budget_seconds > self.settings.admin_time_budget_seconds
+                    or runtime.memory_budget_bytes > self.settings.admin_memory_budget_bytes
+                ):
+                    raise CapacityExceeded(
+                        "Queued training exceeds the current worker resource limits."
+                    )
+                seconds, memory, threads = (
+                    runtime.time_budget_seconds,
+                    runtime.memory_budget_bytes,
+                    runtime.threads,
+                )
+            else:
+                seconds, memory, threads = (
+                    self.settings.admin_time_budget_seconds,
+                    self.settings.admin_memory_budget_bytes,
+                    1,
+                )
+            with (
+                AttemptSupervisor(
+                    lambda stage: self.analysis_service.repository.heartbeat_operation(
+                        operation_id, token, stage
+                    ),
+                    heartbeat_seconds=self.settings.heartbeat_seconds,
+                    time_budget_seconds=seconds,
+                ) as heartbeat,
+                tempfile.TemporaryDirectory(
+                    prefix=f"admin-{operation_id}-", dir=self.analysis_service.work_root
+                ) as temporary,
+            ):
                 root = Path(temporary)
-                if isinstance(run.spec, TrainingSpec):
-                    runtime = run.spec.training_runtime
-                    if (
-                        runtime.time_budget_seconds > self.settings.admin_time_budget_seconds
-                        or runtime.memory_budget_bytes > self.settings.admin_memory_budget_bytes
-                    ):
-                        raise CapacityExceeded(
-                            "Queued training exceeds the current worker resource limits."
-                        )
-                    seconds, memory, threads = (
-                        runtime.time_budget_seconds,
-                        runtime.memory_budget_bytes,
-                        runtime.threads,
-                    )
-                else:
-                    seconds, memory, threads = (
-                        self.settings.admin_time_budget_seconds,
-                        self.settings.admin_memory_budget_bytes,
-                        1,
-                    )
-                deadline = time.monotonic() + seconds
+                beat = heartbeat.poll
                 inputs = self._inputs(principal, run.spec, root, beat)
                 payload: dict[str, JsonValue] = {
                     "spec": run.spec.model_dump(mode="json"),
@@ -860,7 +852,8 @@ class AdminService:
                 }
                 self._materialize_inputs(inputs, payload, root, beat)
                 beat()
-                remaining = max(1, math.ceil(deadline - time.monotonic()))
+                heartbeat.check("administrative-computation")
+                remaining = heartbeat.remaining_seconds
                 result = supervise_child(
                     payload,
                     root,
@@ -869,6 +862,7 @@ class AdminService:
                     ),
                     heartbeat=beat,
                 )
+                heartbeat.check("committing")
                 return AdminResultCommitter(
                     analysis_service=self.analysis_service,
                     repository=self.repository,
@@ -884,11 +878,8 @@ class AdminService:
                 failure = exc.failure
             elif isinstance(exc, CapacityExceeded):
                 failure = OperationFailure(code="capacity_limit", message=exc.message[:1024])
-            elif isinstance(exc, ObjectCapacityError):
-                failure = OperationFailure(
-                    code="capacity_limit",
-                    message="The administrative computation exceeds its configured budget.",
-                )
+            elif (capacity := resource_failure(exc)) is not None:
+                failure = capacity
             elif isinstance(exc, ServiceError):
                 failure = OperationFailure(
                     code="unsupported_configuration"

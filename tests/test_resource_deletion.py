@@ -1,6 +1,7 @@
 """Real ownership, concurrency and failure recovery for resource removal."""
 
 import hashlib
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
@@ -445,10 +446,16 @@ def test_inflight_upload_cannot_recreate_deleted_bytes(
     started, release = Event(), Event()
     put = value.store.put
 
-    def paused_put(key: str, path: Path, *, expected_sha256: str) -> ObjectInfo:
+    def paused_put(
+        key: str,
+        path: Path,
+        *,
+        expected_sha256: str,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> ObjectInfo:
         started.set()
         assert release.wait(5)
-        return put(key, path, expected_sha256=expected_sha256)
+        return put(key, path, expected_sha256=expected_sha256, checkpoint=checkpoint)
 
     monkeypatch.setattr(value.store, "put", paused_put)
     with ThreadPoolExecutor(max_workers=2) as executor:

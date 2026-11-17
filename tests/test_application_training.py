@@ -174,7 +174,7 @@ def request() -> TrainingRequest:
         policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
         training_runtime=TrainingRuntime(threads=1),
         verification_runtime=InferenceRuntime(threads=1),
-        analysis_profile_id="direction-32/2.0",
+        analysis_profile_id="direction-32/2.1",
         build_id="fixture-build",
     )
 

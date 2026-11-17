@@ -7,7 +7,7 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
 from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup
-from regimex.directions import AnalysisConfig, DirectionAnnotations
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.market_config import MarketConfig
 from regimex.model_registry import (
@@ -133,7 +133,7 @@ class ReferenceGenerationSpec(StrictModel):
     reference_set_id: Identifier
     partition: Partition
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
-    analysis_profile_id: Identifier = "direction-32/2.0"
+    analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
 
 
 class HumanAnnotation(StrictModel):
@@ -145,7 +145,7 @@ class HumanReferenceImportBase(StrictModel):
     dataset_id: Identifier
     reference_set_id: Identifier
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
-    analysis_profile_id: Identifier = "direction-32/2.0"
+    analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
     reviewer: Identifier
     blind_review: bool
     independent: bool

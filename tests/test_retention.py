@@ -346,11 +346,11 @@ import hashlib, os, signal
 from pathlib import Path
 from regimex.infrastructure import object_store
 original = object_store._stream
-def killed_copy(source, destination, *, limit):
+def killed_copy(source, destination, *, limit, checkpoint=None):
     if destination is not None:
         os.write(destination, os.read(source, 64))
         os.kill(os.getpid(), signal.SIGKILL)
-    return original(source, destination, limit=limit)
+    return original(source, destination, limit=limit, checkpoint=checkpoint)
 store = object_store.LocalObjectStore(Path(os.environ['REGIMEX_GC_TEST_ROOT']),
     max_object_bytes=1024**2, max_total_bytes=8*1024**2)
 source = Path(os.environ['REGIMEX_GC_TEST_SOURCE'])

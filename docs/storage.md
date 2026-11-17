@@ -83,6 +83,9 @@ locks, hard links, file/directory fsync and user extended attributes. Unsupporte
 filesystem guarantees fail explicitly. Keep the persistent object root separate
 from temporary work/cache space. Identical uploads are idempotent; different bytes
 cannot overwrite an existing key. Reads verify committed bytes and generation.
+Readers share the store lock and can progress concurrently. Uploads, deletion
+and maintenance retain exclusive coordination, so a generation cannot disappear
+or be replaced while it is being checked or copied.
 
 Model cache entries bind bundle and inference-policy hashes and are verified
 before use. Capacity is bounded across workers. A full cache fails explicitly;
@@ -118,6 +121,9 @@ Every writer to the same bucket/prefix must use the same dedicated coordination
 directory and byte limits on one host. Other hosts and out-of-band writes are
 unsupported. Operations check versioning, pin exact provider versions and hash
 actual bytes; ETags and user metadata are not integrity evidence.
+Verified reads share the coordination lock; writes and conditional deletion
+remain exclusive. A slow download does not serialize other downloads, but it
+can delay a mutation until that mutation's bounded lock wait expires.
 
 | Limit | Default |
 | --- | --- |
@@ -132,6 +138,24 @@ actual bytes; ETags and user metadata are not integrity evidence.
 It does not upload/delete probes or establish model readiness. Store lock waits
 are bounded to five seconds. Temporary staging requires additional disk space.
 The [deployment guide](deployment.md#s3-profile) covers container settings.
+
+Analysis and administrative attempts renew their database leases in a background
+thread throughout input loading, computation and output upload. Their wall-time
+budget covers all these stages. Lease refreshes use the configured heartbeat
+interval. Each heartbeat transaction also has a 15-second client-side deadline,
+in addition to the five-second connection timeout and database statement limits.
+An expired connection is closed without waiting for rollback. Attempt cleanup
+joins any in-flight heartbeat before another attempt can start on that worker.
+Local copies and S3 transfers check cancellation,
+lost ownership and deadlines between chunks, while waiting for coordination, and
+before publishing a materialized file. Downloads use the pinned SDK's public
+stream context and the underlying reader's `read1` method, so a steady trickle
+cannot postpone checkpoints until an entire chunk has filled. The adapter fails
+explicitly if that interface is unavailable. An in-progress network read can
+overrun the attempt deadline by the configured socket timeout; filesystem and
+other SDK calls must also return before their next checkpoint. Database publication still
+checks the attempt token and cancellation atomically, including after an ambiguous
+upload. Unregistered uploaded objects remain subject to ordinary orphan cleanup.
 
 ## Stop writers before maintenance
 

@@ -231,6 +231,7 @@ def serve(
     def action() -> None:
         import uvicorn
 
+        from regimex.http_protocol import bounded_http_protocol
         from regimex.service_bootstrap import create_app
 
         settings = ServiceSettings.from_env()
@@ -269,6 +270,11 @@ def serve(
             create_app(),
             host=host,
             port=port,
+            http=bounded_http_protocol(
+                header_timeout_seconds=settings.http_header_timeout_seconds,
+                body_timeout_seconds=settings.http_body_timeout_seconds,
+            ),
+            ws="none",
             proxy_headers=False,
             access_log=False,
             log_config=None,

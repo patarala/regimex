@@ -170,6 +170,12 @@ def _scratch_size(root: Path) -> int:
     return total
 
 
+def _child_finished(child: subprocess.Popen[bytes]) -> bool:
+    # Keep the leader waitable until all group signals have been sent. Reaping
+    # it here would allow its numeric PID/PGID to be reused by another process.
+    return os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+
 def _stop_child(child: subprocess.Popen[bytes]) -> None:
     # The session leader can finish before its descendants. Keep the grace
     # period and forced cleanup scoped to the group created for this child.
@@ -181,7 +187,6 @@ def _stop_child(child: subprocess.Popen[bytes]) -> None:
 
     deadline = time.monotonic() + 1
     while time.monotonic() < deadline:
-        child.poll()
         try:
             os.killpg(child.pid, 0)
         except ProcessLookupError:
@@ -295,7 +300,7 @@ def supervise_child(
             start_new_session=True,
         )
         try:
-            while child.poll() is None:
+            while not _child_finished(child):
                 heartbeat()
                 check_limits()
                 time.sleep(0.1)

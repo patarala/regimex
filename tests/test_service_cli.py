@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 from typer.testing import CliRunner
@@ -113,6 +114,38 @@ def test_https_server_rejects_a_readable_private_key_before_startup(tmp_path: Pa
         },
     )
     assert result.exit_code == 1 and "private file" in result.output
+
+
+def test_server_installs_intake_deadlines_without_automatic_protocol_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uvicorn = pytest.importorskip("uvicorn")
+    pytest.importorskip("psycopg")
+    from regimex import service_bootstrap
+
+    application = object()
+    captured: dict[str, Any] = {}
+
+    def run(app: object, **options: Any) -> None:
+        assert app is application
+        captured.update(options)
+
+    monkeypatch.setattr(service_bootstrap, "create_app", lambda: application)
+    monkeypatch.setattr(uvicorn, "run", run)
+    result = CliRunner().invoke(
+        app,
+        ["service", "serve"],
+        env={
+            "REGIMEX_DATABASE_DSN": "dbname=not_connected",
+            "REGIMEX_PUBLIC_ORIGIN": "http://127.0.0.1:8000",
+            "REGIMEX_ALLOW_LOOPBACK_HTTP": "true",
+        },
+    )
+    assert result.exit_code == 0, result.output
+    assert isinstance(captured["http"], type)
+    assert captured["ws"] == "none"
+    assert captured["limit_concurrency"] == 8
+    assert captured["proxy_headers"] is False
 
 
 def test_local_storage_check_reads_inventory_without_contacting_the_database(

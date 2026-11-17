@@ -63,6 +63,7 @@ sequenceDiagram
 | --- | --- |
 | `src/regimex/web/` | Browser form, history, progress and result preview |
 | `api.py`, `auth_api.py`, `admin_api.py`, `benchmark_api.py` | HTTP validation, authentication and typed routes |
+| `http_protocol.py` | Absolute header/body intake deadlines before ASGI dispatch |
 | `application/` | Resource identity, permissions, workflows and commits |
 | `infrastructure/` | PostgreSQL repositories, migrations and local/S3 adapters |
 | `service_worker.py`, `computation_worker.py` | Queue execution, isolated children, recovery and resource limits |
@@ -84,6 +85,7 @@ sequenceDiagram
 | Immutable objects outside PostgreSQL | Large observations, weights and reports do not inflate relational rows. PostgreSQL still decides ownership and visibility; an uploaded file alone is not a published result. |
 | Explicit model publication | Training creates a candidate. Evaluation and activation are separate, so a successful fit cannot unexpectedly replace the model used by users. |
 | Isolated computation children | Torch/BLAS settings, time, address-space and scratch limits apply per computation. Cancellation and worker death cannot leave an unfenced result commit. This runs trusted installed code, not uploaded Python. |
+| One attempt supervisor across all stages | Lease renewal continues during input download and result upload. I/O checkpoints and child supervision share the attempt deadline; the database still fences every commit. |
 | Backend-owned features | Logistic regression and TCN receive the same raw observations but can prepare different inputs. Adding an architecture does not require adding branches to HTTP handlers. |
 | Logistic baseline and TCN | A small aggregate model provides a control; TCN can represent local and longer temporal shape. Both use the same splits, decoder and evaluation policy. |
 | A shared interval decoder | Full coverage and minimum duration have one meaning across models. A high pointwise classification score alone cannot justify fragmented intervals. |
@@ -107,6 +109,12 @@ dependencies, device and artifact codec. Unsupported settings fail explicitly.
 Repeated job delivery is expected. Attempt tokens and heartbeats prevent stale
 workers from publishing. Idempotency keys are scoped to the authenticated owner
 and operation. Source and run checks also apply to integrations and downloads.
+
+The simulator integration belongs in a backend adapter in the simulator's own
+repository. It owns simulator authorization and export aggregation; Regimex owns
+analysis and model lifecycle. A paired preview must verify that the observations
+and result share the same source, run and snapshot digest. This keeps credentials
+out of the browser and permits either application to be deployed independently.
 
 Resource deletion separates the database decision from physical cleanup. A reviewed
 plan binds the exact resource set and object generations. PostgreSQL first removes

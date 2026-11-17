@@ -262,7 +262,7 @@ def model(service: BenchmarkService, tmp_path: Path, dataset: DatasetRecord) -> 
         feature_version="3.0",
         preprocessing_version="baseline-standardization/1.0",
         decoder_version="duration-viterbi/1.0",
-        analysis_profile="direction-32/2.0",
+        analysis_profile="direction-32/2.1",
         analysis_profile_sha256=analysis_profile_hash(AnalysisConfig()),
         class_names=("sideways", "growth", "decline"),
         training=TrainingEvidence(
@@ -313,7 +313,7 @@ def training(dataset: DatasetRecord, *, benchmark_id: str | None = "fresh") -> T
         policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
         training_runtime=TrainingRuntime(),
         inference_runtime=InferenceRuntime(),
-        analysis_profile_id="direction-32/2.0",
+        analysis_profile_id="direction-32/2.1",
         build_id="test",
         benchmark_selection_id=benchmark_id,
     )
@@ -342,7 +342,12 @@ def test_metadata_lifecycle_never_reads_final_payload_and_blocks_selection_after
     materialize = service.store.materialize
 
     def guarded(
-        key: str, destination: Path, *, expected_sha256: str, expected_size_bytes: int
+        key: str,
+        destination: Path,
+        *,
+        expected_sha256: str,
+        expected_size_bytes: int,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         seen.append(key)
         assert key == "models/fake/manifest.json", (
@@ -353,6 +358,7 @@ def test_metadata_lifecycle_never_reads_final_payload_and_blocks_selection_after
             destination,
             expected_sha256=expected_sha256,
             expected_size_bytes=expected_size_bytes,
+            checkpoint=checkpoint,
         )
 
     monkeypatch.setattr(service.store, "materialize", guarded)

@@ -115,7 +115,9 @@ def policy() -> TrainingPolicy:
     )
 
 
-def fit() -> tuple[TCNBackend, FitResult, ObservationInputs]:
+def fit(
+    *, analysis: AnalysisConfig | None = None
+) -> tuple[TCNBackend, FitResult, ObservationInputs]:
     backend = TCNBackend()
     training, validation = inputs("train"), inputs("validation")
     targets = np.repeat(np.arange(3), (24, 32, 28)).astype(np.int64)
@@ -125,7 +127,7 @@ def fit() -> tuple[TCNBackend, FitResult, ObservationInputs]:
         validation,
         parameters=TCNParameters(channels=4),
         policy=policy(),
-        analysis=AnalysisConfig(min_duration=4),
+        analysis=analysis or AnalysisConfig(min_duration=4),
         runtime=TrainingRuntime(threads=1),
         evaluator=lambda probabilities: float(probabilities[:, 0].mean()),
     )
@@ -162,8 +164,10 @@ def provenance(result: FitResult) -> BundleProvenance:
     )
 
 
-def bundle(tmp_path: Path) -> tuple[TCNBackend, FitResult, ObservationInputs, str]:
-    backend, result, validation = fit()
+def bundle(
+    tmp_path: Path, *, analysis: AnalysisConfig | None = None
+) -> tuple[TCNBackend, FitResult, ObservationInputs, str]:
+    backend, result, validation = fit(analysis=analysis)
     sha = backend.write_bundle(
         result,
         tmp_path / "bundle",
@@ -265,14 +269,20 @@ def test_predictions_preserve_grid_and_ignore_activity_and_other_instruments() -
     np.testing.assert_allclose(expected.sum(axis=1), 1, rtol=1e-12, atol=1e-12)
 
 
-def test_restricted_reload_is_exact_and_uses_independent_inference_runtime(tmp_path: Path) -> None:
-    backend, fitted, validation, sha = bundle(tmp_path)
+@pytest.mark.parametrize(
+    "analysis", [AnalysisConfig(version="2.0", min_duration=4), AnalysisConfig(min_duration=4)]
+)
+def test_restricted_reload_is_exact_and_uses_independent_inference_runtime(
+    tmp_path: Path, analysis: AnalysisConfig
+) -> None:
+    backend, fitted, validation, sha = bundle(tmp_path, analysis=analysis)
     training_threads = cast(TCNPredictor, fitted.predictor).configuration.training_runtime.threads
     runtime = InferenceRuntime(threads=2, max_batch_size=2)
     expected = fitted.predictor.predict(validation, runtime=runtime)
     torch.manual_seed(99)
     prior_rng = torch.random.get_rng_state().clone()
     restored = backend.load_bundle(tmp_path / "bundle", manifest_sha256=sha, runtime=runtime)
+    assert restored.analysis == analysis
     configuration = restored.configuration
     assert restored.implementation_version == "0.2.0"
     assert configuration.codec_version == "temporal-tcn/2.0"

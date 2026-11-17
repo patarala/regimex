@@ -1,7 +1,7 @@
 """Checked immutable objects on a local filesystem, with no application ownership.
 
-The root must be dedicated to this backend. A process-shared lock serializes
-store operations, including conditional deletion and committed-byte accounting.
+The root must be dedicated to this backend. Process-shared locks allow concurrent
+reads and serialize mutations, including deletion and committed-byte accounting.
 Filesystem access outside this adapter is not an authorized way to mutate stored
 objects. Callers must authorize deletion and establish that an object is unused.
 """
@@ -13,7 +13,7 @@ import re
 import stat
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -84,7 +84,14 @@ class ObjectStore(Protocol):
     @property
     def scope_id(self) -> str: ...
 
-    def put(self, key: str, source: Path, *, expected_sha256: str) -> ObjectInfo: ...
+    def put(
+        self,
+        key: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> ObjectInfo: ...
 
     def stat(self, key: str) -> ObjectInfo: ...
 
@@ -95,6 +102,7 @@ class ObjectStore(Protocol):
         *,
         expected_sha256: str,
         expected_size_bytes: int,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo: ...
 
     def delete(self, expected: ObjectInfo) -> None: ...
@@ -188,13 +196,23 @@ def _revision(metadata: os.stat_result) -> str:
     )
 
 
-def _stream(source: int, destination: int | None, *, limit: int) -> tuple[int, str]:
+def _stream(
+    source: int,
+    destination: int | None,
+    *,
+    limit: int,
+    checkpoint: Callable[[], None] | None = None,
+) -> tuple[int, str]:
+    if checkpoint is not None:
+        checkpoint()
     before = os.fstat(source)
     if before.st_size > limit:
         raise ObjectCapacityError("object exceeds the configured per-object byte limit")
     checksum = hashlib.sha256()
     size = 0
     while block := os.read(source, min(_CHUNK_BYTES, limit - size + 1)):
+        if checkpoint is not None:
+            checkpoint()
         size += len(block)
         if size > limit:
             raise ObjectCapacityError("object exceeds the configured per-object byte limit")
@@ -206,6 +224,8 @@ def _stream(source: int, destination: int | None, *, limit: int) -> tuple[int, s
                 if written <= 0:
                     raise OSError("object copy made no progress")
                 pending = pending[written:]
+    if checkpoint is not None:
+        checkpoint()
     if size != before.st_size or _revision(before) != _revision(os.fstat(source)):
         raise ObjectIntegrityError("object source changed while it was being read")
     return size, checksum.hexdigest()
@@ -305,8 +325,14 @@ def _abort_local_upload(
         os.fsync(parent)
 
 
-def _info(key: str, descriptor: int, *, limit: int) -> ObjectInfo:
-    size, checksum = _stream(descriptor, None, limit=limit)
+def _info(
+    key: str,
+    descriptor: int,
+    *,
+    limit: int,
+    checkpoint: Callable[[], None] | None = None,
+) -> ObjectInfo:
+    size, checksum = _stream(descriptor, None, limit=limit, checkpoint=checkpoint)
     return ObjectInfo(
         key=key,
         size_bytes=size,
@@ -366,7 +392,13 @@ class LocalObjectStore:
         return "local:" + hashlib.sha256(json_bytes(location)).hexdigest()
 
     @contextmanager
-    def _locked_root(self, *, create: bool = False) -> Iterator[int]:
+    def _locked_root(
+        self,
+        *,
+        create: bool = False,
+        shared: bool = False,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> Iterator[int]:
         anchor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         try:
             with _child_directory(anchor, _absolute_parts(self.root), create=create) as root:
@@ -381,8 +413,11 @@ class LocalObjectStore:
                         raise ValueError("object-store lock must be a regular file")
                     deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
                     while True:
+                        if checkpoint is not None:
+                            checkpoint()
                         try:
-                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                            fcntl.flock(lock, mode | fcntl.LOCK_NB)
                             break
                         except BlockingIOError:
                             if time.monotonic() >= deadline:
@@ -396,11 +431,18 @@ class LocalObjectStore:
         finally:
             os.close(anchor)
 
-    def put(self, key: str, source: Path, *, expected_sha256: str) -> ObjectInfo:
+    def put(
+        self,
+        key: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> ObjectInfo:
         parts = _key_parts(key)
         _check_digest(expected_sha256)
         with (
-            self._locked_root() as root,
+            self._locked_root(checkpoint=checkpoint) as root,
             _child_directory(root, parts[:-1], create=True) as parent,
         ):
             with _temporary_file(parent) as (temporary, temporary_name):
@@ -408,12 +450,16 @@ class LocalObjectStore:
                     _local_parent(source, create=False) as (source_parent, source_name),
                     _regular_file(source_parent, source_name) as source_file,
                 ):
-                    size, checksum = _stream(source_file, temporary, limit=self.max_object_bytes)
+                    size, checksum = _stream(
+                        source_file, temporary, limit=self.max_object_bytes, checkpoint=checkpoint
+                    )
                 if checksum != expected_sha256:
                     raise ObjectIntegrityError("upload source SHA-256 mismatch")
                 try:
                     with _regular_file(parent, parts[-1]) as existing:
-                        info = _info(key, existing, limit=self.max_object_bytes)
+                        info = _info(
+                            key, existing, limit=self.max_object_bytes, checkpoint=checkpoint
+                        )
                 except FileNotFoundError:
                     info = None
                 if info is not None:
@@ -425,6 +471,8 @@ class LocalObjectStore:
                 os.setxattr(temporary, _VERSION_ATTRIBUTE, uuid.uuid4().hex.encode("ascii"))
                 os.fchmod(temporary, 0o444)
                 os.fsync(temporary)
+                if checkpoint is not None:
+                    checkpoint()
                 os.link(
                     temporary_name,
                     parts[-1],
@@ -435,12 +483,12 @@ class LocalObjectStore:
             # Unlinking the temporary hard link changes ctime; record the final revision.
             os.fsync(parent)
             with _regular_file(parent, parts[-1]) as committed:
-                return _info(key, committed, limit=self.max_object_bytes)
+                return _info(key, committed, limit=self.max_object_bytes, checkpoint=checkpoint)
 
     def stat(self, key: str) -> ObjectInfo:
         parts = _key_parts(key)
         with (
-            self._locked_root() as root,
+            self._locked_root(shared=True) as root,
             _child_directory(root, parts[:-1], create=False) as parent,
             _regular_file(parent, parts[-1]) as source,
         ):
@@ -453,6 +501,7 @@ class LocalObjectStore:
         *,
         expected_sha256: str,
         expected_size_bytes: int,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         parts = _key_parts(key)
         _check_digest(expected_sha256)
@@ -465,7 +514,7 @@ class LocalObjectStore:
         if destination.absolute().is_relative_to(self.root):
             raise ValueError("materialization destination must be outside the object-store root")
         with (
-            self._locked_root() as root,
+            self._locked_root(shared=True, checkpoint=checkpoint) as root,
             _child_directory(root, parts[:-1], create=False) as parent,
             _regular_file(parent, parts[-1]) as source,
         ):
@@ -478,7 +527,9 @@ class LocalObjectStore:
                 else:
                     raise ObjectConflictError("materialization destination already exists")
                 with _temporary_file(target_parent) as (temporary, temporary_name):
-                    size, checksum = _stream(source, temporary, limit=self.max_object_bytes)
+                    size, checksum = _stream(
+                        source, temporary, limit=self.max_object_bytes, checkpoint=checkpoint
+                    )
                     if (size, checksum) != (expected_size_bytes, expected_sha256):
                         raise ObjectIntegrityError(
                             "stored object differs from expected size or SHA-256"
@@ -488,6 +539,8 @@ class LocalObjectStore:
                             "stored object version changed during materialization"
                         )
                     os.fsync(temporary)
+                    if checkpoint is not None:
+                        checkpoint()
                     try:
                         os.link(
                             temporary_name,

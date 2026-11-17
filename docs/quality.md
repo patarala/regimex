@@ -7,6 +7,13 @@ Independent human accuracy and transfer to another market simulator have not
 been measured. The logistic baseline is also available; the measurements below
 apply to this TCN bundle.
 
+The evaluated bundle uses the frozen `direction-32/2.0` analysis profile. Its
+reported scores and saved predictions are unchanged. The current `2.1` profile
+also recognizes inactivity from zero volume and explicit price states when
+trade counts are missing; the results below are not a measurement of a model
+trained or evaluated under that new profile. See [interval semantics](models.md)
+for the versioned availability rules.
+
 ## Evaluation protocol
 
 Training uses 512 experiments with 512 steps, totaling 769 instrument sequences.

@@ -28,6 +28,37 @@ from regimex.resource_limits import ResourceBudgetExceeded, TimeBudgetExceeded
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux child supervision")
 
 
+def test_finished_leader_stays_waitable_until_group_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    child = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    calls: list[int] = []
+    real_killpg = os.killpg
+
+    def signal_owned_group(pgid: int, signum: int) -> None:
+        assert pgid == child.pid
+        status = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+        assert status is not None and status.si_pid == child.pid
+        assert child.returncode is None
+        calls.append(signum)
+        real_killpg(pgid, signum)
+
+    try:
+        deadline = time.monotonic() + 5
+        while not computation_worker._child_finished(child):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        monkeypatch.setattr(os, "killpg", signal_owned_group)
+        computation_worker._stop_child(child)
+        assert child.returncode == 0
+        assert signal.SIGTERM in calls and signal.SIGKILL in calls
+        with pytest.raises(ChildProcessError):
+            os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG)
+    finally:
+        # Only reap our known child; never signal a PGID after it has been reaped.
+        child.wait(timeout=5)
+
+
 @pytest.mark.parametrize("leader_outcome", ["success", "cancelled"])
 @pytest.mark.parametrize("descendant_stop", ["graceful", "forced", "oversized"])
 def test_supervisor_stops_its_descendants_after_leader_exit(
@@ -249,7 +280,13 @@ pending.rename(root / 'output')
         if path == tmp_path / "pending-output" and not renamed:
             renamed = True
             (tmp_path / "continue").touch()
-            assert children[0].wait(timeout=5) == 0
+            deadline = time.monotonic() + 5
+            while (
+                os.waitid(os.P_PID, children[0].pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None
+            ):
+                assert time.monotonic() < deadline, "fixture child did not exit"
+                time.sleep(0.001)
+            # The supervisor owns reaping; preserve its leader PID here.
         return original_lstat(path)
 
     monkeypatch.setattr(subprocess, "Popen", launch)
@@ -329,7 +366,10 @@ for index in range(2):
     def finish_between_polls(seconds: float) -> None:
         nonlocal elapsed
         (tmp_path / "continue").touch()
-        assert children[0].wait(timeout=5) == 0
+        deadline = original_monotonic() + 5
+        while os.waitid(os.P_PID, children[0].pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+            assert original_monotonic() < deadline, "fixture child did not exit"
+        # The supervisor owns reaping; waiting here must preserve its leader PID.
         if limit == "wall_time":
             elapsed = 10.0
 

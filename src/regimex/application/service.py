@@ -108,13 +108,20 @@ class AnalysisResult(StrictModel):
         return self
 
 
-def materialize_object(store: ObjectStore, info: ObjectInfo, destination: Path) -> None:
+def materialize_object(
+    store: ObjectStore,
+    info: ObjectInfo,
+    destination: Path,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> None:
     """Verify committed generation as well as bytes before exposing stored input."""
     actual = store.materialize(
         info.key,
         destination,
         expected_sha256=info.sha256,
         expected_size_bytes=info.size_bytes,
+        checkpoint=checkpoint,
     )
     if actual != info:
         raise ObjectIntegrityError("object generation differs from its committed metadata")
@@ -126,13 +133,14 @@ def materialize_bundle(
     destination: Path,
     *,
     before_copy: Callable[[ObjectInfo], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
 ) -> None:
     if model.manifest.size_bytes > MAX_BUNDLE_MANIFEST_BYTES:
         raise ObjectIntegrityError("stored bundle manifest exceeds its input size limit")
     destination.mkdir(mode=0o700)
     if before_copy is not None:
         before_copy(model.manifest)
-    materialize_object(store, model.manifest, destination / "manifest.json")
+    materialize_object(store, model.manifest, destination / "manifest.json", checkpoint=checkpoint)
     manifest = ModelBundle.model_validate_json((destination / "manifest.json").read_bytes())
     expected = {member.path: member for member in manifest.members}
     if set(expected) != set(model.members):
@@ -145,7 +153,7 @@ def materialize_bundle(
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if before_copy is not None:
             before_copy(info)
-        materialize_object(store, info, path)
+        materialize_object(store, info, path, checkpoint=checkpoint)
 
 
 class AnalysisService:
@@ -218,6 +226,7 @@ class AnalysisService:
         expected_sha256: str,
         principal: Principal | None = None,
         snapshot_identity: tuple[str, str] | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         """Charge an immutable snapshot/report before writing any object bytes."""
         expected = ObjectInfo(
@@ -237,7 +246,9 @@ class AnalysisService:
             if snapshot_identity is not None:
                 require_snapshot_identity(connection, owner_id, source_id, *snapshot_identity)
             self.storage_quotas.reserve(owner_id, source_id, expected, principal=principal)
-            actual = self.store.put(key, path, expected_sha256=expected_sha256)
+            actual = self.store.put(
+                key, path, expected_sha256=expected_sha256, checkpoint=checkpoint
+            )
         if (actual.key, actual.sha256, actual.size_bytes) != (
             expected.key,
             expected.sha256,
@@ -314,12 +325,14 @@ class AnalysisService:
         record = self.get_snapshot(principal, snapshot_id)
         return self._read_snapshot_record(record)
 
-    def _read_snapshot_record(self, record: SnapshotRecord) -> ExportV2:
+    def _read_snapshot_record(
+        self, record: SnapshotRecord, *, checkpoint: Callable[[], None] | None = None
+    ) -> ExportV2:
         if record.object.size_bytes > MAX_INPUT_BYTES:
             raise ObjectIntegrityError("stored snapshot exceeds the input size limit")
         with tempfile.TemporaryDirectory(prefix="snapshot-read-", dir=self.work_root) as temporary:
             path = Path(temporary) / "export.json"
-            materialize_object(self.store, record.object, path)
+            materialize_object(self.store, record.object, path, checkpoint=checkpoint)
             export = parse_export_v2(path.read_bytes())
         if (
             export.content_sha256,

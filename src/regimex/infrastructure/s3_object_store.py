@@ -14,16 +14,18 @@ against PostgreSQL references and the appropriate grace policy before calling.
 import base64
 import fcntl
 import hashlib
+import io
 import json
 import os
 import stat
 import time
-from collections.abc import Callable, Iterator
-from contextlib import closing, contextmanager
+from collections.abc import Buffer, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
+from types import TracebackType
 from typing import BinaryIO, Protocol, cast
 
 from regimex.infrastructure.object_store import (
@@ -75,8 +77,18 @@ class _BotocoreConfig(Protocol):
     def Config(self, **values: object) -> object: ...
 
 
+class _ResponseReader(Protocol):
+    def read1(self, amount: int, *, decode_content: bool = False) -> bytes: ...
+
+
 class _ResponseBody(Protocol):
-    def read(self, amount: int) -> bytes: ...
+    def __enter__(self) -> _ResponseReader: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
     def close(self) -> None: ...
 
 
@@ -85,6 +97,7 @@ class _Sdk:
     client: _Client
     client_error: type[Exception]
     core_error: type[Exception]
+    http_error: type[Exception]
     pid: int
 
 
@@ -153,6 +166,35 @@ def _write_all(descriptor: int, block: bytes) -> None:
         pending = pending[written:]
 
 
+class _CheckedUpload(io.BufferedReader):
+    """Check operation ownership as the SDK consumes or retries upload bytes."""
+
+    def __init__(self, descriptor: int, checkpoint: Callable[[], None] | None) -> None:
+        super().__init__(io.FileIO(os.dup(descriptor), "rb"))
+        self._checkpoint = checkpoint
+        self.failure: Exception | None = None
+
+    def check(self) -> None:
+        if self.failure is not None:
+            raise self.failure
+        if self._checkpoint is not None:
+            try:
+                self._checkpoint()
+            except Exception as exc:
+                # HTTP libraries can wrap errors raised while reading a request
+                # body. Keep the original cancellation/deadline/fencing error.
+                self.failure = exc
+                raise
+
+    def read(self, size: int | None = -1) -> bytes:
+        self.check()
+        return super().read(size)
+
+    def readinto(self, buffer: Buffer) -> int:
+        self.check()
+        return super().readinto(buffer)
+
+
 class S3ObjectStore:
     """One-host coordinated immutable payloads; SDK imports and I/O are lazy."""
 
@@ -211,7 +253,13 @@ class S3ObjectStore:
         return relative
 
     @contextmanager
-    def _locked_root(self, *, create: bool = False) -> Iterator[int]:
+    def _locked_root(
+        self,
+        *,
+        create: bool = False,
+        shared: bool = False,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> Iterator[int]:
         anchor = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
         try:
             with _child_directory(anchor, _absolute_parts(self.root), create=create) as root:
@@ -232,8 +280,11 @@ class S3ObjectStore:
                         raise ValueError("S3 coordination lock must be a regular file")
                     deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
                     while True:
+                        if checkpoint is not None:
+                            checkpoint()
                         try:
-                            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+                            fcntl.flock(lock, mode | fcntl.LOCK_NB)
                             break
                         except BlockingIOError:
                             remaining = deadline - time.monotonic()
@@ -242,14 +293,14 @@ class S3ObjectStore:
                                     "S3 coordination lock wait exceeded 5 seconds"
                                 ) from None
                             time.sleep(min(0.05, remaining))
-                    self._bind(root)
+                    self._bind(root, create=not shared)
                     yield root
                 finally:
                     os.close(lock)
         finally:
             os.close(anchor)
 
-    def _bind(self, root: int) -> None:
+    def _bind(self, root: int, *, create: bool) -> None:
         expected = json.dumps(
             {
                 "endpoint": self.config.endpoint_origin,
@@ -265,6 +316,8 @@ class S3ObjectStore:
             with _regular_file(root, _BINDING_NAME) as descriptor:
                 actual = os.read(descriptor, len(expected) + 1)
         except FileNotFoundError:
+            if not create:
+                raise ObjectIntegrityError("S3 coordination binding disappeared") from None
             with _temporary_file(root) as (temporary, name):
                 _write_all(temporary, expected)
                 os.fsync(temporary)
@@ -283,6 +336,7 @@ class S3ObjectStore:
             boto = cast(_Boto, import_module("boto3"))
             configuration = cast(_BotocoreConfig, import_module("botocore.config"))
             errors = import_module("botocore.exceptions")
+            http_errors = import_module("urllib3.exceptions")
         except ImportError as exc:
             raise OSError("install the S3 extra before selecting S3 storage") from exc
         if self.config.ca_bundle is not None:
@@ -310,7 +364,13 @@ class S3ObjectStore:
             )
         except core_error:
             raise OSError("S3 client configuration or credentials are unavailable") from None
-        self._sdk_value = _Sdk(client, client_error, core_error, os.getpid())
+        self._sdk_value = _Sdk(
+            client,
+            client_error,
+            core_error,
+            cast(type[Exception], http_errors.HTTPError),
+            os.getpid(),
+        )
         return self._sdk_value
 
     def _request(self, operation: Callable[[], dict[str, object]]) -> dict[str, object]:
@@ -380,7 +440,10 @@ class S3ObjectStore:
         *,
         destination: int | None = None,
         version_id: str | None = None,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
+        if checkpoint is not None:
+            checkpoint()
         head = self._head(client, key, version_id)
         version = _version(head.get("VersionId"))
         expected_size = _size(head.get("ContentLength"))
@@ -391,7 +454,13 @@ class S3ObjectStore:
         )
         body = cast(_ResponseBody, response.get("Body"))
         try:
-            with closing(body):
+            # StreamingBody's public context manager exposes urllib3's reader.
+            # read() fills the requested block and can hide a steady trickle;
+            # read1() returns after one network read so deadlines remain visible.
+            # We validate raw payload length and digest ourselves below.
+            with body as reader:
+                if not callable(getattr(reader, "read1", None)):
+                    raise ObjectIntegrityError("S3 transport does not support bounded stream reads")
                 if (
                     _version(response.get("VersionId")) != version
                     or _size(response.get("ContentLength")) != expected_size
@@ -399,7 +468,16 @@ class S3ObjectStore:
                     raise ObjectIntegrityError("S3 response differs from the pinned object version")
                 size = 0
                 checksum = hashlib.sha256()
-                while block := body.read(min(_CHUNK_BYTES, self.max_object_bytes - size + 1)):
+                while True:
+                    if checkpoint is not None:
+                        checkpoint()
+                    block = reader.read1(
+                        min(_CHUNK_BYTES, self.max_object_bytes - size + 1), decode_content=False
+                    )
+                    if checkpoint is not None:
+                        checkpoint()
+                    if not block:
+                        break
                     if not isinstance(block, bytes):
                         raise ObjectIntegrityError("S3 returned a nonbinary object payload")
                     size += len(block)
@@ -414,38 +492,58 @@ class S3ObjectStore:
                         _write_all(destination, block)
                 if size != expected_size:
                     raise ObjectIntegrityError("S3 payload differs from its recorded size")
-        except self._sdk().core_error:
+        except self._sdk().core_error, self._sdk().http_error:
             raise OSError("S3 payload transfer was interrupted") from None
         return ObjectInfo(key=key, size_bytes=size, sha256=checksum.hexdigest(), version_id=version)
 
-    def put(self, key: str, source: Path, *, expected_sha256: str) -> ObjectInfo:
+    def put(
+        self,
+        key: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> ObjectInfo:
         self._full_key(key)
         _check_digest(expected_sha256)
         if source.absolute().is_relative_to(self.root):
             raise ValueError("upload source must be outside the S3 coordination directory")
-        with self._locked_root() as root, _temporary_file(root) as (temporary, _):
+        with (
+            self._locked_root(checkpoint=checkpoint) as root,
+            _temporary_file(root) as (temporary, _),
+        ):
             client = self._ready()
             with (
                 _local_parent(source, create=False) as (parent, name),
                 _regular_file(parent, name) as descriptor,
             ):
-                size, digest = _stream(descriptor, temporary, limit=self.max_object_bytes)
+                size, digest = _stream(
+                    descriptor, temporary, limit=self.max_object_bytes, checkpoint=checkpoint
+                )
             if digest != expected_sha256:
                 raise ObjectIntegrityError("upload source SHA-256 mismatch")
             try:
-                existing = self._read(client, key)
+                existing = self._read(client, key, checkpoint=checkpoint)
             except FileNotFoundError:
                 existing = None
             if existing is not None:
                 return self._same_payload(existing, size, digest)
             if (
-                sum(item.size_bytes for item in self._inventory(client)) + size
+                sum(item.size_bytes for item in self._inventory(client, checkpoint=checkpoint))
+                + size
                 > self.max_total_bytes
             ):
                 raise ObjectCapacityError("object store exceeds committed-payload capacity")
             os.fsync(temporary)
-            with os.fdopen(os.dup(temporary), "rb") as upload:
-                return self._put_stable(client, key, upload, size, digest)
+            with _CheckedUpload(temporary, checkpoint) as upload:
+                try:
+                    return self._put_stable(
+                        client, key, upload, size, digest, checkpoint=checkpoint
+                    )
+                except Exception:
+                    if upload.failure is not None:
+                        raise upload.failure from None
+                    raise
 
     @staticmethod
     def _same_payload(info: ObjectInfo, size: int, digest: str) -> ObjectInfo:
@@ -454,9 +552,18 @@ class S3ObjectStore:
         return info
 
     def _put_stable(
-        self, client: _Client, key: str, upload: BinaryIO, size: int, digest: str
+        self,
+        client: _Client,
+        key: str,
+        upload: BinaryIO,
+        size: int,
+        digest: str,
+        *,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         for attempt in range(self.config.max_attempts):
+            if checkpoint is not None:
+                checkpoint()
             upload.seek(0)
             try:
                 response = self._request(
@@ -472,7 +579,7 @@ class S3ObjectStore:
                 )
             except OSError, _PreconditionFailed, _ConditionalConflict:
                 try:
-                    existing = self._read(client, key)
+                    existing = self._read(client, key, checkpoint=checkpoint)
                 except FileNotFoundError:
                     if attempt + 1 == self.config.max_attempts:
                         raise OSError("S3 conditional upload did not complete") from None
@@ -482,7 +589,7 @@ class S3ObjectStore:
                 return self._same_payload(existing, size, digest)
             else:
                 version = _version(response.get("VersionId"))
-                info = self._read(client, key, version_id=version)
+                info = self._read(client, key, version_id=version, checkpoint=checkpoint)
                 if (info.size_bytes, info.sha256) != (size, digest):
                     raise ObjectIntegrityError("uploaded S3 version failed integrity verification")
                 return info
@@ -490,17 +597,23 @@ class S3ObjectStore:
 
     def stat(self, key: str) -> ObjectInfo:
         self._full_key(key)
-        with self._locked_root():
+        with self._locked_root(shared=True):
             return self._read(self._ready(), key)
 
     def stat_version(self, key: str, version_id: str) -> ObjectInfo:
         self._full_key(key)
         _version(version_id)
-        with self._locked_root():
+        with self._locked_root(shared=True):
             return self._read(self._ready(), key, version_id=version_id)
 
     def materialize(
-        self, key: str, destination: Path, *, expected_sha256: str, expected_size_bytes: int
+        self,
+        key: str,
+        destination: Path,
+        *,
+        expected_sha256: str,
+        expected_size_bytes: int,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         self._full_key(key)
         _check_digest(expected_sha256)
@@ -514,7 +627,10 @@ class S3ObjectStore:
             raise ValueError(
                 "materialization destination must be outside the S3 coordination directory"
             )
-        with self._locked_root(), _local_parent(destination, create=True) as (parent, name):
+        with (
+            self._locked_root(shared=True, checkpoint=checkpoint),
+            _local_parent(destination, create=True) as (parent, name),
+        ):
             try:
                 os.stat(name, dir_fd=parent, follow_symlinks=False)
             except FileNotFoundError:
@@ -522,12 +638,14 @@ class S3ObjectStore:
             else:
                 raise ObjectConflictError("materialization destination already exists")
             with _temporary_file(parent) as (temporary, temporary_name):
-                info = self._read(self._ready(), key, destination=temporary)
+                info = self._read(self._ready(), key, destination=temporary, checkpoint=checkpoint)
                 if (info.size_bytes, info.sha256) != (expected_size_bytes, expected_sha256):
                     raise ObjectIntegrityError(
                         "stored object differs from expected size or SHA-256"
                     )
                 os.fsync(temporary)
+                if checkpoint is not None:
+                    checkpoint()
                 try:
                     os.link(
                         temporary_name,
@@ -576,7 +694,9 @@ class S3ObjectStore:
         with self._locked_root():
             return self._inventory(self._ready())
 
-    def _inventory(self, client: _Client) -> tuple[S3ObjectVersion, ...]:
+    def _inventory(
+        self, client: _Client, *, checkpoint: Callable[[], None] | None = None
+    ) -> tuple[S3ObjectVersion, ...]:
         arguments: dict[str, object] = {
             "Bucket": self.config.bucket,
             "Prefix": self.config.prefix + "/",
@@ -586,6 +706,8 @@ class S3ObjectStore:
         seen: set[tuple[str, str]] = set()
         previous_marker: tuple[str, str] | None = None
         for _ in range(_MAX_LIST_PAGES):
+            if checkpoint is not None:
+                checkpoint()
             response = self._request(lambda: client.list_object_versions(**arguments))
             for marker, field in ((False, "Versions"), (True, "DeleteMarkers")):
                 for row in _rows(response.get(field, [])):

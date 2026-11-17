@@ -5,7 +5,7 @@ import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, current_thread
 
 import pytest
 
@@ -18,6 +18,7 @@ from regimex.infrastructure.object_store import (
     ObjectIntegrityError,
     ObjectStore,
 )
+from regimex.resource_limits import TimeBudgetExceeded
 
 
 def checksum(data: bytes) -> str:
@@ -36,6 +37,76 @@ def source(root: Path, name: str = "source.bin", data: bytes = b"payload") -> Pa
 
 def assert_no_temporary_files(root: Path) -> None:
     assert not tuple(root.rglob(".regimex-temporary-*"))
+
+
+@pytest.mark.parametrize("operation", ["upload", "download"])
+def test_interrupted_copy_has_no_partial_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    objects = store(tmp_path / "objects", object_limit=4096, total_limit=8192)
+    upload = source(tmp_path, data=b"x" * 2048)
+    original = objects.put("existing", upload, expected_sha256=checksum(upload.read_bytes()))
+    monkeypatch.setattr(object_store, "_CHUNK_BYTES", 64)
+    consumed = 0
+
+    def checkpoint() -> None:
+        nonlocal consumed
+        consumed += 1
+        if consumed == 5:
+            raise TimeBudgetExceeded("fixture transfer deadline")
+
+    destination = tmp_path / "copy"
+    with pytest.raises(TimeBudgetExceeded):
+        if operation == "upload":
+            objects.put("cancelled", upload, expected_sha256=original.sha256, checkpoint=checkpoint)
+        else:
+            objects.materialize(
+                original.key,
+                destination,
+                expected_sha256=original.sha256,
+                expected_size_bytes=original.size_bytes,
+                checkpoint=checkpoint,
+            )
+    assert objects.stat(original.key) == original
+    assert not destination.exists()
+    with pytest.raises(FileNotFoundError):
+        objects.stat("cancelled")
+    assert_no_temporary_files(tmp_path)
+
+
+def test_readers_progress_together_while_deletion_waits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    objects = store(tmp_path / "objects")
+    upload = source(tmp_path)
+    info = objects.put("payload", upload, expected_sha256=checksum(upload.read_bytes()))
+    reading, release = Event(), Event()
+    real_read = os.read
+
+    def delayed_read(descriptor: int, size: int) -> bytes:
+        if current_thread().name.startswith("slow-reader"):
+            reading.set()
+            assert release.wait(5)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(os, "read", delayed_read)
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="slow-reader") as slow,
+        ThreadPoolExecutor(max_workers=2) as concurrent,
+    ):
+        pending = slow.submit(objects.stat, info.key)
+        try:
+            assert reading.wait(5)
+            assert concurrent.submit(objects.stat, info.key).result(timeout=2) == info
+            deletion = concurrent.submit(objects.delete, info)
+            with pytest.raises(TimeoutError):
+                deletion.result(timeout=0.1)
+        finally:
+            release.set()
+        assert pending.result(timeout=5) == info
+        deletion.result(timeout=5)
+    with pytest.raises(FileNotFoundError):
+        objects.stat(info.key)
 
 
 def test_immutable_put_idempotency_materialization_and_conditional_delete(tmp_path: Path) -> None:

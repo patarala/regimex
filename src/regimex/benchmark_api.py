@@ -18,7 +18,7 @@ from regimex.api import _json_dependency, _request_body
 from regimex.benchmark_contracts import BenchmarkView, RegistryState
 from regimex.benchmarks import DatasetHistory
 from regimex.contracts import Identifier, StrictModel
-from regimex.directions import AnalysisConfig
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
 from regimex.service_contracts import Principal
 from regimex.storage import json_bytes
 
@@ -79,7 +79,7 @@ class FinalReferenceRequest(StrictModel):
     dataset_id: Identifier
     partition: Literal["test"] = "test"
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
-    analysis_profile_id: Identifier = "direction-32/2.0"
+    analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
     reviewer: Identifier
     blind_review: bool
     independent: bool

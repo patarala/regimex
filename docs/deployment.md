@@ -38,6 +38,18 @@ pass-through proxy is supported. HTTP reverse-proxy termination requires a trust
 proxy feature that is not implemented. Cross-host PostgreSQL must use a DSN with
 verified database TLS and its trusted CA. Regimex never needs simulator DB credentials.
 
+Start the API through `regimex service serve`. It bounds each request's header
+intake to 10 seconds and body intake to 30 seconds, including incomplete requests
+that never reach authentication. These are absolute deadlines; sending another
+byte does not extend them. Expired requests close with HTTP 408 when a response
+has not already started. Completed uploads may take longer to process. The
+16 MiB JSON limit and connection limit remain separate bounds.
+
+An alternative ASGI host must provide its own header deadline. The application
+still enforces its JSON body deadline, but cannot inspect incomplete headers.
+The service uses Uvicorn's h11 protocol with a small deadline adapter, covered by
+real connection tests for chunking, keep-alive and pipelining.
+
 ## Start the service
 
 After provisioning the files above:
@@ -93,6 +105,8 @@ or ineffective backend settings fail explicitly.
 | `REGIMEX_DATABASE_SCHEMA` | `public` |
 | `REGIMEX_PUBLIC_ORIGIN` | `https://localhost` in native processes |
 | `REGIMEX_SESSION_TTL_SECONDS` | 1,800 seconds, absolute expiry |
+| `REGIMEX_HTTP_HEADER_TIMEOUT_SECONDS` | 10 seconds; range 1–60 |
+| `REGIMEX_HTTP_BODY_TIMEOUT_SECONDS` | 30 seconds; range 1–300 |
 | `REGIMEX_MAX_SESSIONS_PER_TOKEN` | 8 |
 | `REGIMEX_MAX_PENDING_PER_OWNER` / `REGIMEX_MAX_ADMIN_PENDING_PER_OWNER` | 8 / 4 |
 | `REGIMEX_MAX_GENERATION_EXPERIMENTS` | 128 |

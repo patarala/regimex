@@ -22,7 +22,7 @@ psycopg = pytest.importorskip("psycopg", reason="install the service extra")
 from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 from pydantic import JsonValue
-from starlette.types import Message, Scope
+from starlette.types import Message, Receive, Scope, Send
 
 from regimex.api import AnalysisAPIService, BoundedJSONBody, create_app
 from regimex.application.service import AnalysisResult, AnalysisService, PredictionSequence
@@ -218,6 +218,41 @@ def test_chunked_limit_is_enforced_before_forwarding_or_reading_remaining_chunks
         assert not forwarded
         assert len(messages) == 1
         assert sent[0]["status"] == 413
+
+    asyncio.run(exercise())
+
+
+def test_body_deadline_rejects_partial_request_before_application() -> None:
+    async def exercise() -> None:
+        sent: list[Message] = []
+        calls = 0
+
+        async def receive() -> Message:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {"type": "http.request", "body": b"{", "more_body": True}
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def send(message: Message) -> None:
+            sent.append(message)
+
+        async def application(_scope: Scope, _receive: Receive, _send: Send) -> None:
+            raise AssertionError("incomplete body reached application")
+
+        middleware = BoundedJSONBody(application, timeout_seconds=0.01)
+        await asyncio.wait_for(
+            middleware(
+                {"type": "http", "path": "/api/v1/snapshots", "method": "POST", "headers": []},
+                receive,
+                send,
+            ),
+            timeout=1,
+        )
+        assert sent[0]["status"] == 408
+        assert (b"connection", b"close") in sent[0]["headers"]
+        assert b"request_timeout" in sent[1]["body"]
 
     asyncio.run(exercise())
 

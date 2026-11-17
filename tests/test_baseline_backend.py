@@ -102,7 +102,9 @@ def prepared(inputs: ObservationInputs, preprocessor: Preprocessor) -> PreparedP
     )
 
 
-def fit() -> tuple[BaselineBackend, FitResult, ObservationInputs]:
+def fit(
+    *, analysis: AnalysisConfig | None = None
+) -> tuple[BaselineBackend, FitResult, ObservationInputs]:
     backend = BaselineBackend()
     training, validation = inputs("train"), inputs("validation")
     targets = np.repeat(np.arange(3), (15, 21, 18)).astype(np.int64)
@@ -112,7 +114,7 @@ def fit() -> tuple[BaselineBackend, FitResult, ObservationInputs]:
         validation,
         parameters=LogisticParameters(regularization=(0.1, 1.0), context_sizes=(4, 16)),
         policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
-        analysis=AnalysisConfig(min_duration=4),
+        analysis=analysis or AnalysisConfig(min_duration=4),
         runtime=TrainingRuntime(threads=1),
         evaluator=lambda probabilities: float(probabilities[:, 0].mean()),
     )
@@ -149,8 +151,10 @@ def provenance(result: FitResult) -> BundleProvenance:
     )
 
 
-def bundle(tmp_path: Path) -> tuple[BaselineBackend, FitResult, ObservationInputs, str]:
-    backend, result, validation = fit()
+def bundle(
+    tmp_path: Path, *, analysis: AnalysisConfig | None = None
+) -> tuple[BaselineBackend, FitResult, ObservationInputs, str]:
+    backend, result, validation = fit(analysis=analysis)
     sha = backend.write_bundle(
         result,
         tmp_path / "bundle",
@@ -236,11 +240,17 @@ def test_original_grid_and_no_cross_sequence_context() -> None:
     np.testing.assert_allclose(full.sum(axis=1), 1, atol=1e-12)
 
 
-def test_fresh_process_reload_has_no_torch_sklearn_or_fitting(tmp_path: Path) -> None:
-    backend, result, validation, sha = bundle(tmp_path)
+@pytest.mark.parametrize(
+    "analysis", [AnalysisConfig(version="2.0", min_duration=4), AnalysisConfig(min_duration=4)]
+)
+def test_fresh_process_reload_has_no_torch_sklearn_or_fitting(
+    tmp_path: Path, analysis: AnalysisConfig
+) -> None:
+    backend, result, validation, sha = bundle(tmp_path, analysis=analysis)
     restored = backend.load_bundle(
         tmp_path / "bundle", manifest_sha256=sha, runtime=InferenceRuntime()
     )
+    assert restored.analysis == analysis
     expected = result.predictor.predict(validation, runtime=InferenceRuntime(threads=1))
     np.testing.assert_array_equal(
         restored.predict(validation, runtime=InferenceRuntime(threads=1)), expected

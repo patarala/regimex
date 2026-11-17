@@ -6,9 +6,11 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from subprocess import Popen
+from threading import Event
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -272,7 +274,7 @@ def test_generic_candidate_evaluate_publish_and_saved_analysis(
             ),
             training_runtime=TrainingRuntime(threads=1, time_budget_seconds=120),
             inference_runtime=InferenceRuntime(threads=1),
-            analysis_profile_id="direction-32/2.0",
+            analysis_profile_id="direction-32/2.1",
             build_id="behavior-fixture",
             benchmark_selection_id="fixture-final-benchmark",
         ),
@@ -524,7 +526,7 @@ def test_wall_budget_kills_generation_before_any_dataset_is_committed(
         (CapacityExceeded("Public limit detail. " * 100), ("Public limit detail. " * 100)[:1024]),
         (
             ObjectCapacityError("private provider path and credential details"),
-            "The administrative computation exceeds its configured budget.",
+            "A model, input or result exceeded the configured storage capacity.",
         ),
     ],
 )
@@ -738,7 +740,12 @@ def test_input_scratch_budget_is_checked_before_any_object_is_copied(
     copies: list[str] = []
 
     def forbidden_copy(
-        key: str, destination: Path, *, expected_sha256: str, expected_size_bytes: int
+        key: str,
+        destination: Path,
+        *,
+        expected_sha256: str,
+        expected_size_bytes: int,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         copies.append(key)
         raise AssertionError("input bytes were copied before checking the total size")
@@ -770,7 +777,12 @@ def test_input_materialization_counts_toward_attempt_wall_budget(
     copies: list[str] = []
 
     def delayed_copy(
-        key: str, destination: Path, *, expected_sha256: str, expected_size_bytes: int
+        key: str,
+        destination: Path,
+        *,
+        expected_sha256: str,
+        expected_size_bytes: int,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         copies.append(key)
         time.sleep(1.1)
@@ -779,6 +791,7 @@ def test_input_materialization_counts_toward_attempt_wall_budget(
             destination,
             expected_sha256=expected_sha256,
             expected_size_bytes=expected_size_bytes,
+            checkpoint=checkpoint,
         )
 
     monkeypatch.setattr(service.analysis_service.store, "materialize", delayed_copy)
@@ -788,3 +801,50 @@ def test_input_materialization_counts_toward_attempt_wall_budget(
     assert len(copies) == 1
     with pytest.raises(NotFound):
         service.get_reference_set(principal, "timed-reference")
+
+
+@pytest.mark.parametrize("phase", ["materialize", "put"])
+def test_long_input_and_output_transfers_keep_the_administrative_lease(
+    admin: tuple[AdminService, Principal], monkeypatch: pytest.MonkeyPatch, phase: str
+) -> None:
+    service, principal = admin
+    service.settings = service.settings.model_copy(update={"heartbeat_seconds": 1})
+    dataset = imported_dataset(service, principal)
+    run = service.generate_references(
+        principal,
+        ReferenceGenerationSpec(
+            dataset_id=dataset.dataset_id, reference_set_id="slow-transfer", partition="train"
+        ),
+        idempotency_key="slow-transfer",
+    )
+    entered, release = Event(), Event()
+    store = service.analysis_service.store
+    transfer = getattr(store, phase)
+
+    def blocked_transfer(*args: Any, **kwargs: Any) -> ObjectInfo:
+        entered.set()
+        assert release.wait(10), "fixture transfer was never released"
+        return cast(ObjectInfo, transfer(*args, **kwargs))
+
+    monkeypatch.setattr(store, phase, blocked_transfer)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(service.run_admin, run.run_id)
+        try:
+            assert entered.wait(10)
+            initial = service.get_run(principal, run.run_id).operation.heartbeat_at
+            assert initial is not None
+            deadline = time.monotonic() + 5
+            while True:
+                current = service.get_run(principal, run.run_id).operation.heartbeat_at
+                assert current is not None
+                if current > initial:
+                    break
+                assert time.monotonic() < deadline, "blocked transfer stopped lease renewal"
+                time.sleep(0.02)
+            # Recovering through the previous heartbeat cannot claim the live attempt.
+            assert service.analysis_service.repository.recover_operations(initial) == ()
+        finally:
+            release.set()
+        result = pending.result(timeout=20)
+    assert result is not None and result.operation.state == "succeeded"
+    assert result.operation.attempt == 1

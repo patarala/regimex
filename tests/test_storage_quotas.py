@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -208,9 +208,15 @@ def test_failed_object_write_keeps_its_reservation_and_retry_reuses_it(
     application = service(database, tmp_path, maximum=size)
     original = application.store.put
 
-    def fail(key: str, source: Path, *, expected_sha256: str) -> ObjectInfo:
+    def fail(
+        key: str,
+        source: Path,
+        *,
+        expected_sha256: str,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> ObjectInfo:
         if after_write:
-            original(key, source, expected_sha256=expected_sha256)
+            original(key, source, expected_sha256=expected_sha256, checkpoint=checkpoint)
         raise OSError("simulated ambiguous upload failure")
 
     with monkeypatch.context() as patch:

@@ -24,6 +24,7 @@ from pydantic import JsonValue, TypeAdapter
 from sqlalchemy import create_engine
 
 from regimex.contracts import MAX_INPUT_BYTES
+from regimex.infrastructure.heartbeat_connection import HeartbeatConnection
 from regimex.infrastructure.history_repository import analysis_filters, analysis_scope
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.operations import (
@@ -103,8 +104,11 @@ class DatabaseRepository:
         self.queue_app = queue_app or create_queue_app(dsn, schema=schema)
 
     @contextmanager
-    def connection(self) -> Iterator[psycopg.Connection[tuple[object, ...]]]:
-        with psycopg.connect(
+    def connection(
+        self, *, heartbeat: bool = False
+    ) -> Iterator[psycopg.Connection[tuple[object, ...]]]:
+        connect = HeartbeatConnection.connect if heartbeat else psycopg.connect
+        with connect(
             self._dsn,
             options=_connection_options(self.schema),
             application_name="regimex",
@@ -895,7 +899,7 @@ class DatabaseRepository:
             return operation
 
     def heartbeat_operation(self, operation_id: UUID, token: UUID, stage: str) -> Operation:
-        with self.connection() as connection:
+        with self.connection(heartbeat=True) as connection:
             operation = self._operation(connection, operation_id, lock=True)
             try:
                 operation = heartbeat(operation, token, stage, self._now(operation))

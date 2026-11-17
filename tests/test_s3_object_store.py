@@ -5,12 +5,17 @@ import multiprocessing
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import import_module
 from pathlib import Path
-from typing import BinaryIO, cast
+from threading import Event, Thread, current_thread
+from types import TracebackType
+from typing import Any, BinaryIO, cast
 
 import pytest
 from test_object_store_contract import (
@@ -21,6 +26,7 @@ from test_object_store_contract import (
     source,
 )
 
+from regimex.computation_worker import ComputationCancelled
 from regimex.infrastructure.object_store import (
     ObjectCapacityError,
     ObjectConflictError,
@@ -28,7 +34,12 @@ from regimex.infrastructure.object_store import (
     ObjectIntegrityError,
 )
 from regimex.infrastructure.s3_config import S3Config
-from regimex.infrastructure.s3_object_store import S3ObjectStore, _Client, _ResponseBody
+from regimex.infrastructure.s3_object_store import (
+    S3ObjectStore,
+    _Client,
+    _ResponseBody,
+)
+from regimex.resource_limits import TimeBudgetExceeded
 
 
 @dataclass(frozen=True)
@@ -63,6 +74,210 @@ def plain_config(root: Path, **values: object) -> S3Config:
     }
     configuration.update(values)
     return S3Config.model_validate(configuration)
+
+
+def test_readers_share_coordination_but_deletion_waits(
+    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    objects = actual_s3.objects
+    path = source(tmp_path)
+    info = objects.put("concurrent-read", path, expected_sha256=digest(path.read_bytes()))
+    reading, release = Event(), Event()
+    client = objects._sdk().client
+    original_get = client.get_object
+
+    def slow_get(**values: object) -> dict[str, object]:
+        if current_thread().name.startswith("slow-reader"):
+            reading.set()
+            assert release.wait(5)
+        return original_get(**values)
+
+    monkeypatch.setattr(client, "get_object", slow_get)
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="slow-reader") as slow,
+        ThreadPoolExecutor(max_workers=2) as concurrent,
+    ):
+        pending = slow.submit(objects.stat, info.key)
+        try:
+            assert reading.wait(5)
+            assert concurrent.submit(objects.stat, info.key).result(timeout=2) == info
+            deletion = concurrent.submit(objects.delete, info)
+            with pytest.raises(TimeoutError):
+                deletion.result(timeout=0.1)
+        finally:
+            release.set()
+        assert pending.result(timeout=5) == info
+        deletion.result(timeout=5)
+    with pytest.raises(FileNotFoundError):
+        objects.stat(info.key)
+
+
+def test_cancelled_download_closes_body_and_keeps_generation(
+    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    objects = actual_s3.objects
+    path = source(tmp_path)
+    info = objects.put("cancel-read", path, expected_sha256=digest(path.read_bytes()))
+    client = objects._sdk().client
+    original_get = client.get_object
+    received, closed = Event(), Event()
+
+    class ObservedBody:
+        def __init__(self, body: _ResponseBody) -> None:
+            self.body = body
+
+        def __enter__(self) -> ObservedBody:
+            self.reader = self.body.__enter__()
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            self.close()
+
+        def read1(self, amount: int, *, decode_content: bool = False) -> bytes:
+            result = self.reader.read1(amount, decode_content=decode_content)
+            received.set()
+            return result
+
+        def close(self) -> None:
+            self.body.close()
+            closed.set()
+
+    def observed_get(**values: object) -> dict[str, object]:
+        result = original_get(**values)
+        result["Body"] = ObservedBody(cast(_ResponseBody, result["Body"]))
+        return result
+
+    def checkpoint() -> None:
+        if received.is_set():
+            raise TimeBudgetExceeded("fixture transfer deadline")
+
+    destination = tmp_path / "interrupted-copy"
+    with monkeypatch.context() as patch:
+        patch.setattr(client, "get_object", observed_get)
+        with pytest.raises(TimeBudgetExceeded):
+            objects.materialize(
+                info.key,
+                destination,
+                expected_sha256=info.sha256,
+                expected_size_bytes=info.size_bytes,
+                checkpoint=checkpoint,
+            )
+    assert closed.is_set()
+    assert not destination.exists()
+    assert not tuple(tmp_path.rglob(".regimex-temporary-*"))
+    assert objects.stat(info.key) == info
+
+
+def test_progressing_download_cannot_hide_the_attempt_deadline(
+    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    objects = actual_s3.objects
+    payload = b"x" * 100
+    info = objects.put("trickle", source(tmp_path, payload), expected_sha256=digest(payload))
+    completed = Event()
+
+    class SlowResponse(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            with suppress(BrokenPipeError, ConnectionResetError):
+                for byte in payload:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.02)
+                completed.set()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), SlowResponse)
+    worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True)
+    worker.start()
+    pool = cast(Any, import_module("urllib3")).PoolManager()
+    streaming_body = cast(Any, import_module("botocore.response")).StreamingBody
+
+    def get(**_values: object) -> dict[str, object]:
+        response = pool.request(
+            "GET",
+            f"http://127.0.0.1:{server.server_port}/object",
+            preload_content=False,
+            timeout=1.0,
+            retries=False,
+        )
+        return {
+            "Body": streaming_body(response, len(payload)),
+            "VersionId": info.version_id,
+            "ContentLength": len(payload),
+        }
+
+    started = time.monotonic()
+
+    def checkpoint() -> None:
+        if time.monotonic() - started >= 0.2:
+            raise TimeBudgetExceeded("fixture operation deadline")
+
+    destination = tmp_path / "trickle-copy"
+    try:
+        monkeypatch.setattr(objects._sdk().client, "get_object", get)
+        with pytest.raises(TimeBudgetExceeded):
+            objects.materialize(
+                info.key,
+                destination,
+                expected_sha256=info.sha256,
+                expected_size_bytes=info.size_bytes,
+                checkpoint=checkpoint,
+            )
+        assert time.monotonic() - started < 1
+        assert not completed.is_set()
+        assert not destination.exists()
+        assert not tuple(tmp_path.rglob(".regimex-temporary-*"))
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+        pool.clear()
+
+
+@pytest.mark.parametrize("error", [ComputationCancelled, TimeBudgetExceeded])
+def test_sdk_upload_preserves_the_checkpoint_error(
+    actual_s3: Context,
+    tmp_path: Path,
+    error: type[Exception],
+) -> None:
+    objects = actual_s3.objects
+    path = source(tmp_path)
+    consuming = Event()
+
+    def sending(**_values: object) -> None:
+        consuming.set()
+
+    # Fail only after signing/checksum preparation, when the real HTTP stack
+    # consumes the body and may wrap the checkpoint exception as a transport error.
+    cast(Any, objects._sdk().client).meta.events.register("before-send.s3.PutObject", sending)
+
+    failure = error("fixture cancelled during SDK body consumption")
+
+    def checkpoint() -> None:
+        if consuming.is_set():
+            raise failure
+
+    with pytest.raises(error) as caught:
+        objects.put(
+            "interrupted-upload",
+            path,
+            expected_sha256=digest(path.read_bytes()),
+            checkpoint=checkpoint,
+        )
+    assert caught.value is failure
+    assert consuming.is_set()
+    assert not tuple(objects.root.rglob(".regimex-temporary-*"))
+    assert objects.inventory() == ()
 
 
 @pytest.mark.parametrize(
@@ -331,11 +546,25 @@ def test_stream_sdk_failure_is_redacted_and_partial_destination_removed(
             self.body = body
             self.reads = 0
 
-        def read(self, amount: int) -> bytes:
+        def __enter__(self) -> InterruptedBody:
+            self.reader = self.body.__enter__()
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc: BaseException | None,
+            traceback: TracebackType | None,
+        ) -> None:
+            self.close()
+
+        def read1(self, amount: int, *, decode_content: bool = False) -> bytes:
             self.reads += 1
             if phase == "read" and self.reads > 1:
                 raise error
-            return self.body.read(min(amount, 2) if phase == "read" else amount)
+            return self.reader.read1(
+                min(amount, 2) if phase == "read" else amount, decode_content=decode_content
+            )
 
         def close(self) -> None:
             self.body.close()
@@ -399,7 +628,14 @@ def test_multipart_cleanup_respects_scope_cutoff_and_identity(actual_s3: Context
 def crash_spooling_process(config_json: str, upload: str, ready: str) -> None:
     class PausedStore(S3ObjectStore):
         def _put_stable(
-            self, client: _Client, key: str, source: BinaryIO, size: int, checksum: str
+            self,
+            client: _Client,
+            key: str,
+            source: BinaryIO,
+            size: int,
+            checksum: str,
+            *,
+            checkpoint: Callable[[], None] | None = None,
         ) -> ObjectInfo:
             Path(ready).touch()
             while True:

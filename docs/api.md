@@ -238,7 +238,7 @@ Create separate training and validation references with `POST /reference-sets`:
 ```
 
 Repeat with `partition: "validation"`. The default profile is
-`direction-32/2.0`; automatic labels use `retrospective-directions/3.0`.
+`direction-32/2.1`; automatic labels use `retrospective-directions/3.0`.
 The same profile name cannot describe changed settings. Human-reference import
 is also supported with complete annotations and reviewer/independence attestations;
 the server checks the contract, not whether a reviewer was genuinely independent.

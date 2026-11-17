@@ -31,7 +31,7 @@ from regimex.admin_contracts import (
 from regimex.api import OperationView, _json_dependency, _operation, _request_body
 from regimex.contracts import Identifier, StrictModel
 from regimex.data_catalog import DatasetManifest, ReferenceSet
-from regimex.directions import AnalysisConfig, DirectionAnnotations
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
 from regimex.model_registry import (
     ArchitectureId,
     InferenceRuntime,
@@ -202,7 +202,7 @@ class AutomaticReferenceRequest(StrictModel):
     dataset_id: Identifier
     partition: Literal["train", "validation", "test"]
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
-    analysis_profile_id: Identifier = "direction-32/2.0"
+    analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
 
 
 class HumanReferenceRequest(StrictModel):
@@ -210,7 +210,7 @@ class HumanReferenceRequest(StrictModel):
     dataset_id: Identifier
     partition: Literal["train", "validation"]
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
-    analysis_profile_id: Identifier = "direction-32/2.0"
+    analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
     reviewer: Identifier
     blind_review: bool
     independent: bool
@@ -234,7 +234,7 @@ class TrainingRunRequest(StrictModel):
     policy: TrainingPolicySpec
     training_runtime: TrainingRuntime = Field(default_factory=TrainingRuntime)
     inference_runtime: InferenceRuntime = Field(default_factory=InferenceRuntime)
-    analysis_profile_id: Identifier = "direction-32/2.0"
+    analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
     benchmark_selection_id: Identifier
 
 

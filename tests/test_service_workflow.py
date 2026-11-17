@@ -9,7 +9,7 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -306,7 +306,12 @@ def test_cached_bundle_is_not_downloaded_for_every_prediction(
     original = service.store.materialize
 
     def observe(
-        key: str, destination: Path, *, expected_sha256: str, expected_size_bytes: int
+        key: str,
+        destination: Path,
+        *,
+        expected_sha256: str,
+        expected_size_bytes: int,
+        checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         seen.append(key)
         return original(
@@ -314,6 +319,7 @@ def test_cached_bundle_is_not_downloaded_for_every_prediction(
             destination,
             expected_sha256=expected_sha256,
             expected_size_bytes=expected_size_bytes,
+            checkpoint=checkpoint,
         )
 
     monkeypatch.setattr(service.store, "materialize", observe)
@@ -772,8 +778,16 @@ def test_cancellation_after_report_upload_cannot_publish_result_or_report(
     original_put = service.store.put
     uploaded: list[ObjectInfo] = []
 
-    def put(key: str, source_path: Path, *, expected_sha256: str) -> ObjectInfo:
-        info = original_put(key, source_path, expected_sha256=expected_sha256)
+    def put(
+        key: str,
+        source_path: Path,
+        *,
+        expected_sha256: str,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> ObjectInfo:
+        info = original_put(
+            key, source_path, expected_sha256=expected_sha256, checkpoint=checkpoint
+        )
         if key.startswith("reports/"):
             uploaded.append(info)
             service.cancel_operation(owner, queued.operation.operation_id)

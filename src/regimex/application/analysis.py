@@ -2,24 +2,22 @@
 
 import fcntl
 import hashlib
-import math
 import os
 import re
 import shutil
 import stat
 import tempfile
-import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from types import TracebackType
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 import psycopg
 from pydantic import Field, JsonValue
 
+from regimex.application.attempt_supervision import AttemptSupervisor
 from regimex.application.service import AnalysisResult, AnalysisService, materialize_bundle
 from regimex.computation_worker import (
     ChildLimits,
@@ -33,7 +31,6 @@ from regimex.model_bundles import ModelBundle, verify_model_bundle
 from regimex.model_registry import RegistryError
 from regimex.operations import Operation, OperationFailure, Sha256
 from regimex.report_contracts import MAX_REPORT_BYTES, AnalysisReportRecord
-from regimex.resource_limits import TimeBudgetExceeded
 from regimex.service_contracts import ModelRecord, StaleAttempt
 from regimex.storage import json_bytes
 
@@ -104,6 +101,7 @@ def _cache_bundle(
                 model,
                 incoming,
                 before_copy=None if heartbeat is None else lambda _: heartbeat(),
+                checkpoint=heartbeat,
             )
             descriptor = service.registry.get(model.architecture_id)
             verify_model_bundle(
@@ -148,64 +146,6 @@ def _validate_registered_model(model: ModelRecord) -> None:
         raise ObjectIntegrityError("registered model digest, policy or resource budget differs")
 
 
-class _Cancelled(RuntimeError):
-    pass
-
-
-class _Heartbeat:
-    def __init__(self, service: AnalysisService, operation: Operation) -> None:
-        assert operation.attempt_token is not None
-        self.service = service
-        self.operation_id = operation.operation_id
-        self.token = operation.attempt_token
-        self.stop = threading.Event()
-        self.cancelled = threading.Event()
-        self.error: Exception | None = None
-        self.stage = "loading"
-        self.deadline = time.monotonic() + service.time_budget_seconds
-        self.thread = threading.Thread(target=self._run, daemon=True, name="regimex-heartbeat")
-
-    def _run(self) -> None:
-        while not self.stop.wait(min(self.service.heartbeat_seconds, 1.0)):
-            try:
-                self.check(self.stage)
-            except Exception as exc:
-                self.error = exc
-                return
-
-    def poll(self) -> None:
-        if self.error is not None:
-            raise self.error
-        if self.cancelled.is_set():
-            raise _Cancelled()
-        if time.monotonic() > self.deadline:
-            raise TimeBudgetExceeded("Analysis exceeded its wall-time budget.")
-
-    def check(self, stage: str) -> None:
-        self.poll()
-        self.stage = stage
-        operation = self.service.repository.heartbeat_operation(
-            self.operation_id, self.token, stage
-        )
-        if operation.state == "cancel_requested":
-            self.cancelled.set()
-            raise _Cancelled()
-
-    def __enter__(self) -> _Heartbeat:
-        self.check("loading")
-        self.thread.start()
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        self.stop.set()
-        self.thread.join(timeout=1)
-
-
 class _ComputedFiles(StrictModel):
     result_sha256: Sha256
     report_sha256: Sha256
@@ -233,7 +173,11 @@ def run_analysis(
     assert operation.attempt_token is not None
     token = operation.attempt_token
     try:
-        with _Heartbeat(service, operation) as heartbeat:
+        with AttemptSupervisor(
+            lambda stage: service.repository.heartbeat_operation(operation_id, token, stage),
+            heartbeat_seconds=service.heartbeat_seconds,
+            time_budget_seconds=service.time_budget_seconds,
+        ) as heartbeat:
             analysis = service.repository.get_analysis_internal(operation_id)
             snapshot = service.repository.get_snapshot_internal(analysis.snapshot_id)
             if operation.owner_id != snapshot.owner_id or operation.model is None:
@@ -244,7 +188,7 @@ def run_analysis(
                 operation.model.inference_policy_sha256,
             ) != (model.bundle_sha256, model.inference_policy_sha256):
                 raise ObjectIntegrityError("operation immutable model differs from its registry")
-            export = service._read_snapshot_record(snapshot)
+            export = service._read_snapshot_record(snapshot, checkpoint=heartbeat.poll)
             _validate_registered_model(model)
             descriptor = service.registry.get(model.architecture_id)
             if descriptor.backend_factory is None or descriptor.worker_probe is None:
@@ -265,7 +209,7 @@ def run_analysis(
                     "descriptor": descriptor.model_dump(mode="json"),
                     "parameter_schema": descriptor.parameters_model.model_json_schema(),
                 }
-                remaining = max(1, math.ceil(heartbeat.deadline - time.monotonic()))
+                remaining = heartbeat.remaining_seconds
                 files = _ComputedFiles.model_validate_json(
                     json_bytes(
                         supervise_child(
@@ -306,6 +250,7 @@ def run_analysis(
                     f"reports/{analysis.analysis_id}/{token}.html",
                     path,
                     expected_sha256=files.report_sha256,
+                    checkpoint=heartbeat.poll,
                 )
                 report = AnalysisReportRecord(
                     analysis_id=analysis.analysis_id,

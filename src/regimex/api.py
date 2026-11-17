@@ -4,6 +4,7 @@ The API validates bounded JSON and exposes committed state. It does not import a
 backend, probe computation dependencies, fit a model, or accept local file paths.
 """
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 from uuid import UUID
@@ -257,11 +258,16 @@ def _html_report(payload: bytes, *, filename: str | None = None) -> Response:
 
 
 class BoundedJSONBody:
-    """Reject excess bytes before handing a request to JSON parsing or storage."""
+    """Bound body bytes and total intake time before parsing or storage."""
 
-    def __init__(self, app: ASGIApp, *, max_bytes: int = MAX_INPUT_BYTES) -> None:
+    def __init__(
+        self, app: ASGIApp, *, max_bytes: int = MAX_INPUT_BYTES, timeout_seconds: float = 30
+    ) -> None:
+        if not 0 < timeout_seconds < float("inf"):
+            raise ValueError("HTTP body timeout must be finite and positive")
         self.app = app
         self.max_bytes = max_bytes
+        self.timeout_seconds = timeout_seconds
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if (
@@ -296,21 +302,30 @@ class BoundedJSONBody:
             )(scope, receive, send)
             return
         body = bytearray()
-        while True:
-            message = await receive()
-            if message["type"] == "http.disconnect":
-                return
-            if message["type"] != "http.request":
-                continue
-            chunk = message.get("body", b"")
-            if len(body) + len(chunk) > self.max_bytes:
-                await JSONResponse(_error("capacity_limit", "JSON exceeds the 16 MiB limit."), 413)(
-                    scope, receive, send
-                )
-                return
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                break
+        try:
+            async with asyncio.timeout(self.timeout_seconds):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        return
+                    if message["type"] != "http.request":
+                        continue
+                    chunk = message.get("body", b"")
+                    if len(body) + len(chunk) > self.max_bytes:
+                        await JSONResponse(
+                            _error("capacity_limit", "JSON exceeds the 16 MiB limit."), 413
+                        )(scope, receive, send)
+                        return
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        break
+        except TimeoutError:
+            await JSONResponse(
+                _error("request_timeout", "Request body was not received in time."),
+                408,
+                headers={"Connection": "close"},
+            )(scope, receive, send)
+            return
         if declared is not None and declared != len(body):
             await JSONResponse(
                 _error("invalid_request", "Content-Length does not match the body."), 400
@@ -445,6 +460,7 @@ def create_app(
     benchmark_service: BenchmarkAPIService | None = None,
     auth_service: AuthService | None = None,
     deletion_service: DeletionAPIService | None = None,
+    body_timeout_seconds: float = 30,
 ) -> FastAPI:
     """Create an app over configured persistence; startup never auto-migrates."""
     app = _API(
@@ -458,7 +474,7 @@ def create_app(
             "backend's subject and run assertions to its configured source scope."
         ),
     )
-    app.add_middleware(BoundedJSONBody)
+    app.add_middleware(BoundedJSONBody, timeout_seconds=body_timeout_seconds)
     app.state.request_models = (ExportV2, AnalysisRequest, ExperimentNameUpdate)
     bearer = HTTPBearer(auto_error=False)
     integration_limits = None if auth_service is None else auth_service.integration_limits

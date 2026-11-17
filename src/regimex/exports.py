@@ -24,6 +24,7 @@ from regimex.contracts import (
     Producer,
     StrictModel,
 )
+from regimex.observation_availability import known_no_executions
 
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Explanation = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"\S")]
@@ -229,8 +230,7 @@ class ExportPayloadV2(StrictModel):
                 )
             # Unknown observations may hide executions. Either known zero total
             # proves inactivity even when the other total and price are lost.
-            known_inactive = row.trade_count == 0 or row.trade_volume == 0
-            if row.last_price is not None or not known_inactive:
+            if row.last_price is not None or not known_no_executions(row):
                 previous_price[identifier] = row.last_price
         return self
 

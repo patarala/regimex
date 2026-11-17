@@ -23,10 +23,19 @@ classified interval, with reduced coverage. Carried prices alone do not establis
 active sideways trading. Availability is derived from observations independently
 of model confidence and is shared by predictions and references.
 
+The current `direction-32/2.1` profile recognizes inactivity from a known zero
+trade count, zero trade volume, or an explicit `carried`/`no_execution` price state.
+A sustained known pause remains `no_trades` even when its prices are absent.
+Unknown totals remain null: knowing that no executions occurred does not fill a
+missing numeric aggregate. Without any such evidence, missing totals alone do
+not establish inactivity.
+
 Interval statistics include first/last observed price steps, relative price change,
 trade count and volume, active-trade fraction, longest observed pause, coverage and
 population standard deviation of adjacent log returns. Only known counts/volumes
 are summed; return deviation is absent with fewer than two known adjacent returns.
+Active-trade fraction and longest observed pause use known trade counts only;
+they do not infer counts from volumes or price states.
 Variability and activity remain numeric descriptors. No jump events are emitted.
 
 ## Synthetic market
@@ -141,15 +150,25 @@ estimator pickles and uploaded Python implementations are not accepted.
 | Observation export | `2.1` |
 | Generator | `4.0` |
 | Direction annotations / automatic policy | `3.0` / `retrospective-directions/3.0` |
-| Analysis profile / decoder | `direction-32/2.0` / `duration-viterbi/1.0` |
+| Analysis profile / decoder | `direction-32/2.1` / `duration-viterbi/1.0` |
 | Raw snapshot, dataset, reference set, bundle envelope | `1.0` |
 | Baseline codec | `aggregate-logistic/1.0` |
 | TCN codecs | `temporal-tcn/2.0` (epoch history), `temporal-tcn/3.0` (update history) |
 | TCN features / preprocessing | `temporal-price-shape/1.0` / `temporal-standardization/1.0` |
-| Evaluation / comparison report | `2.2` / `model-comparison/2.0` |
+| Evaluation / comparison report | `2.3` / `model-comparison/2.0` |
 
 Both TCN codecs restore the same inference implementation, features and decoder.
 Epoch-trained bundles can also be loaded for explicit rollback.
+
+Published bundles and saved results retain their recorded analysis profile.
+Profile `2.0` keeps its original count-only pause detection and gives missing
+prices precedence. It is read explicitly, without upgrading its configuration,
+hashes or saved intervals. New references and training use profile `2.1`; existing
+published `2.0` models continue to produce `2.0` analyses until a distinct model
+version with the current profile is trained and explicitly published. The
+annotation fitting and probability-decoding algorithms are unchanged. Their
+identities remain `retrospective-directions/3.0` and `duration-viterbi/1.0`; the
+profile hash distinguishes the availability semantics.
 
 Artifact identity includes ordered dataset content and split assignments. Raw
 snapshots, training labels and evaluation references have separate identities.

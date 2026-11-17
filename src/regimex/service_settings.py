@@ -24,6 +24,8 @@ class ServiceSettings(StrictModel):
     work_root: Path = _DEFAULT_WORK_ROOT
     public_origin: Annotated[str, Field(min_length=1, max_length=2048)] = "https://localhost"
     allow_loopback_http: bool = False
+    http_header_timeout_seconds: Annotated[int, Field(ge=1, le=60)] = 10
+    http_body_timeout_seconds: Annotated[int, Field(ge=1, le=300)] = 30
     session_ttl_seconds: Annotated[int, Field(ge=60, le=8 * 3600)] = 1800
     max_sessions_per_token: Annotated[int, Field(ge=1, le=32)] = 8
     max_subjects_per_integration: Annotated[int, Field(ge=1, le=1_000_000)] = 100_000
@@ -142,6 +144,8 @@ class ServiceSettings(StrictModel):
             raise ValueError("REGIMEX_S3 settings require REGIMEX_OBJECT_BACKEND=s3")
         for name in (
             "max_object_bytes",
+            "http_header_timeout_seconds",
+            "http_body_timeout_seconds",
             "max_store_bytes",
             "max_owner_storage_bytes",
             "max_integration_storage_bytes",

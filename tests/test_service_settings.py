@@ -13,10 +13,14 @@ def test_environment_settings_keep_credentials_private(monkeypatch: pytest.Monke
     monkeypatch.setenv("REGIMEX_DATABASE_SCHEMA", "test_service")
     monkeypatch.setenv("REGIMEX_OBJECT_ROOT", "/tmp/regimex-test-objects")
     monkeypatch.setenv("REGIMEX_HEARTBEAT_SECONDS", "2")
+    monkeypatch.setenv("REGIMEX_HTTP_HEADER_TIMEOUT_SECONDS", "5")
+    monkeypatch.setenv("REGIMEX_HTTP_BODY_TIMEOUT_SECONDS", "20")
     settings = ServiceSettings.from_env()
     assert settings.database_schema == "test_service"
     assert settings.object_root == Path("/tmp/regimex-test-objects")
     assert settings.heartbeat_seconds == 2
+    assert settings.http_header_timeout_seconds == 5
+    assert settings.http_body_timeout_seconds == 20
     assert "private-password" not in repr(settings)
     assert "private-password" not in settings.model_dump_json()
 
@@ -74,6 +78,10 @@ def test_database_file_and_value_cannot_silently_override_each_other(
         {"public_origin": "https://example.invalid", "allow_loopback_http": True},
         {"public_origin": "https://example.invalid/private/path"},
         {"session_ttl_seconds": 59},
+        {"http_header_timeout_seconds": 0},
+        {"http_header_timeout_seconds": 61},
+        {"http_body_timeout_seconds": 0},
+        {"http_body_timeout_seconds": 301},
         {"max_sessions_per_token": 0},
         {"analysis_time_budget_seconds": 0},
         {"analysis_memory_budget_bytes": 1},

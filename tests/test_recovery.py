@@ -783,7 +783,7 @@ def scientific_backup(
                     policy=policy,
                     training_runtime=TrainingRuntime(threads=1, time_budget_seconds=90),
                     inference_runtime=InferenceRuntime(threads=1, max_batch_size=1),
-                    analysis_profile_id="direction-32/2.0",
+                    analysis_profile_id="direction-32/2.1",
                     build_id="recovery-fixture",
                     benchmark_selection_id="fixture-final-benchmark",
                 ),

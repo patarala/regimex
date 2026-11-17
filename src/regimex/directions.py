@@ -10,8 +10,10 @@ from typing import Annotated, Literal, Protocol, Self
 from pydantic import Field, JsonValue, model_validator
 
 from regimex.contracts import MAX_STEPS, Identifier, Instrument, Observation, StrictModel
+from regimex.observation_availability import known_no_executions
 
 DIRECTION_POLICY = "retrospective-directions/3.0"
+DEFAULT_ANALYSIS_PROFILE = "direction-32/2.1"
 
 
 class AnnotationGrid(Protocol):
@@ -51,7 +53,7 @@ class AnalysisConfig(StrictModel):
     their coverage.
     """
 
-    version: Literal["2.0"] = "2.0"
+    version: Literal["2.0", "2.1"] = "2.1"
     min_duration: Annotated[int, Field(ge=2, le=MAX_STEPS)] = 32
     boundary_penalty: Annotated[float, Field(gt=0)] = 8.0
     noise_floor: Annotated[float, Field(gt=0)] = 0.001
@@ -152,10 +154,20 @@ def observation_blocks(
         raise ValueError("observations must be one complete ordered instrument sequence")
     size = len(observations)
     statuses: list[Literal["observed", "no_trades", "insufficient_data"]] = ["observed"] * size
-    for predicate, unavailable_status in (
-        ([row.trade_count == 0 for row in observations], "no_trades"),
+    # Existing immutable bundles and results retain their recorded 2.0 policy.
+    # The current profile recognizes every explicit source of inactivity and
+    # gives it precedence over absent prices in bins without executions.
+    inactive = [
+        row.trade_count == 0 if config.version == "2.0" else known_no_executions(row)
+        for row in observations
+    ]
+    rules = [
+        (inactive, "no_trades"),
         ([row.last_price is None for row in observations], "insufficient_data"),
-    ):
+    ]
+    if config.version == "2.1":
+        rules.reverse()
+    for predicate, unavailable_status in rules:
         start = 0
         while start < size:
             if not predicate[start]:
