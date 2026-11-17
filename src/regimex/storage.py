@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator
@@ -17,6 +18,15 @@ def json_bytes(value: object) -> bytes:
 
 def write_json(path: Path, value: object) -> None:
     path.write_bytes(json_bytes(value))
+
+
+def write_new_file(path: Path, data: bytes) -> None:
+    """Publish the complete file only if the destination is still free."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete_on_close=False) as temporary:
+        temporary.write(data)
+        temporary.close()
+        os.link(temporary.name, path)
 
 
 def digest(path: Path, *, checkpoint: Callable[[], None] | None = None) -> str:

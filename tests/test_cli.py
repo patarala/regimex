@@ -40,7 +40,6 @@ def test_version_and_module_entry_point() -> None:
 @pytest.mark.parametrize(
     "command",
     [
-        "generate",
         "prepare",
         "train",
         "predict",
@@ -67,6 +66,44 @@ def test_cli_does_not_import_scientific_dependencies() -> None:
         ],
         check=True,
     )
+
+
+@pytest.mark.parametrize("instruments", [1, 2])
+def test_generate_writes_a_reproducible_complete_export(tmp_path: Path, instruments: int) -> None:
+    pytest.importorskip("numpy")
+    args = ["generate", "--seed", "42", "--steps", "32", "--instruments", str(instruments)]
+    first = tmp_path / "exports" / "first.json"
+    second = tmp_path / "second.json"
+    for path in (first, second):
+        result = runner.invoke(app, [*args, "--output", str(path)])
+        assert result.exit_code == 0, result.output
+        assert runner.invoke(app, ["validate", "--input", str(path)]).exit_code == 0
+    assert first.read_bytes() == second.read_bytes()
+    export = ExportV2.model_validate_json(first.read_bytes())
+    assert len(export.instruments) == instruments
+    assert export.time_grid.step_count == 32
+    assert len(export.observations) == instruments * 32
+    assert export.content_sha256 in result.output
+
+
+def test_generated_run_id_tracks_all_simulation_inputs(tmp_path: Path) -> None:
+    pytest.importorskip("numpy")
+    ids = set()
+    for seed, steps, instruments in ((0, 1, 1), (1, 1, 1), (0, 2, 1), (0, 1, 2)):
+        path = tmp_path / f"{seed}-{steps}-{instruments}.json"
+        args = ["--seed", str(seed), "--steps", str(steps), "--instruments", str(instruments)]
+        result = runner.invoke(app, ["generate", *args, "--output", str(path)])
+        assert result.exit_code == 0, result.output
+        ids.add(ExportV2.model_validate_json(path.read_bytes()).source.run_id)
+    assert len(ids) == 4
+
+
+def test_generate_leaves_existing_file_in_place(tmp_path: Path) -> None:
+    path = tmp_path / "snapshot.json"
+    path.write_bytes(b"already here")
+    result = runner.invoke(app, ["generate", "--seed", "42", "--output", str(path)])
+    assert result.exit_code == 1 and "already exists" in result.output
+    assert path.read_bytes() == b"already here"
 
 
 def test_current_export_validation_and_checksum_failure(tmp_path: Path) -> None:

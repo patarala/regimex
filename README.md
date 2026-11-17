@@ -19,7 +19,9 @@ observations or download a report to open offline.
   saved experiments and running the service from source.
 
 From a source checkout you can validate the included example without starting
-a server. The project uses Python 3.14.4 and uv 0.13.0.
+a server. To generate your own reproducible experiment, use
+[`regimex generate`](docs/usage.md#terminal-tools). The project uses Python
+3.14.4 and uv 0.13.0.
 
 ```sh
 uv run --locked regimex validate --input tests/fixtures/experiment-v2.json

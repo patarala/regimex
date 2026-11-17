@@ -49,7 +49,7 @@ Paths below are relative to `src/regimex/`.
 | Workers | `service_worker.py`, `computation_worker.py` | Claim tasks, supervise child processes and recover unfinished work |
 | Scientific code | `model_registry.py`, `backends/`, `directions.py`, `segmentation.py`, `evaluation.py` | Restore models, prepare features, decode predictions and measure quality |
 | Inputs and artifacts | `exports.py`, `data_catalog.py`, `model_bundles.py` | Validate exports, dataset membership and saved model bundles |
-| Generator | `market.py`, `market_sampling.py` | Simulate orders and executions and sample experiment settings |
+| Generator | `market.py`, `market_sampling.py`, `market_export.py` | Simulate a sampled market and build the same export format for the CLI and generated datasets |
 | Reports | `templates/`, `visualization.py`, `comparison.py` | Render results and comparisons with scripts that work offline |
 | Local installation | `local_installation/` | Install the service, coordinate updates and verify backups |
 

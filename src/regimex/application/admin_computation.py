@@ -2,7 +2,6 @@
 
 import platform
 from dataclasses import dataclass
-from decimal import Decimal
 from pathlib import Path
 from typing import cast
 from uuid import NAMESPACE_URL, uuid5
@@ -29,7 +28,7 @@ from regimex.application.training import (
 )
 from regimex.benchmark_contracts import FinalEvaluationGrant
 from regimex.benchmarks import DirectionSemantics
-from regimex.contracts import Producer, StrictModel
+from regimex.contracts import StrictModel
 from regimex.data_catalog import (
     Partition,
     ReferenceMember,
@@ -49,20 +48,9 @@ from regimex.data_catalog import (
     validate_reference_membership,
 )
 from regimex.directions import DIRECTION_POLICY, DirectionAnnotations
-from regimex.exports import (
-    ExportInstrument,
-    ExportObservation,
-    ExportPayloadV2,
-    ExportV2,
-    HistoricalQuoteCapability,
-    InstrumentUnits,
-    ModelTimeGrid,
-    SourceCapabilities,
-    SourceIdentity,
-    seal_export,
-)
-from regimex.market import simulate
-from regimex.market_sampling import GENERATOR_VERSION, sample_market
+from regimex.exports import ExportInstrument, ExportObservation, ExportV2
+from regimex.market_export import simulate_export
+from regimex.market_sampling import sample_market
 from regimex.model_bundles import ModelBundle, verify_model_bundle
 from regimex.model_contracts import LoadedPredictor, ModelBackend
 from regimex.model_registry import ArchitectureRegistry, RegistryError
@@ -86,10 +74,6 @@ def _items(value: JsonValue) -> list[JsonValue]:
     if not isinstance(value, list):
         raise ValueError("expected a computation input list")
     return value
-
-
-def _precision(number: float) -> int:
-    return max(0, -int(Decimal(str(number)).normalize().as_tuple().exponent))
 
 
 def _path(root: Path, value: JsonValue) -> Path:
@@ -176,71 +160,15 @@ def _generation(spec: GenerationSpec, root: Path, owner: str) -> dict[str, JsonV
     (root / "output").mkdir()
     for index, seed in enumerate(seeds):
         market = spec.plan.market or sample_market(seed, 1 + index % 2)
-        market_run = simulate(market, seed, spec.plan.step_count)
         external_id = str(uuid5(NAMESPACE_URL, f"regimex:{identity}:{index}"))
         snapshot_id = uuid5(NAMESPACE_URL, f"regimex-snapshot:{owner}:{external_id}")
         namespace = content_hash([owner, "regimex-exchange", external_id])
-        export = seal_export(
-            ExportPayloadV2(
-                schema_version="2.1",
-                source=SourceIdentity(
-                    source_id="regimex-exchange",
-                    source_version=GENERATOR_VERSION,
-                    configuration_id=identity,
-                    run_id=external_id,
-                    snapshot_id=external_id,
-                    state_revision="completed-1",
-                    run_status="completed",
-                    consistency="atomic_completed_snapshot",
-                ),
-                producer=Producer(name="regimex-exchange", version=GENERATOR_VERSION),
-                time_grid=ModelTimeGrid(
-                    origin=0.0,
-                    unit="simulation_step",
-                    bin_width=1.0,
-                    completed_horizon=float(spec.plan.step_count),
-                    step_count=spec.plan.step_count,
-                    interval_bounds="[start,stop)",
-                    terminal_bin="full_bins_only",
-                ),
-                capabilities=SourceCapabilities(
-                    execution_prices="complete",
-                    trade_aggregates="complete",
-                    accepted_order_aggregates="complete",
-                    historical_quotes=HistoricalQuoteCapability(
-                        mode="retained_snapshots",
-                        coverage="complete",
-                        provenance="Closing resting book after all events in each simulation step.",
-                        complete_event_history_sha256=None,
-                        reconstruction_policy=None,
-                    ),
-                    price_policy="initial_then_carry",
-                    trade_count_policy="one_per_partial_execution",
-                    order_count_policy="accepted_submissions_including_immediate_fills",
-                    rejected_order_policy="excluded",
-                ),
-                instruments=tuple(
-                    ExportInstrument(
-                        **instrument.model_dump(),
-                        units=InstrumentUnits(
-                            price_unit="quote_asset_per_base_asset",
-                            volume_unit="base_asset",
-                            price_decimal_places=_precision(market.tick_size),
-                            volume_decimal_places=_precision(market.lot_size),
-                        ),
-                    )
-                    for instrument in market_run.instruments
-                ),
-                observations=tuple(
-                    ExportObservation(
-                        **row.model_dump(),
-                        price_state="observed" if row.trade_count else "carried",
-                        bid_state="observed" if row.best_bid is not None else "empty",
-                        ask_state="observed" if row.best_ask is not None else "empty",
-                    )
-                    for row in market_run.observations
-                ),
-            )
+        export, audit = simulate_export(
+            market,
+            seed=seed,
+            steps=spec.plan.step_count,
+            configuration_id=identity,
+            run_id=external_id,
         )
         # Native asset names change content identity, not the stochastic market.
         # Keep earlier same-seed data in this group to prevent split leakage.
@@ -269,7 +197,7 @@ def _generation(spec: GenerationSpec, root: Path, owner: str) -> dict[str, JsonV
                 "snapshot_id": str(snapshot_id),
                 "seed": seed,
                 "market": market.model_dump(mode="json"),
-                "audit": market_run.audit.model_dump(mode="json"),
+                "audit": audit.model_dump(mode="json"),
             }
         )
     manifest = seal_dataset(spec.dataset_id, tuple(sources))

@@ -6,7 +6,6 @@ import json
 import os
 import ssl
 import stat
-import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -20,6 +19,7 @@ from regimex.contracts import MAX_INPUT_BYTES
 from regimex.exports import parse_export_v2
 from regimex.operations import OperationFailure, OperationState
 from regimex.report_contracts import MAX_REPORT_BYTES
+from regimex.storage import write_new_file
 
 _JSON_LIMIT = 64 * 1024
 
@@ -177,16 +177,6 @@ async def _wait_for_report(
         status = None
 
 
-def _save_report(output: Path, data: bytes) -> None:
-    if not data:
-        raise ValueError("The service returned an empty report.")
-    with tempfile.NamedTemporaryFile(dir=output.parent, delete_on_close=False) as temporary:
-        temporary.write(data)
-        temporary.close()
-        # Publish only complete files and preserve concurrent downloads to the same name.
-        os.link(temporary.name, output)
-
-
 async def analyze(
     *,
     input_path: Path | None,
@@ -231,7 +221,9 @@ async def analyze(
             progress(f"Analysis ID: {analysis_id}")
             assert analysis_id is not None
             html = await _wait_for_report(client, analysis_id, status)
-            _save_report(output, html)
+            if not html:
+                raise ValueError("The service returned an empty report.")
+            write_new_file(output, html)
     except TimeoutError, httpx2.TimeoutException:
         raise RuntimeError("Timed out waiting for the service.") from None
     except httpx2.RequestError as error:

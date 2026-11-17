@@ -70,11 +70,21 @@ out whether it accepted the request.
 
 ## Terminal tools
 
-With the local service running, submit an export and save its HTML report in one command:
+To try a market of your own, generate one completed experiment locally. The seed,
+step count and instrument count determine its contents. With the same generator
+version and locked dependencies, repeating the command gives the same snapshot
+ID and checksum. Choose a new output filename for each invocation.
+
+```sh
+uv run --locked --extra ml regimex generate --seed 42 --steps 512 --instruments 2 --output var/run.json
+```
+
+Generation runs offline and supports 1–4,096 steps and one or two instruments.
+With Regimex running, submit the generated file and save its HTML report:
 
 ```sh
 uv run --locked regimex analyze \
-  --input tests/fixtures/experiment-v2.json --output var/analysis.html
+  --input var/run.json --output var/analysis.html
 ```
 
 The default service is `http://127.0.0.1:8000` and the token file is

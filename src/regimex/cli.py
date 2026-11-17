@@ -11,9 +11,9 @@ from uuid import UUID
 import typer
 
 from regimex import __version__
-from regimex.contracts import StrictModel
+from regimex.contracts import MAX_STEPS, StrictModel
 from regimex.service_cli import app as service_app
-from regimex.storage import output_directory
+from regimex.storage import json_bytes, output_directory, write_new_file
 
 app = typer.Typer(
     help="Inspect current market snapshots and administer the analysis service.",
@@ -105,6 +105,34 @@ def validate_command(input_path: InputPath) -> None:
     _execute(action)
 
 
+@app.command("generate")
+def generate_command(
+    output: OutputPath,
+    seed: Annotated[int, typer.Option(min=0, max=2**32 - 1, help="Market random seed.")],
+    steps: Annotated[int, typer.Option(min=1, max=MAX_STEPS)] = 512,
+    instruments: Annotated[int, typer.Option(min=1, max=2)] = 1,
+) -> None:
+    """Simulate one completed market experiment and save its observation export."""
+
+    def action() -> None:
+        if output.exists() or output.is_symlink():
+            raise ValueError(f"Output already exists: {output}. Choose a new filename.")
+        try:
+            from regimex.market_export import sample_snapshot
+        except ModuleNotFoundError as exc:
+            if exc.name != "numpy":
+                raise
+            raise RuntimeError(
+                "Run generation with uv run --locked --extra ml regimex generate."
+            ) from None
+
+        export = sample_snapshot(seed=seed, steps=steps, instruments=instruments)
+        write_new_file(output, json_bytes(export.model_dump(mode="json")))
+        typer.echo(f"Snapshot: {export.source.snapshot_id} ({export.content_sha256})")
+
+    _execute(action)
+
+
 @app.command("analyze")
 def analyze_command(
     output: OutputPath,
@@ -172,7 +200,7 @@ def report_command(
 
     Repeat --input and --result for multiple experiments; results match by input hash.
     Blind review accepts one experiment and no results.
-    Generation, fitting, evaluation and publication use the administrative API.
+    Dataset generation, fitting, evaluation and publication use the administrative API.
     """
 
     def action() -> None:
