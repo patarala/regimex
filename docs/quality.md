@@ -35,8 +35,8 @@ Both candidates used the same 96 training experiments and 24 validation
 experiments. Each of the three lengths contributed 32 training, eight validation
 and 24 held-out experiments. Each experiment and its instruments stayed in one
 partition. The exchange generator recorded prices and trade aggregates at every
-step. This population exercises ordinary trading and pauses. Performance on
-incomplete exports remains unmeasured.
+step. The [incomplete-export evaluation](incomplete-exports.md) compares the
+same frozen models on paired full and masked exports from a separate population.
 
 Validation selected regularization 1 from 0.1, 1 and 10 for the baseline. The
 32-channel TCN trained for 240 optimizer updates with seed 29. Of checkpoints
