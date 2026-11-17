@@ -48,8 +48,10 @@ uses a socket inside that root (`--postgres-port` defaults to 55439).
 
 Take a coordinated backup, then run the install command with the new archive
 and digest. Keep the original root, name and ports. The installer remembers
-the PostgreSQL binary path. Repeating a completed installation checks its
-health. An update preserves credentials, saved experiments and the active model.
+the PostgreSQL binary path. Repeating a completed installation checks the
+running services. If a check fails, inspect `var/service.sh status` and rerun
+the same command after the services recover. An update preserves credentials,
+saved experiments and the active model.
 
 The updater stages dependencies while the service is available, then stops
 intake and checks for unfinished jobs. If this first check finds work, the

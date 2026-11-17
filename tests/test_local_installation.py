@@ -291,22 +291,59 @@ def test_migration_failure_keeps_services_stopped_and_preserves_existing_data(
     assert (value.root / "objects/retained").read_bytes() == b"immutable-observation"
 
 
-def test_same_ready_release_only_verifies_without_mutating_live_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("phase", ["ready", "verifying"])
+def test_retry_health_check_of_active_release_keeps_it_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str
 ) -> None:
+    from io import BytesIO
+    from urllib.request import Request
+
     value = installer(tmp_path, monkeypatch)
     managed(value)
     monkeypatch.setattr(value, "validate_database_configuration", lambda: None)
     value.state["active_release"] = str(value.source.parent)
+    value.state["phase"] = phase
+    value.state["archive_sha256"] = value.release.sha256
     install.write_private(value.state_path, json.dumps(value.state))
+    original = value.state_path.read_bytes()
     monkeypatch.setattr(systemd, "available", lambda: None)
     monkeypatch.setattr(systemd, "check_existing", lambda *args, **kwargs: None)
-    verified = []
-    monkeypatch.setattr(value, "verify", lambda: verified.append(True))
     monkeypatch.setattr(value, "stage", lambda: pytest.fail("must not sync the active venv"))
     monkeypatch.setattr(value, "control", lambda *args: pytest.fail("must not restart services"))
+    maintenance_active = False
+
+    def command(arguments: list[str], **kwargs: object) -> str:
+        if arguments[-2:] == ["doctor", "--json"]:
+            return '{"healthy":true}'
+        assert arguments[:4] == ["systemctl", "--user", "is-active", "--quiet"]
+        # Match systemctl's any-active semantics with only the maintenance worker stopped.
+        if not maintenance_active and arguments[4:] == ["regimex-test-maintenance.service"]:
+            raise RuntimeError("inactive")
+        return ""
+
+    class Response(BytesIO):
+        status = 200
+
+    class LocalAPI:
+        def open(self, request: str | Request, timeout: int) -> Response:
+            if isinstance(request, Request):
+                return Response(b'{"state":"available"}')
+            return Response(b'{"status":"ready","deployment_configured":true}')
+
+    monkeypatch.setattr(value, "run", command)
+    monkeypatch.setattr(install, "build_opener", lambda *args: LocalAPI())
+    with monkeypatch.context() as clock:
+        ticks = iter((0.0, 61.0))
+        clock.setattr(time, "monotonic", lambda: next(ticks))
+        with pytest.raises(RuntimeError, match="health/doctor checks failed"):
+            value.install()
+    assert value.state_path.read_bytes() == original
+
+    maintenance_active = True
     value.install()
-    assert verified == [True]
+    assert json.loads(value.state_path.read_bytes())["phase"] == "ready"
+    if phase == "ready":
+        assert value.state_path.read_bytes() == original
 
 
 def test_dependency_staging_failure_keeps_old_services_running(
@@ -510,8 +547,8 @@ def test_verification_requires_own_units_and_authenticated_http(
 
     def command(arguments: list[str], **kwargs: object) -> str:
         assert arguments[:4] == ["systemctl", "--user", "is-active", "--quiet"]
-        assert "regimex-test-api.service" in arguments
-        called.append("units")
+        assert len(arguments) == 5
+        called.append(arguments[-1])
         return ""
 
     monkeypatch.setattr(value, "run", command)
@@ -520,7 +557,13 @@ def test_verification_requires_own_units_and_authenticated_http(
     monkeypatch.setattr(time, "monotonic", lambda: next(clock))
     with pytest.raises(RuntimeError, match="health/doctor checks failed"):
         value.verify()
-    assert called == ["units", "authenticated"]
+    assert called == [
+        *(
+            systemd.unit_name(value.options.name, part)
+            for part in ("postgres", "api", *systemd.WORKERS)
+        ),
+        "authenticated",
+    ]
 
 
 def test_bootstrap_publishes_a_registered_model_after_interrupted_activation(

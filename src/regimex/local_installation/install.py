@@ -390,22 +390,15 @@ class Installer:
             )
 
     def verify(self) -> None:
-        self.state_change("verifying")
         opener = build_opener(ProxyHandler({}))
         deadline = time.monotonic() + 60
         credential = read_private(self.root / "credentials/user.token").strip()
         while True:
             try:
-                self.run(
-                    systemd.command(
-                        "is-active",
-                        "--quiet",
-                        *(
-                            systemd.unit_name(self.options.name, component)
-                            for component in ("postgres", "api", *systemd.WORKERS)
-                        ),
-                    )
-                )
+                # A single is-active call with multiple units succeeds if any one is active.
+                for component in ("postgres", "api", *systemd.WORKERS):
+                    unit = systemd.unit_name(self.options.name, component)
+                    self.run(systemd.command("is-active", "--quiet", unit))
                 for endpoint in ("ready", "models"):
                     with opener.open(
                         f"http://127.0.0.1:{self.options.port}/health/{endpoint}", timeout=3
@@ -441,7 +434,7 @@ class Installer:
                 )
                 if report.get("healthy") is not True:
                     raise ValueError("Service diagnostics did not pass.")
-                break
+                return
             except (OSError, ValueError, RuntimeError) as error:
                 if isinstance(error, HTTPError):
                     error.close()
@@ -450,8 +443,6 @@ class Installer:
                         "Service health/doctor checks failed; inspect the installation status."
                     ) from None
                 time.sleep(1)
-        self.state["active_release"] = str(self.source.parent)
-        self.state_change("ready")
 
     def install(self) -> None:
         systemd.available()
@@ -520,11 +511,13 @@ class Installer:
                         raise ValueError(
                             "The selected HTTP port is occupied; choose another --port."
                         ) from None
-            if self.state.get("phase") == "ready" and self.state.get("active_release") == str(
-                self.source.parent
-            ):
-                # Never synchronize dependencies into a currently running interpreter.
+            if self.state.get("phase") in {"ready", "verifying"} and self.state.get(
+                "active_release"
+            ) == str(self.source.parent):
                 self.verify()
+                # A previous health check may have left the active release marked as verifying.
+                if self.state["phase"] == "verifying":
+                    self.state_change("ready")
                 return
             self.state.update(
                 {
@@ -573,7 +566,10 @@ class Installer:
                 self.run(systemd.command("daemon-reload"))
                 self.run(systemd.command("enable", systemd.unit_name(self.options.name, "target")))
                 self.control("start", "migrate", *systemd.WORKERS, "api", "target")
+                self.state_change("verifying")
                 self.verify()
+                self.state["active_release"] = str(self.source.parent)
+                self.state_change("ready")
             except BaseException:
                 if stopped or self.state.get("phase") == "services_stopped":
                     self.control("stop", "api", *systemd.WORKERS, "migrate")
