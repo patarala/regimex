@@ -366,3 +366,50 @@ def test_paired_bootstrap_identity_sign_swap_and_group_order() -> None:
         evaluation.paired_bootstrap(first, {"other": counts(2, 1)}, repetitions=20)
     with pytest.raises(ValueError, match="populations"):
         evaluation.paired_bootstrap(first, {**second, "a": counts(3, 1)}, repetitions=20)
+
+
+def test_sideways_interval_outcomes_follow_the_evaluation_matcher() -> None:
+    from regimex.interval_errors import Outcome, sideways_intervals
+
+    observations = rows(24)
+    up, side, down = Direction.GROWTH, Direction.SIDEWAYS, Direction.DECLINE
+    reference = intervals(observations, [(0, 8, up), (8, 20, side), (20, 24, down)])
+    cases: list[tuple[list[tuple[int, int, Direction | None]], Outcome]] = [
+        (
+            [(0, 8, up), (8, 14, side), (14, 18, up), (18, 20, side), (20, 24, down)],
+            Outcome.MATCHED,
+        ),
+        ([(0, 8, up), (8, 12, side), (12, 16, up), (16, 20, side), (20, 24, down)], Outcome.SPLIT),
+        ([(0, 18, up), (18, 22, side), (22, 24, down)], Outcome.LOW_OVERLAP),
+        ([(0, 20, up), (20, 24, down)], Outcome.ABSORBED),
+        ([(0, 8, up), (8, 14, down), (14, 20, up), (20, 24, down)], Outcome.WRONG_DIRECTION),
+        ([(0, 8, side), (8, 20, None), (20, 24, down)], Outcome.UNAVAILABLE),
+    ]
+    for bounds, outcome in cases:
+        actual = intervals(observations, bounds)
+        (item,) = sideways_intervals(reference, actual)
+        assert item.outcome == outcome
+        assert item.reference == reference[1]
+        assert all(p.stop > 8 and p.start < 20 for p in item.overlapping)
+        assert (
+            item.best_sideways_iou == 0.5
+            if outcome == Outcome.MATCHED
+            else item.best_sideways_iou < 0.5
+        )
+
+
+def test_spanning_prediction_can_merge_two_sideways_references() -> None:
+    from regimex.interval_errors import Outcome, sideways_intervals
+
+    observations = rows(12)
+    up, side, down = Direction.GROWTH, Direction.SIDEWAYS, Direction.DECLINE
+    reference = intervals(
+        observations, [(0, 3, up), (3, 6, side), (6, 8, down), (8, 11, side), (11, 12, down)]
+    )
+    actual = intervals(observations, [(0, 3, up), (3, 11, side), (11, 12, down)])
+    records = sideways_intervals(reference, actual)
+    assert [(record.outcome, record.best_sideways_iou) for record in records] == [
+        (Outcome.MERGED, 3 / 8)
+    ] * 2
+    with pytest.raises(ValueError, match="cover the full sequence"):
+        sideways_intervals(reference, actual[:-1])

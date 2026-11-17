@@ -131,19 +131,24 @@ def scores(labels: IntArray, predicted: IntArray) -> dict[str, JsonValue]:
     return result
 
 
-def _matched_intervals(
+def interval_iou(expected: DirectionInterval, actual: DirectionInterval) -> float:
+    overlap = max(0, min(expected.stop, actual.stop) - max(expected.start, actual.start))
+    union = expected.stop - expected.start + actual.stop - actual.start - overlap
+    return overlap / union
+
+
+def matched_interval_indices(
     reference: list[DirectionInterval], predicted: list[DirectionInterval]
-) -> int:
-    """Count the largest set of one-to-one matches that meet the overlap threshold."""
-    edges: list[list[int]] = []
-    for expected in reference:
-        candidates = []
-        for index, actual in enumerate(predicted):
-            overlap = max(0, min(expected.stop, actual.stop) - max(expected.start, actual.start))
-            union = expected.stop - expected.start + actual.stop - actual.start - overlap
-            if overlap / union >= IOU_THRESHOLD:
-                candidates.append(index)
-        edges.append(candidates)
+) -> dict[int, int]:
+    """Map reference indexes to predictions within a single direction and instrument."""
+    edges = [
+        [
+            index
+            for index, actual in enumerate(predicted)
+            if interval_iou(expected, actual) >= IOU_THRESHOLD
+        ]
+        for expected in reference
+    ]
     assigned: dict[int, int] = {}
 
     def augment(reference_index: int, visited: set[int]) -> bool:
@@ -156,7 +161,9 @@ def _matched_intervals(
                 return True
         return False
 
-    return sum(augment(index, set()) for index in range(len(reference)))
+    for index in range(len(reference)):
+        augment(index, set())
+    return {expected: actual for actual, expected in assigned.items()}
 
 
 def _segment_counts(
@@ -166,7 +173,7 @@ def _segment_counts(
     for index, name in enumerate(DIRECTION_NAMES):
         expected = [item for item in reference if item.direction == name]
         actual = [item for item in predicted if item.direction == name]
-        matched = _matched_intervals(expected, actual)
+        matched = len(matched_interval_indices(expected, actual))
         result[index] = matched, len(actual) - matched, len(expected) - matched
     return result
 
@@ -320,7 +327,7 @@ def _typed_summary(counts: IntArray, lags: list[int]) -> dict[str, JsonValue]:
     }
 
 
-def _validate_intervals(
+def validate_interval_grid(
     intervals: tuple[DirectionInterval, ...], instrument_id: str, length: int
 ) -> None:
     previous = 0
@@ -524,8 +531,8 @@ def report(
         start, stop = int(sequences.offsets[index]), int(sequences.offsets[index + 1])
         if stop - start != info.step_count:
             raise ValueError("evaluation sequence lengths disagree with metadata")
-        _validate_intervals(reference, info.instrument_id, info.step_count)
-        _validate_intervals(predicted, info.instrument_id, info.step_count)
+        validate_interval_grid(reference, info.instrument_id, info.step_count)
+        validate_interval_grid(predicted, info.instrument_id, info.step_count)
         labels = dense_labels(reference, info.step_count)
         if not np.array_equal(labels, sequences.labels[start:stop]):
             raise ValueError("evaluation references disagree with dense targets")

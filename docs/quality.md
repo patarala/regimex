@@ -28,6 +28,8 @@ bootstrap interval 0.1752 to 0.3664). Resampling kept all instruments in each
 experiment together, using 1,000 draws and seed 1729. This interval describes
 uncertainty across experiments for these two fitted candidates. On 1,024-step
 runs the TCN's point F1 was 0.9127 while interval F1 fell to 0.5738.
+The [sideways interval breakdown](interval-errors.md) uses validation examples
+to show which periods the TCN merged, split or classified as a trend.
 
 Both candidates used the same 96 training experiments and 24 validation
 experiments. Each of the three lengths contributed 32 training, eight validation
