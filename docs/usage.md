@@ -1,26 +1,107 @@
-# Running and using Regimex
+# Using Regimex
 
-For a quick look, open `release/examples/tcn-1-report.html` or
-`release/examples/overview/index.html`. These reports work offline.
-The optional release assets contain saved models and examples; they are separate
-from the source checkout. Place them under `release/` to use the commands below.
+With a running service, all you need is your access token and the JSON export
+of a completed experiment. The default local address is `http://127.0.0.1:8000/`.
+To start a service, use the [Linux installer](installation.md), [Docker
+Compose](deployment.md) or the [manual setup](#start-locally) below.
+
+If you have the reference TCN asset pack, open its `examples/index.html` in
+your browser to see the saved reports.
+
+## Analyze an experiment
+
+1. Paste your token into **Access token** and select **Sign in**. With the
+   default local installation, use the contents of `var/credentials/user.token`.
+2. Under **New analysis**, select **Choose JSON file** or drop an export there.
+   Try `examples/1-instrument/snapshot.json` from the reference TCN pack.
+3. Check the run and instruments, select a published model, then choose
+   **Analyze**. The analysis keeps that model version.
+4. When the job finishes, read the preview or select **Download HTML** for
+   an offline copy. **Download JSON** saves the predictions and statistics.
+
+You can sign out and return to **Experiments** later. A session lasts 30 minutes
+by default. Select an experiment to open its latest matching analysis, or
+expand the analysis count to pick a particular run. Search by name, instrument,
+run, model or analysis ID. **Rename** changes the display name in your workspace.
+
+## Read a report
+
+In the downloaded HTML, select an instrument to see its prices, class
+probabilities and predicted intervals on one time axis. Drag to zoom or use
+**Reset zoom** to return to the full run. In a multi-experiment CLI report,
+select an experiment, then an instrument. Select an interval in the table to
+zoom in on it.
+
+A direction applies from the start step up to, but excluding, the stop step.
+`no_trades` marks a trading pause and `insufficient_data` marks a period with
+too little information to assign a direction. Return standard deviation
+measures the spread of adjacent log price changes within an interval. The
+missing-data plot shows fields with gaps. For quotes, an empty book side means
+there was no resting order on that side. See [interval definitions](models.md).
+
+## Run again and compare
+
+Open a finished analysis, choose a model under **Analyze this experiment
+again**, and select **Run again**. This creates another analysis of the saved
+snapshot. To compare the two, expand the experiment's analysis count, select
+two successful runs and choose **Compare selected**. You can also open one
+result and choose a second under **Compare with another analysis**.
+
+The price chart shows both sets of intervals on the same grid. The table
+reports where the models disagree about direction or data availability.
+**Download comparison** saves a self-contained HTML file. Both results must
+belong to the same saved snapshot. To compare the supplied baseline and TCN,
+both versions must have been published or activated.
+
+## Delete saved work
+
+Use **Delete analysis** under **Details** to remove one result, or **Delete
+experiment** in history to remove the export and its analyses. The preview
+lists the affected resources and any jobs or datasets that block deletion.
+Download anything you want to keep before confirming **Delete**.
+
+Files awaiting cleanup still count toward your quota. If removal was
+interrupted, reopen the receipt under **Pending deletions** and select **Retry
+cleanup**. If the server response was lost, select **Check deletion** to find
+out whether it accepted the request.
+
+## Terminal tools
+
+From a source checkout, these commands validate an export and write the JSON schemas.
+
+```sh
+uv run --locked regimex validate --input tests/fixtures/experiment-v2.json
+uv run --locked regimex schema --output var/schemas
+```
+
+To build an offline report, supply one saved result per export, all from
+the same model and inference policy. This example uses the reference TCN
+pack unpacked under `release/`.
+
+```sh
+uv run --locked --extra viz regimex report \
+  --input release/examples/1-instrument/snapshot.json --result release/examples/1-instrument/tcn-result.json \
+  --input release/examples/2-instrument/snapshot.json --result release/examples/2-instrument/tcn-result.json \
+  --output var/report
+```
+
+Choose a new or empty output directory. Open `var/report/index.html` and keep
+the directory together when sharing it. For larger sets, `--samples` controls
+how many experiments appear in the report (default 12, maximum 100).
 
 ## Start locally
 
-Use Linux, Python 3.14.4, uv 0.13.0 and PostgreSQL 16. PostgreSQL must already be
-running with a database and role that you can use. For a local installation, an
-administrator can create them with:
+To run from source, use Linux with Python 3.14.4, uv 0.13.0 and PostgreSQL 16.
+A PostgreSQL administrator can create the role and database on a running server.
 
 ```sh
 sudo -u postgres createuser --pwprompt regimex
 sudo -u postgres createdb --owner=regimex regimex
 ```
 
-Put the database password in your private PostgreSQL password file (`~/.pgpass`,
-mode `0600`), using the line format `host:port:database:user:password`. Commands
-below assume `127.0.0.1:5432`, database `regimex` and role `regimex`.
-
-From the project root:
+Put the password in a private `~/.pgpass` file with mode `0600`. For the
+connection below the entry is `127.0.0.1:5432:regimex:regimex:YOUR_PASSWORD`.
+Prepare the local configuration and issue the tokens from the checkout root.
 
 ```sh
 uv sync --locked --all-extras
@@ -39,11 +120,15 @@ uv run --locked --all-extras regimex service token-create --owner admin --role a
 uv run --locked --all-extras regimex service token-create --owner researcher --role user --output var/credentials/user.token
 ```
 
-HTTP is permitted here only because the address is literal loopback and the
-setting explicitly enables it. Use [HTTPS deployment](deployment.md) for a server.
+If you have the release assets in `release/`, verify their checksums and import
+the supplied TCN. For a source-only installation, the [administrative
+API](api.md#administration) can train and publish a model.
 
-Import the supplied TCN bundle. Compare the files with the release checksums
-before importing them; then use the manifest digest:
+```sh
+(cd release && sha256sum -c SHA256SUMS)
+```
+
+Once all files pass verification, register and activate the model.
 
 ```sh
 MODEL_MANIFEST_SHA256=$(sha256sum release/models/tcn/manifest.json | cut -d ' ' -f 1)
@@ -52,11 +137,8 @@ uv run --locked --all-extras regimex service register-model \
   --token-file var/credentials/admin.token --activate
 ```
 
-Without the release models, create and train a candidate through the
-[administrative API](api.md#administration). An analysis never trains its own model.
-
-Open four terminals in the project root. Run `. var/environment.sh` in each,
-then one command per terminal:
+Open four terminals in the checkout root and run `. var/environment.sh` in
+each. Start one process per terminal.
 
 ```sh
 uv run --locked --all-extras regimex service serve
@@ -65,164 +147,18 @@ uv run --locked --all-extras regimex service worker --queue admin
 uv run --locked --all-extras regimex service worker --queue maintenance
 ```
 
-The API serves `http://127.0.0.1:8000/`; API documentation is at `/docs`.
-Stop processes with Ctrl+C. Keep `var/objects` and PostgreSQL data: they contain
-saved resources. `var/work` is temporary computation and cache space.
-
-To diagnose the installation, run in another terminal with the same environment:
-
-```sh
-. var/environment.sh
-uv run --locked --all-extras regimex service doctor
-```
-
-Each check prints **PASS**, **FAIL** or **SKIP**, with a reason and next action.
-The command checks the database, migrations, storage, all three worker queues
-and actual restoration of the active model in a separate local process.
-Add `--json` for structured output. A failed or skipped check produces exit code 1.
-Run it in the worker environment to test those installed dependencies; it does
-not execute probes inside remote workers or train a model.
-
-## Analyze an experiment
-
-1. Open `http://127.0.0.1:8000/`. Paste the content of
-   `var/credentials/user.token` into the sign-in field and select **Sign in**.
-   The token is cleared after it is exchanged for a session.
-2. Under **New analysis**, select **Choose JSON file**, or drop the file there.
-   For a demonstration, use `release/examples/input-1.json` or `input-2.json`.
-3. Check the run and instrument summary, choose a published model, then select
-   **Analyze**. The default choice shows the active version; the request keeps
-   that version even if the administrator changes the active model later.
-   **More models** browses additional versions; **Refresh models** updates the list.
-4. Wait for the result. **Cancel** stops queued work or prevents a running
-   attempt from publishing. **Retry request** reuses an interrupted request's
-   identity; it does not intentionally create another analysis.
-5. Read the preview, or use **Download HTML** and **Download JSON**. Technical
-   input/model identity is available under **Details**.
-6. Reopen saved work from **Experiments**. Each entry represents one saved experiment;
-   selecting it opens the latest matching analysis. **Show analyses** expands
-   that experiment's runs, including their models, dates and statuses.
-   **Rename** gives the experiment a name; save an empty name to restore its default.
-   Names support Unicode and remain separate from the original export and results.
-7. Search by name, instrument, run, model or analysis ID, or choose a status.
-   Filters apply to all saved runs and the expanded list. **Previous** and **Next**
-   browse pages of experiments; **Newer** and **Earlier** browse runs within one
-   experiment. **Refresh** reloads the list and **Clear** removes filters.
-   **Sign out** ends the session.
-
-The default session expires after 30 minutes from sign-in. Refreshing the page
-does not extend it. Results survive sign-out and service restarts.
-
-The upload panel shows your storage usage and remaining quota. **Refresh storage**
-reloads it; uploads and completed analyses also refresh the figures. Reserved
-space covers uploads in progress or awaiting cleanup after a failure. If the
-limit is reached, delete unneeded experiments or contact the administrator;
-retrying an unchanged upload does not create another copy. Saved analyses remain
-readable.
-
-## Delete saved work
-
-Use **Delete experiment** in its history entry to remove the saved export and its
-analyses. To keep the export and other runs, open a finished analysis, expand
-**Details**, and choose **Delete analysis**. Experiments without analyses remain
-in history so their exports can still be renamed or deleted.
-
-The preview shows the affected counts, file size and any dependencies that block
-deletion. Active jobs and experiments used by datasets or evaluation resources
-must be resolved first. Review the preview and select **Delete** to confirm;
-deletion cannot be undone. Download any files you want to keep beforehand.
-
-Storage is released only after the files have been removed. If cleanup fails,
-the removed resources stay unavailable and their remaining files still count
-toward the quota. Use **Retry cleanup** in the dialog, or reopen the receipt under
-**Pending deletions** below the storage summary. **Refresh storage** also refreshes
-that list. If a request's outcome is uncertain, use **Check deletion** to retrieve
-its recorded status before retrying.
-
-## Run again and compare
-
-Open a completed, failed or cancelled analysis from **Experiments**. Under
-**Analyze this experiment again**, choose a published model and select **Run again**.
-This creates a new analysis from the same saved snapshot; no file upload is needed
-and the previous result remains available. To compare the supplied models, an
-administrator must register both bundles and publish or activate each at least once.
-
-In the expanded history entry, select two successful analyses and use
-**Compare selected**. Selection can span that experiment's run pages.
-Alternatively, open a successful analysis, expand **Compare with another analysis**
-and choose another successful result, then **Compare**.
-
-Comparison requires the same saved snapshot. Uploading an export with the same
-source/run/snapshot identity and unchanged content reuses that snapshot, including
-its name and history. Different snapshot identities remain separate experiments,
-even if their observations match. **Run again** retains the saved snapshot identity.
-
-The comparison shows one price chart and two aligned rows of intervals. The table
-separates direction disagreements from availability disagreements. Select an
-instrument, drag to zoom or enter a range; **Reset zoom** restores the full horizon.
-**Download comparison** saves a self-contained HTML file that works offline.
-Disagreements describe how the predictions differ, not which model is correct.
-
-## Read a report
-
-Select an instrument. In a report containing multiple experiments, select the
-experiment first. Direction bands show growth, decline or sideways movement;
-symbols distinguish them as well as color. `no_trades` and `insufficient_data`
-are availability states, not direction classes.
-
-Prices use the instrument's quote units. Return standard deviation describes
-the spread of adjacent log returns within an interval. Known zero activity stays
-zero; unknown values stay missing. The missing-data panel shows only fields with
-actual gaps. Empty bid/ask sides are normal when no order is resting there.
-
-Drag to zoom; the plots stay aligned. **Reset zoom** restores the whole horizon.
-Selecting an interval focuses its period. Interval bounds are `[start, stop)`:
-the stop step belongs to the following interval. The report contains predictions,
-not independently verified labels. See [measured quality](quality.md).
-
-## Terminal tools
-
-Validate an export without a running service:
-
-```sh
-uv run --locked regimex validate --input release/examples/input-1.json
-uv run --locked regimex schema --output var/schemas
-```
-
-Render a multi-experiment offline report from exports and matching saved results:
-
-```sh
-uv run --locked --extra viz regimex report \
-  --input release/examples/input-1.json --result release/examples/tcn-1-result.json \
-  --input release/examples/input-2.json --result release/examples/tcn-2-result.json \
-  --output var/report
-```
-
-Open `var/report/index.html` and keep the directory together. The output directory
-must be absent or empty. Rendering does not run inference or assign labels.
-Every result must match its export and use the same model/policy. By default,
-at most 12 experiments are displayed, chosen evenly from sorted snapshot IDs;
-`--samples` changes that limit up to 100. All inputs are validated first.
+Open `http://127.0.0.1:8000/` to sign in. The API reference is at `/docs`.
+Ctrl+C stops each process. Keep the PostgreSQL database and `var/objects` to
+retain saved work.
 
 ## If something fails
 
-| Symptom | Action |
+| Symptom | What to do |
 | --- | --- |
-| Sign-in fails | Use the user token's full content, the exact configured origin and a current token. A revoked or expired session needs a new sign-in. |
-| File is rejected | Check export schema 2.1, a completed run, at most two instruments, 4,096 steps and 16 MiB. Changing only a version field does not convert another format. |
-| No active model | An administrator must register/activate a supplied bundle or evaluate/publish a trained candidate. |
-| Analysis remains queued | Read the queue message. Busy workers need time; an unavailable worker needs administrator attention. Run `service doctor` with the worker configuration to locate the cause. |
-| Analysis fails | Read the reason and suggested action beside the status. **Details** includes the analysis ID, failure code and attempt count for the administrator. A failure does not produce a partial successful report. |
-| History is empty | Check the signed-in owner; other users' analyses are not visible. |
-
-Rejected exports show the affected fields, such as `time_grid.step_count` or
-`observations.0.last_price`. Correct the file before uploading it again.
-Queued analyses show elapsed time and the latest worker availability. A recent
-heartbeat indicates a live worker, not a tested ability to load a particular model.
-**Retry request** checks an interrupted HTTP request; it does not restart a failed
-analysis. Once an analysis has failed, automatic retries have ended. After addressing
-the cause, **Run again** creates a separate analysis using the saved input.
-
-For API automation use [API workflows](api.md). For backups and resource cleanup
-use [storage operations](storage.md); deleting files from the object root is not
-an application cleanup operation.
+| Sign-in fails | Use the full user token and the configured origin. If the session expired, sign in again. |
+| Export rejected | Check the field named in the error. A completed version 2.1 export may have up to two instruments, 4,096 steps and a file size of 16 MiB. |
+| No active model | Register and activate a bundle, or publish an evaluated candidate. |
+| Analysis stays queued | Check the worker status beside the job. For a manual installation, run `uv run --locked --all-extras regimex service doctor` with the worker environment loaded. For the local installer, use `var/service.sh doctor`. |
+| Request interrupted | **Retry request** resumes the original submission or status check. |
+| Analysis failed | Read the reason beside the status. **Details** includes the failure code and analysis ID. After resolving the cause, use **Run again** to create a new analysis. |
+| Storage full | Check the reserved space and **Pending deletions**. Remove unused experiments or ask the administrator to raise the quota. |

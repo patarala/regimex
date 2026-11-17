@@ -1,14 +1,9 @@
 # Storage and recovery
 
-PostgreSQL controls resource ownership, state and publication. Immutable local or
-S3 objects hold observations, models and reports. Uploading bytes does not publish
-a resource. Only an authorized application commit can register a checked object;
-a digest or provider version alone does not authorize deletion.
-
-Hash-bound JSON uses PostgreSQL `json`, preserving canonical numeric representations
-through reads and backups, including signed zero and exponent-form floats. Other
-metadata can use `jsonb`. A content/hash mismatch fails explicitly; it is never
-repaired by replacing the expected digest.
+PostgreSQL records who owns each resource and which files belong to it. The
+object store holds immutable observation files, model bundles and HTML reports.
+An upload becomes visible after Regimex checks its contents and registers it in
+the database. A usable backup includes both the database and those files.
 
 ## Owner and connection quotas
 
@@ -27,76 +22,58 @@ reset the budget. Failed uploads remain reserved because storage may have accept
 their bytes before the failure became visible. Offline maintenance can release a
 reservation only after proving that its unregistered object is absent.
 
-The workspace shows the current owner's usage; administrators can inspect a
+Open the workspace to see the current owner's usage. Administrators can see a
 connection's total in **Connections**. A quota refusal returns `capacity_limit`.
-Existing objects remain readable when a lowered quota is below current usage,
-but new objects cannot increase that usage. Upgrades account for existing snapshots
-and reports without deleting them.
+If a quota is lowered below current usage, existing files can still be read.
+Delete saved resources to release their bytes. For a failed upload, use the
+offline [orphan cleanup procedure](#orphan-cleanup).
 
-These are object-payload quotas, not whole-disk quotas: database rows, logs,
-temporary computation files and backup archives are outside this accounting.
-Their existing size, queue and execution limits still apply. Saved objects remain
-charged until an explicit resource deletion verifies their removal. Orphan cleanup
-is a separate operation and never deletes saved experiments or reports.
+Allow additional disk space for database rows, logs, temporary files and backup
+archives.
 
 ## Delete saved resources
 
-Owners can remove an individual terminal analysis or an experiment with its
-terminal analyses. The browser first shows a deletion preview: analysis and
-experiment counts, stored-file bytes and any blocking references. Confirming the
-preview is a permanent action. Removing one analysis keeps its input experiment
-available for another model run; removing the experiment also removes its analyses.
+Delete an analysis to remove its result and report while keeping its input for
+another run. Delete the experiment to remove its saved input and analyses.
+Only the owner can delete these resources. Simulator backends also need the
+`delete` capability for the same subject and run.
 
-Queued, running and cancelling analyses block deletion. Experiments registered in
-the model data catalog cannot be removed, even if no analysis is currently using
-them. Files referenced by another saved resource are also retained. Administrators
-have no implicit right to delete another owner's experiments. Platform connections
-need the explicit `delete` capability in addition to the same owner/source/run
-authorization used for other resource operations.
+1. Preview the deletion and review the resource counts, stored bytes and
+   blockers. Queued, running and cancelling analyses must finish first. A
+   snapshot in the model data catalog is protected.
+2. Confirm within 15 minutes. If analyses or references have changed, request a
+   new preview. An owner may have up to 100 open previews.
+3. Check the receipt. On confirmation, the resources disappear from history.
+   Their bytes remain charged until Regimex verifies removal of the exact files.
+   If cleanup was interrupted, open **Pending deletions** and select
+   **Retry cleanup**. A replacement integration key can resume cleanup on the
+   same connection if it has the `delete` capability.
 
-A preview expires after 15 minutes and binds the exact reviewed resource set.
-New analyses or changed references require another preview. At most 100 unconfirmed
-previews per owner may remain open; expired unconfirmed previews are removed when
-the owner requests another preview. Confirmed receipts and identity tombstones
-remain durable. Replaying an old analysis request cannot create a replacement;
-reuploading a deleted experiment's original source identity is rejected.
-
-Confirmation removes resources from normal history in one database transaction,
-then removes their exact stored generations. Bytes stay reserved until physical
-absence is verified. If storage fails or the process stops, **Pending deletions**
-shows the remaining bytes and allows **Retry cleanup** after a later sign-in.
-The receipt survives browser closure and retries do not repeat successful work.
-Rotating an integration key does not change ownership; its replacement needs
-`delete` permission to resume cleanup. Unexpected replacement files are retained
-for operator inspection, with their charge still held.
-
-Snapshots, reports and metadata already downloaded by a user are outside the
-service and are not removed. Unregistered files from previously failed uploads
-remain subject to the separate offline orphan-cleanup procedure. Finish pending
-resource deletions before backup: an incomplete deletion cannot produce a complete
-registered-object backup, so the backup command refuses it explicitly.
+Deletion is permanent. Replaying the old request cannot recreate an analysis,
+and uploading the original identity of a deleted experiment returns a conflict.
+Previously downloaded copies stay with their recipients. Regimex retains files
+still referenced elsewhere and flags unexpected replacement files for operator
+inspection. Complete pending deletions before backing up the installation.
 
 ## Local storage
 
-The default adapter requires a dedicated Linux/POSIX directory with advisory
-locks, hard links, file/directory fsync and user extended attributes. Unsupported
-filesystem guarantees fail explicitly. Keep the persistent object root separate
-from temporary work/cache space. Identical uploads are idempotent; different bytes
-cannot overwrite an existing key. Reads verify committed bytes and generation.
-Readers share the store lock and can progress concurrently. Uploads, deletion
-and maintenance retain exclusive coordination, so a generation cannot disappear
-or be replaced while it is being checked or copied.
+Use a dedicated local directory on a filesystem with advisory locks, hard links,
+file and directory fsync, and user extended attributes. Keep temporary work files
+and the model cache elsewhere. Uploading the same bytes under the same key
+reuses the file. A different payload under that key is rejected.
 
-Model cache entries bind bundle and inference-policy hashes and are verified
-before use. Capacity is bounded across workers. A full cache fails explicitly;
-an operator can clear it with workers stopped. It is disposable and is not a backup.
+Readers can verify and copy files concurrently. Writers and maintenance take
+an exclusive lock. The local store admits up to 100,000 committed files.
+
+Workers verify cached models against their bundle and inference-policy hashes.
+If the shared cache is full, stop the workers and clear it. Model bundles can be
+loaded again from the object store.
 
 ## S3 storage
 
-The verified provider is SeaweedFS 4.48, with conditional creation, enabled object
-versioning and verified HTTPS. Its Linux amd64 archive SHA-256 is
-`4a7d108384d044d95212d1342cdda9533fa55842c1c9b41f606ca3c8a9561124`.
-Provider support does not imply equivalent behavior on another S3 service.
+Regimex tests against SeaweedFS 4.48 with versioning enabled, conditional
+creation and HTTPS. Use a dedicated bucket prefix. Verify the same semantics
+before using another provider.
 
 For native processes:
 
@@ -117,13 +94,11 @@ specifies a private CA. The endpoint cannot contain credentials, a path, query o
 fragment. HTTP is allowed only for literal loopback with
 `REGIMEX_S3_ALLOW_LOOPBACK_HTTP=true`. The production Compose profile requires HTTPS.
 
-Every writer to the same bucket/prefix must use the same dedicated coordination
-directory and identical byte and inventory limits on one host. Other hosts and out-of-band writes are
-unsupported. Operations check versioning, pin exact provider versions and hash
-actual bytes; ETags and user metadata are not integrity evidence.
-Verified reads share the coordination lock; writes and conditional deletion
-remain exclusive. A slow download does not serialize other downloads, but it
-can delay a mutation until that mutation's bounded lock wait expires.
+Run all writers for a bucket prefix on one host, with the same coordination
+directory and identical byte and inventory limits. Keep other writers out of
+that prefix. Regimex verifies each read against the exact object version and
+SHA-256 digest. Concurrent reads share the lock. A write or deletion waits up
+to five seconds for exclusive access.
 
 | Limit | Default |
 | --- | --- |
@@ -134,38 +109,28 @@ can delay a mutation until that mutation's bounded lock wait expires.
 | `REGIMEX_S3_READ_TIMEOUT_SECONDS` | 10 per blocking read |
 | `REGIMEX_S3_MAX_ATTEMPTS` | 3 |
 
-At the entry limit, reads and identical uploads still work. A new key requires
-a free entry. The local store applies a fixed limit of 100,000 committed files.
+At the entry limit an upload to a new key fails. Existing versions remain
+readable and retrying an identical upload succeeds. Staging an upload requires
+additional local disk space.
 
-`storage-check` verifies connectivity, enabled versioning and bounded inventory.
-It does not upload/delete probes or establish model readiness. Store lock waits
-are bounded to five seconds. Temporary staging requires additional disk space.
-The [deployment guide](deployment.md#s3-profile) covers container settings.
+Run `storage-check` to check connectivity and versioning and to count retained
+versions and payload bytes. See the [deployment guide](deployment.md#s3-profile)
+for container settings.
 
-Analysis and administrative attempts renew their database leases in a background
-thread throughout input loading, computation and output upload. Their wall-time
-budget covers all these stages. Lease refreshes use the configured heartbeat
-interval. Each heartbeat transaction also has a 15-second client-side deadline,
-in addition to the five-second connection timeout and database statement limits.
-An expired connection is closed without waiting for rollback. Attempt cleanup
-joins any in-flight heartbeat before another attempt can start on that worker.
-Local copies and S3 transfers check cancellation,
-lost ownership and deadlines between chunks, while waiting for coordination, and
-before publishing a materialized file. Downloads use the pinned SDK's public
-stream context and the underlying reader's `read1` method, so a steady trickle
-cannot postpone checkpoints until an entire chunk has filled. The adapter fails
-explicitly if that interface is unavailable. An in-progress network read can
-overrun the attempt deadline by the configured socket timeout; filesystem and
-other SDK calls must also return before their next checkpoint. Database publication still
-checks the attempt token and cancellation atomically, including after an ambiguous
-upload. Unregistered uploaded objects remain subject to ordinary orphan cleanup.
+Workers renew their database leases while loading inputs, running the model
+and uploading results. The attempt's time budget covers all three stages.
+Transfers check cancellation and deadlines between reads. A blocked storage
+call can delay shutdown until it returns. A cancelled attempt or one that lost
+its lease cannot publish a result. A completed upload left behind by such an
+attempt can appear in an orphan cleanup plan.
 
 ## Stop writers before maintenance
 
-Backup, restore and orphan cleanup are offline operations. Stop API, all workers,
-schedulers, uploaders and cleanup processes, including external instances. Drain
-or cancel pending work and establish exclusive access to the store namespace.
-Create a private JSON attestation with the actual current stop time:
+For backup or orphan cleanup, stop new intake and drain or cancel pending work.
+Then stop every writer, including API instances, workers, schedulers and external
+upload or cleanup processes. For restore, stop processes that use the target.
+Ensure exclusive access to the object namespace. Record the actual stop time
+in a private JSON attestation.
 
 ```json
 {
@@ -180,9 +145,8 @@ Create a private JSON attestation with the actual current stop time:
 }
 ```
 
-Replace the example timestamp. This is an operator assertion, not automatic proof
-of filesystem exclusivity. Database checks reject pending/active jobs and other
-application sessions. Their locks cannot stop independent filesystem writers.
+Replace the example timestamp. The tools check database jobs and sessions. The
+operator must also stop anything that writes to the filesystem or S3 directly.
 
 ## Backup and restore
 
@@ -194,16 +158,10 @@ restore in a disposable private cluster without stopping the live service. See
 manual commands below also support other deployments and require explicit
 stopped-writer attestations.
 
-Install PostgreSQL 16 `pg_dump` and `pg_restore`, or use the Compose `ops` image.
-Set `PGDUMP_BIN`/`PGRESTORE_BIN` or pass `--pg-dump`/`--pg-restore` if needed.
-Archives must use the current database revision, `0007_resource_deletion`, including its
-restore-readiness guard. Use an explicit schema migration before backing up a
-database at another revision; restore does not reinterpret incompatible archives.
-Restore an older archive using its matching application version before upgrading
-and migrating the restored installation. The queue registry is included in the
-coordinated database backup; restarting workers creates their fresh registrations.
-Editable experiment names and their revisions are backed up alongside snapshot
-metadata, independently of the immutable export objects.
+Use PostgreSQL 16 `pg_dump` and `pg_restore`, or the Compose `ops` image.
+Set `PGDUMP_BIN` and `PGRESTORE_BIN` or pass `--pg-dump` and `--pg-restore`
+to select the binaries. Backups require the schema revision supported by the
+running release (currently `0007_resource_deletion`).
 
 With all writers stopped:
 
@@ -212,18 +170,14 @@ uv run --locked --all-extras regimex service backup \
   --attestation-file var/stopped.json --output /private/backup-001
 ```
 
-Record the printed manifest SHA-256 separately. The backup contains the database
-dump, every registered object, checksums and table evidence. Protect it like
-credentials because it includes authentication hashes and private metadata.
-A failed backup is not usable. Database metadata alone is not a complete backup.
-Keep the matching application release with the backup. Restore with the schema
-revision that created it; after a successful restore, apply any application upgrade
-and its migrations while the service remains stopped. Create a new backup after
-upgrading the schema.
+Keep the printed manifest SHA-256 separately from the archive, along with the
+matching application release. Protect access to the archive. It includes
+authentication hashes, experiment metadata and all registered files.
 
-Restore into a **new empty database** and a **fresh empty local root or S3 prefix**.
-Keep the original schema name, configure the target environment, and stop every
-target process. Do not run migrations before restore:
+Restore with the release that created the archive. Point its configuration at
+a **new, empty database** and a **fresh local object root or S3 prefix**. Use
+the original schema name. Leave the target offline and skip migrations until
+restoration succeeds.
 
 ```sh
 uv run --locked --all-extras regimex service restore \
@@ -231,24 +185,22 @@ uv run --locked --all-extras regimex service restore \
   --manifest-sha256 EXTERNALLY_RECORDED_SHA256
 ```
 
-Restoration verifies the dump and inventory, restores database/object bytes and
-rebinds physical generations. Copying objects alone is insufficient: local inode
-identities and S3 version IDs change. Content/dataset/model identities remain
-unchanged. The installation receives a new maintenance identity, so old cleanup
-plans cannot apply to the restored target.
+Restore verifies the database dump and objects, then records their new physical
+versions. Existing dataset and model identities are preserved. The target gets
+a new maintenance identity, so cleanup plans from the original installation
+cannot be applied there.
 
-A failed restore may leave a partial offline target. Discard that target and use
-a new empty one; never serve or overwrite it. Its readiness guard rejects intake
-with `503`, and rerunning migration cannot mark it ready. After success, start
-services and verify authorized saved reports and actual model inference before
-opening intake. Rebuild disposable caches as needed.
+If restore fails, discard the partial target and start again with an empty one.
+Its readiness guard blocks intake with `503`. After success, apply any required
+upgrade and migrations, restart the services, and check a saved report and a
+model prediction before admitting users. Take a new backup after a schema upgrade.
 
 ## Orphan cleanup
 
-Cleanup retains **every registered object**, including referenced candidates,
-models, datasets, reports and evidence. It only removes unregistered generations
-and incomplete uploads older than 24 hours. It is not a policy for deleting old
-application resources to save space.
+Orphan cleanup targets unregistered generations and incomplete uploads older
+than 24 hours. Registered reports, experiments and models are retained
+regardless of age. To free space by removing a saved result, use
+[resource deletion](#delete-saved-resources).
 
 After establishing the stopped-services conditions above:
 
@@ -278,7 +230,8 @@ test account. Queue tests need schema-creation permission; recovery tests need
 `PGDUMP_BIN` and `PGRESTORE_BIN` to compatible PostgreSQL 16 clients, or provide
 them on `PATH`.
 
-With OpenSSL and the verified SeaweedFS 4.48 Linux binary available:
+The fixture requires OpenSSL and the pinned SeaweedFS 4.48 Linux amd64 binary.
+It verifies the binary before starting the provider.
 
 ```sh
 uv run --locked --all-extras --group service-test --group queue-test \

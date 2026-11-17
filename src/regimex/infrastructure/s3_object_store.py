@@ -454,10 +454,8 @@ class S3ObjectStore:
         )
         body = cast(_ResponseBody, response.get("Body"))
         try:
-            # StreamingBody's public context manager exposes urllib3's reader.
-            # read() fills the requested block and can hide a steady trickle;
-            # read1() returns after one network read so deadlines remain visible.
-            # We validate raw payload length and digest ourselves below.
+            # read1() returns after one network read. Waiting for a whole block
+            # could delay the cancellation check on a slow but active connection.
             with body as reader:
                 if not callable(getattr(reader, "read1", None)):
                     raise ObjectIntegrityError("S3 transport does not support bounded stream reads")

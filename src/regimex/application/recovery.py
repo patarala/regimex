@@ -197,8 +197,8 @@ def _read(path: Path, maximum: int) -> bytes:
 
 
 def _libpq_environment(dsn: SecretStr) -> dict[str, str]:
-    # Explicitly clear inherited libpq defaults. Passwords remain out of argv,
-    # manifests and persisted logs. The maintenance process still holds secrets.
+    # Give pg_dump and pg_restore the configured connection, even if the operator's
+    # shell has other PG settings. Passing the password in argv would expose it.
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PG")}
     names = {
         "host": "PGHOST",
@@ -242,8 +242,7 @@ def _run_tool(
     stdout: BinaryIO | None = None,
     output_limit: int,
 ) -> None:
-    # A private temporary stderr is deleted; raised errors never include libpq's
-    # raw connection diagnostics or the credential-bearing environment.
+    # libpq diagnostics may contain connection details. Keep stderr private.
     with tempfile.TemporaryFile() as stderr:
         process = subprocess.Popen(
             command,
@@ -338,8 +337,8 @@ def _table_evidence(
     added_claims: frozenset[tuple[str, str]] = frozenset(),
     pending_restore: bool = False,
 ) -> dict[str, TableEvidence]:
-    # Sort fixed-size per-row digests, rather than retaining full analysis JSON
-    # rows. Only explicitly whitelisted location/version fields are normalized.
+    # Sorting row digests makes the checksum independent of row order without
+    # keeping every analysis document in memory.
     portable = {
         key: value.model_copy(update={"version_id": "portable-content"})
         for key, value in old.items()
@@ -421,9 +420,8 @@ def _table_evidence(
                         table, _object(row["document"]), portable, old
                     )
                 elif table == "regimex_maintenance_identity":
-                    # The source value is separately pinned in the manifest. Only
-                    # this physical deployment singleton rotates during restore;
-                    # old review plans, tombstones and events remain unchanged.
+                    # Restore issues a new installation ID. The manifest records
+                    # the source ID separately when verifying the database copy.
                     row = {"singleton": row["singleton"], "physical_identity": "portable"}
                 hashes.append(hashlib.sha256(json_bytes(row)).digest())
         checksum_value = hashlib.sha256(b"".join(sorted(hashes))).hexdigest()

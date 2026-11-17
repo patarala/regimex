@@ -279,7 +279,8 @@ class AdminRepository:
         ).fetchone()
         if row is None:
             raise NotFound()
-        # The final-reference gate precedes parsing, including historical policies.
+        # Check the partition before parsing so callers cannot inspect sealed
+        # final references through validation errors.
         if row[0] == "test" and not allow_test:
             raise Forbidden("Final-reference access requires the dedicated benchmark workflow.")
         record = _read_reference(row[1])
@@ -455,8 +456,8 @@ class AdminRepository:
                         connection, principal.owner_id, previous, allow_test=True
                     )
             dataset = self._dataset(connection, principal.owner_id, record.dataset_id)
-            # Uploads are not publication. Recheck under the registry lock so
-            # concurrent history admission or reservation cannot race this commit.
+            # A benchmark may have been reserved during upload. Recheck while
+            # holding the registry lock before publishing the reference set.
             BenchmarkRepository.validate_final_reference_import(
                 connection, principal.owner_id, dataset
             )
@@ -908,7 +909,6 @@ class AdminRepository:
         self, run_id: UUID, token: UUID, evaluation: EvaluationRecord
     ) -> AdminRunRecord:
         evaluation = EvaluationRecord.model_validate_json(evaluation.model_dump_json())
-        # Per-experiment statistics use the report budget, not the small run-metadata budget.
         self._bounded(evaluation.metrics, limit=MAX_REPORT_BYTES, description="Evaluation metrics")
         with self._active_run(run_id, token, "evaluation") as (connection, run):
             assert isinstance(run.spec, EvaluationSpec)

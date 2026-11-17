@@ -198,7 +198,7 @@ def register_model(
     expected_previous: Annotated[str | None, typer.Option()] = None,
     threads: Annotated[int, typer.Option(min=1, max=256)] = 2,
 ) -> None:
-    """Verify a new-format saved bundle in a computation process and import it."""
+    """Verify and import a saved model bundle. Use --activate to serve it."""
 
     def action() -> None:
         from regimex.model_registry import InferenceRuntime

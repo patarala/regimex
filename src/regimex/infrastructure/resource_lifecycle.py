@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 def owner_payload_lock(
     database: DatabaseRepository, owner_id: str
 ) -> Iterator[psycopg.Connection[tuple[object, ...]]]:
-    # Session ownership spans short database transactions and external object
-    # I/O. Process death closes the connection and releases the lock.
+    # A session lock stays held during the object upload and releases if the
+    # writer disconnects. A transaction lock would end before the upload.
     with database.connection() as connection:
         from psycopg.errors import LockNotAvailable, QueryCanceled
 

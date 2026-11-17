@@ -1,4 +1,4 @@
-"""Explicit storage checks and offline maintenance over application use cases."""
+"""CLI for storage diagnostics, backup, restore and orphan cleanup."""
 
 import json
 import os
@@ -57,7 +57,7 @@ def install_storage_commands(
 ) -> None:
     @app.command("storage-check")
     def storage_check() -> None:
-        """Probe storage explicitly; this does not establish model or worker readiness."""
+        """Check the object store and report its retained versions and bytes."""
 
         def action() -> None:
             from regimex.infrastructure.s3_object_store import S3ObjectStore

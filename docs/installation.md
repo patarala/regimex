@@ -1,25 +1,18 @@
 # Local installation and updates
 
-The installer creates a persistent local service for Linux with a systemd user
-manager. It uses a private PostgreSQL 16 cluster, local immutable storage and a
-loopback HTTP listener. Run it as your ordinary user. Existing system PostgreSQL
-clusters and other Regimex installations are not modified.
-
-Prerequisites are uv 0.13.0, installed PostgreSQL 16 binaries, a working
-`systemctl --user`, and at least 3 GiB free for staging a new runtime. uv installs
-the exact Python version and dependencies recorded in the release. The bootstrap
-command below explicitly uses Python 3.14.4; it needs no installed Regimex package.
-The installer does not download PostgreSQL or run commands with sudo.
-
-Use a release ZIP produced by `scripts/build_release.py --assets release`, with
-both baseline and TCN model bundles. Obtain the archive and its SHA-256 digest
-from a trusted source. Checksums detect changes; they do not establish who
-published the archive. The installer executes the verified release's code.
-Uncommitted preview archives and source-only archives are rejected.
+The native installer runs Regimex on Linux under your systemd user manager.
+It creates a private PostgreSQL 16 cluster and serves the browser on loopback.
+For a public HTTPS endpoint, see [deployment](deployment.md).
 
 ## Install
 
-From a checkout or unpacked release containing `scripts/install_service.py`:
+You need uv 0.13.0, PostgreSQL 16 binaries, a working `systemctl --user` and
+at least 3 GiB free to stage the runtime. Obtain a committed release ZIP with
+both saved models and its trusted SHA-256 digest. The installer uses uv to
+provision Python 3.14.4 and the locked dependencies.
+
+Run this as your ordinary user from a checkout or unpacked release containing
+`scripts/install_service.py`. Substitute the archive path and its digest:
 
 ```sh
 uv run --no-project --python 3.14.4 scripts/install_service.py \
@@ -29,135 +22,86 @@ uv run --no-project --python 3.14.4 scripts/install_service.py \
   --postgres-bin /usr/lib/postgresql/16/bin
 ```
 
-Replace `ARCHIVE_SHA256` with the 64-character archive digest. If `pg_ctl`,
-`postgres` and `initdb` are already on PATH, `--postgres-bin` can be omitted.
-Use an installation directory on a persistent filesystem, not a temporary RAM
-filesystem. Paths currently accept letters, digits, `/`, `.`, `_` and `-`.
+Use a persistent installation path containing only ASCII letters, digits,
+`/`, `.`, `_` and `-`. You can omit `--postgres-bin` if the three server
+binaries (`pg_ctl`, `postgres`, `initdb`) are together on your PATH or in
+`/usr/lib/postgresql/16/bin`.
 
-The command verifies every archive member, stages an isolated locked environment,
-creates a nonsuperuser application database role and private access tokens,
-applies migrations, imports both supplied models and activates the TCN. It then
-starts the API and analysis, administration and maintenance workers. Readiness
-and `service doctor` must pass before the installation is marked ready.
-
-Open **http://127.0.0.1:8000/** and sign in using `var/credentials/user.token`.
-The administrator token is in `var/credentials/admin.token`. Token contents
-and database passwords are never printed by the installer.
+The installer verifies the archive, migrates the database, imports the two
+models and activates the TCN. Once the API and three workers pass verification,
+open `http://127.0.0.1:8000/` and sign in with the contents of
+`var/credentials/user.token`. Use `var/credentials/admin.token` for
+administration. See [using Regimex](usage.md) for the first analysis.
 
 ```sh
 var/service.sh status
 var/service.sh doctor
-var/service.sh stop
-var/service.sh start
 ```
 
-Services start with the systemd user manager. Starting that manager at boot or
-keeping it after logout is a host administrator's login/linger policy. The
-installer does not change that policy. The local HTTP service is not a public
-HTTPS deployment; use the separate [deployment guide](deployment.md) for that.
-
-Use `--name regimex-other --port 8001 --root var/other` for a separate installation.
-The name is the stable systemd unit prefix. PostgreSQL listens only on a private
-Unix socket under the chosen root; `--postgres-port` defaults to 55439. Keep the
-chosen name and ports when updating.
+Use `var/service.sh stop` and `var/service.sh start` to manage the installation.
+The host's systemd user login or linger policy determines whether it runs after
+logout. For a second instance choose a separate root, unit name and HTTP port,
+for example `--root var/other --name regimex-other --port 8001`. PostgreSQL
+uses a socket inside that root (`--postgres-port` defaults to 55439).
 
 ## Update or repeat an installation
 
-Run the same command with the new trusted archive and digest, keeping `--root`,
-`--name` and ports. The saved PostgreSQL binary path is reused unless explicitly
-provided. Repeating an already completed release performs health checks without
-reinstalling dependencies into its running environment.
+Take a coordinated backup, then run the install command with the new archive
+and digest. Keep the original root, name and ports. The installer remembers
+the PostgreSQL binary path. Repeating a completed installation checks its
+health. An update preserves credentials, saved experiments and the active model.
 
-A new runtime is fully staged before intake stops. The updater then stops the
-API, checks for queued/running/cancelling operations, stops the workers and
-checks again. If the first check finds work, the original API resumes and the
-update refuses to continue. Let the work finish and repeat the command. The
-installer never cancels, discards or silently drains pending work.
-
-Migrations run before the new application starts. Stored experiments, model
-versions, reports, database credentials and access tokens are preserved. Updates
-preserve the active model; they do not publish a new model merely because a
-release includes another bundle. Old staged releases remain on disk. Database
-major-version upgrades and arbitrary external database/S3 deployments are outside
-this installer's scope.
-
-Keep a coordinated database/object backup before upgrading an installation with
-valuable data; see [storage and recovery](storage.md). Old code on disk is not a
-rollback of a migrated database.
+The updater stages dependencies while the service is available, then stops
+intake and checks for unfinished jobs. If this first check finds work, the
+API resumes. Let the jobs finish and repeat the command. The updater checks
+again after stopping the workers and before migrating the database.
 
 ## Back up and check restoration
 
-Create a coordinated backup with one command from the directory containing `var/`:
+With PostgreSQL running, use a fresh backup directory. Finish any pending
+deletion cleanup first. Run the commands from the directory containing `var/`:
 
 ```sh
 var/service.sh backup --output var/backups/backup-001
 ```
 
-PostgreSQL must already be running. The helper creates the private `backups/`
-directory when needed. Each backup
-needs a new destination; existing backups are never overwritten. An external
-private directory is also supported. Backups cannot be placed inside the object
-store, work directory, database, credentials or installed runtimes.
+The helper pauses intake, checks for pending jobs and stops the managed writers.
+It backs up the database and registered objects, verifies the copies and restores
+the previous service states. If jobs are still active, let them finish and retry.
+Keep backups private. Retain your release archive, environment and credential
+files separately.
 
-The command records which services are active, pauses intake and checks for
-pending work before stopping workers. If work remains, it resumes intake and
-refuses the backup; let the work finish and retry. It never cancels jobs. Once
-all managed writers are stopped, it copies the database and registered objects,
-verifies their checksums, and restores the original service states. PostgreSQL
-stays running. Previously stopped workers and API processes remain stopped; an
-originally running API must pass readiness after resumption.
-Pending resource-deletion cleanup must finish before a backup can proceed.
-
-Successful output contains `status: backup_verified`, the backup identifier and
-`manifest_sha256`. Record that digest separately from the backup. This verifies
-the copied files; check actual restoration separately:
+Record the returned `manifest_sha256` separately. To check that the backup
+can actually be restored, use that value in:
 
 ```sh
 var/service.sh verify-backup --input var/backups/backup-001 \
   --manifest-sha256 RECORDED_MANIFEST_SHA256
 ```
 
-This command leaves the running service alone. It creates a new private
-PostgreSQL cluster with a Unix socket and no TCP listener, restores into a fresh
-database and object directory, verifies portable database/object identities and
-readiness, and loads the active model in an isolated process. No API or workers
-are started for the restored copy. Success returns `status: restore_verified`;
-the disposable cluster and copied objects are then removed. The check requires
-an active model, compatible PostgreSQL binaries and the runtime matching the
-backup's schema revision. It does not measure model quality or test prediction.
-Use the corresponding older release to verify backups from an earlier schema.
+Verification starts a disposable PostgreSQL cluster on a private Unix socket.
+It restores the database and objects, checks readiness and loads the active
+model. Allow space for the restored data. Use a runtime matching the schema
+revision in the backup. Success returns `restore_verified` and removes the
+temporary cluster and files.
 
-Verification temporarily needs space for restored objects, database data and
-model loading. Its private socket also requires a short installation path; the
-command checks this before starting PostgreSQL. Raw tokens, environment files
-and the application release are outside the database/object backup; retain the
-matching trusted release and protect credential files separately. Authentication
-hashes and private experiment metadata are included, so keep backups private.
-
-Backup, verification, updates and `service.sh start/stop/restart` share an
-exclusive installation lock. Do not launch additional writers or invoke direct
-`systemctl` commands during a backup. These commands manage only the installed
-native topology; external processes still require the explicit
-[offline procedure](storage.md#stop-writers-before-maintenance).
-
-Ordinary failures resume the original services. A killed process or failed
-restart leaves `maintenance-state.json` for explicit recovery:
+Run maintenance through `service.sh` so that updates, backups and restarts
+share the installation lock. If a backup or restore check is interrupted, run:
 
 ```sh
 var/service.sh resume-maintenance
 ```
 
-Recovery restores the recorded active service states or stops/removes the owned
-verification cluster. It never resumes a partly migrated installation. Other
-maintenance commands and updates refuse an unfinished journal. Inspect
-`logs/maintenance.log` and `service.sh status` if recovery fails; do not delete
-the journal to bypass it. Partial backup directories are retained for inspection
-and cannot be reused as a new destination.
+This reads the maintenance journal and resumes the recorded services or
+cleans up the verification cluster. If recovery fails, check `service.sh status`
+and `var/logs/maintenance.log`. Keep the journal for recovery and use a new
+destination for a subsequent backup. For externally managed writers, follow
+the [offline backup procedure](storage.md#stop-writers-before-maintenance).
 
 ## Adopt an existing native installation
 
-An installation previously started using the documented native `var/` layout
-can be adopted explicitly:
+Use `--adopt` only for a native installation with `runtime/installation.json`,
+a private `service.env`, local storage and the matching systemd units:
 
 ```sh
 uv run --no-project --python 3.14.4 scripts/install_service.py \
@@ -165,28 +109,19 @@ uv run --no-project --python 3.14.4 scripts/install_service.py \
   --root /absolute/project/var --adopt
 ```
 
-Adoption requires the recorded `runtime/installation.json`, private `service.env`
-and database DSN, local `objects/` and `work/`, and matching recorded systemd unit
-files. It checks their ownership/layout and uses the existing PostgreSQL binaries.
-Specify the existing custom name or ports when applicable. It preserves existing
-resources and credentials and rewrites the operator helper commands to use the
-new runtime. Unrelated or locally modified unit files are refused for inspection.
+Supply the installation's custom name and ports if applicable. Adoption checks
+ownership and unit contents before attaching the new runtime to the existing
+data and credentials.
 
 ## Interrupted or failed updates
 
-`local-installation.json` records the current phase. Private command output is
-in `logs/installation.log`; component logs remain available through
-`journalctl --user -u regimex-api.service` and the corresponding worker unit.
+Check the phase in `var/local-installation.json` and the private log at
+`var/logs/installation.log`. For the default API unit, use
+`journalctl --user -u regimex-api.service`.
 
-A staging failure leaves the original application running. After workers have
-stopped, a migration/startup/verification failure leaves the API and workers
-stopped with phase `recovery_required`. PostgreSQL stays available for inspection.
-There is no automatic database downgrade or restoration of old code against a
-possibly newer schema. Correct the reported problem and rerun the same trusted
-archive; completed staged environments are reused without modifying a runtime
-that may have started before an interruption. Resume an incomplete update before
-switching to a different release.
-
-If work appeared during the second quiescence check, inspect the installation and
-recover the existing delivery explicitly before retrying. Never edit committed
-result digests or delete queued tasks to make an update pass.
+A staging failure leaves the original service running. A failure during migration
+or startup leaves the API and workers stopped in `recovery_required`, with
+PostgreSQL available for inspection. Correct the reported problem and rerun
+the same archive and digest before switching releases. Recovery of a migrated
+database requires its coordinated backup. The old staged runtime alone cannot
+roll back the schema.

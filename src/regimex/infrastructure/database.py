@@ -591,8 +591,8 @@ class DatabaseRepository:
 
                 lock_integration(self, connection, principal)
                 require_integration(connection, principal, scope="analyze")
-            # Serialize every intake for this owner: different keys must not race
-            # the pending quota, and a replay must precede active resolution.
+            # One owner lock protects the shared quota across keys. Check for a
+            # replay before resolving "active" so it returns the original model.
             self._lock(connection, f"owner:{principal.owner_id}")
             row = connection.execute(
                 "SELECT operation_id,request_sha256 FROM regimex_operations "

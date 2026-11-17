@@ -1,53 +1,27 @@
 # Model quality
 
-The `tcn-0.2.0` reference model reaches **0.7129 interval macro-F1** and
-**0.8932 point macro-F1** on 384 held-out synthetic experiments. These results
-measure agreement with automatic reference policy `retrospective-directions/3.0`.
-Independent human accuracy and transfer to another market simulator have not
-been measured. The logistic baseline is also available; the measurements below
-apply to this TCN bundle.
-
-The evaluated bundle uses the frozen `direction-32/2.0` analysis profile. Its
-reported scores and saved predictions are unchanged. The current `2.1` profile
-also recognizes inactivity from zero volume and explicit price states when
-trade counts are missing; the results below are not a measurement of a model
-trained or evaluated under that new profile. See [interval semantics](models.md)
-for the versioned availability rules.
-
-## Evaluation protocol
-
-Training uses 512 experiments with 512 steps, totaling 769 instrument sequences.
-Preprocessing is fitted on training data only. Validation contains 192 experiments,
-with 64 each at lengths 256, 512 and 1,024. Whole experiments and related seed groups
-stay in one partition, including both instruments of a shared market.
-
-Each training run performs 1,200 successful optimizer updates and is scored at
-updates 300, 600, 900 and 1,200. Batches without known targets do not consume an
-update. Decoded validation interval F1 selects the checkpoint; the reference
-bundle uses seed 29 and update 900. Its history records the full completed budget.
-
-The final population was reserved before fitting, independently of prior exposed
-data. The model, inference policy and evaluation code were frozen before final
-observations or labels were opened. All 384 experiments were processed: 128 per
-length, with 64 one-instrument and 64 two-instrument experiments in each group.
-This gives 576 instrument sequences and 344,064 original-grid rows. No case was
-discarded or resampled to balance directions. Final scores did not choose a
-different model, seed or checkpoint.
-
-Intervals of the same direction match one-to-one at intersection-over-union of at
-least 0.50, maximizing the number of matches. Macro-F1 averages all three
-directions, including zero for an undefined class F1. Point macro-F1 evaluates
-individual eligible steps separately. Pooled scores combine counts rather than
-averaging length-specific scores.
+On 384 held-out synthetic experiments, the reference model `tcn-0.2.0` scored
+**0.7129 interval macro-F1** and **0.8932 point macro-F1**. Both scores measure
+agreement with automatic labels under `retrospective-directions/3.0` and the
+model's `direction-32/2.0` profile. Human agreement, performance on another
+simulator and results for the current training profile are unmeasured. The
+baseline has no score on this benchmark. [Interval definitions](models.md)
 
 ## Results
 
-| Sequence length | Interval macro-F1 | Point macro-F1 |
+| Experiment length | Interval macro-F1 | Point macro-F1 |
 | --- | ---: | ---: |
 | 256 steps | 0.8334 | 0.9130 |
 | 512 steps | 0.7124 | 0.9026 |
 | 1,024 steps | 0.6288 | 0.8808 |
-| All lengths, pooled counts | 0.7129 | 0.8932 |
+| All lengths, pooled | **0.7129** | **0.8932** |
+
+An interval matches a reference when the directions agree and their overlap
+covers at least half their union. Each interval can match once, and the evaluator
+finds the largest set of valid matches. Point F1 instead scores individual steps
+with a reference direction. For both metrics, macro-F1 gives equal weight to all
+three directions and assigns zero to an undefined class F1. The pooled scores
+use counts across all experiments.
 
 | Direction | Interval precision | Interval recall | Interval F1 |
 | --- | ---: | ---: | ---: |
@@ -55,17 +29,19 @@ averaging length-specific scores.
 | Growth | 0.8121 | 0.7883 | 0.8000 |
 | Decline | 0.7454 | 0.6389 | 0.6880 |
 
-Every step eligible for direction classification is covered. On 1,024-step
-sequences, the model produces 372 classified intervals against 412 references;
-their median durations are 285.5 and 193.5 steps respectively. This indicates
-missed structure despite strong pointwise agreement. Full coverage alone does
-not establish correct directions or boundaries.
+The model classified all 283,946 steps that had a reference direction. On the
+longest experiments it produced 372 intervals against 412 references. Its
+median interval lasted 285.5 steps, compared with 193.5 for the references.
+This helps explain why the model can agree on many individual steps while
+missing shorter intervals.
 
 ## Boundary sensitivity
 
-Typed boundary F1 requires the correct direction on both sides of an internal
-transition. Matching is one-to-one within a common available block; availability
-edges are excluded. The model predicts 414 transitions against 454 references.
+A typed boundary records both directions of a transition, such as growth to
+decline. The evaluator pairs predicted and reference transitions of the same
+type one-to-one within a continuous classified block. Intervals marked
+`no_trades` or `insufficient_data` separate blocks. The model produced 414
+transitions against 454 references.
 
 | Allowed displacement, steps | Typed boundary F1 |
 | --- | ---: |
@@ -76,27 +52,36 @@ edges are excluded. The model predicts 414 transitions against 454 references.
 | 32 | 0.4124 |
 | 64 | 0.4724 |
 
-Precise placement remains weak. These tolerances describe agreement with the
-automatic reference convention; they are not confidence intervals for the true
-boundaries. Larger tolerances can pair distinct missed and extra transitions.
-Boundary sensitivity is descriptive and does not select a preferred tolerance.
+Few boundaries fall on the exact reference step. Larger tolerances admit
+nearby transitions and can pair distinct changes. These scores describe how
+sensitive agreement is to placement under the automatic labeling rule.
 
-## Verification and limits
+## Evaluation protocol
 
-The native bundle preserves the selected weights and preprocessing without
-retraining. After serialization, all probabilities match the frozen model exactly
-on the complete 192-experiment validation and 384-experiment final populations.
-The decoder, feature representation and availability rules are shared throughout.
-Final metric reports were also recomputed from the saved probabilities.
+Training used 512 experiments of 512 steps (769 instrument sequences).
+Validation used 192 experiments, with 64 each at 256, 512 and 1,024 steps.
+Whole experiments and related seed groups stayed in one partition.
+Preprocessing was fitted on training data.
 
-Verification used Python 3.14.4, NumPy 2.5.4 and PyTorch 2.14.1 CPU, with four
-inference threads and batches of at most 16 complete instrument sequences.
-Different library versions, devices or batching can change floating-point results.
-No service-latency claim follows from this scientific evaluation: queueing,
-loading, rendering and HTTP are separate work.
+Each training seed ran for 1,200 optimizer updates. Validation scored updates
+300, 600, 900 and 1,200. The selected checkpoint was update 900 for seed 29.
+The model, inference settings and evaluation code were frozen before opening
+the reserved final data.
 
-Automatic agreement does not establish human annotation accuracy, financial
-forecasting quality or transfer to another simulator. Model status therefore
-is `validation_only`; publication is an operational decision. Further model
-selection requires a fresh reserved benchmark, since an opened final population
-cannot be reused as independent test data.
+The final population included 128 experiments per length, half with one
+instrument and half with two. All 576 instrument sequences and 344,064 grid
+rows were retained. Further model selection requires a fresh final benchmark.
+
+## Reproducing the scores
+
+The evaluation assets for `tcn-0.2.0` contain the references, per-step
+probabilities and metric reports. After unpacking the assets under `release/`
+in the checkout, recompute the scores with this command.
+
+```sh
+uv run --locked --extra ml python release/evaluation/reproduce.py score --output var/reproduced-scores
+```
+
+Choose a new output directory. Add `--predict` to run the saved model as well.
+The recorded verification reproduced its validation and final probabilities
+exactly with Python 3.14.4, NumPy 2.5.4 and PyTorch 2.14.1 on CPU.

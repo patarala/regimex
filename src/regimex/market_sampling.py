@@ -34,7 +34,7 @@ def _sample_profile(
 
 
 def sample_market(seed: int, instrument_count: int) -> MarketConfig:
-    """Sample configurations, not desired outcomes; probabilities describe coverage only."""
+    """Draw participant profiles and initial prices from a seed."""
     if instrument_count not in (1, 2):
         raise ValueError("one or two instruments are required")
     rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence([seed, 0xC0FFEE])))
@@ -58,7 +58,6 @@ def sample_market(seed: int, instrument_count: int) -> MarketConfig:
         )
         for i in range(profile_count)
     ]
-    # The tested participant has its own strategy, resources and size range.
     test_participant = _sample_profile(rng, 1, "random" if rng.random() < 0.5 else "trend")
     configured = [*profiles, test_participant]
     if family == "inactive":

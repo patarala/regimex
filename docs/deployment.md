@@ -6,10 +6,9 @@ images contain service/S3 dependencies; CPU workers add ML/report dependencies.
 The operator image adds PostgreSQL recovery clients. Images build the same wheel
 from the same locked dependencies.
 
-The configured Python, uv and PostgreSQL images are pinned by digest. The current
-PostgreSQL container uses major version 16. Full CI runs the container smoke test,
-including saved-model analysis and persistent restart. Run the same check below
-to verify a host's container setup.
+The images pin Python, uv and PostgreSQL by digest. This configuration uses
+PostgreSQL 16. To verify a host installation, run the
+[container smoke test](#verify-a-container-installation).
 
 ## Secrets and TLS
 
@@ -33,22 +32,17 @@ private. Local Compose file secrets preserve host ownership/mode; their Compose
 mapping on rootless installations. Do not place secrets in images, source, task
 payloads, URLs or command history.
 
-The API terminates TLS directly; forwarded headers are disabled. A TCP TLS
-pass-through proxy is supported. HTTP reverse-proxy termination requires a trusted
-proxy feature that is not implemented. Cross-host PostgreSQL must use a DSN with
-verified database TLS and its trusted CA. Regimex never needs simulator DB credentials.
+The API terminates TLS directly and supports a TCP pass-through proxy. It
+ignores forwarded headers. Keep TLS intact up to the API. For a remote
+PostgreSQL server, configure the DSN to verify its certificate against a trusted
+CA.
 
-Start the API through `regimex service serve`. It bounds each request's header
-intake to 10 seconds and body intake to 30 seconds, including incomplete requests
-that never reach authentication. These are absolute deadlines; sending another
-byte does not extend them. Expired requests close with HTTP 408 when a response
-has not already started. Completed uploads may take longer to process. The
-16 MiB JSON limit and connection limit remain separate bounds.
-
-An alternative ASGI host must provide its own header deadline. The application
-still enforces its JSON body deadline, but cannot inspect incomplete headers.
-The service uses Uvicorn's h11 protocol with a small deadline adapter, covered by
-real connection tests for chunking, keep-alive and pipelining.
+Start the API with `regimex service serve`. By default, clients have 10 seconds
+to finish sending headers and 30 seconds to finish sending the body. Both clocks
+measure elapsed time even while bytes are arriving. An expired request closes
+with HTTP `408` if a response has not started. Model and application processing
+after the upload use separate budgets. An alternative ASGI host must enforce
+its own header deadline because the application only sees completed headers.
 
 ## Start the service
 
@@ -69,10 +63,10 @@ Use the real public origin and a matching certificate. The default host bind is
 `127.0.0.1:8443`; configure `REGIMEX_BIND_ADDRESS` and `REGIMEX_HTTPS_PORT` with an
 appropriate firewall when exposing it. PostgreSQL is not published to the host.
 
-The one-shot migration service waits for PostgreSQL health, then API/workers wait
-for migration success. A successful migration container exiting is expected.
-Pulling PostgreSQL explicitly fetches its pinned runtime image even when the
-engine has only cached the Dockerfile build stage.
+The migration service waits for PostgreSQL to become healthy. The API and
+workers start once migration exits successfully.
+
+Check storage, then create an administrator token and a user token.
 
 ```sh
 docker compose --profile ops run --rm ops service storage-check
@@ -82,14 +76,33 @@ docker compose --profile ops run --rm ops service token-create \
   --owner researcher --role user --output /operator-output/user.token
 ```
 
-Token files are private inside the operator volume; their values are not printed.
-Retrieve them using authorized host tooling. API/worker containers do not mount
-this volume. Use the administrator token in `/docs` for the [model lifecycle](api.md#administration).
+Only the operator container mounts the token volume. To sign in as the ordinary
+user, copy the token to a new private file on the host and paste its contents
+into the workspace sign-in form.
 
-To import a release bundle, mount it read-only into an operator container and run
-`service register-model --bundle /bundle --manifest-sha256 RECORDED_SHA256
---token-file /operator-output/admin.token --activate`. Ordinary analyses restore
-saved models; startup never trains or activates one automatically.
+```sh
+(
+  umask 077
+  set -C
+  mkdir -p var/credentials
+  docker compose --profile ops run --rm --no-deps -T --entrypoint cat ops \
+    /operator-output/user.token > var/credentials/user.token
+)
+```
+
+To activate a release model, use the bundle path and manifest digest from the
+verified archive's `SHA256SUMS`. For the TCN in an extracted archive containing
+`release/models/tcn/manifest.json`, run this from the archive root.
+
+```sh
+manifest_sha256=$(awk '$2 == "release/models/tcn/manifest.json" {print $1}' SHA256SUMS)
+docker compose --profile ops run --rm -v "$PWD/release/models/tcn:/bundle:ro" ops \
+  service register-model --bundle /bundle --manifest-sha256 "$manifest_sha256" \
+  --token-file /operator-output/admin.token --activate
+```
+
+Use the [administrative API](api.md#administration) to train and publish a
+candidate in this installation.
 
 ## Configuration and capacity
 
@@ -128,11 +141,9 @@ not measured resident memory. Requests must fit both application and container l
 
 Containers use UID 10001, a read-only root, dropped capabilities, PID limits and
 bounded tmpfs. Each CPU worker handles one task at a time, with default 8 GiB RAM,
-2 CPUs and 5 GiB scratch. The five persistent services have about 19.25 GiB of
-combined memory limits. A 4-vCPU, 24 GiB RAM host is a starting capacity allocation;
-concurrent operator jobs need additional headroom. This is not a measured minimum
-or throughput guarantee. Account separately for retained objects, database data,
-images and backups on disk.
+2 CPUs and 5 GiB scratch. Size the host for both workers running together,
+PostgreSQL, the API and the maintenance worker. Operator jobs need additional headroom. Reserve disk space for the
+database, retained objects, container images and backups.
 
 ## S3 profile
 
@@ -163,10 +174,8 @@ docker compose -f compose.yaml -f compose.s3.yaml --profile ops run --rm ops ser
 
 Use both Compose files for every service/operator command in this installation.
 The endpoint has no credential, path or query component; the prefix has no leading
-or trailing slash. TLS verification stays enabled. All six storage-capable
-services share `/coordination` on one host, with identical namespace and byte
-limits. This is a required process-shared lock, not distributed coordination.
-The extra storage network permits outbound HTTPS without publishing provider ports.
+or trailing slash. All writers must share `/coordination` on one host and use
+the same namespace, byte limits and inventory limit. The extra storage network permits outbound HTTPS without publishing provider ports.
 Rotate the credential file and restart services to replace cached SDK clients.
 See [storage](storage.md) for native S3 settings, quotas and recovery.
 
@@ -193,17 +202,16 @@ isolated local child. Add `--json` for machine-readable output. A required faile
 or skipped check exits with status 1. The command does not change jobs or
 publication and does not test remote worker environments or prediction quality.
 
-Run `service migrate` when upgrading, then restart API and workers together.
-Worker queue registration requires revision `0002_worker_queues`; workers from
-an earlier installation do not populate the registry. Queue availability uses
-fresh heartbeats and occupied slots, so it can take up to `REGIMEX_STALE_SECONDS`
-to recognize an abruptly lost worker. A busy worker still passes the diagnostic.
+Run `service migrate` when upgrading, then restart the API and workers together.
+A worker's heartbeat can remain fresh for up to `REGIMEX_STALE_SECONDS` after
+an abrupt shutdown. A busy worker can pass diagnostics while every slot is in use.
 
 Logs are bounded JSON with route templates, status and elapsed time; credentials,
 request bodies and arbitrary query strings are excluded. Docker rotates its local
 logs. Protect logs as operational data.
 
-Before maintenance, stop intake and drain/cancel queued work, then stop all writers:
+Before maintenance, take the API out of service and drain or cancel queued work.
+Stop the remaining writers and confirm their status.
 
 ```sh
 docker compose stop api analysis-worker admin-worker maintenance-worker
@@ -225,4 +233,4 @@ python tests/support/compose_service_smoke.py
 The test creates a disposable project and private credentials, builds images,
 runs saved-model analysis, checks reports/access/restart/idempotency and removes
 only its own resources. Docker must be available, with permission to assign
-secret-file ownership. The test does not publish images or measure model quality.
+secret-file ownership.

@@ -134,7 +134,7 @@ def scores(labels: IntArray, predicted: IntArray) -> dict[str, JsonValue]:
 def _matched_intervals(
     reference: list[DirectionInterval], predicted: list[DirectionInterval]
 ) -> int:
-    """Maximum-cardinality bipartite matching, rather than order-dependent greed."""
+    """Count the largest set of one-to-one matches that meet the overlap threshold."""
     edges: list[list[int]] = []
     for expected in reference:
         candidates = []

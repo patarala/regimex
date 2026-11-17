@@ -180,7 +180,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       if (current !== selection || workspace !== session.epoch) return;
       $("progress").hidden = true;
       $("job-detail").textContent = "The request was not confirmed. Retry to check or continue it.";
-      // Retry the captured request, even if the visible model selector later changes.
+      // A retry must send the same model version and idempotency key.
       retry(() => submitRequest(submission));
       notice(error.message, true);
     } finally {

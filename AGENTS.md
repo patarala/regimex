@@ -1,123 +1,66 @@
-# Working on Regimex
+# Regimex
 
-Regimex is a Python service for retrospective analysis of completed market
-experiments. Read [README.md](README.md) for setup and
-[docs/architecture.md](docs/architecture.md) for component responsibilities.
+Use the Python and uv versions pinned in `.python-version` and `pyproject.toml`.
+Check the current branch and diff before editing. Work on topic branches,
+preserve unrelated edits, and write code, comments and docs in English.
+Use comments for constraints a maintainer could miss, such as why an upload
+must finish before a database commit. Omit narration of the next line.
 
-## Repository layout
+## Change boundaries
 
-- `src/regimex/`: contracts, scientific code, HTTP/CLI entry points and web assets.
-- `src/regimex/application/`: authorization, resource lifecycle and workflows.
-- `src/regimex/backends/`: baseline and temporal model implementations.
-- `src/regimex/infrastructure/`: PostgreSQL, queue, migrations and object storage.
-- `tests/`: behavior tests and small deliberate fixtures.
-- `docs/`: product, model and operator documentation.
-- `deploy/`, `Dockerfile`, `compose*.yaml`: deployment configuration.
+- Keep HTTP and CLI handlers thin. Put workflows in `src/regimex/application/`,
+  SQL and object storage in `src/regimex/infrastructure/`, model-specific code
+  in `src/regimex/backends/`, and browser controls in `src/regimex/web/`.
+  See [architecture](docs/architecture.md) for the analysis flow.
+- Scientific functions take data and configuration as arguments. CLI startup
+  and backend discovery must work without NumPy, Torch or Plotly. Use the
+  `ml` and `viz` extras for those dependencies and development groups for tests.
+- Keep runtime data and credentials in `var/` and generated release assets in
+  `release/`. Exclude both from Git and container build contexts. Keep only
+  small, intentional fixtures in `tests/`.
 
-## Development
+## Invariants
 
-Use Python from `.python-version` and uv from `pyproject.toml`. Use `uv` and
-`--locked` for checks; retain intentional lockfile changes. Write code, comments
-and repository documentation in English. Keep commands in the README executable.
-Inspect the current diff before editing and preserve unrelated work.
-
-Use topic branches for ongoing work. Push CI runs quick checks; pull requests
-into `main` and manual full runs also exercise scientific and service integrations.
-A quick CI pass alone does not verify a release. See the README for CI controls.
-
-Prefer small, explicit functions and modules organized by responsibility. Keep
-HTTP and CLI handlers thin. Scientific functions receive data and configuration
-as arguments; they do not read service settings or perform storage operations.
-Do not add compatibility layers, speculative abstractions or placeholder success
-responses. Validate configuration and reject settings that have no effect.
-
-Scientific dependencies belong to `ml`, plotting to `viz`, and integration test
-tools to explicit development groups. PyTorch uses the explicit CPU index.
-Ordinary CLI/API startup and backend discovery must not import optional scientific
-libraries. Package web/report assets and migrations with the wheel. Pin GitHub
-Actions to reviewed commit SHAs and keep CI permissions read-only.
-
-## Models and data
-
-[docs/models.md](docs/models.md) defines the interval semantics. Preserve the
-original time grid, complete interval coverage, and the distinction between
-missing values and observed zeros. Direction, activity, variability and data
-availability are separate concepts. Do not add jump-event annotations.
-
-Backends own feature preparation, fitting and weight/preprocessing codecs.
-Prediction accepts original observations, timing, units and missingness; never
-pass targets, reference boundaries, seeds or generator settings. Discover only
-trusted installed implementations through `regimex.models`; reject incompatible
-interfaces, devices, class order, output grids and codecs.
-
-Keep raw observations, ordered dataset membership, split assignments, training
-labels and evaluation references separately identified. Split whole experiments
-or seed groups before windows, keeping instruments together. Fit preprocessing
-on training data only. Select settings and checkpoints on decoded validation
-segment F1. Freeze choices before opening a final benchmark; any subsequent
-search requires a fresh benchmark checked against prior exposures.
-
-Record seeds, data/configuration hashes and environment versions. Restore
-preprocessing with weights; prediction must not retrain. Automatic labels are a
-training convention, not independent human truth. Report measured quality,
-uncertainty and boundary weaknesses. Mocks cannot establish transfer to another
-simulator.
-
-Simulated prices, volumes and quotes come from executions and resting orders.
-Preserve price/time priority, partial fills, reservation release, asset
-conservation and shared quote balances. Do not schedule regimes to raise scores.
-
-## Persistence and security
-
-PostgreSQL is authoritative for owners, lifecycle, jobs and publication. Immutable
-object storage holds observations, models and reports. Enqueue the operation and
-its task in one supported transaction. Keep digest-bound JSON numbers faithful;
-never replace a committed digest to hide a mismatch.
-
-Assume retries and worker death. Preserve attempt fencing, heartbeats,
-cancellation and bounded recovery. Stale attempts cannot commit. Verify objects
-before making them visible. Resolve active models to immutable versions at intake.
-Keep training, fixed-model evaluation and explicit publication separate.
-
-Enforce owner/run/source checks on resources and downloads. Scope idempotency by
-owner and operation. Keep integration credentials on the backend. Preserve session
-and CSRF checks; never fetch arbitrary user URLs or persist presigned URLs.
-Apply Torch/BLAS settings and computation limits in isolated worker processes.
-
-Deletion requires authorization and reference checks. Preserve registered
-objects during cleanup and fence exact orphan generations. Backup/restore must
-coordinate database and objects; partial restoration blocks readiness and intake.
-See [docs/storage.md](docs/storage.md) for provider and maintenance guarantees.
+- Preserve the original **observation grid**, complete interval coverage,
+  and the difference between missing and zero. Keep availability, direction,
+  activity and variability separate. Do not add jump-event annotations.
+  Preserve price/time priority, partial fills, reservations and shared quote
+  balances when changing the simulator.
+- For **model training**, split by whole experiment or seed group before
+  windowing. Fit preprocessing on training data only. Select settings by
+  decoded validation segment F1. Freeze choices before opening a final
+  benchmark and use a fresh benchmark for further selection. Restore saved preprocessing
+  and weights at inference. Prediction inputs exclude labels, reference boundaries,
+  seeds and generator settings. See [model contracts](docs/models.md).
+- Resolve the active model when accepting a **job**. Commit the operation
+  and queue task together. Scope idempotency keys by owner and operation. Verify
+  objects before publication, and check the attempt token and cancellation
+  state in the commit transaction. Renew the lease during I/O.
+- Check **access** by owner, source and run on resources and downloads.
+  Keep integration keys on the backend and enforce session and CSRF checks.
+  Preserve digest-bound JSON numbers. Check references and exact object
+  generations before cleanup. A partial restore blocks readiness and intake.
+  See [storage guarantees](docs/storage.md).
 
 ## Verification
 
-Run checks appropriate to the change:
+Run the checks that cover the change and report any skipped integrations.
 
 ```sh
 uv run --locked ruff format --check .
 uv run --locked ruff check .
-uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test mypy src tests
-uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test pytest
-uv build --no-build-isolation
+uv run --locked --all-extras --all-groups mypy src tests
+uv run --locked --all-extras --all-groups pytest
 ```
 
-Database/queue tests additionally use `--group queue-test` and a disposable
-`REGIMEX_TEST_DATABASE_DSN`. Run the real HTTPS S3 provider with
-`tests/support/run_storage_tests.py --tls`; recovery tests need compatible
-`PGDUMP_BIN` and `PGRESTORE_BIN`. Disclose skipped or unavailable checks.
-
-After dependency changes, verify imports and a CPU tensor operation. After
-packaging changes, install the wheel outside the source tree. After container
-changes, build and run the Compose smoke when Docker is available.
-
-Test observable behavior and critical invariants, not implementation details.
-After UI/report changes, check JavaScript syntax and actual browser controls at
-desktop and narrow widths, including offline reports, missing data and linked
-zoom. Keep errors explicit; do not silently skip failed instruments.
-
-## Files
-
-Keep credentials, generated data, models, reports, local inputs and test evidence
-out of Git and container build contexts. Runtime data belongs in `var/`; generated
-release assets belong in `release/`. Keep only small intentional fixtures in tests.
-Do not publish artifacts or change remotes during local development.
+- Use a disposable `REGIMEX_TEST_DATABASE_DSN` for database and queue tests.
+  For HTTPS S3 and recovery, follow the [provider test setup](docs/storage.md#integration-test-setup).
+- For browser and report changes, run `node --experimental-vm-modules --test tests/*.test.cjs`.
+  Try changed controls at desktop and narrow widths. For reports, check offline
+  loading, linked zoom and missing data.
+- Preserve the CPU PyTorch index. Test scientific imports and a CPU tensor
+  operation after dependency changes. After packaging changes run
+  `uv build --no-build-isolation` and test the installed wheel outside the checkout.
+- Run `python tests/support/compose_service_smoke.py` after container
+  changes. Pin CI actions to reviewed SHAs and keep permissions
+  read-only. Use full CI for release verification.

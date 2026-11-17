@@ -1,135 +1,84 @@
 # Architecture
 
-Regimex is a Python application with an HTTP API, a small browser interface and
-separate workers. It analyzes completed experiments; it does not participate in
-trading or read a simulator's database.
+Regimex accepts a snapshot of a completed market experiment. The API serves the
+browser and accepts the same exports from a simulator backend. PostgreSQL stores
+ownership, job state and analysis results. Immutable object storage holds the
+exports, model files and HTML reports.
 
-```mermaid
-flowchart LR
-    User[Browser] --> API[FastAPI]
-    Export[Completed JSON export] --> API
-    Admin[Administrator] --> API
-    API --> DB[(PostgreSQL)]
-    DB --> Analysis[Analysis worker]
-    DB --> Training[Training and evaluation worker]
-    DB --> Maintenance[Maintenance worker]
-    Analysis --> Child[Isolated computation process]
-    Training --> Child
-    Child --> Models[Baseline or TCN]
-    API --> Store[(Local files or S3)]
-    Analysis --> Store
-    Training --> Store
-    Store --> Report[Saved JSON and offline HTML]
-    API --> Report
-```
-
-## What happens when a user selects Analyze
-
-1. The API validates the completed export, checks the user's access and stores an
-   immutable snapshot. The export preserves its original time grid and missing values.
-2. Submission resolves `active` to a particular model version and inference
-   policy. PostgreSQL commits the analysis record and queue task together.
-3. The analysis worker claims an attempt. Its child process restores the model
-   and preprocessing, builds that backend's features and predicts three class
-   probabilities for every original observation.
-4. A shared decoder turns probabilities into direction intervals. Availability
-   and interval statistics come from observations. The child builds the HTML report.
-5. The parent verifies identities and hashes, uploads the objects and commits
-   the result only if the attempt is still current and uncancelled.
-6. The browser reads the saved result. Downloaded HTML works without the service.
+## From upload to report
 
 ```mermaid
 sequenceDiagram
-    participant Browser
-    participant API
+    actor User as Browser or simulator backend
+    participant API as Regimex API
     participant DB as PostgreSQL
-    participant Worker
-    participant Store as Object storage
-    Browser->>API: Upload export and submit analysis
-    API->>DB: Commit analysis and queue task
-    API-->>Browser: Analysis ID
-    Worker->>DB: Claim attempt and heartbeat
-    Worker->>Store: Read verified snapshot and model
-    Worker->>Worker: Predict, decode and render in child
-    Worker->>Store: Write immutable result and report
-    Worker->>DB: Commit under current attempt token
-    Browser->>API: Read status and download report
-    API-->>Browser: Saved result and HTML
+    participant Store as Local files or S3
+    participant Worker as Analysis worker
+    participant Child as Computation process
+    User->>API: Upload completed export
+    API->>Store: Write verified snapshot
+    API->>DB: Register snapshot for this owner
+    API-->>User: Snapshot ID
+    User->>API: Submit snapshot ID and model
+    API->>DB: Pin model version and enqueue analysis in one transaction
+    API-->>User: Analysis ID
+    Worker->>DB: Claim attempt
+    Worker->>Store: Load snapshot and model bundle
+    Worker->>Child: Predict, decode intervals and render HTML
+    Child-->>Worker: Result JSON and report files
+    Worker->>Store: Write verified HTML
+    Worker->>DB: Commit result JSON and report reference under the attempt token
+    User->>API: Check status and download the result or report
 ```
+
+The worker renews its claim while downloading inputs, computing and saving the
+report. A retry gets a new attempt token. The database checks the token and
+cancellation state in the transaction that makes a result visible. If
+cancellation wins, the job ends as cancelled and the report stays unpublished.
 
 ## Where to find the code
 
-| Area | Responsibility |
-| --- | --- |
-| `src/regimex/web/` | Browser form, history, progress and result preview |
-| `api.py`, `auth_api.py`, `admin_api.py`, `benchmark_api.py` | HTTP validation, authentication and typed routes |
-| `http_protocol.py` | Absolute header/body intake deadlines before ASGI dispatch |
-| `application/` | Resource identity, permissions, workflows and commits |
-| `infrastructure/` | PostgreSQL repositories, migrations and local/S3 adapters |
-| `service_worker.py`, `computation_worker.py` | Queue execution, isolated children, recovery and resource limits |
-| `model_registry.py`, `model_contracts.py`, `backends/` | Installed backend discovery and training/prediction contracts |
-| `baseline.py`, `temporal.py`, `features.py` | Numeric model implementations and feature preparation |
-| `market.py`, `market_sampling.py` | Order-driven simulation and parameter sampling |
-| `directions.py`, `segmentation.py`, `evaluation.py` | Automatic references, decoding and evaluation |
-| `exports.py`, `data_catalog.py`, `model_bundles.py` | Versioned inputs, datasets and model artifacts |
-| `templates/`, `visualization.py`, `comparison.py` | Offline reports |
-| `local_installation/` | Native installation, coordinated backup and isolated restore checks |
+Paths below are relative to `src/regimex/`.
 
-## Why these choices
+| Area | Code | Responsibility |
+| --- | --- | --- |
+| Browser | `web/` | Sign-in, upload, history, report preview and comparisons |
+| HTTP | `api.py`, `auth_api.py`, `admin_api.py`, `benchmark_api.py` | Validate requests and call the application as the authenticated principal |
+| Workflows | `application/` | Check access, manage snapshots and jobs, train and publish model versions |
+| Persistence | `infrastructure/` | Database transactions, migrations, queue and object storage |
+| Workers | `service_worker.py`, `computation_worker.py` | Claim tasks, supervise child processes and recover unfinished work |
+| Scientific code | `model_registry.py`, `backends/`, `directions.py`, `segmentation.py`, `evaluation.py` | Restore models, prepare features, decode predictions and measure quality |
+| Inputs and artifacts | `exports.py`, `data_catalog.py`, `model_bundles.py` | Validate exports, dataset membership and saved model bundles |
+| Generator | `market.py`, `market_sampling.py` | Simulate orders and executions and sample experiment settings |
+| Reports | `templates/`, `visualization.py`, `comparison.py` | Render results and comparisons with scripts that work offline |
+| Local installation | `local_installation/` | Install the service, coordinate updates and verify backups |
 
-| Decision | Reason and tradeoff |
-| --- | --- |
-| One application, separate processes | Shared contracts stay easy to change while training cannot occupy the interactive analysis queue. Deployment needs several processes, not several independently versioned services. |
-| FastAPI and Pydantic | Request schemas, validation and OpenAPI come from the same typed contracts. Scientific calculations remain outside route handlers. |
-| PostgreSQL and Procrastinate | Jobs and application state share a real transaction. There is no second broker whose publication must be coordinated with the database. |
-| Immutable objects outside PostgreSQL | Large observations, weights and reports do not inflate relational rows. PostgreSQL still decides ownership and visibility; an uploaded file alone is not a published result. |
-| Explicit model publication | Training creates a candidate. Evaluation and activation are separate, so a successful fit cannot unexpectedly replace the model used by users. |
-| Isolated computation children | Torch/BLAS settings, time, address-space and scratch limits apply per computation. Cancellation and worker death cannot leave an unfenced result commit. This runs trusted installed code, not uploaded Python. |
-| One attempt supervisor across all stages | Lease renewal continues during input download and result upload. I/O checkpoints and child supervision share the attempt deadline; the database still fences every commit. |
-| Backend-owned features | Logistic regression and TCN receive the same raw observations but can prepare different inputs. Adding an architecture does not require adding branches to HTTP handlers. |
-| Logistic baseline and TCN | A small aggregate model provides a control; TCN can represent local and longer temporal shape. Both use the same splits, decoder and evaluation policy. |
-| A shared interval decoder | Full coverage and minimum duration have one meaning across models. A high pointwise classification score alone cannot justify fragmented intervals. |
-| Plain browser JavaScript and packaged Plotly | The interface has a small deployment surface, and exported reports retain their controls offline. It does not need a frontend build service or CDN. |
-| PostgreSQL `json` for digest-bound numbers | Signed zero and exponent-form numbers survive database and backup round trips. Metadata that does not require faithful numeric representation can use `jsonb`. |
+## Why the components are separate
 
-## Boundaries that matter
+**Queues and storage.** Procrastinate uses PostgreSQL, so accepting a job and
+enqueuing it succeeds or rolls back in one transaction. Analysis, administrative
+work and maintenance have separate queues. An administrator can train a model
+without occupying an analysis worker. Files can be written before a transaction
+commits. Downloads therefore check the database record for ownership and
+publication. On deletion, the database removes access first. Storage usage
+drops after cleanup succeeds.
 
-The browser uses native JavaScript modules, without a separate frontend build.
-`web/app.js` connects feature controllers; session/request handling, model choices,
-history, analysis execution, comparisons and advisory queue status each own their
-state. Controllers receive explicit callbacks rather than sharing mutable globals.
-Every asynchronous response checks its session and current selection before
-changing the page. Browser tests exercise the same modules shipped in the wheel.
+**Models and workers.** Each backend receives the original observations, timing
+and units. It restores its own weights and preprocessing. All backends use the
+same decoder and interval metric, so results from different models are
+comparable on the same snapshot. Model code runs in a child process with its
+own time, memory and thread limits. An administrator can evaluate a trained
+candidate before publishing it. Each accepted analysis keeps its selected model
+version even if the active model changes.
 
-Backends receive observations, timing, units and missingness. Labels, reference
-boundaries, generator settings and seeds are absent from prediction inputs.
-Installed descriptors are lightweight; each worker separately checks its actual
-dependencies, device and artifact codec. Unsupported settings fail explicitly.
+**Simulator integration.** The simulator backend checks access to the run,
+assembles its observations and holds the integration credential. Regimex checks
+the delegated identity and owns the analysis, model and report. A client that
+displays the chart alongside a saved result must match both to the same
+snapshot. This lets each service keep its own database and release cycle.
+See the [integration contract](integration.md).
 
-Repeated job delivery is expected. Attempt tokens and heartbeats prevent stale
-workers from publishing. Idempotency keys are scoped to the authenticated owner
-and operation. Source and run checks also apply to integrations and downloads.
-
-The simulator integration belongs in a backend adapter in the simulator's own
-repository. It owns simulator authorization and export aggregation; Regimex owns
-analysis and model lifecycle. A paired preview must verify that the observations
-and result share the same source, run and snapshot digest. This keeps credentials
-out of the browser and permits either application to be deployed independently.
-
-Resource deletion separates the database decision from physical cleanup. A reviewed
-plan binds the exact resource set and object generations. PostgreSQL first removes
-visibility and records permanent identity tombstones; only then can the service
-remove the files. Uploads and deletion share an owner lock, and retired identities
-cannot be recreated by retries. Bytes stay charged until removal is verified.
-This makes partial failures resumable without reporting storage that is not yet free.
-
-Native maintenance shares the installer's exclusive lock and records original
-service states before stopping writers. Backup verifies the copied files; a
-separate restore check uses a fresh private PostgreSQL cluster and object root.
-The journal permits recovery after interruption, and pending file deletion blocks
-backup until its storage state is settled.
-
-The S3 profile currently uses one host with a shared coordination directory.
-Container deployment and operational limits are described in
-[deployment](deployment.md); backup and restoration are in [storage](storage.md).
-The [model reference](models.md) explains the scientific choices in detail.
+**Offline reports.** The browser workspace reads jobs and history from the API.
+A downloaded HTML report carries the observations, predictions and plotting
+code it needs. The CLI can also build a report directory from matching exports
+and saved results. See [using reports](usage.md#read-a-report).

@@ -64,8 +64,8 @@ class IntakeReceipts:
         lock: bool = False,
     ) -> str | None:
         if lock:
-            # Serialize a key even before its first row exists. The lock and
-            # receipt share the resource transaction, so rollback admits a retry.
+            # Two requests can arrive before either has a receipt row to lock.
+            # Lock the key until the resource and its receipt commit together.
             scope = json_bytes([owner_id, kind, request.idempotency_key]).decode()
             connection.execute(
                 "SELECT pg_advisory_xact_lock(hashtextextended("

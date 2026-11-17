@@ -31,12 +31,10 @@ def eligible_mask(
 
 
 def _fit(values: NDArray[np.float64]) -> tuple[float, float]:
-    """Estimate sustained slope while allowing one unreported level offset.
+    """Return the slope and R² of the best fit within a piece.
 
-    Each candidate has a common time slope and separate intercepts on either
-    side of an observed split. Its directional fit uses within-side variation;
-    the level difference cannot provide evidence for a sustained trend. This
-    affects interpretation inside a piece, never its output boundaries.
+    Allowing a separate intercept on each side of a level change keeps that
+    change from counting as sustained movement.
     """
     known = np.isfinite(values)
     x = np.flatnonzero(known).astype(np.float64)
@@ -50,8 +48,7 @@ def _fit(values: NDArray[np.float64]) -> tuple[float, float]:
         prefix = np.vstack(
             (np.zeros((1, 5)), np.column_stack((x, y, x * x, y * y, x * y)).cumsum(axis=0))
         )
-        # Both intercept groups need two observed timestamps to distinguish
-        # within-side movement from a level difference. Missing bins keep x.
+        # Two observed prices per side let us distinguish a slope from a level change.
         counts = np.arange(2, len(y) - 1, dtype=np.float64)
         left = prefix[2:-2]
         right = prefix[-1] - left
@@ -77,7 +74,7 @@ def _fit(values: NDArray[np.float64]) -> tuple[float, float]:
 
 
 def _pieces(values: NDArray[np.float64], config: AnalysisConfig) -> list[tuple[int, int]]:
-    """Exact penalized independent line fits; jumps need not become trend classes."""
+    """Choose piece boundaries by minimizing line-fit error plus a penalty per split."""
     size = len(values)
     if size < 2 * config.min_duration:
         return [(0, size)]
@@ -148,9 +145,7 @@ def _directions(
         else:
             groups.append(_FittedRun(start, stop, sign, movement))
 
-    # Supported slopes can accumulate into a sustained trend. Sum only movement
-    # within each fit: refitting across pieces would turn their level offsets into
-    # direction evidence, even when every piece has only a subthreshold drift.
+    # Summing within-piece movement keeps level changes between pieces out of the trend.
     result: list[tuple[int, int, Direction]] = []
     for group in groups:
         direction = Direction.SIDEWAYS
@@ -183,7 +178,7 @@ def _interval(
 def annotate(
     experiment: AnnotationGrid, config: AnalysisConfig | None = None
 ) -> DirectionAnnotations:
-    """Create automatic references, never independent human ground truth."""
+    """Label sustained price movements in each instrument's available blocks."""
     config = config or AnalysisConfig()
     intervals = []
     for instrument in experiment.instruments:
@@ -279,7 +274,7 @@ def decode(
     observations: tuple[Observation, ...],
     config: AnalysisConfig | None = None,
 ) -> tuple[DirectionInterval, ...]:
-    """Jointly decode scores; only availability gaps can exempt minimum duration."""
+    """Decode each available block on the original grid, including short edge blocks."""
     config = config or AnalysisConfig()
     values = np.asarray(probabilities, dtype=np.float64)
     if values.shape != (len(observations), len(DIRECTION_NAMES)):

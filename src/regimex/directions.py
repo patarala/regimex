@@ -154,9 +154,6 @@ def observation_blocks(
         raise ValueError("observations must be one complete ordered instrument sequence")
     size = len(observations)
     statuses: list[Literal["observed", "no_trades", "insufficient_data"]] = ["observed"] * size
-    # Existing immutable bundles and results retain their recorded 2.0 policy.
-    # The current profile recognizes every explicit source of inactivity and
-    # gives it precedence over absent prices in bins without executions.
     inactive = [
         row.trade_count == 0 if config.version == "2.0" else known_no_executions(row)
         for row in observations
@@ -166,6 +163,8 @@ def observation_blocks(
         ([row.last_price is None for row in observations], "insufficient_data"),
     ]
     if config.version == "2.1":
+        # The last matching rule wins. In 2.1 a known pause takes precedence
+        # when the same stretch of steps also lacks prices.
         rules.reverse()
     for predicate, unavailable_status in rules:
         start = 0

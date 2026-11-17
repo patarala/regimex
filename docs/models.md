@@ -1,180 +1,143 @@
-# Data, models and interval semantics
+# Models and interval semantics
 
-Regimex describes sustained price direction in a completed experiment. Models may
-use the entire sequence. The result is retrospective, not a streaming signal or
-a forecast of real-market prices.
+Regimex labels sustained price direction in a completed experiment. Both models
+can use prices before and after the step they are classifying. This makes their
+intervals suitable for retrospective analysis.
 
 ## Observations and intervals
 
-An export contains one or two instruments on a complete shared time grid,
-source/run/snapshot identity, units, capabilities and explicit missingness. Limits
-are 4,096 steps and 16 MiB. Observed zero trade count differs from an unknown count;
-an empty book side differs from unavailable quote history.
+An export holds one or two instruments on the same grid, up to 4,096 steps and
+16 MiB. Every interval belongs to one instrument. Its start is inclusive and
+its stop is exclusive, so `[8, 40)` covers 32 steps. The intervals cover every
+step exactly once.
 
-Each instrument has contiguous, non-overlapping `[start, stop)` intervals covering
-its full grid. Direction is `sideways`, `growth` or `decline`. Adjacent equal
-directions merge. The default minimum duration is 32 steps; an entire observed
-block isolated by unavailable data may be shorter, but cannot be split into still
-shorter fragments. Imported annotations are validated, never silently repaired.
+| Interval status | Meaning |
+| --- | --- |
+| `observed` | The interval has enough price observations to assign `growth`, `decline` or `sideways`. |
+| `no_trades` | The observations establish a sustained pause in executions. Direction is null. |
+| `insufficient_data` | Too few prices are available to classify this part of the experiment. Direction is null. |
 
-Long observed trading pauses are `no_trades`; insufficient observations are
-`insufficient_data`. Both have no direction. Short gaps may remain within a
-classified interval, with reduced coverage. Carried prices alone do not establish
-active sideways trading. Availability is derived from observations independently
-of model confidence and is shared by predictions and references.
+With the current profile, `direction-32/2.1`, a zero trade count, zero volume,
+or a price state of `carried` or `no_execution` establishes that a step had no
+executions. A stretch of 32 or more inactive steps forms a pause even when
+prices are missing. A stretch of 32 or more missing prices otherwise marks a
+gap. Either rule also applies to a shorter stretch that spans the entire sequence.
 
-The current `direction-32/2.1` profile recognizes inactivity from a known zero
-trade count, zero trade volume, or an explicit `carried`/`no_execution` price state.
-A sustained known pause remains `no_trades` even when its prices are absent.
-Unknown totals remain null: knowing that no executions occurred does not fill a
-missing numeric aggregate. Without any such evidence, missing totals alone do
-not establish inactivity. The offline summary counts each step with evidence of
-inactivity in `steps_without_executions`, including pauses shorter than an interval.
+The remaining blocks need at least four prices and 80% price coverage. Short
+gaps and pauses can fall inside a classified interval. The minimum duration is
+32 steps, or the length of the whole available block if shorter. Adjacent
+intervals with the same direction merge.
 
-Interval statistics include first/last observed price steps, relative price change,
-trade count and volume, active-trade fraction, longest observed pause, coverage and
-population standard deviation of adjacent log returns. Only known counts/volumes
-are summed; return deviation is absent with fewer than two known adjacent returns.
-Active-trade fraction and longest observed pause use known trade counts only;
-they do not infer counts from volumes or price states.
-Variability and activity remain numeric descriptors. No jump events are emitted.
+### Reading interval statistics
+
+- **Price change** is the percentage difference between the first and last
+  available prices. Their step numbers show which part of the interval the
+  calculation covers.
+- **Return SD** is the population standard deviation of one-step log returns.
+  Both steps of each return must have prices. A gap breaks the sequence, and
+  fewer than two returns gives a null result.
+- **Trade count and volume** sum the observations available for each field.
+  A total is null if the field is missing throughout. The coverage fractions
+  show how much of the interval contributed.
+- **Active-trade fraction** is the share of steps with a positive count among
+  steps with a known count. **Longest no-trade run** counts consecutive steps
+  with a known zero count. The offline summary's `steps_without_executions`
+  also uses volume and price state, so it can count pauses when the count is
+  missing.
+
+Saved models use the profile in their bundle. Profile `direction-32/2.0`
+recognizes pauses from trade counts alone and gives missing prices precedence.
+To use the current rules for a published model, train and publish a new version.
 
 ## Synthetic market
 
-The generator simulates orders, resting books and executions using integer tick,
-lot and settlement units. Matching uses best price, then arrival time, supports
-partial fills and releases asset reservations correctly. Separate instruments
-share participant quote balances. Random participants sample BUY/SELL/HOLD;
-Trend Following participants compare execution prices across their trade-history
-window and hold until enough trades exist. Each step processes participants in
-fixed order, with one independently configured test participant last.
+Create a dataset through `POST /api/v1/datasets`. Supply `plan.market` to set
+the initial prices and participant profiles. With the default sampler,
+experiments alternate between one and two instruments. The seed assigns each
+instrument a synthetic symbol such as `BTC/USD`. Each participant shares one
+cash balance across its instruments.
 
-The sampler varies strategies, resources and activity without scheduling target
-directions or balancing labels. It alternates one/two instruments and samples
-inactive, one-sided, fixed-price and heterogeneous configuration families with
-probabilities 5%, 5%, 10% and 80%. Native names are BTC, ETH, SOL, XRP, ADA, LTC,
-DOT or DOGE quoted in USD, selected deterministically from the seed. These names
-do not imply realistic currency prices or calibrated behavior.
+Each participant acts once per step in a fixed order, with the separately
+configured test participant last. A random trader samples buy, sell or hold
+from its profile. A trend follower compares the latest execution price with
+the price a configured number of trades earlier. It holds while the history
+is too short or the change falls below its threshold.
 
-Prices come from executions; without a trade, the last or initial price carries
-forward. Counts and volumes are always observed, including zeros. Quotes are
-sampled after each step; an empty side is null. Generator assumptions include
-execution at the resting price, uniform instrument choice per participant event,
-incoming-remainder cancellation on self-match, and no fees, expiry, leverage or
-external news. Tick and lot sizes default to 0.01. A real simulator may use
-different mechanics; shared fields alone do not establish model transfer.
+Orders match at the resting price, best price first and oldest order first at
+a given price. An order can fill partially. If it reaches the participant's own
+resting order, the exchange cancels the incoming remainder. Prices and quantities
+use integer ticks and lots. The default tick and lot sizes are both 0.01.
 
-Generate through `POST /api/v1/datasets`; an optional `plan.market` supplies an
-explicit validated market configuration. Generation settings and seed provenance
-are kept outside observation-only prediction inputs. In participant profiles,
-BUY/SELL/HOLD probabilities apply to Random, while history window/threshold apply
-to Trend Following. The other strategy's stored action fields are inactive.
+After each step the generator records executed trades, accepted orders and the
+best bid and ask. An empty book side has a null quote. A step without trades has
+zero count and volume and carries forward the last price (initially the starting
+price). The sampler draws inactive (5%), one-sided (5%), fixed-price (10%) and
+mixed participant configurations (80%). Price directions emerge from the trades.
 
 ## Automatic reference labels
 
-`retrospective-directions/3.0` is a reproducible annotation convention, not human
-ground truth. After determining availability, it partitions log prices into
-penalized line fits. Within each piece it compares an ordinary line with a common
-time slope and separate intercepts around one internal level offset. A split
-needs two observed prices on each side; missing values retain their timestamps.
-Minimum residual error selects the fit, with ties preferring the ordinary line
-then the earliest split. The internal split is not an output boundary or event.
+The policy `retrospective-directions/3.0` supplies reproducible labels for
+training and evaluating models. It uses the same availability rules as the
+decoder. On each available block it divides log prices into pieces by fitting
+straight lines. Adding a piece incurs a penalty based on the local noise level.
 
-The shared slope must explain at least the configured directional variance
-(default 0.5). Consecutive supported pieces of one sign form a run. Their fitted
-movements `slope * (stop - start - 1)` are summed and compared with
-`log1p(minimum_relative_change)`, default 0.5%. Unsupported pieces break the run;
-level differences between pieces do not contribute movement. Equal output
-directions merge. A level offset alone can therefore be sideways even when its
-end-to-end price-change statistic is large.
+To assign a direction, the policy estimates a slope in each piece. It also
+tries a line with the same slope on both sides of a single price-level change,
+with at least two observed prices per side. The fit with the smallest residual
+error wins. This lets a price that moves once and then stays flat receive a
+sideways label despite a large end-to-end change.
 
-Only one unresolved offset per piece is modeled. Multiple offsets, unequal slopes,
-noise or sparse short series remain ambiguous. A fit score is not a probability
-that the interpretation is correct. Optional independent review uses
-`regimex report --input export.json --output var/blind --blind`; its annotations
-must remain separate from automatic labels and predictions.
+A slope must explain at least half of the price variation in its fit. Consecutive
+supported slopes of the same sign form a run. The policy adds their fitted log
+movements and assigns growth or decline when the absolute sum reaches
+`log1p(0.005)`. Other runs receive sideways. Human reference sets are recorded
+separately. A reviewer can see observations with the predictions hidden by
+running `regimex report --input export.json --output var/blind --blind`.
 
 ## Learned backends
 
-| Backend | Inputs and method |
+Both backends return one probability for each of the three directions at every
+original step. A shared decoder chooses intervals using the probabilities, a
+penalty for switching direction and the availability and duration rules above.
+
+| Backend | What it uses |
 | --- | --- |
-| Baseline | Logistic regression on mean, population standard deviation, minimum and maximum of observation channels/masks in centered 32/128-step contexts and the whole sequence. It receives aggregates, not a flattened sequence. |
-| TCN | Noncausal residual temporal convolutions over 50 price-shape/mask channels, with 32/64/128/256/512-bin contexts. It returns three probabilities per original step. |
+| Logistic baseline | Price, trade and order activity, spread and missing-value indicators. It summarizes each channel with its mean, population standard deviation, minimum and maximum over centered windows (32 and 128 steps by default) and the whole instrument sequence. |
+| Temporal convolutional network (TCN) | Log prices, returns and price shape in centered windows of 32, 64, 128, 256 and 512 steps. The network receives 25 numeric channels and their 25 missing-value indicators. |
 
-Both fit preprocessing only on training data and restore it with weights. They
-use the same availability rules and duration-constrained decoder. Prediction
-receives raw observations, timing, units and missingness, never targets, reference
-boundaries, seeds or generator settings. Backends own feature preparation and
-their weight/preprocessing codecs; they do not share one compulsory feature matrix.
+Training and validation contain separate experiments. All instruments from one
+experiment and all members of a split group stay together. Both backends need
+all three directions in their training targets and fit their preprocessing
+on training data. Model selection requires at least one
+validation interval with a known direction. The decoded validation interval
+macro-F1 selects the settings or checkpoint, with the first best score winning a
+tie. The administrative workflow covers benchmark reservation, freezing the
+model and final evaluation. [API guide](api.md#administration)
 
-Baseline uses balanced logistic regression, LBFGS and up to 2,000 iterations.
-TCN uses class-balanced cross-entropy, optional interval weighting, AdamW and
-gradient clipping. Its adjacent-log-probability smoothing applies only to equal
-known training targets. The four bins on each side of an internal training
-direction change have twice the classification weight; neighborhoods stop at
-gaps/edges and do not compound when overlapping. Inference needs none of those labels.
+The baseline uses class-balanced logistic regression with the LBFGS solver.
+The TCN uses AdamW and class-balanced cross-entropy. Within a known training
+direction it can penalize changes in adjacent log probabilities. The four steps
+on each side of a direction change receive double classification weight.
+The weighting stops at gaps and sequence edges.
 
-TCN training accepts either an epoch policy or an explicit optimizer-update policy.
-The default uses epoch-based training with early stopping. An update policy
-sets `budget: "updates"`, an AdamW learning rate and weight decay, a batch size,
-seeds, an exact update count per seed, and increasing `validation_updates` ending
-at that count. It has no epoch limit or early-stopping settings. Complete sequences
-are shuffled in passes; batches without known training targets do not consume an
-update. Each seed completes its budget, and validation chooses the first best
-scheduled checkpoint across seeds. A common runtime limit covers the entire fit.
+TCN training supports epoch-based early stopping and fixed optimizer updates.
+For a fixed budget, set `budget` to `updates`, set the number of updates per
+seed, and list checkpoints in `validation_updates`, ending at the last update.
+Batches without known targets do not consume an update. The history records
+the validation scores and the bundle identifies the selected seed and update.
 
-Update histories record successful updates, pass and batch positions, training
-loss, sequence and row counts, and scheduled validation scores. The bundle records
-the selected seed and update. At most 32,000 history entries across all seeds are
-accepted; service limits may further restrict the update count per seed.
+## Saved models
 
-Whole experiments or seed groups are split before windows; both instruments stay
-together. Model selection requires at least one reference interval with an observed
-direction in the validation partition. Decoded validation segment F1 selects
-settings, seeds and checkpoints, with first-win ties. Final data is reserved
-before selection and opened after freezing. [API workflows](api.md#administration)
-enforce these lifecycle boundaries.
+Regimex discovers trusted backends through the `regimex.models` entry point.
+The API reads their descriptors. Workers load the scientific libraries and
+check device support. Both built-in backends run on CPU.
 
-## Artifacts and extension points
+Each bundle contains weights, preprocessing, configuration, class order,
+validation evidence and training history. At the end of training Regimex
+reloads the bundle and checks that it reproduces the validation probabilities.
+Analyses use the published weights and preprocessing. The baseline stores
+numeric arrays. The TCN stores a restricted Torch state dictionary. Its
+`temporal-tcn/2.0` and `temporal-tcn/3.0` codecs share the same inference
+procedure and record training by epoch and optimizer update respectively.
 
-Trusted installed implementations are discovered through `regimex.models` entry
-points. Lightweight descriptors expose parameters without importing scientific
-libraries. A worker separately probes the declared backend and device. The current
-backends support CPU. Unknown or ineffective supplied settings fail explicitly.
-
-A bundle contains checksummed configuration, preprocessing, weights, validation
-evidence and training history. Loading checks paths, sizes, archive bounds,
-classes, shapes, finite values and semantic codec compatibility. Baseline arrays
-use a numeric codec; TCN uses restricted CPU state-dictionary loading. Executable
-estimator pickles and uploaded Python implementations are not accepted.
-
-| Contract | Identity |
-| --- | --- |
-| Observation export | `2.1` |
-| Generator | `4.0` |
-| Direction annotations / automatic policy | `3.0` / `retrospective-directions/3.0` |
-| Analysis profile / decoder | `direction-32/2.1` / `duration-viterbi/1.0` |
-| Raw snapshot, dataset, reference set, bundle envelope | `1.0` |
-| Baseline codec | `aggregate-logistic/1.0` |
-| TCN codecs | `temporal-tcn/2.0` (epoch history), `temporal-tcn/3.0` (update history) |
-| TCN features / preprocessing | `temporal-price-shape/1.0` / `temporal-standardization/1.0` |
-| Evaluation / comparison report | `2.3` / `model-comparison/2.0` |
-
-Both TCN codecs restore the same inference implementation, features and decoder.
-Epoch-trained bundles can also be loaded for explicit rollback.
-
-Published bundles and saved results retain their recorded analysis profile.
-Profile `2.0` keeps its original count-only pause detection and gives missing
-prices precedence. It is read explicitly, without upgrading its configuration,
-hashes or saved intervals. New references and training use profile `2.1`; existing
-published `2.0` models continue to produce `2.0` analyses until a distinct model
-version with the current profile is trained and explicitly published. The
-annotation fitting and probability-decoding algorithms are unchanged. Their
-identities remain `retrospective-directions/3.0` and `duration-viterbi/1.0`; the
-profile hash distinguishes the availability semantics.
-
-Artifact identity includes ordered dataset content and split assignments. Raw
-snapshots, training labels and evaluation references have separate identities.
-Prediction never refits or retrains. Exact equality is checked when restoring
-saved models. Different devices or library versions may produce different
-floating-point results.
+See the [evaluation report](quality.md) for measured agreement and boundary accuracy.

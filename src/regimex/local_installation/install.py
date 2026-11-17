@@ -545,9 +545,8 @@ class Installer:
             stopped = False
             try:
                 if existing:
-                    # Older native targets required every component. Explicitly
-                    # stopping intake would then stop the target and PostgreSQL
-                    # through PartOf. Change only this owned target before drain.
+                    # A target that Requires the API can also stop PostgreSQL
+                    # through PartOf. Update the target before pausing intake.
                     target = systemd.unit_name(self.options.name, "target")
                     systemd.write_units(self.root, {target: rendered[target]})
                     self.run(systemd.command("daemon-reload"))

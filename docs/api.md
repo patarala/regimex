@@ -1,30 +1,26 @@
 # API workflows
 
-Start the service as described in [usage](usage.md). Open `/docs`, select
-**Authorize**, enter your provisioned token, then use **Try it out** on a route.
-The generated OpenAPI schema is the complete field reference. All resource paths
-below have the `/api/v1` prefix unless shown otherwise.
+Start the service using the [usage guide](usage.md). Open `/docs`, select
+**Authorize**, enter your token and use **Try it out** to send a request.
+Resource paths in this guide are relative to `/api/v1`. Health checks use
+`/health` at the server root.
 
 ## Authentication and request rules
 
-Resource routes accept a bearer token or an HttpOnly browser session. The browser
-exchanges a token at `POST /session`; `GET /session` restores session state and
-`DELETE /session` signs out. Cookie-authenticated mutations require
-`X-CSRF-Token`, the configured Origin and an allowed fetch-site context. Do not
-mix bearer, cookie and body-login credentials.
+Send a bearer token for API calls. The browser exchanges a user or administrator
+token at `POST /session` for an HttpOnly session cookie. Use `GET /session` to
+restore a session and `DELETE /session` to sign out. Cookie-authenticated
+mutations require the configured Origin, an allowed fetch-site context and the
+session's `X-CSRF-Token`. Use one authentication method per request.
 
-Only token/session hashes are persisted. Sessions expire absolutely after 30
-minutes by default, and token revocation invalidates their next request. Integration
-tokens cannot create browser sessions. Credentials are never saved in browser
-storage or URLs. Roles are `user`, `admin` and source-bound `integration`.
+Sessions expire 30 minutes after sign-in by default. Revoking the underlying
+token also ends access on the next request. Simulator backends use a separate
+[integration credential](integration.md).
 
-Queued submissions and synchronous administrative imports require an
-`Idempotency-Key`. Its scope is the authenticated owner and operation. A retry
-with identical canonical content returns the original resource; changed content
-returns `409`. Reference and training requests that omit the analysis profile
-can be retried after the default changes. A retry returns the first accepted
-resource with its original profile. Every resource and download is authorized
-on the server.
+Send an `Idempotency-Key` for queued submissions and synchronous administrative
+imports. Retry with the same body and key to receive the original resource,
+including the profile and model selected when the request was accepted. Reusing
+that key for different content under the same owner and operation returns `409`.
 
 ## Manage platform connections
 
@@ -42,20 +38,26 @@ Administrator routes under `/admin/integrations` manage platform connections:
 | `GET /admin/integrations/{id}/events` | Paginated access-change history |
 | `GET /admin/integrations/{id}/storage` | Connection-wide storage usage and limit |
 
-These routes require a current administrator credential; browser mutations retain
-Origin and CSRF checks. See [platform access](access.md) for capabilities, rotation
-and shared request/queue limits.
-
-A backend can inspect its own connection with `GET /connection` and its integration
-bearer key. The response contains only `source_namespace` and the key's `scopes`.
-This read-only diagnostic does not need delegated subject/run headers or the
-`read` capability, so a backend can detect missing capabilities before sending
-observations. It remains subject to connection authentication and request limits.
-Local user/admin credentials and browser sessions cannot use this route.
-Rejected keys receive the ordinary `401`; the response does not distinguish an
-invalid key from an expired or revoked key or a paused connection.
+A simulator backend can check its own key with `GET /connection`. Send the
+integration bearer token alone. The response contains `source_namespace` and
+`scopes`. For key rotation, capabilities and shared limits, see
+[platform access](access.md).
 
 ## Analyze an export
+
+Use `Content-Type: application/json` for the schema 2.1 export. The service
+accepts one or two instruments, up to 4,096 original time bins and up to 16 MiB
+of uncompressed JSON. Save the export with `POST /snapshots` and copy its
+`snapshot_id` into a `POST /analyses` request.
+
+```json
+{"snapshot_id":"SNAPSHOT_UUID","model_version_id":"active"}
+```
+
+Poll the returned analysis link. When the job succeeds, download the saved JSON
+result or HTML report. To analyze the same experiment again, submit the same
+snapshot ID with a new idempotency key. Choose a published model version to
+pin it explicitly or use `"active"` for the version active at acceptance.
 
 | Request | Result |
 | --- | --- |
@@ -76,54 +78,52 @@ invalid key from an expired or revoked key or a paused connection.
 | `GET /service-status` | Current analysis-queue availability for signed-in users |
 | `GET /storage` | The authenticated owner's storage usage and limit |
 
-Storage responses contain `used_bytes`, `reserved_bytes`, `limit_bytes` and
-`available_bytes`. Saved snapshots and analysis HTML count toward the quota;
-reserved bytes include uploads in progress, uncertain failed uploads and files
-awaiting completion of an explicit deletion. Generated snapshots count toward
-their administrator owner's quota too.
-Result JSON in PostgreSQL and administrator-managed model, reference and dataset
-metadata objects are outside these object-storage quotas. Those object payloads
-still share the global store capacity. `available_bytes` is the remaining quota,
-not a guarantee of free disk space. Owner usage cannot be queried by supplying
-another owner's identifier.
-Delegated clients use `GET /integration/storage` with the `read` capability.
+### Storage and history
 
-History accepts `q` (up to 128 characters) for a case-insensitive, literal search
-across experiment names and source, run, snapshot, instrument, model and analysis
-identifiers. Name search uses Unicode normalization/casefolding independently of
-the database locale. `state`
-accepts `queued`, `running`, `cancel_requested`, `cancelled`, `succeeded` or
-`failed`; `active` groups the first three. `snapshot_id` restricts the list to one
-saved snapshot. Filters apply before `limit`/`offset`
-and never expand the caller's owner, source or run permissions. For example:
+`GET /storage` returns `used_bytes`, `reserved_bytes`, `limit_bytes` and
+`available_bytes`. The last value is the owner's remaining object quota.
+Reservations include uploads and files awaiting deletion. Delegated clients use
+`GET /integration/storage` with the `read` capability. See [storage
+quotas](storage.md#owner-and-connection-quotas) for which files count.
+
+Use `GET /analyses` for individual attempts and `GET /experiments` for
+history grouped by saved snapshot. Both accept these filters before pagination.
+
+| Parameter | Meaning |
+| --- | --- |
+| `q` | A literal, case-insensitive search (up to 128 characters) across experiment names and source, run, snapshot, instrument, model and analysis identifiers |
+| `state` | One of `queued`, `running`, `cancel_requested`, `cancelled`, `succeeded`, `failed`, or `active` for the first three |
+| `limit`, `offset` | Page size and starting position |
 
 ```text
 GET /api/v1/analyses?q=BTC%2FUSD&state=succeeded&limit=20&offset=0
 ```
 
-List entries and individual analysis metadata include the source/run identifiers,
-available instrument identifiers and step count. These endpoints do not read the
-raw export or result payload. A failed job includes `failure.code`, a safe
-`failure.message` and attempt counts. `failure.retryable` describes the type of
-failure; a terminal `failed` job has no automatic retries remaining.
+Each experiment shows the total and successful analysis counts, the count
+matching the filters, and the latest matching analysis. To list its attempts,
+call `GET /analyses?snapshot_id=...` with the same filters. Snapshots that have
+never been analyzed appear with zero counts and `latest_analysis: null` unless
+a state filter is set. A failed job reports `failure.code`, `failure.message`
+and attempt counts. Once it reaches `failed`, automatic retries have ended.
 
-`GET /experiments` accepts the same `q` and `state` filters. Each item contains
-`snapshot_id`, source/run identifiers, instruments, `display_name`, `name_revision`,
-`analysis_count`, `successful_analysis_count`, `matching_analysis_count` and
-`latest_analysis`. Counts cover authorized runs of that saved snapshot; the latest
-analysis is the newest matching the current filter. Grouping precedes pagination,
-so a large experiment never splits across group pages. Expand it through
-`GET /analyses?snapshot_id=...`, retaining the same filters and independent pagination.
-Saved snapshots without analyses remain listed with zero counts and
-`latest_analysis: null`. They can be searched by experiment metadata and renamed
-or deleted. An analysis-state filter excludes these empty experiments.
+### Choose a model or compare results
+
+`GET /models?published_only=true` lists published versions and the active
+model ID. Administrators can omit the filter to see unpublished candidates.
+`GET /models/{id}` and `GET /metrics` expose model metadata and evaluation
+information. Use `GET /architectures` as an administrator to inspect installed
+backend schemas.
+
+Compare two successful analyses of the same saved snapshot with
+`GET /analyses/{id}/comparison?other=ANALYSIS_UUID`. The HTML attachment
+aligns their predictions on the original price grid. A comparison of different
+snapshots returns `409`, even if the observations match. Prediction disagreements
+show where the two models classify the same data differently.
 
 ## Delete saved resources
 
-Deletion is restricted to the authenticated owner's resources and the same source
-and run boundaries as downloads. An administrator credential does not bypass
-ownership. Integration keys require the explicit `delete` capability on both
-ordinary and delegated routes; existing and default keys do not include it.
+Only the owner can delete a resource. An integration key also needs the
+`delete` capability and access to the source and run.
 
 | Request | Result |
 | --- | --- |
@@ -148,73 +148,29 @@ list also supplies these values after a client restart. If a confirmation respon
 is lost, read its receipt before retrying. A `404` receipt means confirmation has
 not been recorded; retry the same reviewed plan if it remains valid.
 
-Deletion cannot be undone through the service. Removing an analysis keeps its
-source snapshot. Removing an experiment retires its original source/run/snapshot
-identity: replaying that original upload returns `409` rather than restoring it.
-Existing downloaded files are unaffected. Browser previews and confirmations
-require the normal session Origin and CSRF checks.
+Deleting an analysis keeps its input snapshot. Deleting the experiment retires
+its source/run/snapshot identity, so uploading that identity again returns
+`409`.
 
 ## Experiment names
 
-Rename with `{"display_name":"Experiment A","expected_revision":0}`. Names have at
-most 120 Unicode characters after normalization; control characters and empty
-strings are rejected. Use `null` to restore the default. The response contains
-`snapshot_id`, `display_name` and the new `revision`. A stale revision returns `409`;
-refresh before deciding whether to save again. Ownership/source/run checks precede
-revision checks. Browser mutations require CSRF as usual. Names are separate
-metadata: renaming never changes export/result hashes or the identity of a re-upload.
-
-Example analysis body, using the returned snapshot ID:
+Send `PATCH /experiments/{snapshot_id}/name` with the current revision.
 
 ```json
-{"snapshot_id":"SNAPSHOT_UUID","model_version_id":"active"}
+{"display_name":"Experiment A","expected_revision":0}
 ```
 
-Exports use schema 2.1 and `Content-Type: application/json`. The limits are
-16 MiB, 4,096 original time bins and two instruments. Compressed request bodies,
-unknown versions, invalid grids and inconsistent values are rejected; inputs are
-never truncated or resampled. `active` is pinned to an immutable version/policy
-at intake. Retrying the same request preserves that choice after a model change.
-
-To run again, submit the existing `snapshot_id` with a new idempotency key and
-the desired published `model_version_id`. This creates a separate analysis; no
-re-upload or retraining occurs. Explicit versions also keep a browser selection
-stable if publication changes before the first accepted request.
-
-A successful job has both a complete JSON result and HTML report. Partial
-uploads and cancelled/stale attempts cannot publish either. Invalid stored
-contracts return `409` after authorization; reads do not silently regenerate them.
-A missing model or failed analysis never triggers training or publication.
-
-`GET /models`, `/models/{id}` and `/metrics` expose allowed model metadata and
-the evaluation attached to the active publication. `/architectures` is an
-administrator catalog of installed backend schemas, not a worker capability test.
-
-`GET /models?published_only=true` lists published choices, including for
-administrators, with `limit`/`offset` pagination. Every page includes
-`active_model_version_id`, or `null` when no version is active. The ordinary
-administrator list still includes unpublished candidates.
-
-Comparisons require two distinct successful analyses of the exact same owned
-snapshot. Both resources are authorized before their compatibility is checked.
-The server verifies saved results against the original observations and renders
-aligned prices and intervals without loading a model. The attachment is private,
-uncached and self-contained. Comparing different saved snapshot identities returns
-`409`, even when their observations are identical. Re-uploading unchanged content
-with the same source/run/snapshot identity reuses the existing snapshot. Differences are prediction
-disagreements, not accuracy measurements.
+Names are limited to 120 Unicode characters after normalization. Empty strings
+and control characters are rejected. Use `null` to restore the default name.
+The response includes `snapshot_id`, `display_name` and the new `revision`. On
+`409`, refresh the experiment before editing again. Renaming affects display
+metadata only.
 
 ## Administration
 
-Use an administrator token in Swagger. Keep the `admin` worker running separately
-from the `analysis` worker. Poll `/admin-runs/{id}` or the returned job link for
-queued operations. Generation, reference creation, training, evaluation and
-publication are separate actions.
-
-For each POST, select **Try it out**, fill its body and required headers, then
-**Execute**. Give each new logical operation a new descriptive idempotency key;
-reuse it only when retrying that operation. Copy resource IDs from completed
-responses into the next request rather than inventing them.
+Sign in to `/docs` with an administrator token and run the `admin` worker.
+Poll `/admin-runs/{id}` or the returned job link for each queued operation.
+Use the resource IDs from the completed runs in the following requests.
 
 ### 1. Create observations and references
 
@@ -230,9 +186,8 @@ For example:
 }
 ```
 
-This is a usage example, not a quality benchmark. Fix generation settings before
-observing labels or scores. The split keeps whole experiments and seed groups
-together. `GET /datasets/{id}/manifest` downloads ordered membership and identity.
+The split keeps whole experiments and seed groups together. Download the
+ordered membership with `GET /datasets/{id}/manifest`.
 
 Create separate training and validation references with `POST /reference-sets`:
 
@@ -242,10 +197,9 @@ Create separate training and validation references with `POST /reference-sets`:
 
 Repeat with `partition: "validation"`. The default profile is
 `direction-32/2.1`; automatic labels use `retrospective-directions/3.0`.
-The same profile name cannot describe changed settings. Human-reference import
-is also supported with complete annotations and reviewer/independence attestations;
-the server checks the contract, not whether a reviewer was genuinely independent.
-Ordinary annotation downloads expose training/validation references only.
+To import human references, provide complete annotations and identify the
+reviewer. The reviewer attests to independence. The ordinary annotation
+download covers the training and validation partitions.
 
 ### 2. Reserve final data before selection
 
@@ -263,11 +217,10 @@ Automatic test references use `POST /reference-sets` with that dataset ID and
 | `POST /benchmarks/{id}/selection-start` | Begin model selection under that reservation |
 | `GET /benchmarks/registry` | Inspect persisted inventory and reservation metadata |
 
-The candidate final dataset is checked against known content, seed groups, runs
-and reservations. Renew the inventory attestation when history changes. Human
-final annotations, if used, enter through `POST /benchmarks/reference-sets` before
-reservation. The service enforces reference access, but cannot prove that an
-operator never inspected external files or discover unknown data exposures.
+Regimex checks the proposed final dataset against the content, seed groups,
+runs and reservations in the registry. Include known external exposures and
+renew the attestation when history changes. If you use human final references,
+import them through `POST /benchmarks/reference-sets` before reservation.
 
 ### 3. Train and publish
 
@@ -275,8 +228,9 @@ operator never inspected external files or discover unknown data exposures.
    `POST /training-runs` with the development dataset, training-label and
    validation-reference IDs, selection benchmark, analysis profile, parameters,
    training policy and separate training/inference runtimes.
-2. Training creates an immutable candidate and verifies exact prediction reload.
-   It does not change the active deployment. Obtain its version from the completed run.
+2. Training requires at least one validation interval with a known direction.
+   The worker saves the candidate, reloads it and verifies the predictions.
+   Copy its model version ID from the completed run.
 3. Submit `POST /evaluations` for that concrete model and its development
    validation references. This performs fixed-model evaluation without fitting.
    Download `GET /evaluations/{id}/result` to inspect detailed metrics.
@@ -302,9 +256,9 @@ For a fixed budget, send the following `policy` object; epoch-only fields such a
 }
 ```
 
-The resulting quality status remains `validation_only`. Publication does not
-establish independent predictive accuracy. Managed training candidates require
-this evaluation/publication workflow; CLI bootstrap activation cannot bypass it.
+Publication makes the candidate available for analysis. A candidate
+evaluated on the development validation set has quality status
+`validation_only`. For held-out metrics, use the final evaluation below.
 
 ### 4. Freeze and evaluate final data
 
@@ -317,7 +271,9 @@ reading payloads and again at commit. Further selection requires fresh final dat
 
 ### Compare evaluations
 
-Save two compatible evaluation JSON files, then render without running a model:
+Download `GET /evaluations/{id}/result` for a baseline and a TCN evaluated on
+the same dataset and references. Save them as `baseline-evaluation.json` and
+`tcn-evaluation.json` in your working directory, then render the comparison.
 
 ```python
 import json
@@ -341,19 +297,16 @@ datasets, policies or bootstrap settings are rejected. See [metrics](quality.md)
 restore readiness. `/health/models` reports active deployment configuration; it
 does not execute a backend. Workers have a separate heartbeat health command.
 
-Authenticated `GET /service-status` returns `state`, `checked_at` and a safe
-`message`. States are `available` (a worker has a free slot), `busy` (all fresh
-workers are occupied), `unavailable` (no fresh registered worker) and `unknown`
-(the check failed). Responses are private and uncached, and expose no worker IDs,
-process names or other owners' jobs. Freshness uses `REGIMEX_STALE_SECONDS`;
-heartbeat availability is not a model-capability check (`worker_capability` is
-`not_probed`). The browser checks at most once every five seconds while queued.
+Authenticated `GET /service-status` reports analysis queue availability. The `state`
+field is `available` for a free worker slot, `busy` when all slots are occupied,
+`unavailable` when there is no fresh worker, and `unknown` when the check
+fails. A fresh heartbeat alone cannot tell you whether the worker can load a
+particular model. Run `service doctor` to inspect queues, storage and local
+model restoration. See the [usage guide](usage.md).
 
-`service doctor` adds explicit operator checks for storage, all worker queues
-and actual model restoration in a local isolated process. See [usage](usage.md).
-
-Treat `4xx` responses as input, authentication, ownership or state failures.
-Conflict responses include changed idempotent content and outdated publication
-expectations. Capacity failures are explicit; unsupported settings do not fall
-back to another model or device. Retry infrastructure errors using the same
-operation key. Integration uses the separate [delegation contract](integration.md).
+A `409` can mean changed content under an existing key, an outdated revision or
+a conflict with the current job state. Read the error code and message before
+resubmitting. For an integration rate limit (`429`, `rate_limit`), wait for
+`Retry-After`. For a queue or storage limit (`429`, `capacity_limit`), free the
+reported capacity first. After a lost response, retry a queued submission with
+its original idempotency key.

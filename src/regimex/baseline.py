@@ -1,4 +1,4 @@
-"""Preserved aggregate logistic calculations, independent of Torch and service I/O."""
+"""Logistic regression on per-instrument window summaries."""
 
 import logging
 import warnings
@@ -101,7 +101,7 @@ def fit_baseline(
     scorer: Scorer,
     check_budget: Callable[[], None] = lambda: None,
 ) -> tuple[LinearModel, list[JsonValue], float]:
-    # Training-only dependencies remain absent from restored inference processes.
+    # Restored models predict from numeric weights using NumPy alone.
     from sklearn.exceptions import ConvergenceWarning  # type: ignore[import-untyped]
     from sklearn.linear_model import LogisticRegression  # type: ignore[import-untyped]
     from sklearn.preprocessing import StandardScaler  # type: ignore[import-untyped]

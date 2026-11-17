@@ -1,4 +1,4 @@
-"""Real aggregate logistic backend with a numeric, nonexecutable bundle codec."""
+"""Feature preparation, fitting and numeric bundle I/O for the logistic baseline."""
 
 import hashlib
 import platform

@@ -1,151 +1,67 @@
 # Regimex
 
-Regimex analyses completed market experiments and marks intervals of price growth,
-decline and sideways movement. Upload a JSON export, run a saved model, and view
-or download an interactive report. Run the same saved experiment with another
-published model and compare its intervals on a shared price chart. Reports and
-comparisons also work offline.
-Saved analyses and experiments can be deleted after reviewing their dependencies
-and storage usage. Interrupted file cleanup remains visible and can be retried.
+Regimex labels periods of growth, decline and sideways movement in completed
+market experiments. Upload an experiment, choose a saved model and inspect its
+predictions on the price chart. You can compare two models on the same
+observations or download a report to open offline.
 
-The service includes a baseline model, a temporal convolutional network (TCN),
-a reproducible market generator and an administrative API for training,
-evaluation and model publication. It runs independently of an external simulator.
+## Getting started
 
-## Start here
+- **Try a report.** Open a saved HTML report from the release assets in your
+  browser. The reference TCN pack includes `examples/1-instrument/tcn-report.html`.
+- **Run the service.** The Linux installer sets up a private PostgreSQL
+  database, imports the bundled models and starts the API and workers.
+  See [local installation](docs/installation.md). For containers, use the
+  [Compose deployment guide](docs/deployment.md).
+- **Analyze your first file.** Sign in with the token supplied by your
+  administrator. Under **New analysis**, choose a JSON file and select
+  **Analyze**. The [usage guide](docs/usage.md) covers reports, comparisons,
+  saved experiments and running the service from source.
 
-- [Install or update the local service](docs/installation.md)
-- [Run the service and analyse a file](docs/usage.md)
-- [Architecture and design decisions](docs/architecture.md)
-- [API and model administration](docs/api.md)
-- [Deployment](docs/deployment.md)
-
-## Installation
-
-For a persistent Linux service, the [local installer](docs/installation.md) stages
-locked dependencies, provisions PostgreSQL, imports the supplied models and
-starts the API/workers with one command. It also updates an existing installation
-while preserving its data and credentials.
-
-For development or a manual setup:
-
-Use Python **3.14.4** and uv **0.13.0**:
+From a source checkout you can validate the included example without starting
+a server. The project uses Python 3.14.4 and uv 0.13.0.
 
 ```sh
-uv sync --locked --extra ml --extra viz --extra service --extra s3
-uv run --locked regimex --help
+uv run --locked regimex validate --input tests/fixtures/experiment-v2.json
 ```
 
-The service needs PostgreSQL and separate API and worker processes. The
-[usage guide](docs/usage.md) walks through database setup, access tokens,
-loading a model, starting the processes and using the browser interface.
-[Docker Compose](docs/deployment.md) provides the container setup.
+## Data and models
 
-Release assets contain saved models and sample exports. Unpack them into
-`release/`, or create data and train models through the administrative API.
-Training is an explicit action; uploading an experiment never retrains a model.
-Runtime data and private credentials belong in the ignored `var/` directory.
+A version 2.1 export contains one completed run with one or two instruments,
+up to 4,096 time steps and a maximum file size of 16 MiB. An analysis preserves
+that grid and returns direction intervals, class probabilities and trading
+statistics. The report distinguishes steps with missing observations from
+steps with known zero activity. See the [export contract](docs/integration.md)
+and [model and interval definitions](docs/models.md).
 
-## Input and output
+Regimex includes a market generator and two model backends, logistic regression
+and a temporal convolutional network (TCN). On 384 held-out synthetic
+experiments, the reference TCN with profile `direction-32/2.0` scored
+0.713 interval macro-F1 against automatic labels. Scores by sequence length
+and boundary tolerance are in [model quality](docs/quality.md). Model bundles
+and example reports are distributed as release assets.
 
-The current JSON export contract supports one or two instruments, at most 4,096
-time steps and a 16 MiB file. It records prices, trades, orders, quotes, time units
-and explicit missingness. Validate an export before using it:
+## Running and maintaining Regimex
 
-```sh
-uv run --locked regimex validate --input experiment.json
-uv run --locked regimex schema --output var/schemas
-```
-
-Each analysis returns direction intervals, class probabilities, activity and
-variability statistics, plus a saved HTML report. Missing observations and
-observed zeros keep their distinct meanings. Intervals cover the original time
-grid; direction and data availability are separate.
-
-To build an offline report from an export and a downloaded analysis result:
-
-```sh
-uv run --locked --extra viz regimex report \
-  --input experiment.json --result result.json --output var/report
-```
-
-Open `var/report/index.html` and keep its directory together. The browser also
-provides a self-contained HTML download for each saved analysis.
-
-## Models and limitations
-
-Both models restore saved preprocessing and weights. Evaluation uses whole
-experiment splits and interval macro-F1. The reference TCN scores **0.713**
-interval macro-F1 and **0.893** point macro-F1 on 384 held-out experiments spanning
-256, 512 and 1,024 steps. Longer sequences and precise boundary placement remain
-weaknesses.
-These measurements do not establish independent human accuracy or transfer to a
-different simulator. See [evaluation](docs/quality.md) and
-[model and interval definitions](docs/models.md).
-
-## Documentation
-
-| Guide | Contents |
+| Task | Guide |
 | --- | --- |
-| [Usage](docs/usage.md) | Terminal commands, browser controls and common errors |
-| [Architecture](docs/architecture.md) | Component diagram, data flow and reasons for the design |
-| [API](docs/api.md) | Endpoints, authentication, datasets and model lifecycle |
-| [Models](docs/models.md) | Generation, interval semantics, features, training and evaluation |
-| [Quality](docs/quality.md) | Current measurements, methodology and limitations |
-| [Deployment](docs/deployment.md) | Docker, TLS, resources and local/S3 configuration |
-| [Storage](docs/storage.md) | Integrity, retention, backup and restoration |
-| [Integration](docs/integration.md) | External export and delegated access contract |
-| [Platform access](docs/access.md) | Connections, scoped keys, rotation, limits and access history |
-| [Release build](docs/releasing.md) | One-command packaging, saved assets and checksums |
-
-Build a release from a committed checkout:
-
-```sh
-uv run --locked python scripts/build_release.py --assets release
-```
-
-This writes `release/build/regimex-0.1.0.zip` with the source, wheel, source
-distribution and checksummed assets, including editable DOCX documents.
-Omit `--assets release` to build from source without an existing asset pack.
+| Understand the data flow and design choices | [Architecture](docs/architecture.md) |
+| Automate analysis, train a model or publish a version | [API workflows](docs/api.md) |
+| Connect a simulator and manage its keys | [Platform access](docs/access.md) |
+| Configure storage, back up data or recover an installation | [Storage and recovery](docs/storage.md) |
+| Package the service and its optional assets | [Building a release](docs/releasing.md) |
 
 ## Development
 
-Production code is in `src/regimex`, behavior tests in `tests`. See
-[AGENTS.md](AGENTS.md) for engineering conventions.
+The code lives in `src/regimex/`. See [AGENTS.md](AGENTS.md) for development
+conventions and local test commands.
 
-Work on a topic branch, then open a pull request into `main` when ready for full
-verification. CI runs the following checks:
-
-| Event | Checks |
-| --- | --- |
-| Push to any branch or tag | Formatting, lint, core tests, JavaScript tests and packaging |
-| Pull request into `main`, including subsequent pushes | All checks, including ML, type checking, PostgreSQL, HTTPS S3 and Docker deployment |
-| Manual run | All checks by default; clear `full_checks` to run only the quick checks |
-
-To start a manual run, open **Actions → CI → Run workflow**, choose the branch
-and set `full_checks`. This control is available once the workflow is on the
-default branch. Quick push runs do not cancel manual full runs. Direct pushes
-to `main` run only quick checks; request a full manual run before releasing them.
-
-Run the relevant checks locally:
-
-```sh
-uv run --locked ruff format --check .
-uv run --locked ruff check .
-uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test mypy src tests
-uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test pytest
-uv build --no-build-isolation
-```
-
-PostgreSQL and queue tests additionally require `--group queue-test` and a
-disposable `REGIMEX_TEST_DATABASE_DSN`. The real S3 and restoration test setup is
-described in [storage](docs/storage.md). Tests requiring unavailable services are
-reported as skipped; they do not verify those integrations.
+Every push runs formatting, lint, core tests, JavaScript checks and packaging.
+Pull requests into `main` also run the scientific, PostgreSQL, HTTPS S3 and
+container tests. For a direct push to `main`, run **Actions → CI → Run workflow**
+with **full_checks** enabled before releasing.
 
 ## License
 
-Regimex is licensed under the [MIT License](LICENSE). Third-party dependencies
-retain their own licenses.
-
-Standalone HTML reports include software notices. Keep `LICENSES.md` with
-exported report directories.
+[MIT](LICENSE). When sharing a report directory, include its `LICENSES.md`
+with the HTML and JavaScript.

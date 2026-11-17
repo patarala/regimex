@@ -145,8 +145,7 @@ def _environment() -> dict[str, JsonValue]:
 
 def _feature_inputs(observations: ObservationInputs) -> PredictionInputs:
     require_observation_inputs(observations)
-    # This conversion is private to this backend. The first two float32 columns
-    # preserve the original relative-log-price/adjacent-return representation.
+    # temporal_features reads relative log price and adjacent return from the first two columns.
     return PredictionInputs(
         np.concatenate([compute_features(rows) for rows in observations.observations]),
         np.r_[0, np.cumsum([item.step_count for item in observations.info])].astype(np.int64),
@@ -437,11 +436,8 @@ class TCNBackend:
             min(SELECTION_BATCH_SIZE, len(validation.info)),
             max(info.step_count for info in validation.info),
         )
-        # Include feature temporaries, AdamW state and saved gradients/checkpoints,
-        # Training and validation run sequentially but use different batch sizes
-        # and sequence lengths. Preserve the fixed validation batch policy: silently
-        # shrinking batches could change floating-point results and checkpoint ties.
-        # The child process provides hard OS limits in addition to this estimate.
+        # Training and validation run in turn. Budget for the larger activation set.
+        # Changing the validation batch size could change a close checkpoint score.
         required = (
             rows * len(TEMPORAL_NAMES) * 8 * 8
             + _state_bytes(parameters) * 10
