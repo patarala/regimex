@@ -3,6 +3,7 @@
 import html
 import re
 from dataclasses import dataclass
+from fractions import Fraction
 from importlib.resources import files
 from typing import TYPE_CHECKING
 
@@ -17,7 +18,7 @@ from regimex.storage import json_bytes
 if TYPE_CHECKING:
     from regimex.application.service import AnalysisResult
 
-COMPARISON_RENDERER_VERSION = "analysis-comparison/1.0"
+COMPARISON_RENDERER_VERSION = "analysis-comparison/1.1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +124,11 @@ def render_analysis_comparison(
                 "differences": _differences(a.intervals, b.intervals),
             }
         )
+    grid = export.time_grid
+    # Match the decimal grid contract even when subtracting two large coordinates
+    # in browser arithmetic would lose the duration of the terminal bin.
+    duration = Fraction(str(grid.completed_horizon)) - Fraction(str(grid.origin))
+    last_bin_fraction = duration / Fraction(str(grid.bin_width)) - (grid.step_count - 1)
     payload = _script_json(
         json_bytes(
             {
@@ -130,7 +136,8 @@ def render_analysis_comparison(
                 "source": export.source.model_dump(mode="json"),
                 "snapshot_id": str(first.snapshot_id),
                 "snapshot_sha256": export.content_sha256,
-                "time_grid": export.time_grid.model_dump(mode="json"),
+                "time_grid": grid.model_dump(mode="json"),
+                "last_bin_fraction": float(last_bin_fraction),
                 "analyses": [_metadata(first, first_sha256), _metadata(second, second_sha256)],
                 "series": series,
             }

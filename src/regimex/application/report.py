@@ -168,24 +168,18 @@ def render_analysis_report(
     template = resources.joinpath("analysis-report.html").read_text()
     css = resources.joinpath("analysis-report.css").read_text()
     script = resources.joinpath("analysis-report.js").read_text()
-    # Store repeated row keys and instrument identifiers once. This lossless
-    # plain JSON representation keeps every accepted full-grid report bounded
-    # without relying on browser decompression support.
-    fields = tuple(ExportObservation.model_fields)
-    fields = tuple(name for name in fields if name != "instrument_id")
-    observations = []
+    # Row order is part of the export digest. Use instrument indexes so long
+    # identifiers are not repeated in every observation of a multi-instrument run.
+    fields = tuple(name for name in ExportObservation.model_fields if name != "instrument_id")
+    instrument_indexes = {
+        instrument.instrument_id: index for index, instrument in enumerate(export.instruments)
+    }
+    observations = [
+        [instrument_indexes[row.instrument_id], *(getattr(row, name) for name in fields)]
+        for row in export.observations
+    ]
     sequences = []
     for sequence in result.sequences:
-        observations.append(
-            {
-                "instrument_id": sequence.instrument_id,
-                "rows": [
-                    [getattr(row, name) for name in fields]
-                    for row in export.observations
-                    if row.instrument_id == sequence.instrument_id
-                ],
-            }
-        )
         item = sequence.model_dump(mode="json")
         for interval in item["intervals"]:
             interval.pop("instrument_id")

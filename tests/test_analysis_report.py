@@ -29,7 +29,7 @@ from regimex.storage import json_bytes
 
 
 def report_inputs(
-    *, steps: int = 32, long_ids: bool = False, missing: bool = False
+    *, steps: int = 32, long_ids: bool = False, missing: bool = False, interleaved: bool = False
 ) -> tuple[ExportV2, AnalysisResult]:
     value = json.loads((Path(__file__).parent / "fixtures" / "experiment-v2.json").read_text())
     value.pop("content_sha256")
@@ -74,6 +74,8 @@ def report_inputs(
                 row.update(
                     last_price=None, price_state="unknown", trade_count=None, trade_volume=None
                 )
+    if interleaved:
+        value["observations"].sort(key=lambda row: row["step"])
     export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(value)))
     runtime = InferenceRuntime()
     policy_sha = hashlib.sha256(json_bytes(runtime.model_dump(mode="json"))).hexdigest()
@@ -204,11 +206,11 @@ def test_saved_results_render_using_their_recorded_availability_profile(
 
 
 def test_report_is_offline_escaped_and_preserves_original_zero_and_missing_values() -> None:
-    export, result = report_inputs(missing=True)
+    export, result = report_inputs(missing=True, interleaved=True)
     rendered = render_analysis_report(export, result, result_sha256=digest(result))
     document = rendered.html.decode()
     assert len(rendered.html) <= MAX_REPORT_BYTES
-    assert rendered.renderer_version == "analysis-html/3.0"
+    assert rendered.renderer_version == "analysis-html/3.1"
     assert '<footer class="provenance"' in document
     assert "Reading the plots" not in document and '<pre id="provenance"' not in document
     assert "whole requested completed snapshot" in document
@@ -227,20 +229,17 @@ def test_report_is_offline_escaped_and_preserves_original_zero_and_missing_value
     assert isinstance(sequences, list)
     assert all("events" not in sequence for sequence in sequences)
     fields = payload["observation_fields"]
-    blocks = payload["observations"]
-    assert isinstance(fields, list) and isinstance(blocks, list)
-    first = blocks[0]
-    assert isinstance(first, dict)
-    rows = first["rows"]
-    assert isinstance(rows, list)
-    assert rows[0][fields.index("buy_order_count")] == 0
-    assert rows[0][fields.index("best_bid")] is None
-    assert rows[0][fields.index("bid_state")] == "unknown"
-    assert rows[5][fields.index("trade_count")] == 0
-    assert rows[20][fields.index("last_price")] is None
-    assert rows[8][fields.index("best_bid")] is None
-    assert rows[8][fields.index("bid_state")] == "empty"
-    assert len(rows) == export.time_grid.step_count
+    rows = payload["observations"]
+    snapshot = payload["export"]
+    assert isinstance(fields, list) and isinstance(rows, list) and isinstance(snapshot, dict)
+    snapshot["observations"] = [
+        dict(
+            zip(fields, values, strict=True),
+            instrument_id=snapshot["instruments"][i]["instrument_id"],
+        )
+        for i, *values in rows
+    ]
+    assert ExportV2.model_validate_json(json.dumps(snapshot)) == export
     provenance = payload["report"]
     assert isinstance(provenance, dict)
     assert provenance["result_sha256"] == digest(result)
@@ -252,8 +251,8 @@ def test_maximum_grid_with_long_unicode_identities_fits_without_browser_decompre
     assert len(json_bytes(export.model_dump(mode="json"))) <= MAX_REPORT_BYTES
     assert len(rendered.html) <= MAX_REPORT_BYTES
     payload = embedded_data(rendered.html)
-    blocks = payload["observations"]
-    assert isinstance(blocks, list) and len(blocks) == 2
+    rows = payload["observations"]
+    assert isinstance(rows, list) and len(rows) == len(export.observations)
     assert (
         "DecompressionStream"
         not in (Path(__file__).parents[1] / "src/regimex/templates/analysis-report.js").read_text()

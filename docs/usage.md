@@ -28,7 +28,9 @@ run, model or analysis ID. **Rename** changes the display name in your workspace
 
 In the downloaded HTML, select an instrument to see its prices, class
 probabilities and predicted intervals on one time axis. Drag to zoom or use
-**Reset zoom** to return to the full run. In a multi-experiment CLI report,
+**Reset zoom** to return to the full run. **Download JSON** in this HTML file
+saves the original snapshot under `export` and the predictions under `result`.
+In a multi-experiment CLI report,
 select an experiment, then an instrument. Select an interval in the table to
 zoom in on it.
 
@@ -49,6 +51,7 @@ result and choose a second under **Compare with another analysis**.
 
 The price chart shows both sets of intervals on the same grid. The table
 reports where the models disagree about direction or data availability.
+Select a step range in the table to zoom both predictions and the price chart.
 **Download comparison** saves a self-contained HTML file. Both results must
 belong to the same saved snapshot. To compare the supplied baseline and TCN,
 both versions must have been published or activated.

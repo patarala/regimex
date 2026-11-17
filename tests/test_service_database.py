@@ -949,13 +949,15 @@ def test_polling_and_lists_do_not_transfer_or_decode_result_payload(
         repository.get_analysis(_principal("bob"), operation_id)
 
 
+@pytest.mark.parametrize("renderer", ["analysis-html/3.0", "analysis-html/3.1"])
 def test_success_requires_a_matching_report_in_the_same_commit(
-    repository: DatabaseRepository,
+    repository: DatabaseRepository, renderer: str
 ) -> None:
     operation_id = _submit(repository)
     operation = repository.claim_operation(operation_id)
     assert operation is not None and operation.attempt_token is not None
     payload, report = _result(repository, operation_id, {"complete": True})
+    report = report.model_copy(update={"renderer_version": renderer})
     with pytest.raises(ValueError, match="requires current report metadata"):
         repository.complete_analysis(
             operation_id, operation.attempt_token, payload, report=cast(AnalysisReportRecord, None)
