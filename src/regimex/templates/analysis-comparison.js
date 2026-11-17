@@ -10,7 +10,8 @@
   const priceBottom = 192;
   const laneY = [232, 280];
   const differenceY = 328;
-  const count = data.time_grid.step_count;
+  const grid = data.time_grid;
+  const count = grid.step_count;
   const states = {
     growth: {label: "Growth", symbol: "↑", fill: "#d6eadc"},
     decline: {label: "Decline", symbol: "↓", fill: "#f3d9ce"},
@@ -25,8 +26,20 @@
   let brush = null;
   let cursor = null;
   const number = (value) => value.toLocaleString(undefined, {maximumSignificantDigits: 6});
-  const time = (step) => data.time_grid.origin + step * data.time_grid.bin_width;
-  const x = (step) => left + (step - start) / (stop - start) * (right - left);
+  function time(step) {
+    if (step === count) return grid.completed_horizon;
+    const offset = step * grid.bin_width;
+    // The sum can be finite even when the offset alone is too large to represent.
+    return Number.isFinite(offset) ? grid.origin + offset : (grid.origin / 2 + step * (grid.bin_width / 2)) * 2;
+  }
+  function visibleDuration() {
+    return stop === count ? count - 1 - start + data.last_bin_fraction : stop - start;
+  }
+  function x(step) {
+    if (step === stop) return right;
+    if (step === start) return left;
+    return left + (step - start) / visibleDuration() * (right - left);
+  }
   const stateLabel = (state) => `${states[state].symbol} ${states[state].label}`;
 
   function element(tag, attributes = {}, text = null) {
@@ -129,7 +142,19 @@
       const rect = band(item, differenceY, 18, fill);
       rect.append(element("title", {}, `${item.kind} difference · [${item.start}, ${item.stop})`));
       const row = document.createElement("tr");
-      [`[${item.start}, ${item.stop})`, stateLabel(item.first), stateLabel(item.second), item.kind].forEach((value) => {
+      const range = document.createElement("button");
+      range.type = "button";
+      range.className = "range-link";
+      range.textContent = `[${item.start}, ${item.stop})`;
+      range.setAttribute("aria-label", `Zoom to steps ${item.start} through ${item.stop - 1}`);
+      range.addEventListener("click", () => {
+        setRange(item.start, item.stop);
+        $("chart-container").focus();
+      });
+      const steps = document.createElement("td");
+      steps.append(range);
+      row.append(steps);
+      [stateLabel(item.first), stateLabel(item.second), item.kind].forEach((value) => {
         const cell = document.createElement("td");
         cell.textContent = value;
         row.append(cell);
@@ -151,7 +176,7 @@
     const price = series.prices[step];
     const priceText = price === null ? "unavailable" : `${number(price)} (${series.price_states[step]})`;
     $("inspection").textContent =
-      `Step ${step} · Time ${number(time(step))} · Price ${priceText}` +
+      `Step ${step} · Time ${time(step)} · Price ${priceText}` +
       ` · A: ${labels[0]} · B: ${labels[1]}`;
     if (cursor) {
       cursor.setAttribute("x1", x(step));
@@ -175,10 +200,11 @@
     differences(series);
     line(left, priceBottom, right, priceBottom, "axis");
     for (let tick = 0; tick <= 4; tick++) {
-      const step = start + (stop - start) * tick / 4;
-      const position = x(step);
+      const fraction = tick / 4;
+      const position = left + fraction * (right - left);
+      const coordinate = (1 - fraction) * time(start) + fraction * time(stop);
       line(position, 351, position, 357, "axis");
-      text(number(time(step)), {x: position, y: 377, "text-anchor": tick === 4 ? "end" : tick === 0 ? "start" : "middle"});
+      text(String(coordinate), {x: position, y: 377, "text-anchor": tick === 4 ? "end" : tick === 0 ? "start" : "middle"});
     }
     text(`Time (${data.time_grid.unit})`, {x: (left + right) / 2, y: 399, "text-anchor": "middle"});
     cursor = element("line", {x1: left, x2: left, y1: top, y2: 347, class: "cursor"});
@@ -202,35 +228,46 @@
     stop = b;
     render();
   }
-  function pointerStep(event) {
+  function pointerX(event) {
     const box = svg.getBoundingClientRect();
     const position = (event.clientX - box.left) / box.width * width;
-    return Math.max(start, Math.min(stop, start + (position - left) / (right - left) * (stop - start)));
+    return Math.max(left, Math.min(right, position));
+  }
+  function stepAt(position) {
+    if (position === right) return stop;
+    const fraction = (position - left) / (right - left);
+    if (stop === count && start === count - 1) return start + fraction;
+    const offset = fraction * visibleDuration();
+    const fullBins = count - 1 - start;
+    if (stop === count && offset > fullBins)
+      return count - 1 + (offset - fullBins) / data.last_bin_fraction;
+    return start + offset;
   }
   svg.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
-    drag = {step: pointerStep(event), pointer: event.pointerId};
+    drag = {x: pointerX(event), pointer: event.pointerId};
     svg.setPointerCapture(event.pointerId);
-    brush = element("rect", {x: x(drag.step), y: top, width: 0, height: 323, class: "brush"});
+    brush = element("rect", {x: drag.x, y: top, width: 0, height: 323, class: "brush"});
     svg.append(brush);
   });
   svg.addEventListener("pointermove", (event) => {
-    const step = pointerStep(event);
+    const position = pointerX(event);
     if (drag) {
-      brush.setAttribute("x", x(Math.min(step, drag.step)));
-      brush.setAttribute("width", Math.abs(x(step) - x(drag.step)));
-    } else inspect(Math.floor(step));
+      brush.setAttribute("x", Math.min(position, drag.x));
+      brush.setAttribute("width", Math.abs(position - drag.x));
+    } else inspect(Math.floor(stepAt(position)));
   });
   svg.addEventListener("pointerup", (event) => {
     if (!drag || event.pointerId !== drag.pointer) return;
-    const first = drag.step;
-    const last = pointerStep(event);
+    const first = drag.x;
+    const last = pointerX(event);
     drag = null;
     brush.remove();
     brush = null;
     svg.releasePointerCapture(event.pointerId);
-    if (Math.abs(first - last) >= 1) setRange(Math.floor(Math.min(first, last)), Math.ceil(Math.max(first, last)));
-    else inspect(Math.floor(last));
+    if (Math.abs(first - last) >= 4)
+      setRange(Math.floor(stepAt(Math.min(first, last))), Math.ceil(stepAt(Math.max(first, last))));
+    else inspect(Math.floor(stepAt(last)));
   });
   svg.addEventListener("pointercancel", () => {
     drag = null;

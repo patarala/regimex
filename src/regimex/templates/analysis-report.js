@@ -9,13 +9,11 @@
     "1 experiment · " + input.instruments.length + " instrument" +
     (input.instruments.length === 1 ? "" : "s");
   // Reconstruct named fields without changing nulls or observed zeros.
-  input.observations = data.observations.flatMap((block) =>
-    block.rows.map((values) => {
-      const row = { instrument_id: block.instrument_id };
-      data.observation_fields.forEach((field, index) => { row[field] = values[index]; });
-      return row;
-    }),
-  );
+  input.observations = data.observations.map(([instrumentIndex, ...values]) => {
+    const row = { instrument_id: input.instruments[instrumentIndex].instrument_id };
+    data.observation_fields.forEach((field, index) => { row[field] = values[index]; });
+    return row;
+  });
   result.sequences = data.sequences.map((sequence) => ({
     ...sequence,
     intervals: sequence.intervals.map((item) => ({ ...item, instrument_id: sequence.instrument_id })),
@@ -31,9 +29,21 @@
   const nodes = ["price", "timeline", "activity", "volume", "coverage", "probability"].map($);
   const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
-  const coordinate = (step) => Math.min(grid.origin + step * grid.bin_width, grid.completed_horizon);
+  function coordinate(step) {
+    if (step === grid.step_count) return grid.completed_horizon;
+    const offset = step * grid.bin_width;
+    // A negative origin can bring an otherwise overflowing offset back into range.
+    return Number.isFinite(offset)
+      ? grid.origin + offset
+      : (grid.origin / 2 + step * (grid.bin_width / 2)) * 2;
+  }
   const extent = [grid.origin, grid.completed_horizon];
-  const sampleTime = (row) => (coordinate(row.step) + coordinate(row.step + 1)) / 2;
+  function sampleTime(row) {
+    const start = coordinate(row.step);
+    const stop = coordinate(row.step + 1);
+    const sum = start + stop;
+    return Number.isFinite(sum) ? sum / 2 : start / 2 + stop / 2;
+  }
   let activeNodes = [];
   let synchronizing = false;
   let generation = 0;

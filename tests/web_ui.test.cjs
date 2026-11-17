@@ -1192,7 +1192,7 @@ test("offline chart rendering removes the PNG export control", async () => {
   assert.equal(configurations[0].toImageButtonOptions, undefined);
 });
 
-test("analysis report reset restores the full extent after repeated linked drag zooms", async () => {
+async function drawAnalysisReport(timeGrid) {
   const elements = new Map();
   const get = (name) => {
     if (!elements.has(name)) {
@@ -1208,15 +1208,15 @@ test("analysis report reset restores the full extent after repeated linked drag 
   get("analysis-data").textContent = JSON.stringify({
     export: {
       instruments: [{instrument_id: "BTC/USD", base_asset: "BTC", quote_asset: "USD"}],
-      time_grid: {origin: 100, completed_horizon: 116, bin_width: 4, unit: "model-second"},
+      time_grid: {...timeGrid, step_count: 4, unit: "model-second"},
     },
     result: {class_names: ["sideways", "growth", "decline"]},
     observation_fields: ["step", "last_price", "trade_count", "trade_volume", "buy_order_count",
       "buy_order_volume", "sell_order_count", "sell_order_volume", "best_bid", "best_ask"],
-    observations: [{instrument_id: "BTC/USD", rows: [
-      [0, 100, 1, 1, 0, 0, 1, 1, null, 101], [1, 101, 1, 1, 0, 0, 1, 1, 100, 102],
-      [2, 102, 1, 1, 0, 0, 1, 1, 101, 103], [3, 103, 1, 1, 0, 0, 1, 1, 102, 104],
-    ]}],
+    observations: [
+      [0, 0, 100, 1, 1, 0, 0, 1, 1, null, 101], [0, 1, 101, 1, 1, 0, 0, 1, 1, 100, 102],
+      [0, 2, 102, 1, 1, 0, 0, 1, 1, 101, 103], [0, 3, 103, 1, 1, 0, 0, 1, 1, 102, 104],
+    ],
     sequences: [{instrument_id: "BTC/USD", intervals: [{start: 0, stop: 4, direction: "growth"}],
       probabilities: Array.from({length: 4}, () => [.1, .8, .1])}],
   });
@@ -1224,7 +1224,8 @@ test("analysis report reset restores the full extent after repeated linked drag 
   vm.runInNewContext(fs.readFileSync(path.join(root, "src/regimex/templates/analysis-report.js"), "utf8"), {
     document: {getElementById: get, createElement: () => new Element()},
     Plotly: {
-      react: async (node, _traces, layout) => {
+      react: async (node, traces, layout) => {
+        node.data = traces;
         node.layout = layout;
         plots.push(node);
       },
@@ -1235,6 +1236,28 @@ test("analysis report reset restores the full extent after repeated linked drag 
     },
   });
   await flush();
+  return {get, plots};
+}
+
+test("analysis report keeps sample times finite for large origins and offsets", async () => {
+  for (const [grid, expected] of [
+    [{origin: 1e308, completed_horizon: 1.4e308, bin_width: 1e307},
+      [1.05e308, 1.15e308, 1.25e308, 1.35e308]],
+    [{origin: -1.5e308, completed_horizon: 1.25e308, bin_width: 7e307},
+      [-1.15e308, -4.5e307, 2.5e307, 9.25e307]],
+  ]) {
+    const {get} = await drawAnalysisReport(grid);
+    const times = get("price").data[0].x;
+    assert.equal(times.length, expected.length);
+    times.forEach((time, step) => {
+      assert.ok(Number.isFinite(time));
+      assert.ok(Math.abs(time / expected[step] - 1) <= 4 * Number.EPSILON);
+    });
+  }
+});
+
+test("analysis report reset restores the full extent after repeated linked drag zooms", async () => {
+  const {get, plots} = await drawAnalysisReport({origin: 100, completed_horizon: 116, bin_width: 4});
   assert.equal(plots.length, 6);
   for (const [name, zoom] of [["price", [104, 112]], ["probability", [106, 110]]]) {
     const node = get(name);

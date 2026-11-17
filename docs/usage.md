@@ -28,7 +28,9 @@ run, model or analysis ID. **Rename** changes the display name in your workspace
 
 In the downloaded HTML, select an instrument to see its prices, class
 probabilities and predicted intervals on one time axis. Drag to zoom or use
-**Reset zoom** to return to the full run. In a multi-experiment CLI report,
+**Reset zoom** to return to the full run. **Download JSON** in this HTML file
+saves the original snapshot under `export` and the predictions under `result`.
+In a multi-experiment CLI report,
 select an experiment, then an instrument. Select an interval in the table to
 zoom in on it.
 
@@ -49,6 +51,7 @@ result and choose a second under **Compare with another analysis**.
 
 The price chart shows both sets of intervals on the same grid. The table
 reports where the models disagree about direction or data availability.
+Select a step range in the table to zoom both predictions and the price chart.
 **Download comparison** saves a self-contained HTML file. Both results must
 belong to the same saved snapshot. To compare the supplied baseline and TCN,
 both versions must have been published or activated.
@@ -67,7 +70,32 @@ out whether it accepted the request.
 
 ## Terminal tools
 
-From a source checkout, these commands validate an export and write the JSON schemas.
+With the local service running, submit an export and save its HTML report in one command:
+
+```sh
+uv run --locked regimex analyze \
+  --input tests/fixtures/experiment-v2.json --output var/analysis.html
+```
+
+The default service is `http://127.0.0.1:8000` and the token file is
+`var/credentials/user.token`. For a remote deployment, pass its HTTPS
+`--origin` and your `--token-file`. Use `--model` to select a published
+version. The default is the model active when the service accepts the job.
+Choose a new output filename.
+
+The command prints an idempotency key before submission and an analysis ID
+once accepted. If the connection drops before you receive an ID, repeat the
+submission with the same input, model and `--idempotency-key`. Once you have
+an ID, resume the download without submitting again:
+
+```sh
+uv run --locked regimex analyze --analysis-id ANALYSIS_UUID --output var/analysis.html
+```
+
+Waiting stops after 300 seconds by default. Use `--timeout SECONDS` to change it.
+An accepted analysis continues on the server after you stop waiting.
+
+To validate an export or write JSON schemas locally:
 
 ```sh
 uv run --locked regimex validate --input tests/fixtures/experiment-v2.json

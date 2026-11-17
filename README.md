@@ -35,11 +35,11 @@ steps with known zero activity. See the [export contract](docs/integration.md)
 and [model and interval definitions](docs/models.md).
 
 Regimex includes a market generator and two model backends, logistic regression
-and a temporal convolutional network (TCN). On 384 held-out synthetic
-experiments, the reference TCN with profile `direction-32/2.0` scored
-0.713 interval macro-F1 against automatic labels. Scores by sequence length
-and boundary tolerance are in [model quality](docs/quality.md). Model bundles
-and example reports are distributed as release assets.
+and a temporal convolutional network (TCN). On the same 72 held-out synthetic
+experiments with profile `direction-32/2.1`, interval macro-F1 against automatic
+labels was 0.408 for logistic regression and 0.669 for the TCN. See
+[model quality](docs/quality.md) for results by sequence length and the separate
+evaluation of the reference TCN distributed with the release assets.
 
 ## Running and maintaining Regimex
 

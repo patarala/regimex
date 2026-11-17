@@ -813,6 +813,7 @@ version = "0.1.0"
 source = { editable = "." }
 default-groups = ["build", "dev"]
 dependencies = [
+    { name = "httpx2" },
     { name = "pydantic" },
     { name = "typer" },
 ]
@@ -863,6 +864,7 @@ requires-dist = [
     { name = "alembic", marker = "extra == 'service'", specifier = ">=1.17,<2" },
     { name = "boto3", marker = "extra == 's3'", specifier = "==1.43.117" },
     { name = "fastapi", marker = "extra == 'service'", specifier = ">=0.119,<1" },
+    { name = "httpx2", specifier = "==2.13.0" },
     { name = "numpy", marker = "extra == 'ml'", specifier = ">=2.3,<3" },
     { name = "numpy", marker = "extra == 'viz'", specifier = ">=2.3,<3" },
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=6.3,<7" },

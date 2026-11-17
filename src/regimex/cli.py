@@ -1,10 +1,12 @@
 """Current observation tools and persistent service operations."""
 
+import asyncio
 import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated
+from uuid import UUID
 
 import typer
 
@@ -99,6 +101,48 @@ def validate_command(input_path: InputPath) -> None:
 
         export = load_export_v2(input_path)
         typer.echo(f"Valid snapshot: {export.source.snapshot_id}")
+
+    _execute(action)
+
+
+@app.command("analyze")
+def analyze_command(
+    output: OutputPath,
+    input_path: Annotated[
+        Path | None, typer.Option("--input", exists=True, dir_okay=False, readable=True)
+    ] = None,
+    analysis_id: Annotated[UUID | None, typer.Option(help="Resume an existing analysis.")] = None,
+    model: Annotated[
+        str | None, typer.Option(help="Published model version (default: active).")
+    ] = None,
+    idempotency_key: Annotated[
+        UUID | None, typer.Option(help="Reuse the printed key when retrying a submission.")
+    ] = None,
+    origin: Annotated[str, typer.Option(help="Regimex service origin.")] = "http://127.0.0.1:8000",
+    token_file: Annotated[
+        Path, typer.Option(help="File containing your user access token.")
+    ] = Path("var/credentials/user.token"),
+    timeout: Annotated[int, typer.Option(min=1, help="Total wait in seconds.")] = 300,
+) -> None:
+    """Analyze an export using a running service and save the HTML report."""
+    from regimex.analysis_client import analyze
+
+    def action() -> None:
+        logging.getLogger("httpx2").setLevel(logging.WARNING)
+        asyncio.run(
+            analyze(
+                input_path=input_path,
+                analysis_id=analysis_id,
+                model_version=model,
+                idempotency_key=idempotency_key,
+                origin=origin,
+                token_file=token_file,
+                output=output,
+                timeout=timeout,
+                progress=typer.echo,
+            )
+        )
+        typer.echo(f"Report: {output}")
 
     _execute(action)
 

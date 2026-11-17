@@ -41,7 +41,7 @@ from regimex.operations import (
     start_attempt,
     succeed,
 )
-from regimex.report_contracts import MAX_REPORT_BYTES, REPORT_RENDERER_VERSION, AnalysisReportRecord
+from regimex.report_contracts import MAX_REPORT_BYTES, SAVED_REPORT_RENDERERS, AnalysisReportRecord
 from regimex.service_contracts import (
     AnalysisHistoryFilter,
     AnalysisRecord,
@@ -925,7 +925,7 @@ class DatabaseRepository:
                 raise Conflict("The report metadata is absent after its visibility check.")
             if (
                 isinstance(row[0], dict)
-                and row[0].get("renderer_version") != REPORT_RENDERER_VERSION
+                and row[0].get("renderer_version") not in SAVED_REPORT_RENDERERS
             ):
                 raise UnsupportedContract()
             return AnalysisReportRecord.model_validate_json(json_bytes(row[0]))
