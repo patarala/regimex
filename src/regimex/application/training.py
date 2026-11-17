@@ -16,6 +16,7 @@ from pydantic import Field, JsonValue
 from regimex.contracts import Identifier, StrictModel
 from regimex.data_catalog import (
     LabeledSnapshot,
+    NoValidationDirections,
     RawTrainingData,
     analysis_profile_hash,
     content_hash,
@@ -229,6 +230,13 @@ def train_candidate(
     descriptor.validate_training_policy(request.policy)
     for item in (*data.train, *data.validation):
         descriptor.validate_observation_fields(_available_fields(item))
+    validation_references = _references(data.validation)
+    if not any(
+        interval.direction is not None
+        for reference in validation_references
+        for interval in reference
+    ):
+        raise NoValidationDirections()
     factory = registry.load_backend_factory_on_worker(
         request.architecture_id,
         request.training_runtime,
@@ -252,7 +260,7 @@ def train_candidate(
     )
     evaluator = SharedSelectionEvaluator(
         validation,
-        _references(data.validation),
+        validation_references,
         data.analysis_profile,
         data.validation_references.kind,
     )

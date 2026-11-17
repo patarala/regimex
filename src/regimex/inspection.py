@@ -18,6 +18,7 @@ from regimex.data_catalog import (
 )
 from regimex.directions import DIRECTION_NAMES
 from regimex.exports import ExportObservation, ExportV2
+from regimex.observation_availability import known_no_executions
 
 REPORT_VERSION = "6.0"
 OBSERVABLE_FIELDS = tuple(
@@ -276,7 +277,9 @@ def inspect_snapshots(
         for series in series_group:
             totals["instrument_sequences"] += 1
             totals["observations"] += len(series.rows)
-            totals["steps_without_executions"] += sum(row.trade_count == 0 for row in series.rows)
+            totals["steps_without_executions"] += sum(
+                known_no_executions(row) for row in series.rows
+            )
             validate_series(series)
             for i, (row, regime) in enumerate(zip(series.rows, series.regimes, strict=True)):
                 regime_counts[regime] += 1

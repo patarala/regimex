@@ -143,6 +143,22 @@ def test_unknown_values_remain_distinct_from_recorded_zero() -> None:
     assert missing["trade_count"]["fraction"] == 0.0
 
 
+def test_steps_without_executions_use_inactivity_evidence_when_counts_are_missing() -> None:
+    snapshot = source(0, missing=True)
+    value = snapshot.export.model_dump(mode="json", exclude={"content_sha256"})
+    for row in value["observations"]:
+        row.update(trade_count=None, trade_volume=0.0 if row["step"] < 4 else None)
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(value)))
+    inspection = inspect_snapshots(
+        (snapshot.model_copy(update={"export": export}),), results=(prediction_for(export),)
+    )
+    totals = inspection.summary["totals"]
+    assert isinstance(totals, dict)
+    assert totals["steps_without_executions"] == 4
+    assert inspection.summary["status_counts"] == {"no_trades": 4, "insufficient_data": 4}
+    assert all(row.trade_count is None for row in inspection.samples[0].rows)
+
+
 def test_report_preserves_saved_directions_instead_of_annotating_prices() -> None:
     sources = (source(0, active=True),)
     result = prediction_for(sources[0].export, direction=Direction.DECLINE)

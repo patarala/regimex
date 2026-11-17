@@ -292,6 +292,13 @@ class LabeledSnapshot(CatalogRecord):
     annotations: ValidatedAnnotations
 
 
+class NoValidationDirections(ValueError):
+    def __init__(self) -> None:
+        super().__init__(
+            "Model selection requires at least one validation interval with an observed direction."
+        )
+
+
 class RawTrainingData(CatalogRecord):
     """Checked train/validation values, without proof of their original allocation.
 

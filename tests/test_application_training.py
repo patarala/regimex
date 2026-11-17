@@ -56,7 +56,7 @@ from regimex.segmentation import DECODER_VERSION
 PROFILE = AnalysisConfig()
 
 
-def source(index: int) -> SourceSnapshot:
+def source(index: int, *, inactive: bool = False) -> SourceSnapshot:
     # Deliberate direction fixtures test implementation, not simulator realism or quality.
     value = json.loads((Path(__file__).parent / "fixtures" / "experiment-v2.json").read_text())
     value.pop("content_sha256")
@@ -79,6 +79,9 @@ def source(index: int) -> SourceSnapshot:
         }
         for step in range(192)
     ]
+    if inactive:
+        for row in value["observations"]:
+            row.update(last_price=initial, trade_count=0, trade_volume=0.0, price_state="carried")
     return SourceSnapshot(
         source_namespace="behavior-fixtures",
         split_group=SplitGroup(namespace="fixture-seeds", group_id=identifier, seed=index),
@@ -86,8 +89,8 @@ def source(index: int) -> SourceSnapshot:
     )
 
 
-def prepared_data() -> tuple[RawTrainingData, DatasetManifest]:
-    sources = tuple(source(index) for index in range(3))
+def prepared_data(*, inactive_validation: bool = False) -> tuple[RawTrainingData, DatasetManifest]:
+    sources = (source(0), source(1, inactive=inactive_validation), source(2))
     partitions: tuple[Partition, ...] = ("train", "validation", "test")
     dataset = seal_dataset(
         "training-fixture",
@@ -101,6 +104,13 @@ def prepared_data() -> tuple[RawTrainingData, DatasetManifest]:
     for member, item in zip(dataset.members[:2], sources[:2], strict=True):
         human = member.partition == "validation"
         rows = item.export.observations
+        directions: tuple[tuple[int, int, Direction | None], ...] = (
+            (0, 64, Direction.GROWTH),
+            (64, 128, Direction.DECLINE),
+            (128, 192, Direction.SIDEWAYS),
+        )
+        if human and inactive_validation:
+            directions = ((0, len(rows), None),)
         document = DirectionAnnotations(
             experiment_id=member.snapshot_id,
             policy="human-directions/1.0" if human else "retrospective-directions/3.0",
@@ -113,14 +123,10 @@ def prepared_data() -> tuple[RawTrainingData, DatasetManifest]:
                     start=start,
                     stop=stop,
                     direction=direction,
-                    status="observed",
+                    status="observed" if direction is not None else "no_trades",
                     statistics=summarize_interval(rows, start, stop),
                 )
-                for start, stop, direction in (
-                    (0, 64, Direction.GROWTH),
-                    (64, 128, Direction.DECLINE),
-                    (128, 192, Direction.SIDEWAYS),
-                )
+                for start, stop, direction in directions
             ),
         )
         documents[member.snapshot_id] = document
@@ -228,6 +234,27 @@ def test_shared_evaluator_rejects_lost_timestamps_and_wrong_class_shape(
     )
     with pytest.raises(ValueError, match="invalid class scores"):
         evaluator(np.full(shape, 1 / 3, dtype=np.float64))
+
+
+def test_training_requires_an_observed_validation_interval_before_fitting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data, _ = prepared_data(inactive_validation=True)
+
+    def unexpected_fit(*args: object, **kwargs: object) -> FitResult:
+        pytest.fail("The backend started fitting without a scorable validation reference.")
+
+    monkeypatch.setattr(BaselineBackend, "fit", unexpected_fit)
+    output = tmp_path / "candidate"
+    with pytest.raises(ValueError, match="validation interval with an observed direction"):
+        train_candidate(
+            data,
+            request(),
+            output,
+            registry=ArchitectureRegistry((baseline_descriptor(),)),
+            worker_id="test",
+        )
+    assert not output.exists()
 
 
 def test_failed_restoration_never_exposes_a_candidate(

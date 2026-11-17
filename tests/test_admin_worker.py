@@ -23,6 +23,7 @@ from regimex.computation_worker import (
     ComputationFailure,
     supervise_child,
 )
+from regimex.data_catalog import NoValidationDirections
 from regimex.resource_limits import ResourceBudgetExceeded, TimeBudgetExceeded
 
 pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux child supervision")
@@ -180,6 +181,7 @@ while True:
         (OSError(errno.EDQUOT, "private quota"), "capacity_limit", "disk space", False),
         (OSError(errno.EFBIG, "private path"), "capacity_limit", "file size", False),
         (ValueError("private validation details"), "invalid_data", "validation", False),
+        (NoValidationDirections(), "invalid_data", "observed direction", False),
         (ImportError("private module path"), "unsupported_configuration", "backend", False),
         (
             OSError(errno.EIO, "private provider credentials"),

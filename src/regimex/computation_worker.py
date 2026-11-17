@@ -20,6 +20,7 @@ from typing import Literal
 from pydantic import JsonValue, TypeAdapter
 
 from regimex.contracts import MAX_INPUT_BYTES
+from regimex.data_catalog import NoValidationDirections
 from regimex.infrastructure.object_store import ObjectCapacityError
 from regimex.model_registry import RegistryError
 from regimex.operations import OperationFailure
@@ -93,6 +94,8 @@ def _failure_from_exception(error: Exception) -> OperationFailure:
             code="unsupported_configuration",
             message="The worker cannot load the requested model backend or its dependencies.",
         )
+    if isinstance(error, NoValidationDirections):
+        return OperationFailure(code="invalid_data", message=str(error))
     if isinstance(error, ValueError):
         return OperationFailure(
             code="invalid_data",

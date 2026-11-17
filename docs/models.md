@@ -28,7 +28,8 @@ trade count, zero trade volume, or an explicit `carried`/`no_execution` price st
 A sustained known pause remains `no_trades` even when its prices are absent.
 Unknown totals remain null: knowing that no executions occurred does not fill a
 missing numeric aggregate. Without any such evidence, missing totals alone do
-not establish inactivity.
+not establish inactivity. The offline summary counts each step with evidence of
+inactivity in `steps_without_executions`, including pauses shorter than an interval.
 
 Interval statistics include first/last observed price steps, relative price change,
 trade count and volume, active-trade fraction, longest observed pause, coverage and
@@ -128,9 +129,11 @@ the selected seed and update. At most 32,000 history entries across all seeds ar
 accepted; service limits may further restrict the update count per seed.
 
 Whole experiments or seed groups are split before windows; both instruments stay
-together. Decoded validation segment F1 selects settings, seeds and checkpoints,
-with first-win ties. Final data is reserved before selection and opened after
-freezing. [API workflows](api.md#administration) enforce these lifecycle boundaries.
+together. Model selection requires at least one reference interval with an observed
+direction in the validation partition. Decoded validation segment F1 selects
+settings, seeds and checkpoints, with first-win ties. Final data is reserved
+before selection and opened after freezing. [API workflows](api.md#administration)
+enforce these lifecycle boundaries.
 
 ## Artifacts and extension points
 
