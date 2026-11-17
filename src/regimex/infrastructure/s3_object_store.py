@@ -528,11 +528,10 @@ class S3ObjectStore:
                 existing = None
             if existing is not None:
                 return self._same_payload(existing, size, digest)
-            if (
-                sum(item.size_bytes for item in self._inventory(client, checkpoint=checkpoint))
-                + size
-                > self.max_total_bytes
-            ):
+            versions = self._inventory(client, checkpoint=checkpoint)
+            if len(versions) >= self.config.max_inventory_entries:
+                raise ObjectCapacityError("S3 inventory has reached its configured entry limit")
+            if sum(item.size_bytes for item in versions) + size > self.max_total_bytes:
                 raise ObjectCapacityError("object store exceeds committed-payload capacity")
             os.fsync(temporary)
             with _CheckedUpload(temporary, checkpoint) as upload:

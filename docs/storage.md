@@ -118,7 +118,7 @@ fragment. HTTP is allowed only for literal loopback with
 `REGIMEX_S3_ALLOW_LOOPBACK_HTTP=true`. The production Compose profile requires HTTPS.
 
 Every writer to the same bucket/prefix must use the same dedicated coordination
-directory and byte limits on one host. Other hosts and out-of-band writes are
+directory and identical byte and inventory limits on one host. Other hosts and out-of-band writes are
 unsupported. Operations check versioning, pin exact provider versions and hash
 actual bytes; ETags and user metadata are not integrity evidence.
 Verified reads share the coordination lock; writes and conditional deletion
@@ -129,10 +129,13 @@ can delay a mutation until that mutation's bounded lock wait expires.
 | --- | --- |
 | `REGIMEX_MAX_OBJECT_BYTES` | 512 MiB, bounded single-part uploads |
 | `REGIMEX_MAX_STORE_BYTES` | 4 GiB, including retained S3 payload versions |
-| `REGIMEX_S3_MAX_INVENTORY_ENTRIES` | 100,000; excess fails |
+| `REGIMEX_S3_MAX_INVENTORY_ENTRIES` | 100,000 retained versions and delete markers |
 | `REGIMEX_S3_CONNECT_TIMEOUT_SECONDS` | 5 |
 | `REGIMEX_S3_READ_TIMEOUT_SECONDS` | 10 per blocking read |
 | `REGIMEX_S3_MAX_ATTEMPTS` | 3 |
+
+At the entry limit, reads and identical uploads still work. A new key requires
+a free entry. The local store applies a fixed limit of 100,000 committed files.
 
 `storage-check` verifies connectivity, enabled versioning and bounded inventory.
 It does not upload/delete probes or establish model readiness. Store lock waits

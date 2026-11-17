@@ -511,6 +511,19 @@ def test_object_and_total_capacity_limits_preserve_prior_commits(tmp_path: Path)
     assert_no_temporary_files(tmp_path)
 
 
+def test_new_key_must_fit_local_inventory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(object_store, "_MAX_COMMITTED_ENTRIES", 1)
+    objects = store(tmp_path / "objects")
+    upload = source(tmp_path, data=b"")
+    first = objects.put("nested/first", upload, expected_sha256=checksum(b""))
+    assert objects.put(first.key, upload, expected_sha256=first.sha256) == first
+    with pytest.raises(ObjectCapacityError, match="entry limit"):
+        objects.put("second", upload, expected_sha256=first.sha256)
+    assert [item.key for item in objects.inventory()] == [first.key]
+    objects.delete(first)
+    assert objects.put("second", upload, expected_sha256=first.sha256).key == "second"
+
+
 def test_racing_uploads_cannot_exceed_total_capacity(tmp_path: Path) -> None:
     root = tmp_path / "objects"
     stores = tuple(store(root, object_limit=4, total_limit=4) for _ in range(2))

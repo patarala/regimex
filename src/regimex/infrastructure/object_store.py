@@ -33,6 +33,7 @@ _VERSION_ATTRIBUTE = "user.regimex.object-version"
 _TEMPORARY_NAME = re.compile(r"\.regimex-temporary-[0-9a-f]{32}\Z")
 _BINDING_NAME = ".regimex-s3-binding.json"
 _LOCK_TIMEOUT_SECONDS = 5.0
+_MAX_COMMITTED_ENTRIES = 100_000
 
 
 class ObjectConflictError(ValueError):
@@ -44,7 +45,7 @@ class ObjectIntegrityError(ValueError):
 
 
 class ObjectCapacityError(ValueError):
-    """The configured per-object or committed-payload capacity would be exceeded."""
+    """A byte or inventory entry limit would be exceeded."""
 
 
 def _key_parts(key: str) -> tuple[str, ...]:
@@ -341,8 +342,8 @@ def _info(
     )
 
 
-def _committed_bytes(root: int) -> int:
-    total = 0
+def _committed_usage(root: int) -> tuple[int, int]:
+    count = total_bytes = 0
     with os.scandir(root) as entries:
         for entry in entries:
             if entry.name.startswith(_INTERNAL_PREFIX):
@@ -351,12 +352,15 @@ def _committed_bytes(root: int) -> int:
                 raise ValueError("object store cannot contain symbolic links")
             if entry.is_dir(follow_symlinks=False):
                 with _child_directory(root, (entry.name,), create=False) as child:
-                    total += _committed_bytes(child)
+                    child_count, child_bytes = _committed_usage(child)
+                    count += child_count
+                    total_bytes += child_bytes
             elif entry.is_file(follow_symlinks=False):
-                total += entry.stat(follow_symlinks=False).st_size
+                count += 1
+                total_bytes += entry.stat(follow_symlinks=False).st_size
             else:
                 raise ValueError("object store must contain only regular files and directories")
-    return total
+    return count, total_bytes
 
 
 class LocalObjectStore:
@@ -466,7 +470,10 @@ class LocalObjectStore:
                     if (info.sha256, info.size_bytes) != (checksum, size):
                         raise ObjectConflictError("immutable object key already has other content")
                     return info
-                if _committed_bytes(root) + size > self.max_total_bytes:
+                count, committed_bytes = _committed_usage(root)
+                if count >= _MAX_COMMITTED_ENTRIES:
+                    raise ObjectCapacityError("local inventory has reached its entry limit")
+                if committed_bytes + size > self.max_total_bytes:
                     raise ObjectCapacityError("object store exceeds committed-payload capacity")
                 os.setxattr(temporary, _VERSION_ATTRIBUTE, uuid.uuid4().hex.encode("ascii"))
                 os.fchmod(temporary, 0o444)
@@ -592,7 +599,7 @@ class LocalObjectStore:
                         with _child_directory(directory, (entry.name,), create=False) as child:
                             visit(child, parts)
                     elif entry.is_file(follow_symlinks=False):
-                        if len(results) >= 100_000:
+                        if len(results) >= _MAX_COMMITTED_ENTRIES:
                             raise ObjectCapacityError("local inventory exceeds its entry limit")
                         with _regular_file(directory, entry.name) as descriptor:
                             metadata = os.fstat(descriptor)

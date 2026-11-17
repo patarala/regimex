@@ -452,6 +452,34 @@ def test_bucket_versioning_suspension_fails_closed(actual_s3: Context, tmp_path:
     assert actual_s3.objects.inventory() == ()
 
 
+def test_new_key_must_fit_s3_version_inventory(tmp_path: Path) -> None:
+    config = s3_configuration(tmp_path / "coordination").model_copy(
+        update={"max_inventory_entries": 2}
+    )
+    objects = S3ObjectStore(config, max_object_bytes=4, max_total_bytes=8)
+    upload = source(tmp_path, b"")
+    checksum = digest(b"")
+    try:
+        first = objects.put("first", upload, expected_sha256=checksum)
+        # A retained generation occupies the second slot without creating a second key.
+        objects._sdk().client.put_object(
+            Bucket=config.bucket, Key=f"{config.prefix}/first", Body=b""
+        )
+        current = objects.stat("first")
+        assert current.version_id != first.version_id
+        assert objects.put("first", upload, expected_sha256=checksum) == current
+        with pytest.raises(ObjectCapacityError, match="entry limit"):
+            objects.put("second", upload, expected_sha256=checksum)
+        assert {version.version_id for version in objects.inventory()} == {
+            first.version_id,
+            current.version_id,
+        }
+        objects.delete_version(first)
+        assert objects.put("second", upload, expected_sha256=checksum).key == "second"
+    finally:
+        cleanup_owned_test_prefix(objects)
+
+
 def test_retained_old_versions_consume_quota(tmp_path: Path) -> None:
     config = s3_configuration(tmp_path / "coordination")
     objects = S3ObjectStore(config, max_object_bytes=4, max_total_bytes=8)
