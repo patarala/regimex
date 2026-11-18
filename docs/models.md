@@ -102,7 +102,7 @@ penalty for switching direction and the availability and duration rules above.
 
 | Backend | What it uses |
 | --- | --- |
-| Logistic baseline | Price, trade and order activity, spread and missing-value indicators. It summarizes each channel with its mean, population standard deviation, minimum and maximum over centered windows (32 and 128 steps by default) and the whole instrument sequence. |
+| Logistic baseline | Price, trade and order activity, spread and missing-value indicators. It computes the mean, population standard deviation, minimum and maximum over centered windows (32 and 128 steps by default). The training configuration selects whether to include whole-instrument summaries and how to handle gaps. |
 | Temporal convolutional network (TCN) | Log prices, returns and price shape in centered windows of 32, 64, 128, 256 and 512 steps. The network receives 25 numeric channels and their 25 missing-value indicators. |
 
 Training and validation contain separate experiments. All instruments from one
@@ -115,6 +115,8 @@ tie. The administrative workflow covers benchmark reservation, freezing the
 model and final evaluation. [API guide](api.md#administration)
 
 The baseline uses class-balanced logistic regression with the LBFGS solver.
+The [baseline window comparison](baseline-context.md) explains its summary
+settings and the measured effect of missing prices.
 The TCN uses AdamW and class-balanced cross-entropy. Within a known training
 direction it can penalize changes in adjacent log probabilities. The four steps
 on each side of a direction change receive double classification weight.

@@ -15,7 +15,7 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("sklearn")
 
 from regimex.backends.baseline import BaselineBackend, BaselinePredictor
-from regimex.baseline import fit_baseline
+from regimex.baseline import aggregate, fit_baseline
 from regimex.directions import AnalysisConfig
 from regimex.exports import ExportInstrument, ExportObservation, InstrumentUnits, ModelTimeGrid
 from regimex.features import FEATURE_NAMES, NUMERIC_NAMES, Preprocessor, compute_features
@@ -24,6 +24,7 @@ from regimex.model_contracts import BundleProvenance, FitResult, ObservationInpu
 from regimex.model_registry import (
     InferenceRuntime,
     LogisticParameters,
+    SummaryMode,
     TrainingPolicy,
     TrainingRuntime,
 )
@@ -103,7 +104,7 @@ def prepared(inputs: ObservationInputs, preprocessor: Preprocessor) -> PreparedP
 
 
 def fit(
-    *, analysis: AnalysisConfig | None = None
+    *, analysis: AnalysisConfig | None = None, summaries: SummaryMode = SummaryMode.LOCAL_AND_GLOBAL
 ) -> tuple[BaselineBackend, FitResult, ObservationInputs]:
     backend = BaselineBackend()
     training, validation = inputs("train"), inputs("validation")
@@ -112,7 +113,9 @@ def fit(
     result = backend.fit(
         TrainingInputs(training, targets),
         validation,
-        parameters=LogisticParameters(regularization=(0.1, 1.0), context_sizes=(4, 16)),
+        parameters=LogisticParameters(
+            regularization=(0.1, 1.0), context_sizes=(4, 16), summaries=summaries
+        ),
         policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
         analysis=analysis or AnalysisConfig(min_duration=4),
         runtime=TrainingRuntime(threads=1),
@@ -221,6 +224,77 @@ def test_backend_matches_numeric_fit_and_training_only_preprocessing() -> None:
     prior = fitted.preprocessor.mean.copy()
     fitted.predict(altered, runtime=InferenceRuntime(threads=1))
     np.testing.assert_array_equal(fitted.preprocessor.mean, prior)
+
+
+def test_local_summaries_preserve_distant_features_when_a_price_is_missing() -> None:
+    original = inputs("validation", (24,))
+    rows = original.observations[0]
+    gap = tuple(
+        row.model_copy(update={"last_price": None, "price_state": "unknown"})
+        if 12 <= row.step < 16
+        else row
+        for row in rows
+    )
+    masked = replace(original, observations=(gap,))
+    raw = np.concatenate([compute_features(seq) for seq in original.observations])
+    prep = Preprocessor.fit(raw)
+    before, after = prepared(original, prep), prepared(masked, prep)
+    for mode in (SummaryMode.LOCAL, SummaryMode.LOCAL_OBSERVED):
+        np.testing.assert_array_equal(
+            aggregate(before, (4,), mode)[:10], aggregate(after, (4,), mode)[:10]
+        )
+    assert not np.array_equal(aggregate(before, (4,))[0], aggregate(after, (4,))[0])
+
+
+def test_observed_statistics_exclude_fill_and_preserve_missing_indicators() -> None:
+    observations = inputs("validation", (3,))
+    width = len(FEATURE_NAMES)
+    values = np.zeros((3, width), dtype=np.float32)
+    values[:, 0] = [1.0, -99.0, 5.0]
+    values[:, len(NUMERIC_NAMES)] = [0.0, 1.0, 0.0]
+    values[:, 1] = -99.0
+    values[:, len(NUMERIC_NAMES) + 1] = 1.0
+    prepared = PreparedPredictionInputs(values, np.array([0, 3]), observations.info)
+    summaries = aggregate(prepared, (3,), SummaryMode.LOCAL_OBSERVED)
+    window = summaries[1].reshape(4, width)
+    np.testing.assert_allclose(window[:, 0], [3, 2, 1, 5])
+    np.testing.assert_array_equal(window[:, 1], np.zeros(4))
+    np.testing.assert_allclose(window[:, len(NUMERIC_NAMES)], [1 / 3, np.sqrt(2) / 3, 0, 1])
+    np.testing.assert_array_equal(window[:, len(NUMERIC_NAMES) + 1], [1, 0, 1, 1])
+
+
+@pytest.mark.parametrize("mode", list(SummaryMode))
+def test_summary_mode_survives_reload(tmp_path: Path, mode: SummaryMode) -> None:
+    backend, fitted, validation = fit(summaries=mode)
+    root = tmp_path / "bundle"
+    runtime = InferenceRuntime(threads=1)
+    sha = backend.write_bundle(
+        fitted, root, provenance=provenance(fitted), analysis=fitted.predictor.analysis
+    )
+    saved = json.loads((root / "configuration.json").read_bytes())
+    if mode == SummaryMode.LOCAL_AND_GLOBAL:
+        assert saved["codec_version"] == "aggregate-logistic/1.0"
+        assert "summaries" not in saved["parameters"]
+    else:
+        assert saved["codec_version"] == "aggregate-logistic/2.0"
+        assert saved["parameters"]["summaries"] == mode
+    restored = backend.load_bundle(root, manifest_sha256=sha, runtime=runtime)
+    assert restored.model.summaries == mode
+    np.testing.assert_array_equal(
+        restored.predict(validation, runtime=runtime),
+        fitted.predictor.predict(validation, runtime=runtime),
+    )
+    if mode != SummaryMode.LOCAL_AND_GLOBAL:
+        saved["codec_version"] = "aggregate-logistic/1.0"
+        write_json(root / "configuration.json", saved)
+        with pytest.raises(ValueError, match="summary mode differs from its codec"):
+            backend.load_bundle(root, manifest_sha256=rehash(root), runtime=runtime)
+
+
+def test_empty_contexts_require_whole_sequence_statistics() -> None:
+    assert LogisticParameters(context_sizes=()).summaries.whole_sequence
+    with pytest.raises(ValueError, match="local-only summaries"):
+        LogisticParameters(context_sizes=(), summaries=SummaryMode.LOCAL_OBSERVED)
 
 
 def test_original_grid_and_no_cross_sequence_context() -> None:

@@ -46,13 +46,13 @@ PROFILE = AnalysisConfig(version="2.1")
 RUNTIME = InferenceRuntime(threads=2, max_batch_size=8)
 
 
-def prepare_masked_members(paths, members):
+def prepare_masked_members(paths, members, *, scenarios=SCENARIOS):
     variants = []
     for path, member in zip(paths, members, strict=True):
         pristine = load_export_v2(path)
         if pristine.content_sha256 != member.export_sha256:
             raise ValueError("Pristine snapshot differs from the reserved dataset")
-        for scenario in SCENARIOS:
+        for scenario in scenarios:
             export = masked_export(pristine, scenario)
             source = SourceSnapshot(
                 source_namespace=member.source_namespace,

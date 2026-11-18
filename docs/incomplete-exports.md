@@ -39,7 +39,9 @@ entire sequence as well as local windows. A local gap can therefore change an
 input to the baseline at every step. The TCN uses price-derived features.
 These measurements cover the specified gaps on synthetic markets and measure
 agreement with the automatic labeling rule. Accuracy on external markets and
-agreement with human judgments remain unmeasured.
+agreement with human judgments remain unmeasured. A separate
+[comparison of baseline windows](baseline-context.md) tests which features
+make a price gap change directions elsewhere in the run.
 
 ## When does the service stop classifying?
 

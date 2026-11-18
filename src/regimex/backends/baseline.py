@@ -7,10 +7,10 @@ import zipfile
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Literal, cast
+from typing import Literal, Self, cast
 
 import numpy as np
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from regimex.baseline import LinearModel, fit_baseline
 from regimex.contracts import StrictModel
@@ -35,6 +35,7 @@ from regimex.model_contracts import (
 from regimex.model_registry import (
     InferenceRuntime,
     LogisticParameters,
+    SummaryMode,
     TrainingPolicy,
     TrainingPolicySpec,
     TrainingRuntime,
@@ -47,7 +48,17 @@ from regimex.storage import digest, json_bytes, output_directory, write_json
 ARCHITECTURE_ID = "baseline"
 IMPLEMENTATION_VERSION = "0.1.0"
 PREPROCESSING_VERSION = "baseline-standardization/1.0"
-CODEC_VERSION: Literal["aggregate-logistic/1.0"] = "aggregate-logistic/1.0"
+BaselineCodec = Literal["aggregate-logistic/1.0", "aggregate-logistic/2.0"]
+
+
+def _codec(summaries: SummaryMode) -> BaselineCodec:
+    return (
+        "aggregate-logistic/1.0"
+        if summaries == SummaryMode.LOCAL_AND_GLOBAL
+        else "aggregate-logistic/2.0"
+    )
+
+
 _MEMBERS: dict[BundleRole, str] = {
     "configuration": "configuration.json",
     "preprocessing": "preprocessing.npz",
@@ -58,7 +69,7 @@ _MEMBERS: dict[BundleRole, str] = {
 
 
 class BaselineConfiguration(StrictModel):
-    codec_version: Literal["aggregate-logistic/1.0"] = CODEC_VERSION
+    codec_version: BaselineCodec
     parameters: LogisticParameters
     training_policy: TrainingPolicy
     training_runtime: TrainingRuntime
@@ -67,6 +78,12 @@ class BaselineConfiguration(StrictModel):
     solver: Literal["lbfgs"] = "lbfgs"
     maximum_iterations: Literal[2000] = 2000
     environment: dict[str, JsonValue]
+
+    @model_validator(mode="after")
+    def require_summary_codec(self) -> Self:
+        if self.codec_version != _codec(self.parameters.summaries):
+            raise ValueError("baseline summary mode differs from its codec")
+        return self
 
 
 class ValidationRecord(StrictModel):
@@ -148,7 +165,10 @@ class BaselinePredictor:
 
     def __post_init__(self) -> None:
         size = len(FEATURE_NAMES)
-        width = size * 4 * (len(self.configuration.parameters.context_sizes) + 1)
+        parameters = self.configuration.parameters
+        width = parameters.summaries.width(size, parameters.context_sizes)
+        if self.model.summaries != parameters.summaries:
+            raise ValueError("baseline summary configuration disagrees with weights")
         if self.model.context_sizes != self.configuration.parameters.context_sizes:
             raise ValueError("baseline context configuration disagrees with weights")
         preprocessor = Preprocessor(
@@ -169,6 +189,7 @@ class BaselinePredictor:
             _freeze(self.model.mean, (width,)),
             _freeze(self.model.scale, (width,), positive=True),
             self.model.context_sizes,
+            self.model.summaries,
         )
         object.__setattr__(self, "preprocessor", preprocessor)
         object.__setattr__(self, "model", model)
@@ -293,7 +314,7 @@ class BaselineBackend:
             item.experiment_id for item in validation.info
         }:
             raise ValueError("baseline training and validation experiments must be disjoint")
-        width = len(FEATURE_NAMES) * 4 * (len(parameters.context_sizes) + 1)
+        width = parameters.summaries.width(len(FEATURE_NAMES), parameters.context_sizes)
         # A conservative allocation bound rejects oversized jobs before feature
         # preparation. A worker process enforces the hard OS resource limits.
         rows = training.observations.row_count + validation.row_count
@@ -333,6 +354,7 @@ class BaselineBackend:
             seed=policy.seeds[0],
             threads=runtime.threads,
             context_sizes=parameters.context_sizes,
+            summaries=parameters.summaries,
             scorer=evaluate,
             check_budget=check_budget,
         )
@@ -347,6 +369,7 @@ class BaselineBackend:
             raise ValueError("baseline evaluator must return segment macro F1 between zero and one")
         environment = _environment()
         configuration = BaselineConfiguration(
+            codec_version=_codec(parameters.summaries),
             parameters=parameters,
             training_policy=policy,
             training_runtime=runtime,
@@ -397,9 +420,11 @@ class BaselineBackend:
         history = HistoryRecord.model_validate({"candidates": result.history})
         self._validate_selection(predictor.configuration, validation, history)
         with output_directory(root) as output:
-            write_json(
-                output / _MEMBERS["configuration"], predictor.configuration.model_dump(mode="json")
-            )
+            configuration = predictor.configuration.model_dump(mode="json")
+            if predictor.configuration.codec_version == "aggregate-logistic/1.0":
+                # The original codec has one fixed summary mode.
+                del configuration["parameters"]["summaries"]
+            write_json(output / _MEMBERS["configuration"], configuration)
             np.savez(
                 output / _MEMBERS["preprocessing"],
                 fill=predictor.preprocessor.fill,
@@ -500,7 +525,9 @@ class BaselineBackend:
             raise ValueError("baseline bundle configuration and manifest provenance disagree")
         self._validate_selection(configuration, validation, history)
         size = len(FEATURE_NAMES)
-        width = size * 4 * (len(configuration.parameters.context_sizes) + 1)
+        width = configuration.parameters.summaries.width(
+            size, configuration.parameters.context_sizes
+        )
         state_bytes = 8 * (3 * size + 5 * width + 3)
         if state_bytes > runtime.model_cache_budget_bytes:
             raise ResourceBudgetExceeded("baseline model exceeds the inference model cache budget")
@@ -527,6 +554,7 @@ class BaselineBackend:
                 weights["mean"],
                 weights["scale"],
                 configuration.parameters.context_sizes,
+                configuration.parameters.summaries,
             ),
             configuration,
         )

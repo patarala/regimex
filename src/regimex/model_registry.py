@@ -9,6 +9,7 @@ import importlib
 import json
 from collections.abc import Callable, Collection, Iterable
 from datetime import UTC, datetime
+from enum import StrEnum
 from importlib import metadata
 from types import MappingProxyType
 from typing import Annotated, Literal, Self, cast
@@ -44,6 +45,24 @@ class RegistryError(ValueError):
     """An installed architecture has an invalid or incompatible contract."""
 
 
+class SummaryMode(StrEnum):
+    LOCAL_AND_GLOBAL = "local_and_global"
+    LOCAL = "local"
+    LOCAL_AND_GLOBAL_OBSERVED = "local_and_global_observed"
+    LOCAL_OBSERVED = "local_observed"
+
+    @property
+    def whole_sequence(self) -> bool:
+        return self in (self.LOCAL_AND_GLOBAL, self.LOCAL_AND_GLOBAL_OBSERVED)
+
+    @property
+    def observed_only(self) -> bool:
+        return self in (self.LOCAL_AND_GLOBAL_OBSERVED, self.LOCAL_OBSERVED)
+
+    def width(self, channels: int, context_sizes: tuple[int, ...]) -> int:
+        return 4 * channels * (len(context_sizes) + int(self.whole_sequence))
+
+
 class LogisticParameters(StrictModel):
     """Regularization candidates preserve the existing aggregate baseline search."""
 
@@ -54,10 +73,14 @@ class LogisticParameters(StrictModel):
     )
     context_sizes: tuple[Annotated[int, Field(ge=2, le=MAX_STEPS)], ...] = (32, 128)
 
+    summaries: SummaryMode = SummaryMode.LOCAL_AND_GLOBAL
+
     @model_validator(mode="after")
     def distinct_candidates(self) -> Self:
         if len(set(self.regularization)) != len(self.regularization):
             raise ValueError("regularization candidates must be unique")
+        if not self.context_sizes and not self.summaries.whole_sequence:
+            raise ValueError("local-only summaries require at least one context size")
         if len(set(self.context_sizes)) != len(self.context_sizes):
             raise ValueError("baseline context sizes must be unique")
         return self
