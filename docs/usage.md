@@ -110,6 +110,16 @@ uv run --locked regimex analyze --analysis-id ANALYSIS_UUID --output var/analysi
 Waiting stops after 300 seconds by default. Use `--timeout SECONDS` to change it.
 An accepted analysis continues on the server after you stop waiting.
 
+To use the predictions in another program or a multi-experiment report, choose
+`--format json`. You can request JSON on the initial submission or download it
+later using the analysis ID printed by the command. Both formats come from the
+same saved analysis.
+
+```sh
+uv run --locked regimex analyze --analysis-id ANALYSIS_UUID --format json --output var/result.json
+uv run --locked --extra viz regimex report --input var/run.json --result var/result.json --output var/run-report
+```
+
 To validate an export or write JSON schemas locally:
 
 ```sh

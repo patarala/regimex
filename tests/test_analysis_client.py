@@ -8,10 +8,12 @@ from uuid import uuid4
 
 import httpx2
 import pytest
+from support.report_fixtures import prediction_for
 from typer.testing import CliRunner
 
 from regimex import analysis_client
 from regimex.cli import app
+from regimex.exports import load_export_v2
 
 EXPORT = Path(__file__).parent / "fixtures" / "experiment-v2.json"
 ANALYSIS_ID = str(uuid4())
@@ -34,16 +36,22 @@ def status_for(state: str, **changes: object) -> dict[str, object]:
         "analysis_id": ANALYSIS_ID,
         "snapshot_id": SNAPSHOT_ID,
         "job": {"state": state, "failure": None},
+        "result_available": state == "succeeded",
         "report_available": state == "succeeded",
         **changes,
     }
 
 
 @pytest.fixture
-def command(tmp_path: Path) -> list[str]:
+def token_file(tmp_path: Path) -> Path:
     token = tmp_path / "user.token"
     token.write_text("test-client-token\n")
-    return ["analyze", "--output", str(tmp_path / "report.html"), "--token-file", str(token)]
+    return token
+
+
+@pytest.fixture
+def command(tmp_path: Path, token_file: Path) -> list[str]:
+    return ["analyze", "--output", str(tmp_path / "report.html"), "--token-file", str(token_file)]
 
 
 def mock_http(
@@ -93,6 +101,83 @@ def test_submit_wait_and_save(
         f"/api/v1/analyses/{ANALYSIS_ID}/report",
     ]
     assert (tmp_path / "report.html").read_bytes() == HTML
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_save_json_predictions(
+    tmp_path: Path, token_file: Path, monkeypatch: pytest.MonkeyPatch, resume: bool
+) -> None:
+    export = load_export_v2(EXPORT)
+    payload = prediction_for(export).model_dump(mode="json")
+    payload.update(analysis_id=ANALYSIS_ID, snapshot_id=SNAPSHOT_ID)
+    # Large results use the artifact limit, while polling responses have a smaller limit.
+    body = b" " * (64 * 1024) + json.dumps(payload).encode()
+    calls = []
+
+    def service(request: httpx2.Request) -> httpx2.Response:
+        path = request.url.path
+        calls.append((request.method, path))
+        if path.endswith("/snapshots"):
+            return reply(201, {"snapshot_id": SNAPSHOT_ID, "content_sha256": export.content_sha256})
+        if path.endswith("/analyses"):
+            return reply(202, status_for("succeeded", report_available=False))
+        if path == f"/api/v1/analyses/{ANALYSIS_ID}":
+            return reply(200, status_for("succeeded", report_available=False))
+        assert path == f"/api/v1/analyses/{ANALYSIS_ID}/result"
+        assert request.headers["Accept"] == "application/json"
+        return httpx2.Response(
+            200, headers={"Content-Type": "application/json"}, stream=httpx2.ByteStream(body)
+        )
+
+    output = tmp_path / "predictions.json"
+    source = ["--analysis-id", ANALYSIS_ID] if resume else ["--input", str(EXPORT)]
+    mock_http(monkeypatch, service)
+    result = CliRunner().invoke(
+        app,
+        [
+            "analyze",
+            "--output",
+            str(output),
+            "--token-file",
+            str(token_file),
+            "--format",
+            "json",
+            *source,
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert output.read_bytes() == body
+    expected = (
+        [("GET", f"/api/v1/analyses/{ANALYSIS_ID}")]
+        if resume
+        else [("POST", "/api/v1/snapshots"), ("POST", "/api/v1/analyses")]
+    )
+    assert calls == [*expected, ("GET", f"/api/v1/analyses/{ANALYSIS_ID}/result")]
+
+
+@pytest.mark.parametrize(
+    ("issue", "message"),
+    [
+        ("missing", "without a saved JSON result"),
+        ("invalid", "schema"),
+        ("wrong_id", "different analysis"),
+    ],
+)
+def test_rejects_unusable_json_result(
+    tmp_path: Path, command: list[str], monkeypatch: pytest.MonkeyPatch, issue: str, message: str
+) -> None:
+    def service(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path.endswith("/result"):
+            assert issue != "missing"
+            if issue == "invalid":
+                return reply(200, {"invalid": True})
+            return reply(200, prediction_for(load_export_v2(EXPORT)).model_dump(mode="json"))
+        return reply(200, status_for("succeeded", result_available=issue != "missing"))
+
+    mock_http(monkeypatch, service)
+    result = CliRunner().invoke(app, [*command, "--format", "json", "--analysis-id", ANALYSIS_ID])
+    assert result.exit_code == 1 and message in result.output
+    assert not (tmp_path / "report.html").exists()
 
 
 @pytest.mark.parametrize(

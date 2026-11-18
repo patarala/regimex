@@ -1,4 +1,4 @@
-"""Submit an export to a running Regimex service and download its saved report."""
+"""Submit an export and retrieve the saved HTML report or JSON predictions."""
 
 import asyncio
 import ipaddress
@@ -8,6 +8,7 @@ import ssl
 import stat
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -38,6 +39,7 @@ class _Analysis(BaseModel):
     analysis_id: UUID
     snapshot_id: UUID
     job: _Job
+    result_available: bool
     report_available: bool
 
 
@@ -101,9 +103,9 @@ async def _request(
     expected_status: int = 200,
     content: bytes | None = None,
     key: UUID | None = None,
-    html: bool = False,
+    media_type: str = "application/json",
+    limit: int = _JSON_LIMIT,
 ) -> bytes:
-    media_type = "text/html" if html else "application/json"
     headers = {"Accept": media_type}
     if content is not None:
         headers["Content-Type"] = "application/json"
@@ -126,7 +128,7 @@ async def _request(
             raise RuntimeError(message)
         if actual_type != media_type:
             raise ValueError(f"Expected a {media_type} response from the service.")
-        return await _response_bytes(response, MAX_REPORT_BYTES if html else _JSON_LIMIT)
+        return await _response_bytes(response, limit)
 
 
 async def _submit(
@@ -154,9 +156,9 @@ async def _submit(
     return analysis
 
 
-async def _wait_for_report(
+async def _wait_for_success(
     client: httpx2.AsyncClient, analysis_id: UUID, status: _Analysis | None
-) -> bytes:
+) -> _Analysis:
     path = f"analyses/{analysis_id}"
     while True:
         if status is None:
@@ -164,9 +166,7 @@ async def _wait_for_report(
         if status.analysis_id != analysis_id:
             raise ValueError("The service returned a different analysis ID.")
         if status.job.state == "succeeded":
-            if not status.report_available:
-                raise ValueError("The analysis succeeded without a saved HTML report.")
-            return await _request(client, path + "/report", html=True)
+            return status
         if status.job.state == "failed":
             failure = status.job.failure
             detail = f" ({failure.code}): {_display(failure.message)}" if failure else "."
@@ -175,6 +175,31 @@ async def _wait_for_report(
             raise ValueError("The analysis was cancelled.")
         await asyncio.sleep(1.5)
         status = None
+
+
+async def _download(
+    client: httpx2.AsyncClient, analysis: _Analysis, output_format: Literal["html", "json"]
+) -> bytes:
+    path = f"analyses/{analysis.analysis_id}"
+    if output_format == "html":
+        if not analysis.report_available:
+            raise ValueError("The analysis succeeded without a saved HTML report.")
+        html = await _request(
+            client, path + "/report", media_type="text/html", limit=MAX_REPORT_BYTES
+        )
+        if not html:
+            raise ValueError("The service returned an empty report.")
+        return html
+
+    from regimex.application.service import AnalysisResult
+
+    if not analysis.result_available:
+        raise ValueError("The analysis succeeded without a saved JSON result.")
+    data = await _request(client, path + "/result", limit=MAX_INPUT_BYTES)
+    result = AnalysisResult.model_validate_json(data)
+    if (result.analysis_id, result.snapshot_id) != (analysis.analysis_id, analysis.snapshot_id):
+        raise ValueError("The saved result belongs to a different analysis or snapshot.")
+    return data
 
 
 async def analyze(
@@ -188,6 +213,7 @@ async def analyze(
     output: Path,
     timeout: int,
     progress: Callable[[str], None],
+    output_format: Literal["html", "json"] = "html",
 ) -> None:
     if (input_path is None) == (analysis_id is None):
         raise ValueError("Supply exactly one of --input and --analysis-id.")
@@ -220,10 +246,8 @@ async def analyze(
                 analysis_id = status.analysis_id
             progress(f"Analysis ID: {analysis_id}")
             assert analysis_id is not None
-            html = await _wait_for_report(client, analysis_id, status)
-            if not html:
-                raise ValueError("The service returned an empty report.")
-            write_new_file(output, html)
+            completed = await _wait_for_success(client, analysis_id, status)
+            write_new_file(output, await _download(client, completed, output_format))
     except TimeoutError, httpx2.TimeoutException:
         raise RuntimeError("Timed out waiting for the service.") from None
     except httpx2.RequestError as error:

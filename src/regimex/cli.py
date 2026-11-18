@@ -5,7 +5,7 @@ import json
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 import typer
@@ -136,6 +136,10 @@ def generate_command(
 @app.command("analyze")
 def analyze_command(
     output: OutputPath,
+    output_format: Annotated[
+        Literal["html", "json"],
+        typer.Option("--format", help="Download the HTML report or JSON predictions."),
+    ] = "html",
     input_path: Annotated[
         Path | None, typer.Option("--input", exists=True, dir_okay=False, readable=True)
     ] = None,
@@ -152,7 +156,7 @@ def analyze_command(
     ] = Path("var/credentials/user.token"),
     timeout: Annotated[int, typer.Option(min=1, help="Total wait in seconds.")] = 300,
 ) -> None:
-    """Analyze an export using a running service and save the HTML report."""
+    """Analyze an export using a running service and save its report or predictions."""
     from regimex.analysis_client import analyze
 
     def action() -> None:
@@ -166,11 +170,13 @@ def analyze_command(
                 origin=origin,
                 token_file=token_file,
                 output=output,
+                output_format=output_format,
                 timeout=timeout,
                 progress=typer.echo,
             )
         )
-        typer.echo(f"Report: {output}")
+        label = "Report" if output_format == "html" else "Result"
+        typer.echo(f"{label}: {output}")
 
     _execute(action)
 
