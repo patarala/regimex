@@ -177,6 +177,10 @@ a:focus-visible {
   min-width: 820px;
   height: auto;
 }
+.chart-canvas.paired,
+.chart-canvas.paired #explorer {
+  min-width: 0;
+}
 .table-wrap {
   overflow-x: auto;
 }

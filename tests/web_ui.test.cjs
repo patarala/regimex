@@ -1161,6 +1161,12 @@ test("an earlier session's diagnostics cannot overwrite a new session", async ()
   assert.match(ui.get("job-detail").textContent, /Checking worker availability/);
 });
 
+function reportScript(name) {
+  return ["instrument-timeline.js", name]
+    .map((script) => fs.readFileSync(path.join(root, "src/regimex/templates", script), "utf8"))
+    .join("\n");
+}
+
 test("offline chart rendering removes the PNG export control", async () => {
   const elements = new Map();
   const get = (name) => {
@@ -1181,7 +1187,7 @@ test("offline chart rendering removes the PNG export control", async () => {
   get("experiment").value = "one";
   get("sample").value = "0";
   const configurations = [];
-  vm.runInNewContext(fs.readFileSync(path.join(root, "src/regimex/templates/direction-report.js"), "utf8"), {
+  vm.runInNewContext(reportScript("direction-report.js"), {
     document: {getElementById: get, createElement: () => new Element(), createTextNode: (text) => text},
     Plotly: {react: async (_node, _traces, _layout, config) => configurations.push(config)},
     history: {replaceState() {}}, location: {hash: ""}, URLSearchParams,
@@ -1221,7 +1227,7 @@ async function drawAnalysisReport(timeGrid) {
       probabilities: Array.from({length: 4}, () => [.1, .8, .1])}],
   });
   const plots = [];
-  vm.runInNewContext(fs.readFileSync(path.join(root, "src/regimex/templates/analysis-report.js"), "utf8"), {
+  vm.runInNewContext(reportScript("analysis-report.js"), {
     document: {getElementById: get, createElement: () => new Element()},
     Plotly: {
       react: async (node, traces, layout) => {

@@ -167,7 +167,10 @@ def render_analysis_report(
     resources = files("regimex").joinpath("templates")
     template = resources.joinpath("analysis-report.html").read_text()
     css = resources.joinpath("analysis-report.css").read_text()
-    script = resources.joinpath("analysis-report.js").read_text()
+    script = "\n".join(
+        resources.joinpath(name).read_text()
+        for name in ("instrument-timeline.js", "analysis-report.js")
+    )
     # Row order is part of the export digest. Use instrument indexes so long
     # identifiers are not repeated in every observation of a multi-instrument run.
     fields = tuple(name for name in ExportObservation.model_fields if name != "instrument_id")

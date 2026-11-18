@@ -19,7 +19,7 @@ from regimex.exports import SourceIdentity
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.model_registry import InferenceRuntime
 from regimex.operations import Operation, OperationFailure
-from regimex.report_contracts import AnalysisReportRecord
+from regimex.report_contracts import SAVED_REPORT_RENDERERS, AnalysisReportRecord
 from regimex.service_contracts import (
     CapacityExceeded,
     Conflict,
@@ -949,7 +949,7 @@ def test_polling_and_lists_do_not_transfer_or_decode_result_payload(
         repository.get_analysis(_principal("bob"), operation_id)
 
 
-@pytest.mark.parametrize("renderer", ["analysis-html/3.0", "analysis-html/3.1"])
+@pytest.mark.parametrize("renderer", SAVED_REPORT_RENDERERS)
 def test_success_requires_a_matching_report_in_the_same_commit(
     repository: DatabaseRepository, renderer: str
 ) -> None:

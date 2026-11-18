@@ -110,6 +110,13 @@
     "<b>Volume</b> · same line styles as activity",
     "<b>Unavailable values</b> · × known absence · | unknown observation",
   ];
+  const compactGuides = [
+    "<b>Price</b> · last, bid, ask",
+    "<b>Log return</b> (%)",
+    "<b>Activity</b> · trades, buys, sells",
+    "<b>Volume</b> · trades, buys, sells",
+    "<b>Unavailable</b> · × absence · | unknown",
+  ];
   let panelCount = 4;
   let current;
   let renderGeneration = 0;
@@ -135,11 +142,15 @@
       pct(stats.trade_active_fraction) +
       "%";
   }
-  async function render() {
+  async function render(generation, visibleRange) {
     current = samples[Number($("sample").value)];
     const observations = current.observations;
     const steps = current.steps;
     const intervals = current.intervals;
+    const group = experiments.get(current.experiment_id);
+    const paired = predicted && group.length > 1;
+    $("explorer").parentElement?.classList.toggle("paired", paired);
+    const compact = paired && $("explorer").clientWidth < 600;
     const classified = intervals.reduce(
       (sum, interval) => sum + (interval.direction == null ? 0 : interval.stop - interval.start),
       0,
@@ -151,7 +162,7 @@
       (field) => observations[field].some((value) => value === null),
     );
     panelCount = missingFields.length ? 5 : 4;
-    const domains = missingFields.length
+    const panelDomains = missingFields.length
       ? [
           [0.8, 0.99],
           [0.61, 0.73],
@@ -165,6 +176,7 @@
           [0.27, 0.44],
           [0.02, 0.19],
         ];
+    const domains = paired ? panelDomains.map((domain) => domain.map((value) => value * 0.86)) : panelDomains;
     const grid = current.time_grid;
     $("time-guide").textContent =
       "Step width: " + fmt(grid.bin_width, 6) + " " + grid.unit +
@@ -210,21 +222,23 @@
     $("config").textContent = JSON.stringify(analysis, null, 2);
     $("timeline").replaceChildren();
     $("intervals").replaceChildren();
-    $("timeline").hidden = blind;
+    $("timeline").hidden = blind || paired;
     $("interval-wrap").hidden = blind;
     $("focus-summary").textContent = "";
     $("focus-summary").hidden = true;
     intervals.forEach((interval) => {
-      const button = document.createElement("button");
       const description = "[" + interval.start + ", " + interval.stop + ") " + label(interval);
-      const fraction = (interval.stop - interval.start) / steps.length;
-      button.style.width = 100 * fraction + "%";
-      button.style.borderTopColor = report.colors[interval.direction || "unclassified"];
-      button.textContent = fraction >= 0.09 ? label(interval) : "";
-      button.title = description;
-      button.setAttribute("aria-label", description);
-      button.onclick = () => zoom(interval);
-      $("timeline").append(button);
+      if (!paired) {
+        const button = document.createElement("button");
+        const fraction = (interval.stop - interval.start) / steps.length;
+        button.style.width = 100 * fraction + "%";
+        button.style.borderTopColor = report.colors[interval.direction || "unclassified"];
+        button.textContent = fraction >= 0.09 ? label(interval) : "";
+        button.title = description;
+        button.setAttribute("aria-label", description);
+        button.onclick = () => zoom(interval);
+        $("timeline").append(button);
+      }
       const row = document.createElement("tr");
       const link = document.createElement("button");
       link.textContent = "[" + interval.start + ", " + interval.stop + ")";
@@ -324,11 +338,11 @@
       });
     });
     const layout = {
-      height: missingFields.length ? 1150 : 940,
-      margin: { l: 140, r: 25, t: 30, b: 60 },
-      hovermode: "x unified",
+      height: (missingFields.length ? 1150 : 940) + (paired ? 120 : 0),
+      margin: { l: compact ? 85 : 140, r: compact ? 10 : 25, t: 30, b: 60 },
+      hovermode: paired ? "closest" : "x unified",
       font: { family: "system-ui, sans-serif", size: 12, color: "#334155" },
-      annotations: guides.slice(0, panelCount).map((text, index) => ({
+      annotations: (compact ? compactGuides : guides).slice(0, panelCount).map((text, index) => ({
         text,
         xref: "paper",
         yref: "paper",
@@ -366,7 +380,7 @@
         domain: [0, 1],
         anchor: "y" + suffix,
         matches: index ? "x" : undefined,
-        range: [-0.5, steps.length - 0.5],
+        range: visibleRange ? [...visibleRange] : [-0.5, steps.length - 0.5],
         gridcolor: "#eef2f6",
         title: index === panelCount - 1 ? { text: "Step index" } : undefined,
       };
@@ -385,7 +399,21 @@
         ticktext: missingFields.map(human),
         range: [missingFields.length - 0.5, -0.5],
         title: undefined,
+        automargin: compact,
       });
+    if (paired) {
+      const lanes = instrumentLanes(
+        group.map((index) => samples[index]), current.instrument_id,
+        {...report.colors, no_trades: report.colors.unclassified, insufficient_data: report.colors.unclassified},
+        (step) => step - 0.5,
+      );
+      const suffix = panelCount + 1;
+      layout.barmode = "overlay";
+      layout["yaxis" + suffix] = { ...lanes.axis, domain: [0.90, 1], anchor: "x" };
+      for (const trace of lanes.traces) {
+        traces.push({ ...trace, xaxis: "x", yaxis: "y" + suffix, showlegend: false });
+      }
+    }
     domains.slice(0, 4).forEach((domain, index) => {
       const axis = "y" + (index ? index + 1 : "");
       if (
@@ -414,18 +442,29 @@
           instrument: current.instrument_id,
         }),
     );
+    $("explorer").removeAllListeners?.("plotly_click");
     $("explorer").style.height = layout.height + "px";
     await Plotly.react("explorer", traces, layout, {
       responsive: true,
       displaylogo: false,
       modeBarButtonsToRemove: ["toImage"],
     });
+    if (paired && generation === renderGeneration) {
+      $("explorer").on("plotly_click", (event) => {
+        const index = group[instrumentLaneClick(event)];
+        if (index !== undefined && $("sample").value !== String(index)) {
+          $("sample").value = String(index);
+          update(true);
+        }
+      });
+    }
   }
-  function update() {
+  function update(keepZoom = false) {
+    const visibleRange = keepZoom ? $("explorer").layout?.xaxis.range : null;
     const generation = ++renderGeneration;
     $("render-error").hidden = true;
     $("explorer").hidden = false;
-    render().catch((error) => {
+    render(generation, visibleRange).catch((error) => {
       // A late failure from a previous selection cannot hide the current view.
       if (generation !== renderGeneration) return;
       $("render-error").textContent = "Could not display this selection: " + error.message;
@@ -440,7 +479,7 @@
     $("experiment").value = initial.get("experiment");
   }
   selectInstruments(initial.get("instrument"));
-  $("sample").onchange = () => update();
+  $("sample").onchange = () => update(true);
   $("experiment").onchange = () => {
     selectInstruments(samples[Number($("sample").value)].instrument_id);
     update();

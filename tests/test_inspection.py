@@ -320,7 +320,7 @@ def test_offline_report_preserves_source_identity_and_canonical_symbols(tmp_path
     )
     data = report_data(output)
     assert data["kind"] == "prediction"
-    assert inspection.summary["report_version"] == "6.0"
+    assert inspection.summary["report_version"] == "6.1"
     assert all("events" not in sample.payload() for sample in inspection.samples)
     assert data["samples"] == json.loads(
         json.dumps([sample.payload() for sample in inspection.samples])

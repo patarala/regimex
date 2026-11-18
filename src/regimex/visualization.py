@@ -52,11 +52,12 @@ def _write_direction_assets(target: Path, payload: Mapping[str, object]) -> None
         .replace("__REPORT_JSON__", _script_json(payload)),
         encoding="utf-8",
     )
-    for extension in ("js", "css"):
-        (target / f"report.{extension}").write_text(
-            templates.joinpath(f"direction-report.{extension}").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
+    script = "\n".join(
+        templates.joinpath(name).read_text(encoding="utf-8")
+        for name in ("instrument-timeline.js", "direction-report.js")
+    )
+    (target / "report.js").write_text(script, encoding="utf-8")
+    (target / "report.css").write_bytes(templates.joinpath("direction-report.css").read_bytes())
 
 
 def _write_manifest(target: Path, *, kind: str, source_sha256: str) -> None:

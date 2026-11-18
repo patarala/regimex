@@ -25,10 +25,7 @@
   const selector = $("instrument");
   const quotes = $("quotes");
   const colors = { growth: "#147d64", decline: "#b84c34", sideways: "#416ea7", no_trades: "#8a8e98", insufficient_data: "#a29b84" };
-  const symbols = { growth: "↗", decline: "↘", sideways: "→", no_trades: "—", insufficient_data: "—" };
   const nodes = ["price", "timeline", "activity", "volume", "coverage", "probability"].map($);
-  const escape = (value) => String(value).replaceAll("&", "&amp;").replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
   function coordinate(step) {
     if (step === grid.step_count) return grid.completed_horizon;
     const offset = step * grid.bin_width;
@@ -38,12 +35,17 @@
       : (grid.origin / 2 + step * (grid.bin_width / 2)) * 2;
   }
   const extent = [grid.origin, grid.completed_horizon];
+  let visibleRange = [...extent];
   function sampleTime(row) {
     const start = coordinate(row.step);
     const stop = coordinate(row.step + 1);
     const sum = start + stop;
     return Number.isFinite(sum) ? sum / 2 : start / 2 + stop / 2;
   }
+  const sequences = input.instruments.map((instrument) =>
+    result.sequences.find((sequence) => sequence.instrument_id === instrument.instrument_id));
+  const paired = sequences.length > 1;
+  if (paired) $("price").before($("timeline"));
   let activeNodes = [];
   let synchronizing = false;
   let generation = 0;
@@ -59,13 +61,13 @@
     return {
       title: { text: title.replace(/(.{26,40})\s/g, "$1<br>"), font: { size: 14 } },
       height: height + 110,
-      margin: { l: 65, r: 20, t: 45, b: 140 },
+      margin: { l: paired ? 84 : 65, r: 20, t: 45, b: 140 },
       paper_bgcolor: "white", plot_bgcolor: "#fbfcfe",
       font: { family: "system-ui, sans-serif", color: "#17283d" },
       xaxis: {
-        title: { text: escape(grid.unit.length > 24 ? grid.unit.slice(0, 24) + "…" : grid.unit) },
+        title: { text: plotLabel(grid.unit.length > 24 ? grid.unit.slice(0, 24) + "…" : grid.unit) },
         // Plotly mutates axis ranges during interactive zoom.
-        range: [...extent], showgrid: true, gridcolor: "#e7edf4",
+        range: [...visibleRange], showgrid: true, gridcolor: "#e7edf4",
       },
       yaxis: {
         title: { text: unit.length > 36 ? unit.slice(0, 36) + "…" : unit },
@@ -117,8 +119,8 @@
     const instrument = input.instruments.find((item) => item.instrument_id === selector.value);
     const sequence = result.sequences.find((item) => item.instrument_id === selector.value);
     const rows = input.observations.filter((row) => row.instrument_id === selector.value);
-    const priceUnit = escape(instrument.quote_asset) + " / " + escape(instrument.base_asset);
-    const volumeUnit = escape(instrument.base_asset);
+    const priceUnit = plotLabel(instrument.quote_asset) + " / " + plotLabel(instrument.base_asset);
+    const volumeUnit = plotLabel(instrument.base_asset);
     $("units").textContent =
       "Time: " + grid.unit + " · bin width: " + grid.bin_width + " · price: " +
       instrument.quote_asset + " / " + instrument.base_asset + " · volume: " +
@@ -128,25 +130,11 @@
       trace(rows, "best_bid", "Best bid", "#247961", "dot"),
       trace(rows, "best_ask", "Best ask", "#a14f48", "dash"),
     );
-    const intervals = Object.keys(colors).map((key) => {
-      const group = sequence.intervals.filter((interval) => (interval.direction || interval.status) === key);
-      return {
-        type: "bar", orientation: "h", name: symbols[key] + " " + key.replaceAll("_", " "),
-        y: group.map(() => "Prediction"),
-        x: group.map((interval) => coordinate(interval.stop) - coordinate(interval.start)),
-        base: group.map((interval) => coordinate(interval.start)), width: .65,
-        marker: { color: colors[key], line: { color: "white", width: 1 } },
-        text: group.map(() => symbols[key]),
-        customdata: group.map((interval) => "[" + coordinate(interval.start) + ", " +
-          coordinate(interval.stop) + ")<br>bins [" + interval.start + ", " + interval.stop + ")"),
-        textposition: "inside", insidetextanchor: "middle",
-        hovertemplate: escape(symbols[key] + " " + key) + "<br>%{customdata}<extra></extra>",
-        showlegend: group.length > 0,
-      };
-    });
-    const timeline = layout("Predicted directions", "", 160);
+    const lanes = instrumentLanes(sequences, selector.value, colors, coordinate, grid.unit);
+    const timeline = layout("Predicted directions", "", paired ? 192 : 160);
     timeline.barmode = "overlay";
-    timeline.yaxis = { fixedrange: true };
+    timeline.hovermode = "closest";
+    timeline.yaxis = lanes.axis;
     const count = [
       trace(rows, "trade_count", "Executions", "#263b55"),
       trace(rows, "buy_order_count", "Accepted buys", "#247961"),
@@ -166,7 +154,7 @@
       categoryarray: fields.map((field) => field.replaceAll("_", " ")), autorange: "reversed",
     };
     const probabilities = result.class_names.map((name, index) => ({
-      type: "scatter", mode: "lines", name: symbols[name] + " " + name,
+      type: "scatter", mode: "lines", name: directionSymbols[name] + " " + name,
       x: rows.map(sampleTime), y: sequence.probabilities.map((row) => row[index]),
       line: { color: colors[name], width: 1.6 },
       hovertemplate: "%{x}<br>%{y:.4f}<extra>" + name + "</extra>",
@@ -175,13 +163,14 @@
     probability.yaxis.range = [0, 1];
     const definitions = [
       [$("price"), price, layout("Execution price and historical quotes", priceUnit, 290)],
-      [$("timeline"), intervals, timeline],
+      [$("timeline"), lanes.traces, timeline],
       [$("activity"), count, layout("Executions and accepted orders", "Count per bin", 290)],
       [$("volume"), volume, layout("Execution and accepted order volumes", volumeUnit + " per bin", 290)],
       ...(fields.length ? [[$("coverage"), unavailable(rows, fields), availability]] : []),
       [$("probability"), probabilities, probability],
     ];
     const drawn = definitions.map(([node]) => node);
+    $("timeline").removeAllListeners?.("plotly_click");
     for (const node of nodes) {
       node.hidden = !drawn.includes(node);
       node.removeAllListeners?.("plotly_relayout");
@@ -192,6 +181,13 @@
     }));
     if (current !== generation) return;
     activeNodes = drawn;
+    if (paired) $("timeline").on("plotly_click", (event) => {
+      const sequence = sequences[instrumentLaneClick(event)];
+      if (sequence && sequence.instrument_id !== selector.value) {
+        selector.value = sequence.instrument_id;
+        refresh();
+      }
+    });
     for (const node of activeNodes) {
       node.on("plotly_relayout", (change) => {
         if (synchronizing) return;
@@ -200,8 +196,10 @@
         else if (change["xaxis.range"]) range = change["xaxis.range"];
         else if (change["xaxis.range[0]"] !== undefined) range = [change["xaxis.range[0]"], change["xaxis.range[1]"]];
         if (!range) return;
+        visibleRange = [...range];
         synchronizing = true;
-        Promise.all(activeNodes.filter((other) => other !== node)
+        const targets = change["xaxis.autorange"] ? activeNodes : activeNodes.filter((other) => other !== node);
+        Promise.all(targets
           .map((other) => Plotly.relayout(other, { "xaxis.range": [...range] })))
           .catch(failed).finally(() => { synchronizing = false; });
       });
@@ -219,6 +217,7 @@
   selector.addEventListener("change", refresh);
   quotes.addEventListener("change", refresh);
   $("reset").addEventListener("click", () => {
+    visibleRange = [...extent];
     synchronizing = true;
     Promise.all(activeNodes.map((node) => Plotly.relayout(node, { "xaxis.range": [...extent] })))
       .catch(failed).finally(() => { synchronizing = false; });

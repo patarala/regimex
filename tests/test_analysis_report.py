@@ -210,7 +210,7 @@ def test_report_is_offline_escaped_and_preserves_original_zero_and_missing_value
     rendered = render_analysis_report(export, result, result_sha256=digest(result))
     document = rendered.html.decode()
     assert len(rendered.html) <= MAX_REPORT_BYTES
-    assert rendered.renderer_version == "analysis-html/3.1"
+    assert rendered.renderer_version == "analysis-html/3.2"
     assert '<footer class="provenance"' in document
     assert "Reading the plots" not in document and '<pre id="provenance"' not in document
     assert "whole requested completed snapshot" in document

@@ -28,6 +28,23 @@ def browser() -> Iterator[Any]:
             instance.close()
 
 
+def click_visible_lane(page: Any, selector: str, lane: int) -> None:
+    """Click a real bar at the center of the visible x range."""
+    plot = page.locator(selector)
+    position = plot.evaluate(
+        """(node, lane) => {
+      const trace = node.data.find(item =>
+        item.meta === "instrument-lane" && item.y.includes(lane));
+      const layout = node._fullLayout;
+      const x = layout.xaxis;
+      const y = layout["yaxis" + (trace.yaxis || "y").slice(1)];
+      return {x: x._offset + x._length / 2, y: y._offset + y.l2p(lane)};
+    }""",
+        lane,
+    )
+    plot.click(position=position)
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 def test_offline_download_preserves_original_export(
     browser: Any, tmp_path: Path, width: int
@@ -42,7 +59,6 @@ def test_offline_download_preserves_original_export(
     page = browser.new_page(viewport={"width": width, "height": 860}, offline=True)
     try:
         page.goto(report.as_uri())
-        page.get_by_role("combobox").select_option(export.instruments[1].instrument_id)
         with page.expect_download() as download:
             page.get_by_role("button", name="Download JSON").click()
         saved = json.loads(download.value.path().read_bytes())
@@ -53,9 +69,59 @@ def test_offline_download_preserves_original_export(
         page.wait_for_function(
             "document.getElementById('probability').layout.xaxis.range[0] === 103"
         )
+        assert page.locator("#timeline .ytick text").all_text_contents() == ["A/Q", "B/Q"]
+        click_visible_lane(page, "#timeline", 1)
+        page.wait_for_function("document.getElementById('instrument').value === 'B/Q'")
+        page.wait_for_function(
+            "document.getElementById('price').layout.yaxis.title.text.endsWith(' / B')"
+        )
+        assert page.locator("#timeline").evaluate("(node) => node.layout.xaxis.range") == [103, 108]
+        assert page.locator("#price").evaluate("(node) => node.layout.xaxis.range") == [103, 108]
+        page.get_by_role("combobox").select_option("A/Q")
+        page.wait_for_function("document.getElementById('instrument').value === 'A/Q'")
+        assert page.locator("#price").evaluate("(node) => node.layout.xaxis.range") == [103, 108]
         page.get_by_role("button", name="Reset zoom").click()
         page.wait_for_function("document.getElementById('coverage').layout.xaxis.range[0] === 100")
         assert page.locator("#plot-error").is_hidden()
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+def test_cli_report_switches_lanes_within_the_zoomed_experiment(
+    browser: Any, tmp_path: Path, width: int
+) -> None:
+    from test_inspection import predictions, source
+
+    from regimex.visualization import render_snapshot_report
+
+    sources = (source(1, instrument_count=2, active=True), source(2, active=True))
+    output = tmp_path / "report"
+    render_snapshot_report(sources, output, results=predictions(sources))
+    page = browser.new_page(viewport={"width": width, "height": 860}, offline=True)
+    try:
+        page.goto((output / "index.html").as_uri() + "#experiment=snapshot-1")
+        page.locator("#explorer .barlayer path").first.wait_for()
+        assert page.locator(".chart-scroll").evaluate(
+            "(node) => node.scrollWidth <= node.clientWidth + 1"
+        )
+        page.evaluate("() => Plotly.relayout('explorer', {'xaxis.range': [1, 5]})")
+        click_visible_lane(page, "#explorer", 1)
+        page.wait_for_function(
+            "document.getElementById('sample').selectedOptions[0].text === 'ETH/USD'"
+        )
+        assert "ETH" in page.locator("#sample-meta").inner_text()
+        assert page.locator("#explorer").evaluate("(node) => node.layout.xaxis.range") == [1, 5]
+        page.get_by_label("Instrument").select_option(label="BTC/USD")
+        assert page.locator("#explorer").evaluate("(node) => node.layout.xaxis.range") == [1, 5]
+        page.get_by_label("Experiment", exact=True).select_option("snapshot-2")
+        page.wait_for_function("document.getElementById('timeline').hidden === false")
+        assert page.locator("#explorer").evaluate("(node) => node.layout.xaxis.range") == [
+            -0.5,
+            7.5,
+        ]
+        assert page.locator("#explorer .barlayer path").count() == 0
+        assert page.locator("#render-error").is_hidden()
     finally:
         page.close()
 

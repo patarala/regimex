@@ -11,8 +11,8 @@ from regimex.infrastructure.object_store import ObjectInfo
 from regimex.operations import ResolvedModel, Sha256
 
 MAX_REPORT_BYTES = 16 * 1024 * 1024
-REPORT_RENDERER_VERSION: Literal["analysis-html/3.1"] = "analysis-html/3.1"
-SAVED_REPORT_RENDERERS = ("analysis-html/3.0", REPORT_RENDERER_VERSION)
+REPORT_RENDERER_VERSION: Literal["analysis-html/3.2"] = "analysis-html/3.2"
+SAVED_REPORT_RENDERERS = ("analysis-html/3.0", "analysis-html/3.1", REPORT_RENDERER_VERSION)
 
 
 class AnalysisReportRecord(StrictModel):
@@ -23,7 +23,9 @@ class AnalysisReportRecord(StrictModel):
     source: SourceIdentity
     model: ResolvedModel
     result_sha256: Sha256
-    renderer_version: Literal["analysis-html/3.0", "analysis-html/3.1"] = REPORT_RENDERER_VERSION
+    renderer_version: Literal["analysis-html/3.0", "analysis-html/3.1", "analysis-html/3.2"] = (
+        REPORT_RENDERER_VERSION
+    )
     plotly_version: Annotated[str, Field(min_length=1, max_length=128)]
     object: ObjectInfo
     created_at: AwareDatetime

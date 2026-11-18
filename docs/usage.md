@@ -26,13 +26,18 @@ run, model or analysis ID. **Rename** changes the display name in your workspace
 
 ## Read a report
 
-In the downloaded HTML, select an instrument to see its prices, class
-probabilities and predicted intervals on one time axis. Drag to zoom or use
-**Reset zoom** to return to the full run. **Download JSON** in this HTML file
-saves the original snapshot under `export` and the predictions under `result`.
-In a multi-experiment CLI report,
-select an experiment, then an instrument. Select an interval in the table to
-zoom in on it.
+For an experiment with two instruments, the report shows both sets of
+predicted intervals on a shared timeline. Select a lane or choose its instrument
+in the dropdown to see its prices and trading activity at the current zoom.
+The other lane stays visible, so you can see when the two directions diverged.
+For a single instrument the report opens directly on its price history.
+Drag to zoom or use **Reset zoom** to return to the full run.
+
+The HTML downloaded from the service also shows the model's probability for
+each direction at each step. Its **Download JSON** button saves the original
+snapshot under `export` and the predictions under `result`. In a multi-experiment
+CLI report, select an experiment, then an instrument. Select an interval in the
+table to zoom in on it.
 
 A direction applies from the start step up to, but excluding, the stop step.
 `no_trades` marks a trading pause and `insufficient_data` marks a period with
