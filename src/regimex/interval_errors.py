@@ -3,8 +3,14 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from regimex.directions import Direction, DirectionInterval
-from regimex.evaluation import interval_iou, matched_interval_indices, validate_interval_grid
+from regimex.directions import DIRECTION_NAMES, Direction, DirectionInterval
+from regimex.evaluation import (
+    interval_iou,
+    matched_interval_indices,
+    probabilities_valid,
+    validate_interval_grid,
+)
+from regimex.features import DoubleArray, IntArray
 
 
 class Outcome(StrEnum):
@@ -23,6 +29,28 @@ class SidewaysInterval:
     outcome: Outcome
     best_sideways_iou: float
     overlapping: tuple[DirectionInterval, ...]
+
+
+@dataclass(frozen=True)
+class SidewaysEvidence:
+    raw_leaders: dict[str, int]
+    decoded_sideways_steps: int
+    retained_sideways_steps: int
+
+
+def sideways_evidence(probabilities: DoubleArray, decoded: IntArray) -> SidewaysEvidence:
+    """Count pointwise network preferences and their overlap with the decoded sideways steps."""
+    if decoded.ndim != 1 or ((decoded < -1) | (decoded >= len(DIRECTION_NAMES))).any():
+        raise ValueError("Expected one direction index or unavailable status per step")
+    probabilities_valid(probabilities, len(decoded))
+    maxima = probabilities == probabilities.max(axis=1, keepdims=True)
+    unique = maxima.sum(axis=1) == 1
+    leaders = maxima & unique[:, None]
+    counts = dict(zip(DIRECTION_NAMES, map(int, leaders.sum(axis=0)), strict=True))
+    counts["tied"] = int((~unique).sum())
+    sideways = DIRECTION_NAMES.index(Direction.SIDEWAYS)
+    chosen = decoded == sideways
+    return SidewaysEvidence(counts, int(chosen.sum()), int((chosen & leaders[:, sideways]).sum()))
 
 
 def _overlaps(first: DirectionInterval, second: DirectionInterval) -> bool:

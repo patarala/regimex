@@ -14,11 +14,29 @@ sideways intervals as its denominator.
 | 256 or more | 12 | 9 | 3 | 75% |
 | All durations | 26 | 15 | 11 | 57.7% |
 
-None of the six shortest intervals contained a predicted sideways step.
-Three were covered by a neighboring trend. In the other three, the model called
-the entire interval growth on precisely the reference bounds. All three lasted
-less than 32 steps. These six observations come from a validation split also
-used to choose the checkpoint. They describe this candidate on these runs.
+## Did the network or the decoder miss the short intervals?
+
+Before decoding, each step has three probabilities from the TCN. A direction
+leads when its probability is strictly higher than both alternatives. Exact
+ties count separately. The decoder uses the scores across an available block
+and accounts for minimum duration and the cost of switching direction.
+
+| Missed sideways references | Intervals | Steps | Raw sideways leads | Raw growth leads | Raw decline leads | Decoded sideways steps |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Under 32 steps, labeled growth on the reference bounds | 3 | 56 | 0 | 56 | 0 | 0 |
+| 32–63 steps, absorbed by a neighboring trend | 3 | 121 | 4 | 85 | 32 | 0 |
+| All under 64 steps | 6 | 177 | 4 | 141 | 32 | 0 |
+
+Five of the six references had a trend ahead of sideways on every step.
+Only the 39-step XRP/USD interval `[244, 283)` contained any raw sideways
+leads. The decoder assigned a trend to all four of those steps. This gives a
+reason to investigate the network scores first. These six intervals come
+from the validation split used to choose the checkpoint.
+
+Longer misses can have a different explanation. On the 76-step ETH/USD
+reference, sideways led on 72 steps and the decoder assigned sideways to all
+76. Its predicted interval extended across another reference sideways period,
+so the one-to-one interval match still failed.
 
 ## How the misses are counted
 
@@ -52,9 +70,14 @@ uv run --locked --extra ml --extra viz python scripts/diagnose_intervals.py var/
 ```
 
 Open `var/sideways-errors/index.html` to inspect all eleven misses by outcome.
-Each chart identifies the interval in steps and shows price, the automatic
-reference and the decoded prediction. The dotted lines mark the reference
-bounds. Keep the generated directory together when opening it offline.
-`summary.json` contains every reference interval, its overlapping predictions,
-and the digests of the model, dataset and validation references. The script
-loads only the validation partition and uses the profile stored in the candidate.
+Each chart shows price, the three raw probability curves, and the reference
+and decoded intervals on a shared step axis. Hover over a curve to read the
+probability at that step. Gaps in the curves mark unavailable reference
+blocks. The dotted lines mark the selected reference bounds. Keep the
+generated directory together when opening it offline.
+
+For each of the 26 sideways references, `summary.json` records the raw leader
+counts, decoded sideways steps and steps where both agreed on sideways.
+It also records overlapping predictions and the digests of the model, dataset
+and validation references. The script loads only the validation partition and
+uses the profile stored in the candidate.

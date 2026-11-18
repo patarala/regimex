@@ -3,6 +3,7 @@
 import argparse
 import json
 from collections import Counter
+from dataclasses import asdict
 from html import escape
 from pathlib import Path
 
@@ -14,7 +15,9 @@ from plotly.subplots import make_subplots
 from regimex.application.training import _references, observation_inputs
 from regimex.backends.tcn import TCNBackend
 from regimex.data_catalog import _load_partition
-from regimex.interval_errors import Outcome, sideways_intervals
+from regimex.directions import DIRECTION_NAMES
+from regimex.evaluation import dense_labels
+from regimex.interval_errors import Outcome, sideways_evidence, sideways_intervals
 from regimex.model_bundles import ModelBundle
 from regimex.report_licenses import license_notices
 from regimex.segmentation import decode
@@ -38,13 +41,16 @@ def label(outcome):
     return outcome.replace("_", " ").capitalize()
 
 
-def chart(path, rows, references, predictions, selected, title, snapshot_id):
+def chart(path, rows, references, predictions, probabilities, selected, title, snapshot_id):
+    steps = [row.step for row in rows]
+    centers = [step + 0.5 for step in steps]
+    reference_labels = dense_labels(references, len(rows))
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True, row_heights=[0.72, 0.28], vertical_spacing=0.06
+        rows=3, cols=1, shared_xaxes=True, row_heights=[0.48, 0.32, 0.20], vertical_spacing=0.05
     )
     fig.add_trace(
         go.Scatter(
-            x=[row.step + 0.5 for row in rows],
+            x=centers,
             y=[row.last_price for row in rows],
             name="Price",
             mode="lines",
@@ -54,6 +60,25 @@ def chart(path, rows, references, predictions, selected, title, snapshot_id):
         row=1,
         col=1,
     )
+    for index, name in enumerate(DIRECTION_NAMES):
+        fig.add_trace(
+            go.Scatter(
+                x=centers,
+                y=[
+                    float(p) if state >= 0 else None
+                    for p, state in zip(probabilities[:, index], reference_labels, strict=True)
+                ],
+                customdata=steps,
+                name=name,
+                legendgroup=name,
+                mode="lines",
+                line_color=COLORS[name],
+                connectgaps=False,
+                hovertemplate="Step %{customdata} · %{fullData.name} %{y:.1%}<extra></extra>",
+            ),
+            row=2,
+            col=1,
+        )
     for label, color in COLORS.items():
         bars = [
             (lane, item)
@@ -65,6 +90,8 @@ def chart(path, rows, references, predictions, selected, title, snapshot_id):
             fig.add_trace(
                 go.Bar(
                     name=label,
+                    legendgroup=label,
+                    showlegend=label not in DIRECTION_NAMES,
                     orientation="h",
                     y=[lane for lane, _ in bars],
                     base=[item.start for _, item in bars],
@@ -76,24 +103,24 @@ def chart(path, rows, references, predictions, selected, title, snapshot_id):
                     marker_color=color,
                     width=0.6,
                 ),
-                row=2,
+                row=3,
                 col=1,
             )
     margin = selected.stop - selected.start
     fig.update_xaxes(
         range=[max(0, selected.start - margin), min(len(rows), selected.stop + margin)]
     )
-    fig.update_xaxes(title_text="Step", row=2, col=1)
+    fig.update_xaxes(title_text="Step", row=3, col=1)
     fig.update_yaxes(title_text="Price", row=1, col=1)
-    fig.update_yaxes(categoryorder="array", categoryarray=["TCN", "Reference"], row=2, col=1)
+    fig.update_yaxes(title_text="Raw probability", range=[0, 1], tickformat=".0%", row=2, col=1)
+    fig.update_yaxes(categoryorder="array", categoryarray=["TCN", "Reference"], row=3, col=1)
     for step in (selected.start, selected.stop):
         fig.add_vline(x=step, line_dash="dot", line_width=1, line_color="#333")
     fig.update_layout(
-        title=escape(title),
         template="plotly_white",
         barmode="overlay",
-        height=540,
-        margin=dict(l=80, r=30, t=85, b=55),
+        height=640,
+        margin=dict(l=80, r=30, t=20, b=55),
         legend=dict(orientation="h", y=-0.18),
     )
     plot = fig.to_html(
@@ -107,8 +134,7 @@ def chart(path, rows, references, predictions, selected, title, snapshot_id):
         f'content="width=device-width,initial-scale=1"><title>{escape(title)}</title>'
         '<script src="plotly.min.js"></script><body style="font:1rem system-ui">'
         f'<a href="index.html">Sideways intervals</a> · {escape(snapshot_id)}'
-        + plot
-        + "</body></html>",
+        f'<h1 style="font-size:1.3rem">{escape(title)}</h1>' + plot + "</body></html>",
         encoding="utf-8",
     )
 
@@ -130,7 +156,13 @@ def write_index(path, summary):
         if item["chart"]:
             interval = f"{item['instrument_id']} · [{item['start']}, {item['stop']})"
             link = f'<a href="{item["chart"]}">{escape(interval)}</a>'
-            by_outcome[item["outcome"]].append(f"<li>{link} · {escape(item['snapshot_id'])}</li>")
+            evidence = item["step_evidence"]
+            length = item["stop"] - item["start"]
+            by_outcome[item["outcome"]].append(
+                f"<li>{link} · {escape(item['snapshot_id'])}<br>"
+                f"Sideways on {evidence['raw_leaders']['sideways']}/{length} steps before decoding"
+                f" and {evidence['decoded_sideways_steps']}/{length} after.</li>"
+            )
     sections = [
         f"<h2>{label(kind)} ({len(links)})</h2><ul>{''.join(links)}</ul>"
         for kind, links in by_outcome.items()
@@ -195,7 +227,9 @@ def diagnose(corpus_path, output):
         for sample, rows, expected in zip(
             sources, inputs.observations, _references(samples), strict=True
         ):
-            actual = decode(probabilities[offset : offset + len(rows)], rows, model.analysis)
+            scores = probabilities[offset : offset + len(rows)]
+            actual = decode(scores, rows, model.analysis)
+            decoded = dense_labels(actual, len(rows))
             offset += len(rows)
             for item in sideways_intervals(expected, actual):
                 ref = item.reference
@@ -207,6 +241,7 @@ def diagnose(corpus_path, output):
                         rows,
                         expected,
                         actual,
+                        scores,
                         ref,
                         f"{ref.instrument_id} · [{ref.start}, {ref.stop}) · {label(item.outcome)}",
                         sample.snapshot_id,
@@ -222,6 +257,11 @@ def diagnose(corpus_path, output):
                         "start": ref.start,
                         "stop": ref.stop,
                         "outcome": item.outcome.value,
+                        "step_evidence": asdict(
+                            sideways_evidence(
+                                scores[ref.start : ref.stop], decoded[ref.start : ref.stop]
+                            )
+                        ),
                         "best_sideways_iou": item.best_sideways_iou,
                         "predictions": [
                             {"start": p.start, "stop": p.stop, "state": state(p)}

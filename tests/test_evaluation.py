@@ -413,3 +413,23 @@ def test_spanning_prediction_can_merge_two_sideways_references() -> None:
     ] * 2
     with pytest.raises(ValueError, match="cover the full sequence"):
         sideways_intervals(reference, actual[:-1])
+
+
+def test_sideways_evidence_pairs_steps_and_keeps_tied_scores_separate() -> None:
+    from regimex.interval_errors import sideways_evidence
+
+    probabilities = np.array(
+        [
+            [0.6, 0.3, 0.1],
+            [0.7, 0.2, 0.1],
+            [0.1, 0.2, 0.7],
+            [0.1, 0.8, 0.1],
+            [0.5, 0.5, 0.0],
+        ]
+    )
+    evidence = sideways_evidence(probabilities, np.array([0, 1, 0, -1, 1]))
+    assert evidence.raw_leaders == {"sideways": 2, "growth": 1, "decline": 1, "tied": 1}
+    assert evidence.decoded_sideways_steps == 2
+    assert evidence.retained_sideways_steps == 1
+    with pytest.raises(ValueError, match="invalid class scores"):
+        sideways_evidence(probabilities, np.array([0]))
