@@ -19,6 +19,7 @@ def test_load_summary_uses_arrival_window_and_drain(
         "analyses_accepted": {"count": 2},
         "analyses_verified": {"count": 2},
         "analyses_quota_refused": {"count": 1},
+        "dropped_iterations": {"count": 0},
         "analysis_to_result": {"med": 4_000, "p(95)": 5_900},
         "analysis_intake": {"med": 150},
         "analysis_queued_first_half": {"med": 1, "max": 1},
@@ -150,3 +151,49 @@ def test_stop_confirmation_only_removes_the_original_scratch_directory(
         digest_dir.chmod(0o500)
     assert external.is_dir()
     assert not clean.exists()
+
+
+def test_failed_cell_reports_partial_k6_outcomes_and_keeps_failure_status(tmp_path: Path) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    cell = tmp_path / "sustained-512-2w"
+    cell.mkdir()
+    metrics = {
+        "analyses_scheduled": {"count": 3},
+        "analyses_started": {"count": 3},
+        "analyses_accepted": {"count": 2},
+        "analyses_verified": {"count": 2},
+        "analyses_failed": {"count": 1},
+        "analyses_submit_failed": {"count": 1},
+        "http_req_failed": {"passes": 1, "fails": 8},
+        "analysis_to_result": {"med": 3000, "p(95)": 3900},
+    }
+    (cell / "sustained.json").write_text(json.dumps({"metrics": metrics}))
+    (cell / "sustained-points.jsonl").write_text(
+        json.dumps(
+            {
+                "type": "Point",
+                "metric": "http_req_failed",
+                "data": {"value": 1, "tags": {"status": "503", "name": "submit analysis"}},
+            }
+        )
+        + "\n"
+    )
+    with (
+        pytest.raises(RuntimeError, match="exit 99"),
+        stand["record_cell"](tmp_path, [], 1, "sustained", 512, 2),
+    ):
+        raise RuntimeError("k6 exit 99")
+    rows = json.loads((tmp_path / "comparison.json").read_text())
+    assert rows == [json.loads((cell / "result.json").read_text())]
+    assert rows[0]["status"] == "failed"
+    assert rows[0]["http_failures"] == 1
+    assert rows[0]["http_failure_samples"] == [
+        {"request": "submit analysis", "status": "503", "count": 1}
+    ]
+    assert rows[0]["completed"] == 2 and rows[0]["requested"] == 3
+    assert rows[0]["dropped"] is None and rows[0]["cgroup_peak_bytes"] is None
+    markdown = (tmp_path / "comparison.md").read_text()
+    assert "# Failed load comparison (1 of 1 cells reported)" in markdown
+    assert "2 / 3" in markdown and "HTTP 503 (count 1)" in markdown
+    assert "3.00 | 3.90 | unavailable | 1 |" in markdown
