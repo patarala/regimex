@@ -509,14 +509,31 @@ def run_cell(config_file, scratch, steps, workers, name):
 
 
 def failed_cell(cell, planned_phase, steps, workers):
+    unreadable = []
+
+    def read_artifact(name):
+        try:
+            data = json.loads((cell / name).read_bytes())
+            if isinstance(data, dict):
+                return data
+        except FileNotFoundError:
+            return {}
+        except OSError, ValueError:
+            pass
+        unreadable.append(name)
+        return {}
+
+    measured = read_artifact("result.json")
+    if measured:
+        return {**measured, "status": "failed", "failure_stage": "after measurement"}
+
     # A warm-up summary cannot describe a measured phase that started but never exported.
     phase = "setup"
     for candidate in (planned_phase, "warmup"):
         if (cell / f"{candidate}-k6.log").exists() or (cell / f"{candidate}.json").exists():
             phase = candidate
             break
-    summary = cell / f"{phase}.json"
-    metrics = json.loads(summary.read_bytes())["metrics"] if summary.exists() else {}
+    metrics = read_artifact(f"{phase}.json").get("metrics", {})
     row = {
         "phase": phase,
         "planned_phase": planned_phase,
@@ -525,24 +542,19 @@ def failed_cell(cell, planned_phase, steps, workers):
         "status": "failed",
         **outcomes(metrics, phase),
     }
-    envelope = cell / "envelope.json"
-    row["cgroup_peak_bytes"] = (
-        json.loads(envelope.read_bytes()).get("peak_bytes") if envelope.exists() else None
-    )
-    timings = cell / "timings.json"
-    row["median_stage_ms"] = {}
-    if timings.exists():
-        row["median_stage_ms"] = (
-            json.loads(timings.read_bytes())["phases"].get(phase, {}).get("median_ms", {})
-        )
+    row["cgroup_peak_bytes"] = read_artifact("envelope.json").get("peak_bytes")
+    phases = read_artifact("timings.json").get("phases", {})
+    row["median_stage_ms"] = phases.get(phase, {}).get("median_ms", {})
+    if unreadable:
+        row["unreadable_artifacts"] = unreadable
     points = cell / f"{phase}-points.jsonl"
     if points.exists():
         failures = Counter()
-        with points.open() as stream:
+        with points.open("rb") as stream:
             for line in stream:
                 try:
                     point = json.loads(line)
-                except json.JSONDecodeError:
+                except json.JSONDecodeError, UnicodeDecodeError:
                     continue
                 if (
                     point.get("type") == "Point"
@@ -565,21 +577,16 @@ def record_cell(out, rows, total, name, steps, workers):
     cell = out / f"{name}-{steps}-{workers}w"
     try:
         yield
-    except Exception as failure:
+        row = json.loads((cell / "result.json").read_bytes())
+    except (Exception, KeyboardInterrupt, SystemExit) as failure:
         try:
-            result = cell / "result.json"
-            if result.is_file():
-                row = json.loads(result.read_bytes())
-                row.update(status="failed", failure_stage="after measurement")
-            else:
-                row = failed_cell(cell, name, steps, workers)
+            row = failed_cell(cell, name, steps, workers)
             if cell.is_dir():
                 save(cell / "result.json", row)
             report(out, [*rows, row], total)
         except Exception as diagnostic:
             failure.add_note(f"Could not summarize the failed cell: {diagnostic}")
         raise
-    row = json.loads((cell / "result.json").read_bytes())
     rows.append(row)
     report(out, rows, total)
 
@@ -676,6 +683,8 @@ def report(out, rows, total):
             )
             for item in row.get("http_failure_samples", []):
                 lines.append(f"- {item['request']}: HTTP {item['status']} (count {item['count']})")
+            if row.get("unreadable_artifacts"):
+                lines.extend(["", "Could not read " + ", ".join(row["unreadable_artifacts"]) + "."])
         if row["phase"] == "sustained" and row.get("status") != "failed":
             counts = [row[f"queued_{half}_half"].get("samples") for half in ("first", "second")]
             coverage = " and ".join("unavailable" if n is None else str(n) for n in counts)
