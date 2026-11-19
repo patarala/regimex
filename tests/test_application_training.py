@@ -34,6 +34,7 @@ from regimex.data_catalog import (
     seal_reference_set,
 )
 from regimex.directions import (
+    DEFAULT_ANALYSIS_PROFILE,
     AnalysisConfig,
     Direction,
     DirectionAnnotations,
@@ -180,7 +181,7 @@ def request() -> TrainingRequest:
         policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
         training_runtime=TrainingRuntime(threads=1),
         verification_runtime=InferenceRuntime(threads=1),
-        analysis_profile_id="direction-32/2.1",
+        analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
         build_id="fixture-build",
     )
 

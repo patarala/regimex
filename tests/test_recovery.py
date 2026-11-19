@@ -29,6 +29,7 @@ from test_object_store_contract import cleanup_owned_test_prefix, s3_configurati
 
 from regimex.application import recovery, recovery_objects
 from regimex.application.service import AnalysisService
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE
 from regimex.exports import ExportPayloadV2, ExportV2, seal_export
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.maintenance import ServicesStoppedAttestation
@@ -1069,7 +1070,7 @@ def scientific_backup(
                     policy=policy,
                     training_runtime=TrainingRuntime(threads=1, time_budget_seconds=90),
                     inference_runtime=InferenceRuntime(threads=1, max_batch_size=1),
-                    analysis_profile_id="direction-32/2.1",
+                    analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
                     build_id="recovery-fixture",
                     benchmark_selection_id="fixture-final-benchmark",
                 ),

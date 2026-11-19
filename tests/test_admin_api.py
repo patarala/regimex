@@ -48,7 +48,8 @@ from regimex.storage import json_bytes
 
 def test_reference_retries_preserve_published_hashes_and_explicit_profile_fields() -> None:
     body = {"mode": "automatic", "dataset_id": "DATASET_ID", "partition": "train"}
-    current = "3c0ea083342ef7253144818651cba2aeeea838828b5867c09a4c945a5298fdef"
+    current = "117093ab9a5e7a8aebdca2158c21666c0f23576a32447c93eb40130eb98f7cee"
+    previous_21 = "3c0ea083342ef7253144818651cba2aeeea838828b5867c09a4c945a5298fdef"
     previous = "ce2c48baaaaa4d420bf5c12c0d0787e719a2ce0bba97f8cd79b60faaae19f4ed"
 
     def fingerprint(**fields: object) -> RequestFingerprint:
@@ -56,14 +57,22 @@ def test_reference_retries_preserve_published_hashes_and_explicit_profile_fields
             AutomaticReferenceRequest.model_validate({**body, **fields})
         )
 
-    assert fingerprint() == RequestFingerprint(sha256=current, previous_hashes=(previous,))
+    assert fingerprint() == RequestFingerprint(
+        sha256=current, previous_hashes=(previous_21, previous)
+    )
     assert fingerprint(analysis={"min_duration": 32}) == fingerprint()
     for explicit in (
-        fingerprint(analysis={"version": "2.1"}),
-        fingerprint(analysis_profile_id="direction-32/2.1"),
+        fingerprint(analysis={"version": "2.2"}),
+        fingerprint(analysis_profile_id="direction-32/2.2"),
     ):
         assert explicit.sha256 == current
-        assert previous not in explicit.previous_hashes
+        assert (
+            previous not in explicit.previous_hashes and previous_21 not in explicit.previous_hashes
+        )
+    assert (
+        fingerprint(analysis={"version": "2.1"}, analysis_profile_id="direction-32/2.1").sha256
+        == previous_21
+    )
     changed = fingerprint(analysis={"min_duration": 64})
     assert previous not in (changed.sha256, *changed.previous_hashes)
 
@@ -80,13 +89,16 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
     }
     request = TrainingRunRequest.model_validate_json(json_bytes(body))
     original = request.model_dump(mode="json")
-    previous = content_hash({**original, "analysis_profile_id": "direction-32/2.0"})
+    previous = tuple(
+        content_hash({**original, "analysis_profile_id": f"direction-32/{version}"})
+        for version in ("2.1", "2.0")
+    )
     assert RequestFingerprint.for_profile_request(request) == RequestFingerprint(
-        sha256=content_hash(original), previous_hashes=(previous,)
+        sha256=content_hash(original), previous_hashes=previous
     )
     changed = TrainingRunRequest.model_validate_json(json_bytes({**body, "parameters": {}}))
     fingerprint = RequestFingerprint.for_profile_request(changed)
-    assert previous not in (fingerprint.sha256, *fingerprint.previous_hashes)
+    assert not set(previous).intersection((fingerprint.sha256, *fingerprint.previous_hashes))
 
 
 @pytest.mark.parametrize(

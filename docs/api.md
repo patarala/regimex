@@ -212,7 +212,7 @@ Create separate training and validation references with `POST /reference-sets`:
 ```
 
 Repeat with `partition: "validation"`. The default profile is
-`direction-32/2.1`; automatic labels use `retrospective-directions/3.0`.
+`direction-32/2.2`; automatic labels use `retrospective-directions/3.0`.
 To import human references, provide complete annotations and identify the
 reviewer. The reviewer attests to independence. The ordinary annotation
 download covers the training and validation partitions.

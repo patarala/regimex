@@ -17,7 +17,7 @@ step exactly once.
 | `no_trades` | The observations establish a sustained pause in executions. Direction is null. |
 | `insufficient_data` | Too few prices are available to classify this part of the experiment. Direction is null. |
 
-With the current profile, `direction-32/2.1`, a zero trade count, zero volume,
+With the current profile, `direction-32/2.2`, a zero trade count, zero volume,
 or a price state of `carried` or `no_execution` establishes that a step had no
 executions. A stretch of 32 or more inactive steps forms a pause even when
 prices are missing. A stretch of 32 or more missing prices otherwise marks a
@@ -32,13 +32,15 @@ intervals with the same direction merge.
 
 - **Price change** is the percentage difference between the first and last
   available prices. Their step numbers show which part of the interval the
-  calculation covers.
+  calculation covers. A null with two distinct endpoint steps means the
+  percentage exceeds the finite numeric range.
 - **Return SD** is the population standard deviation of one-step log returns.
   Both steps of each return must have prices. A gap breaks the sequence, and
   fewer than two returns gives a null result.
 - **Trade count and volume** sum the observations available for each field.
   A total is null if the field is missing throughout. The coverage fractions
-  show how much of the interval contributed.
+  show how much of the interval contributed. A null volume with positive
+  coverage means the observed total exceeds the finite numeric range.
 - **Active-trade fraction** is the share of steps with a positive count among
   steps with a known count. **Longest no-trade run** counts consecutive steps
   with a known zero count. The offline summary's `steps_without_executions`
@@ -47,6 +49,7 @@ intervals with the same direction merge.
 
 Saved models use the profile in their bundle. Profile `direction-32/2.0`
 recognizes pauses from trade counts alone and gives missing prices precedence.
+Both 2.0 and 2.1 fit absolute log prices and use an exact threshold comparison.
 To use the current rules for a published model, train and publish a new version.
 
 ## Synthetic market
@@ -90,7 +93,10 @@ sideways label despite a large end-to-end change.
 A slope must explain at least half of the price variation in its fit. Consecutive
 supported slopes of the same sign form a run. The policy adds their fitted log
 movements and assigns growth or decline when the absolute sum reaches
-`log1p(0.005)`. Other runs receive sideways. Human reference sets are recorded
+`log1p(0.005)`. Profile 2.2 fits log price ratios relative to the first
+available price in the block. It accepts movements within floating-point
+roundoff of the threshold so that changing quote units preserves a borderline
+label. Other runs receive sideways. Human reference sets are recorded
 separately. A reviewer can see observations with the predictions hidden by
 running `regimex report --input export.json --output var/blind --blind`.
 

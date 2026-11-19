@@ -115,7 +115,8 @@ def test_short_inactivity_stays_inside_observed_intervals() -> None:
 def test_profile_versions_are_distinct_and_roundtrip_without_rewriting() -> None:
     previous = AnalysisConfig.model_validate_json('{"version":"2.0"}')
     current = AnalysisConfig()
-    assert current.version == "2.1"
-    assert analysis_profile_hash(previous) != analysis_profile_hash(current)
-    for profile in (previous, current):
+    profiles = (previous, AnalysisConfig(version="2.1"), current)
+    assert current.version == "2.2"
+    assert len({analysis_profile_hash(profile) for profile in profiles}) == 3
+    for profile in profiles:
         assert AnalysisConfig.model_validate_json(profile.model_dump_json()) == profile

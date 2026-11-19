@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass
+from sys import float_info
 
 import numpy as np
 from numpy.typing import NDArray
@@ -147,15 +148,38 @@ def _directions(
 
     # Summing within-piece movement keeps level changes between pieces out of the trend.
     result: list[tuple[int, int, Direction]] = []
+    threshold = math.log1p(config.minimum_relative_change)
+    if config.version == "2.2":
+        # A change of quote units can round the same fitted log movement either way.
+        threshold -= min(16 * math.ulp(1.0), threshold * 1e-10)
     for group in groups:
         direction = Direction.SIDEWAYS
-        if group.sign and abs(group.log_movement) >= math.log1p(config.minimum_relative_change):
+        if group.sign and abs(group.log_movement) >= threshold:
             direction = Direction.GROWTH if group.sign > 0 else Direction.DECLINE
         if result and result[-1][2] == direction:
             result[-1] = (result[-1][0], group.stop, direction)
         else:
             result.append((group.start, group.stop, direction))
     return result
+
+
+def _log_prices(rows: tuple[Observation, ...], config: AnalysisConfig) -> NDArray[np.float64]:
+    reference = next(row.last_price for row in rows if row.last_price is not None)
+    values = np.full(len(rows), np.nan)
+    for index, row in enumerate(rows):
+        price = row.last_price
+        if price is None:
+            continue
+        if config.version == "2.2":
+            ratio = price / reference
+            # Fall back to separate logs when extreme endpoints lose precision in the ratio.
+            if math.isfinite(ratio) and ratio >= float_info.min:
+                values[index] = math.log(ratio)
+            else:
+                values[index] = math.log(price) - math.log(reference)
+        else:
+            values[index] = math.log(price)
+    return values
 
 
 def _interval(
@@ -189,13 +213,7 @@ def annotate(
             if status != "observed":
                 intervals.append(_interval(rows, start, stop, None, status))
                 continue
-            values = np.array(
-                [
-                    math.log(row.last_price) if row.last_price is not None else np.nan
-                    for row in rows[start:stop]
-                ],
-                dtype=np.float64,
-            )
+            values = _log_prices(rows[start:stop], config)
             for left, right, direction in _directions(values, config):
                 intervals.append(_interval(rows, start + left, start + right, direction, status))
     result = DirectionAnnotations(

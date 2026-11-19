@@ -58,10 +58,11 @@
           "type": "number"
         },
         "version": {
-          "default": "2.1",
+          "default": "2.2",
           "enum": [
             "2.0",
-            "2.1"
+            "2.1",
+            "2.2"
           ],
           "title": "Version",
           "type": "string"

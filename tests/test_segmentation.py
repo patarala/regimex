@@ -4,6 +4,7 @@ import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
@@ -70,6 +71,23 @@ def test_slow_sustained_movement_covers_the_whole_experiment(
     assert (interval.start, interval.stop, interval.direction) == (0, 512, direction)
     assert interval.statistics.price_change_percent == pytest.approx(100 * (factor - 1))
     assert annotations.reference_kind == "automatic"
+
+
+@pytest.mark.parametrize(
+    ("factor", "direction"),
+    [
+        (Decimal("1.005"), Direction.GROWTH),
+        (1 / Decimal("1.005"), Direction.DECLINE),
+        (Decimal("1.00499999"), Direction.SIDEWAYS),
+    ],
+)
+def test_fitted_movement_at_threshold_is_independent_of_price_units(
+    factor: Decimal, direction: Direction
+) -> None:
+    for scale in (Decimal("0.01"), Decimal(1), Decimal(10), Decimal("1e200")):
+        data = experiment([float(scale * factor ** (Decimal(step) / 31)) for step in range(32)])
+        intervals = segmentation.annotate(data).intervals
+        assert [(i.start, i.stop, i.direction) for i in intervals] == [(0, 32, direction)]
 
 
 @pytest.mark.parametrize("noisy", [False, True])

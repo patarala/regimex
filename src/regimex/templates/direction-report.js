@@ -8,6 +8,10 @@
   const names = ["sideways", "growth", "decline", "unclassified"];
   const arrows = { sideways: "→", growth: "↗", decline: "↘", unclassified: "—" };
   const human = (value) => String(value).replaceAll("_", " ");
+  const priceChange = (stats) =>
+    stats.price_change_percent == null && stats.first_price_step !== stats.last_price_step
+      ? "out of range"
+      : fmt(stats.price_change_percent);
   const fmt = (value, digits = 2) =>
     value == null || !Number.isFinite(Number(value))
       ? "—"
@@ -142,8 +146,9 @@
       " · " +
       (interval.stop - interval.start) +
       " steps · change " +
-      fmt(stats.price_change_percent) +
-      "% · active steps " +
+      priceChange(stats) +
+      (stats.price_change_percent == null ? "" : "%") +
+      " · active steps " +
       pct(stats.trade_active_fraction) +
       "%";
   }
@@ -250,7 +255,7 @@
       const stats = interval.statistics;
       [
         label(interval),
-        fmt(stats.price_change_percent),
+        priceChange(stats),
         pct(stats.return_std),
         fmt(stats.trade_count, 0),
         pct(stats.trade_active_fraction),

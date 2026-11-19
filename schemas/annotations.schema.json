@@ -66,7 +66,7 @@
     },
     "IntervalStatistics": {
       "additionalProperties": false,
-      "description": "Observed totals, adjacent one-step returns, and explicit coverage.\n\nPrice change uses the first and last available prices at the reported steps.\nReturn standard deviation uses population normalization and only adjacent\nobserved prices; it is absent when fewer than two returns are available.\nTrade totals include known values only and are absent at zero coverage.",
+      "description": "Observed totals, adjacent one-step returns, and explicit coverage.\n\nPrice change uses the first and last available prices at the reported steps.\nReturn standard deviation uses population normalization and only adjacent\nobserved prices; it is absent when fewer than two returns are available.\nTrade totals include known values only and are absent at zero coverage.\nA percentage or volume total outside the finite float range is also null.\nThe price endpoints and volume coverage remain available in that case.",
       "properties": {
         "first_price_step": {
           "anyOf": [

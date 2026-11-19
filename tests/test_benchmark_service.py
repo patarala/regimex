@@ -45,7 +45,7 @@ from regimex.data_catalog import (
     seal_dataset,
     seal_reference_set,
 )
-from regimex.directions import AnalysisConfig
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
 from regimex.exports import ExportPayloadV2, seal_export
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
 from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, TrainingEvidence
@@ -267,7 +267,7 @@ def model(service: BenchmarkService, tmp_path: Path, dataset: DatasetRecord) -> 
         feature_version="3.0",
         preprocessing_version="baseline-standardization/1.0",
         decoder_version="duration-viterbi/1.0",
-        analysis_profile="direction-32/2.1",
+        analysis_profile=DEFAULT_ANALYSIS_PROFILE,
         analysis_profile_sha256=analysis_profile_hash(AnalysisConfig()),
         class_names=("sideways", "growth", "decline"),
         training=TrainingEvidence(
@@ -318,7 +318,7 @@ def training(dataset: DatasetRecord, *, benchmark_id: str | None = "fresh") -> T
         policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
         training_runtime=TrainingRuntime(),
         inference_runtime=InferenceRuntime(),
-        analysis_profile_id="direction-32/2.1",
+        analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
         build_id="test",
         benchmark_selection_id=benchmark_id,
     )
