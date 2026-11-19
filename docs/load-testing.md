@@ -23,6 +23,8 @@ The runner checks each downloaded result's analysis, snapshot and model identiti
 
 Each cell gets a fresh systemd user service with two logical CPUs shared by all descendants, a CPU quota of 200%, a total memory limit of 3 GiB and zero swap. This includes the API, database, workers, computation subprocesses and k6. Each worker executes one analysis at a time. All cells use the same CPU IDs. The driver verifies the effective affinity and the unit's kernel quota, memory and swap settings. Use `--cpus` and `--memory-mib` to select another common envelope. Host contention and page-cache state can vary between runs.
 
+Use `--http-concurrency-limit` to vary the private API’s Uvicorn connection/task limit independently of worker count. The default is 8 and the minimum is 2. The selected value is recorded in `run.json`.
+
 The sustained executor schedules arrivals independently of completions. The default requests 12 analyses. To vary the arrival rate, window and client pool, run e.g.
 
 ```sh

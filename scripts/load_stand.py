@@ -431,9 +431,10 @@ def run_cell(config_file, scratch, steps, workers, name):
             env,
             setup_log,
         )
+        api_env = {**env, "REGIMEX_HTTP_CONCURRENCY_LIMIT": str(config["http_concurrency_limit"])}
         services = [
             pg,
-            launch(stack, [*service, "serve", "--port", str(api_port)], env, cell / "api.log"),
+            launch(stack, [*service, "serve", "--port", str(api_port)], api_env, cell / "api.log"),
         ]
         logs = []
         for index in range(1, workers + 1):
@@ -578,12 +579,17 @@ def main():
     parser.add_argument("--bundle", type=Path, default=ROOT / "release/models/tcn")
     parser.add_argument("--runtime-file", type=Path, help="inference runtime JSON for all cells")
     parser.add_argument("--output", type=Path, help="new directory (default var/load-test/run-*)")
+    parser.add_argument(
+        "--http-concurrency-limit", type=int, default=8, help="API connection/task limit"
+    )
     parser.add_argument("--cpus", type=int, default=2)
     parser.add_argument("--memory-mib", type=int, default=3072)
     parser.add_argument("--rate-per-minute", type=int, default=6)
     parser.add_argument("--duration-seconds", type=int, default=120)
     parser.add_argument("--max-vus", type=int, default=16)
     options = parser.parse_args()
+    if options.http_concurrency_limit < 2:
+        parser.error("--http-concurrency-limit must be at least 2")
     if (
         min(
             options.cpus,
@@ -619,6 +625,7 @@ def main():
         pgdir = subprocess.check_output(["pg_config", "--bindir"], text=True).strip()
     config = {
         **inference_policy(options.runtime_file),
+        "http_concurrency_limit": options.http_concurrency_limit,
         "cpu_ids": cpus[: options.cpus],
         "memory_bytes": options.memory_mib * 2**20,
         "bundle": str(bundle),
