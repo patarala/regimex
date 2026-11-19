@@ -2,6 +2,14 @@
 set -eu
 
 cd "$(dirname "$0")/.."
+case "${1:-}" in
+    --stand)
+        shift
+        exec uv run --locked --extra service --extra ml --extra viz python scripts/load_stand.py "$@"
+        ;;
+    --sustained|"") ;;
+    *) echo "Usage: sh scripts/load_test.sh [--stand [OPTIONS] | --sustained]" >&2; exit 2 ;;
+esac
 command -v k6 >/dev/null || { echo "Install Grafana k6 and add it to PATH." >&2; exit 1; }
 token_file=${REGIMEX_LOAD_TOKEN_FILE:-var/load-instance/credentials/user.token}
 token=$(cat "$token_file")
@@ -17,12 +25,16 @@ for seed in 42 43 44 45; do
 done
 
 phase() {
-    echo "Running $1 ($2 clients, $3 analyses)"
-    REGIMEX_LOAD_TOKEN="$token" REGIMEX_LOAD_CLIENTS="$2" REGIMEX_LOAD_JOBS="$3" \
+    echo "Running $1"
+    REGIMEX_LOAD_TOKEN="$token" REGIMEX_LOAD_PHASE="$1" REGIMEX_LOAD_CLIENTS="$2" REGIMEX_LOAD_JOBS="$3" \
         k6 run --no-usage-report --summary-export "$REGIMEX_LOAD_DIR/$1.json" \
         scripts/load_analysis.js
 }
 
 phase warmup 1 1
-phase serial 1 4
-phase parallel 4 4
+if [ "${1:-}" = --sustained ]; then
+    phase sustained 1 1
+else
+    phase serial 1 4
+    phase parallel 4 4
+fi
