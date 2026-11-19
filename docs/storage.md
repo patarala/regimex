@@ -177,8 +177,11 @@ authentication hashes, experiment metadata and all registered files.
 This release restores archives from schemas `0007_resource_deletion` and
 `0008_analysis_metadata`. Point its configuration at a **new, empty database**
 and a **fresh local object root or S3 prefix**. Use
-the original schema name. Leave the target offline and skip migrations until
-restoration succeeds.
+the original schema name. Restore checks the target's schema inventory and large
+objects before copying files. Database tools use the host, port, database and
+user of the verified connection, including when libpq selects them from a
+service file or environment. Leave the target offline until restoration succeeds
+and any required migrations have run.
 
 ```sh
 uv run --locked --all-extras regimex service restore \

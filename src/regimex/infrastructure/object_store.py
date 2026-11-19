@@ -94,7 +94,7 @@ class ObjectStore(Protocol):
         checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo: ...
 
-    def stat(self, key: str) -> ObjectInfo:
+    def stat(self, key: str, *, checkpoint: Callable[[], None] | None = None) -> ObjectInfo:
         """Read and hash the current generation, returning its verified identity."""
         ...
 
@@ -494,14 +494,14 @@ class LocalObjectStore:
             with _regular_file(parent, parts[-1]) as committed:
                 return _info(key, committed, limit=self.max_object_bytes, checkpoint=checkpoint)
 
-    def stat(self, key: str) -> ObjectInfo:
+    def stat(self, key: str, *, checkpoint: Callable[[], None] | None = None) -> ObjectInfo:
         parts = _key_parts(key)
         with (
-            self._locked_root(shared=True) as root,
+            self._locked_root(shared=True, checkpoint=checkpoint) as root,
             _child_directory(root, parts[:-1], create=False) as parent,
             _regular_file(parent, parts[-1]) as source,
         ):
-            return _info(key, source, limit=self.max_object_bytes)
+            return _info(key, source, limit=self.max_object_bytes, checkpoint=checkpoint)
 
     def materialize(
         self,

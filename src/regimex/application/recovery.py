@@ -15,7 +15,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from functools import wraps
+from functools import partial, wraps
 from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
@@ -196,10 +196,19 @@ def _read(path: Path, maximum: int) -> bytes:
         os.close(descriptor)
 
 
+def _tool_database(connection: Connection) -> str:
+    # Pin the server chosen by libpq, including the address selected from a
+    # multi-host DSN. Keep the hostname for TLS verification and passfile lookup.
+    info = connection.info
+    return make_conninfo(
+        dbname=info.dbname, user=info.user, host=info.host, port=info.port, hostaddr=info.hostaddr
+    )
+
+
 def _libpq_environment(dsn: SecretStr) -> dict[str, str]:
-    # Give pg_dump and pg_restore the configured connection, even if the operator's
-    # shell has other PG settings. Passing the password in argv would expose it.
-    environment = {key: value for key, value in os.environ.items() if not key.startswith("PG")}
+    # Match the guard's libpq defaults (including service and passfile settings).
+    # Explicit DSN options override them. Credentials stay out of tool arguments.
+    environment = os.environ.copy()
     names = {
         "host": "PGHOST",
         "hostaddr": "PGHOSTADDR",
@@ -224,10 +233,6 @@ def _libpq_environment(dsn: SecretStr) -> dict[str, str]:
         "application_name": "PGAPPNAME",
     }
     parameters = conninfo_to_dict(dsn.get_secret_value())
-    if "service" in parameters:
-        for service_path in ("PGSERVICEFILE", "PGSYSCONFDIR"):
-            if service_path in os.environ:
-                environment[service_path] = os.environ[service_path]
     for key, value in parameters.items():
         if key not in names:
             raise ValueError("This libpq setting is not supported by offline recovery.")
@@ -247,6 +252,7 @@ def _run_tool(
     stdout: BinaryIO | None = None,
     output_limit: int,
 ) -> None:
+    _deadline(deadline)
     # libpq diagnostics may contain connection details. Keep stderr private.
     with tempfile.TemporaryFile() as stderr:
         process = subprocess.Popen(
@@ -269,6 +275,7 @@ def _run_tool(
                 _deadline(deadline)
                 within_output_limit()
                 time.sleep(0.05)
+            _deadline(deadline)
             if process.returncode:
                 raise RuntimeError("The PostgreSQL recovery tool failed; no target is ready.")
             within_output_limit()
@@ -448,6 +455,7 @@ def backup_service(
 ) -> BackupResult:
     schema = _schema(schema)
     deadline = time.monotonic() + limits.timeout_seconds
+    checkpoint = partial(_deadline, deadline)
     attestation = _attestation(attestation)
     if destination.exists() or destination.is_symlink():
         raise ValueError("A backup destination must be new; existing paths are never overwritten.")
@@ -511,7 +519,7 @@ def backup_service(
                     "--no-privileges",
                     "--schema=" + schema,
                     "--snapshot=" + snapshot,
-                    "--dbname=" + make_conninfo(dbname=connection.info.dbname),
+                    "--dbname=" + _tool_database(connection),
                     "--file=" + str(dump),
                 ],
                 database_dsn,
@@ -526,7 +534,7 @@ def backup_service(
                 # source revision, even when one archive payload already exists.
                 with tempfile.TemporaryDirectory(dir=destination, prefix=".copy-") as temporary:
                     copy = Path(temporary) / "payload"
-                    materialize_object(store, info, copy)
+                    materialize_object(store, info, copy, checkpoint=checkpoint)
                     copy.chmod(0o600)
                     with copy.open("rb") as stream:
                         os.fsync(stream.fileno())
@@ -563,31 +571,45 @@ def backup_service(
     return BackupResult(manifest=manifest, manifest_sha256=hashlib.sha256(data).hexdigest())
 
 
-def _empty_database(connection: Connection) -> None:
-    if connection.execute(
-        "SELECT 1 FROM pg_namespace "
-        "WHERE nspname NOT IN ('public','pg_catalog','information_schema') "
-        "AND nspname NOT LIKE 'pg_toast%' AND nspname NOT LIKE 'pg_temp_%' LIMIT 1"
-    ).fetchone():
-        raise ValueError("Restore requires a newly provisioned empty database.")
-    if connection.execute(
-        "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace "
-        "WHERE n.nspname='public' LIMIT 1"
-    ).fetchone():
-        raise ValueError("Restore refuses existing database objects.")
-    if connection.execute(
-        "SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace "
-        "WHERE n.nspname='public' LIMIT 1"
-    ).fetchone():
-        raise ValueError("Restore refuses existing database routines.")
-    if (
-        connection.execute(
-            "SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid=t.typnamespace "
-            "WHERE n.nspname='public' LIMIT 1"
-        ).fetchone()
-        or connection.execute("SELECT 1 FROM pg_largeobject_metadata LIMIT 1").fetchone()
-    ):
-        raise ValueError("Restore refuses existing user types or PostgreSQL large objects.")
+def _empty_database(
+    connection: Connection,
+    dsn: SecretStr,
+    tools: PostgresTools,
+    *,
+    deadline: float,
+    metadata_limit: int,
+) -> None:
+    # A schema-only dump omits large objects. Its TOC covers the other dumpable
+    # objects, including types without a relation, such as collations and casts.
+    if connection.execute("SELECT 1 FROM pg_catalog.pg_largeobject_metadata LIMIT 1").fetchone():
+        raise ValueError("Restore requires an empty database without existing large objects.")
+    with tempfile.TemporaryDirectory(prefix="regimex-restore-schema-") as temporary:
+        dump = Path(temporary) / "target.dump"
+        dump.touch(mode=0o600)
+        _run_tool(
+            [
+                str(tools.pg_dump),
+                "--format=custom",
+                "--schema-only",
+                "--dbname=" + _tool_database(connection),
+                "--file=" + str(dump),
+            ],
+            dsn,
+            deadline=deadline,
+            output=dump,
+            output_limit=metadata_limit,
+        )
+        with tempfile.TemporaryFile() as toc:
+            _run_tool(
+                [str(tools.pg_restore), "--list", str(dump)],
+                dsn,
+                deadline=deadline,
+                stdout=toc,
+                output_limit=metadata_limit,
+            )
+            toc.seek(0)
+            if any(line.strip() and not line.startswith(b";") for line in toc):
+                raise ValueError("Restore requires an empty database without existing objects.")
 
 
 def _registered_claims(
@@ -625,6 +647,7 @@ def restore_service(
 ) -> RestoreReceipt:
     attestation = _attestation(attestation)
     deadline = time.monotonic() + limits.timeout_seconds
+    checkpoint = partial(_deadline, deadline)
     data = _read(backup / "manifest.json", limits.max_manifest_bytes)
     if hashlib.sha256(data).hexdigest() != expected_manifest_sha256:
         raise ValueError("The backup manifest differs from the trusted external digest.")
@@ -652,27 +675,33 @@ def restore_service(
             sha256=info.sha256,
             deadline=deadline,
         )
-        if time.monotonic() > deadline:
-            raise TimeoutError("Restore exceeded its overall wall-time budget.")
     with psycopg.connect(
         target_dsn.get_secret_value(), connect_timeout=5, autocommit=True
     ) as guard:
         maintenance_lock(guard, schema)
-        _empty_database(guard)
-        if _postgres_major(_text(_first(guard, "SHOW server_version"))) != _postgres_major(
-            manifest.postgres_version
-        ) or _postgres_major(_tool_version(tools.pg_restore)) != _postgres_major(
-            manifest.dump_tool_version
+        major = _postgres_major(manifest.postgres_version)
+        if (
+            _postgres_major(_text(_first(guard, "SHOW server_version"))) != major
+            or _postgres_major(manifest.dump_tool_version) != major
+            or any(
+                _postgres_major(_tool_version(tool)) != major
+                for tool in (tools.pg_dump, tools.pg_restore)
+            )
         ):
             raise ValueError("Offline restore requires matching PostgreSQL server and tool majors.")
-        target_database = make_conninfo(dbname=guard.info.dbname)
+        target_database = _tool_database(guard)
+        _empty_database(
+            guard, target_dsn, tools, deadline=deadline, metadata_limit=limits.max_manifest_bytes
+        )
         assert_empty_store()
         replacements = {}
         for info in manifest.objects:
-            if time.monotonic() > deadline:
-                raise TimeoutError("Restore exceeded its overall wall-time budget.")
+            checkpoint()
             restored = store.put(
-                info.key, backup / "objects" / info.sha256, expected_sha256=info.sha256
+                info.key,
+                backup / "objects" / info.sha256,
+                expected_sha256=info.sha256,
+                checkpoint=checkpoint,
             )
             if (restored.key, restored.sha256, restored.size_bytes) != (
                 info.key,
@@ -682,7 +711,7 @@ def restore_service(
                 raise ValueError("The target object adapter changed object content identity.")
             replacements[info.key] = restored
             # Both providers stream the current bytes to calculate stat's digest.
-            if store.stat(restored.key) != restored:
+            if store.stat(restored.key, checkpoint=checkpoint) != restored:
                 raise ValueError("The restored object differs from its verified generation.")
             _deadline(deadline)
         command = [

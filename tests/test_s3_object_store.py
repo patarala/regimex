@@ -112,8 +112,9 @@ def test_readers_share_coordination_but_deletion_waits(
         objects.stat(info.key)
 
 
+@pytest.mark.parametrize("operation", ("materialize", "stat"))
 def test_cancelled_download_closes_body_and_keeps_generation(
-    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     objects = actual_s3.objects
     path = source(tmp_path)
@@ -160,13 +161,16 @@ def test_cancelled_download_closes_body_and_keeps_generation(
     with monkeypatch.context() as patch:
         patch.setattr(client, "get_object", observed_get)
         with pytest.raises(TimeBudgetExceeded):
-            objects.materialize(
-                info.key,
-                destination,
-                expected_sha256=info.sha256,
-                expected_size_bytes=info.size_bytes,
-                checkpoint=checkpoint,
-            )
+            if operation == "stat":
+                objects.stat(info.key, checkpoint=checkpoint)
+            else:
+                objects.materialize(
+                    info.key,
+                    destination,
+                    expected_sha256=info.sha256,
+                    expected_size_bytes=info.size_bytes,
+                    checkpoint=checkpoint,
+                )
     assert closed.is_set()
     assert not destination.exists()
     assert not tuple(tmp_path.rglob(".regimex-temporary-*"))

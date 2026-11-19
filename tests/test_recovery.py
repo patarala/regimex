@@ -232,6 +232,43 @@ def test_cross_timezone_restore_through_a_service_without_object_scratch(
     assert target.readiness()
 
 
+def test_recovery_uses_the_guard_endpoint_from_libpq_defaults(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = databases(minimal.source.schema)
+    with psycopg.connect(minimal.source._dsn) as connection:
+        info = connection.info
+        for variable, value in (
+            ("PGHOST", info.host),
+            ("PGPORT", str(info.port)),
+            ("PGUSER", info.user),
+            ("PGPASSWORD", info.password),
+        ):
+            monkeypatch.setenv(variable, value)
+        source = SecretStr(make_conninfo(dbname=info.dbname))
+    directory = tmp_path / "libpq-backup"
+    backup = recovery.backup_service(
+        source, minimal.source.schema, minimal.store, directory, tools=tools, attestation=stopped()
+    )
+    with psycopg.connect(target._dsn) as connection:
+        destination = SecretStr(make_conninfo(dbname=connection.info.dbname))
+    store = local(tmp_path / "libpq-target")
+    receipt = recovery.restore_service(
+        destination,
+        store,
+        directory,
+        expected_manifest_sha256=backup.manifest_sha256,
+        assert_empty_store=store.assert_empty_store,
+        tools=tools,
+        attestation=stopped(),
+    )
+    assert target.readiness() and receipt.object_count == 1
+
+
 def test_restore_object_larger_than_compose_tmpfs(
     minimal: MinimalBackup,
     databases: DatabaseFactory,
@@ -672,6 +709,76 @@ def test_restore_refuses_existing_database_or_store(
     with pytest.raises(ValueError, match="empty"):
         restore(minimal, databases(minimal.source.schema), store, tools)
     assert store.stat(prior.key) == prior
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ['CREATE COLLATION public.saved FROM "C"', "SELECT lo_create(0)"],
+)
+def test_restore_checks_other_database_objects_before_writing(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    statement: str,
+) -> None:
+    target = databases(minimal.source.schema)
+    with psycopg.connect(target._dsn) as connection:
+        connection.execute(statement)
+    store = local(tmp_path / "target-objects")
+    with pytest.raises(ValueError, match="empty database"):
+        restore(minimal, target, store, tools)
+    store.assert_empty_store()
+    assert not target.readiness()
+
+
+@pytest.mark.parametrize("stage", ["materialize", "put", "stat"])
+def test_object_transfer_checks_recovery_deadline_before_completion(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    target = databases(minimal.source.schema)
+    store = local(tmp_path / "target-objects")
+    adapter = minimal.store if stage == "materialize" else store
+    transfer = getattr(adapter, stage)
+    expired = False
+    finished = False
+    original_deadline = recovery._deadline
+
+    def deadline(limit: float) -> None:
+        original_deadline(0 if expired else limit)
+
+    def delayed(*args: object, **kwargs: object) -> ObjectInfo:
+        nonlocal expired, finished
+        expired = True
+        result: ObjectInfo = transfer(*args, **kwargs)
+        finished = True
+        return result
+
+    monkeypatch.setattr(recovery, "_deadline", deadline)
+    monkeypatch.setattr(adapter, stage, delayed)
+    destination = tmp_path / "interrupted-backup"
+    with pytest.raises(TimeoutError, match="wall-time"):
+        if stage == "materialize":
+            recovery.backup_service(
+                SecretStr(minimal.source._dsn),
+                minimal.source.schema,
+                adapter,
+                destination,
+                tools=tools,
+                attestation=stopped(),
+            )
+        else:
+            restore(minimal, target, store, tools)
+    assert expired and not finished
+    assert not (destination / "manifest.json").exists()
+    assert not target.readiness()
+    if stage != "stat":
+        store.assert_empty_store()
 
 
 def test_mid_rebind_failure_rolls_back_and_cannot_be_served_or_reseeded(

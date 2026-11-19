@@ -592,10 +592,10 @@ class S3ObjectStore:
                 return info
         raise AssertionError("unreachable bounded S3 upload loop")
 
-    def stat(self, key: str) -> ObjectInfo:
+    def stat(self, key: str, *, checkpoint: Callable[[], None] | None = None) -> ObjectInfo:
         self._full_key(key)
-        with self._locked_root(shared=True):
-            return self._read(self._ready(), key)
+        with self._locked_root(shared=True, checkpoint=checkpoint):
+            return self._read(self._ready(), key, checkpoint=checkpoint)
 
     def stat_version(self, key: str, version_id: str) -> ObjectInfo:
         self._full_key(key)
