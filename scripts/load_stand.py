@@ -182,7 +182,9 @@ def stop_unit(unit):
 
 @contextmanager
 def private_scratch(out, unit):
-    scratch = Path(tempfile.mkdtemp(prefix="runtime-", dir=out))
+    # Keep ambiguous shutdowns for inspection; explicit cleanup handles read-only model caches.
+    temporary = tempfile.TemporaryDirectory(prefix="runtime-", dir=out, delete=False)
+    scratch = Path(temporary.name)
     created = scratch.lstat()
 
     def cleanup():
@@ -194,7 +196,7 @@ def private_scratch(out, unit):
             ) from exc
         if not os.path.samestat(created, scratch.lstat()):
             raise RuntimeError(f"The private scratch path changed. Inspect {scratch}")
-        shutil.rmtree(scratch)
+        temporary.cleanup()
 
     with finish_with(cleanup):
         yield scratch

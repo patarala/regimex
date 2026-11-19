@@ -140,6 +140,13 @@ def test_stop_confirmation_only_removes_the_original_scratch_directory(
         marker = scratch / "unrelated"
         marker.touch()
     assert marker.is_file()
+    external = tmp_path / "external"
+    external.mkdir()
     with stand["private_scratch"](tmp_path, "regimex-load-second.service") as clean:
-        assert clean.is_dir()
+        digest_dir = clean / "worker-1" / "cache" / ("a" * 64)
+        digest_dir.mkdir(parents=True)
+        (digest_dir / "weights.pt").touch(mode=0o400)
+        (digest_dir / "external-link").symlink_to(external, target_is_directory=True)
+        digest_dir.chmod(0o500)
+    assert external.is_dir()
     assert not clean.exists()
