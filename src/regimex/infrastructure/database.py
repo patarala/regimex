@@ -1143,6 +1143,18 @@ class DatabaseRepository:
     def recover_stale(self, stale_before: datetime) -> tuple[Operation, ...]:
         return self.recover_operations(stale_before)
 
+    def prune_successful_recovery_deliveries(self) -> None:
+        """Expire successful maintenance ticks, including any backlog from earlier runs."""
+        with self.connection() as connection:
+            # The queue removes the associated events and keeps its periodic
+            # deduplication marker when the completed job is deleted.
+            connection.execute(
+                "WITH finished AS (SELECT id FROM procrastinate_jobs "
+                "WHERE queue_name='maintenance' AND task_name='regimex.recover' "
+                "AND status='succeeded' ORDER BY id LIMIT 1000 FOR UPDATE SKIP LOCKED) "
+                "DELETE FROM procrastinate_jobs j USING finished WHERE j.id=finished.id"
+            )
+
     def recover_queued_deliveries(
         self, *, limit: int = 100, stalled_worker_seconds: int | None = None
     ) -> tuple[Operation, ...]:

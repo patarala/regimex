@@ -673,9 +673,7 @@ def restore_service(
         _empty_database(
             guard, target_dsn, tools, deadline=deadline, metadata_limit=limits.max_manifest_bytes
         )
-        replacements = transfer_objects(
-            "restore", store, manifest.objects, backup, deadline=deadline
-        )
+        transfer_objects("check_empty", store, (), backup, deadline=deadline)
         command = [
             str(tools.pg_restore),
             "--no-owner",
@@ -755,6 +753,11 @@ def restore_service(
             )
             if current_identity != manifest.source_maintenance_identity:
                 raise ValueError("The copied maintenance identity differs from the backup.")
+            # pg_restore has committed the schema without its ready row. A failed
+            # upload now leaves intake closed even if migrations run on restart.
+            replacements = transfer_objects(
+                "restore", store, manifest.objects, backup, deadline=deadline
+            )
             new_installation = uuid4()
             connection.execute(
                 "UPDATE regimex_maintenance_identity SET installation_id=%s,created_at=now(),"

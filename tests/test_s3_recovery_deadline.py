@@ -181,4 +181,6 @@ def test_offline_deadline_closes_stalled_s3_request(
         assert not (destination / "manifest.json").exists()
         assert not (destination / "objects" / info.sha256).exists()
     else:
+        if stage == "upload":
+            database.migrate()
         assert not database.readiness()

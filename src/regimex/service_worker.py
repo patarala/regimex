@@ -100,4 +100,5 @@ def recover_operations(settings: ServiceSettings, service: AnalysisService) -> i
     queued = service.repository.recover_queued_deliveries(
         stalled_worker_seconds=settings.stale_seconds
     )
+    service.repository.prune_successful_recovery_deliveries()
     return len(recovered) + len(queued)

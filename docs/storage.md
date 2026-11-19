@@ -189,8 +189,11 @@ uv run --locked --all-extras regimex service restore \
   --manifest-sha256 EXTERNALLY_RECORDED_SHA256
 ```
 
-Restore verifies the database dump and objects, then records their new physical
-versions. Existing dataset and model identities are preserved. The target gets
+After checking both targets are empty, restore loads the database with intake
+closed, verifies its contents, then copies the objects. Readiness opens only
+after their new physical versions are committed. Running migrations or
+restarting the API after an interrupted copy leaves intake closed. Existing
+dataset and model identities are preserved. The target gets
 a new maintenance identity, so cleanup plans from the original installation
 cannot be applied there.
 

@@ -26,7 +26,7 @@ from regimex.infrastructure.object_store import (
 from regimex.infrastructure.s3_config import S3Config
 from regimex.infrastructure.s3_object_store import S3ObjectStore
 
-Transfer = Literal["backup", "restore"]
+Transfer = Literal["backup", "check_empty", "restore"]
 _VERSIONS = TypeAdapter(tuple[Annotated[str, Field(min_length=1, max_length=256)], ...])
 _TIMEOUT = "Offline recovery exceeded its wall-time budget."
 
@@ -59,8 +59,10 @@ def _copy(
 ) -> dict[str, ObjectInfo]:
     replacements = {}
     checkpoint()
-    if operation == "restore":
+    if operation == "check_empty":
         store.assert_empty_store()
+        checkpoint()
+        return {}
     for info in objects:
         checkpoint()
         path = archive / "objects" / info.sha256
@@ -99,7 +101,7 @@ def transfer_objects(
     deadline: float,
 ) -> dict[str, ObjectInfo]:
     check_deadline(deadline)
-    if operation == "backup" and not objects:
+    if not objects and operation != "check_empty":
         return {}
     # The coordinator owns the backup staging directory even if the SDK process dies.
     staging = (
@@ -129,8 +131,8 @@ def transfer_objects(
 
 
 def _run_s3(request: _TransferRequest) -> dict[str, ObjectInfo]:
-    # A single SDK process covers credential lookup, preflight and every object.
-    # It can be stopped even while a network call is waiting for its first byte.
+    # Isolate credential lookup and SDK calls so the coordinator can stop a
+    # preflight or a transfer even while the network is waiting for its first byte.
     payload = request.model_dump_json().encode()
     check_deadline(request.deadline)
     with subprocess.Popen(

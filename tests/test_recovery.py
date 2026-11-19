@@ -34,6 +34,7 @@ from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.maintenance import ServicesStoppedAttestation
 from regimex.infrastructure.object_store import (
     LocalObjectStore,
+    ObjectCapacityError,
     ObjectInfo,
     ObjectIntegrityError,
     ObjectStore,
@@ -41,7 +42,7 @@ from regimex.infrastructure.object_store import (
 from regimex.infrastructure.s3_object_store import S3ObjectStore
 from regimex.model_registry import ArchitectureRegistry
 from regimex.recovery_contracts import BackupResult, PostgresTools, RestoreReceipt
-from regimex.service_contracts import Conflict
+from regimex.service_contracts import Conflict, ServiceError
 from regimex.storage import digest, json_bytes
 
 DatabaseFactory = Callable[[str], DatabaseRepository]
@@ -697,9 +698,61 @@ def test_restore_refuses_existing_database_or_store(
     existing = tmp_path / "prior"
     existing.write_bytes(b"preexisting target content")
     prior = store.put("preserved", existing, expected_sha256=digest(existing))
+    target = databases(minimal.source.schema)
     with pytest.raises(ValueError, match="empty"):
-        restore(minimal, databases(minimal.source.schema), store, tools)
+        restore(minimal, target, store, tools)
     assert store.stat(prior.key) == prior
+    with psycopg.connect(target._dsn) as connection:
+        assert connection.execute(
+            "SELECT to_regclass(%s)", (target.schema + ".regimex_restore_state",)
+        ).fetchone() == (None,)
+
+
+def test_partial_object_restore_stays_closed_after_migration_and_restart(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+) -> None:
+    owner = minimal.source.authenticate(minimal.token)
+    export = minimal.service.read_snapshot(owner, minimal.snapshot_id)
+    another_snapshot = export.source.model_copy(update={"snapshot_id": "another-snapshot"})
+    minimal.service.create_snapshot(
+        owner, seal_export(export.model_copy(update={"source": another_snapshot}))
+    )
+    directory = tmp_path / "two-snapshot-backup"
+    backup = recovery.backup_service(
+        SecretStr(minimal.source._dsn),
+        minimal.source.schema,
+        minimal.store,
+        directory,
+        tools=tools,
+        attestation=stopped(),
+    )
+    first, second = backup.manifest.objects
+    capacity = max(first.size_bytes, second.size_bytes)
+    target = databases(minimal.source.schema)
+    store = LocalObjectStore(
+        tmp_path / "target-objects", max_object_bytes=capacity, max_total_bytes=capacity
+    )
+    with pytest.raises(ObjectCapacityError):
+        recovery.restore_service(
+            SecretStr(target._dsn),
+            store,
+            directory,
+            expected_manifest_sha256=backup.manifest_sha256,
+            tools=tools,
+            attestation=stopped(),
+        )
+    assert store.stat(first.key).sha256 == first.sha256
+    with pytest.raises(FileNotFoundError):
+        store.stat(second.key)
+    target.migrate()
+    restarted = DatabaseRepository(target._dsn, schema=target.schema)
+    assert not restarted.readiness()
+    with pytest.raises(ServiceError) as blocked:
+        restarted.create_token("new-user", "user")
+    assert (blocked.value.status_code, blocked.value.code) == (503, "restore_incomplete")
 
 
 @pytest.mark.parametrize(
