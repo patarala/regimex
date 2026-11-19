@@ -107,9 +107,10 @@ penalty for switching direction and the availability and duration rules above.
 
 Training and validation contain separate experiments. All instruments from one
 experiment and all members of a split group stay together. Validation and test
-references require one snapshot per source run, split group and generator-scoped
-seed. When a run has several revisions, choose the one to evaluate before
-registering its reference set.
+reject snapshots that repeat a complete instrument series from another snapshot,
+even when the run and instrument IDs differ. Their references require one
+snapshot per source run, split group and generator-scoped seed. When a run has
+several revisions, choose the one to evaluate before registering its reference set.
 
 Both backends need all three directions in their training targets and fit their
 preprocessing on training data. Model selection requires at least one

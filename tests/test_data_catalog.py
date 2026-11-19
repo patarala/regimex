@@ -260,6 +260,23 @@ def test_evaluation_rejects_dependent_runs_within_a_partition(
         validate_reference_membership(updated, refs)
 
 
+@pytest.mark.parametrize("partition", ["train", "validation", "test"])
+def test_repeated_instrument_series_in_different_snapshots(partition: Partition) -> None:
+    manifest, _ = dataset()
+    original = next(item for item in manifest.members if item.partition == partition)
+    new = create_snapshot_member(snapshot(3, instrument_count=2), partition)
+    # Sharing even one complete instrument would give it additional weight.
+    repeated = new.model_copy(
+        update={"observation_hashes": (original.observation_hashes[0], new.observation_hashes[1])}
+    )
+    members = (*manifest.members, repeated)
+    if partition == "train":
+        assert seal_dataset("training-revisions", members).members == members
+    else:
+        with pytest.raises(ValueError, match="repeat the same instrument observations"):
+            seal_dataset("repeated-observations", members)
+
+
 def test_seed_namespaces_do_not_conflate_unrelated_generators() -> None:
     manifest, _ = dataset()
     train, validation, test = manifest.members
@@ -574,6 +591,27 @@ def raw_training_data() -> RawTrainingData:
     return load_training_data(
         manifest, labels, validation, snapshot_reader=read_snapshot, reference_reader=read_reference
     )
+
+
+def test_raw_validation_rejects_repeated_observations_with_new_identities() -> None:
+    original = raw_training_data()
+    sample = original.validation[0]
+    payload = sample.export.model_dump(mode="json", exclude={"content_sha256"})
+    payload["source"].update(snapshot_id="another-snapshot", run_id="another-run")
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload)))
+    repeated = sample.model_copy(
+        update={
+            "snapshot_id": export.source.snapshot_id,
+            "export": export,
+            "annotations": sample.annotations.model_copy(
+                update={"experiment_id": export.source.snapshot_id}
+            ),
+        }
+    )
+    with pytest.raises(ValueError, match="repeat the same instrument observations"):
+        RawTrainingData.model_validate(
+            original.model_copy(update={"validation": (sample, repeated)})
+        )
 
 
 @pytest.mark.parametrize("boundary", ["constructor", "instance", "json"])
