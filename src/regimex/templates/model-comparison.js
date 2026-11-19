@@ -44,7 +44,11 @@
   const intervalNote = first.experiment_count === 1
     ? "Sampling intervals require at least two independent experiments."
     : "Brackets show 95% whole-experiment intervals.";
-  document.getElementById("metric-note").textContent = `Higher F1 is better. Interval IoU ≥ 0.50; boundary tolerance ${first.boundary_metrics.tolerance_steps} steps. Typed boundaries also require both directions to agree. ${intervalNote} Lag is prediction − reference among aligned typed transitions, without a distance cutoff; positive means later. Distant pairs can represent different events.`;
+  const boundaryIntervalNote = first.experiment_count === 1 ? ""
+    : first.evaluation_version === "2.4"
+      ? " A boundary interval requires a defined F1 in every bootstrap draw."
+      : " The saved version 2.3 intervals count boundary-free draws as zero F1.";
+  document.getElementById("metric-note").textContent = `Higher F1 is better. Interval IoU ≥ 0.50; boundary tolerance ${first.boundary_metrics.tolerance_steps} steps. Typed boundaries also require both directions to agree. ${intervalNote}${boundaryIntervalNote} Lag is prediction − reference among aligned typed transitions, without a distance cutoff; positive means later. Distant pairs can represent different events.`;
   table("overview", ["Model", "Interval macro-F1 ↑", "Step macro-F1 ↑", "Boundary timing F1 ↑", "Typed boundary F1 ↑", "Median typed lag, steps"], evaluations.map(item => [
     item.model_version_id,
     score(item.segment_macro_f1, item.confidence_intervals.segment_macro_f1_percentile_interval),
@@ -55,9 +59,14 @@
   ]));
   const paired = () => {
     const metric = document.getElementById("paired-metric").value;
-    table("paired", ["Model", `Δ vs ${first.model_version_id}`, "Experiments ↑", "Tied", "Experiments ↓"], payload.paired_comparisons.map(item => {
+    const headings = ["Model", `Δ vs ${first.model_version_id}`, "Experiments ↑", "Tied", "Experiments ↓"];
+    const hasUndefined = payload.paired_comparisons.some(item => item.metrics[metric].undefined_experiments > 0);
+    if (hasUndefined) headings.push("Undefined");
+    table("paired", headings, payload.paired_comparisons.map(item => {
       const values = item.metrics[metric];
-      return [item.candidate_model_version_id, score(values.delta, values.percentile_interval), values.improved_experiments, values.tied_experiments, values.worse_experiments];
+      const row = [item.candidate_model_version_id, score(values.delta, values.percentile_interval), values.improved_experiments, values.tied_experiments, values.worse_experiments];
+      if (hasUndefined) row.push(values.undefined_experiments);
+      return row;
     }));
   };
   document.getElementById("paired-metric").addEventListener("change", paired);
@@ -66,7 +75,7 @@
     ? "Reused selection data limits conclusions about unseen experiments."
     : "Models were fixed before opening this final benchmark; these data were not used for selection.";
   const pairedIntervalNote = first.experiment_count === 1 ? intervalNote
-    : `95% paired intervals use the same ${first.confidence_intervals.repetitions} experiment draws for both models.`;
+    : `95% paired intervals use the same ${first.confidence_intervals.repetitions} experiment draws for both models and require two defined scores in every draw.`;
   document.getElementById("paired-note").textContent = `Candidate − ${first.model_version_id}. ${pairedIntervalNote} Counts compare individual experiment scores; overall Δ pools counts. ${selectionNote} Intervals condition on the saved models and do not include training-seed variation.`;
   const directions = () => {
     const metric = document.getElementById("metric-kind").value;

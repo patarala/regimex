@@ -72,7 +72,7 @@ def test_comparison_preserves_downloads_and_escapes_embedded_script(tmp_path: Pa
             "paired-comparisons.json",
         )
     }
-    assert manifest["version"] == "model-comparison/2.0"
+    assert manifest["version"] == "model-comparison/2.1"
     paired = json.loads((target / "paired-comparisons.json").read_text())
     assert paired[0]["reference_model_version_id"] == "baseline"
     assert paired[0]["candidate_model_version_id"] == "tcn"
@@ -293,3 +293,59 @@ def test_paired_download_is_invariant_to_experiment_order_and_negates_on_swap(
             -item["percentile_interval"][0],
         ]
         assert item["improved_experiments"] == 1 and item["tied_experiments"] == 2
+
+
+def test_comparison_distinguishes_undefined_boundary_deltas_from_ties(tmp_path: Path) -> None:
+    pytest.importorskip("numpy")
+    from test_evaluation import intervals, rows, sequences
+
+    from regimex.evaluation import report
+
+    observations = rows(96)
+    flat = intervals(observations, [(0, 96, Direction.GROWTH)])
+    change = intervals(observations, [(0, 48, Direction.GROWTH), (48, 96, Direction.DECLINE)])
+    data = sequences((flat, flat))
+    first, second = evaluation("baseline"), evaluation("tcn")
+    first.update(report(data, (flat, flat), bootstrap_repetitions=100))
+    second.update(report(data, (flat, change), bootstrap_repetitions=100))
+    render_model_comparison((first, second), tmp_path / "absent")
+    item = json.loads((tmp_path / "absent/paired-comparisons.json").read_bytes())[0]
+    for metric in ("boundary_f1", "typed_boundary_f1"):
+        assert item["metrics"][metric] == {
+            "delta": None,
+            "percentile_interval": None,
+            "undefined_draws": 100,
+            "undefined_experiments": 2,
+            "tied_experiments": 0,
+            "improved_experiments": 0,
+            "worse_experiments": 0,
+        }
+    data = sequences((flat, change))
+    first.update(report(data, (flat, flat), bootstrap_repetitions=100))
+    second.update(report(data, (flat, change), bootstrap_repetitions=100))
+    render_model_comparison((first, second), tmp_path / "mixed")
+    item = json.loads((tmp_path / "mixed/paired-comparisons.json").read_bytes())[0]
+    for metric in ("boundary_f1", "typed_boundary_f1"):
+        values = item["metrics"][metric]
+        assert values["delta"] == 1
+        assert 0 < values["undefined_draws"] < 100
+        assert values["percentile_interval"] is None
+        assert values["improved_experiments"] == values["undefined_experiments"] == 1
+        assert values["tied_experiments"] == 0
+
+
+def test_comparison_supports_saved_v23_evaluations(tmp_path: Path) -> None:
+    first, second = evaluation("baseline"), evaluation("tcn")
+    for item in (first, second):
+        item["evaluation_version"] = "2.3"
+        confidence = cast(dict[str, JsonValue], item["confidence_intervals"])
+        del (
+            confidence["boundary_f1_undefined_draws"],
+            confidence["typed_boundary_f1_undefined_draws"],
+        )
+    # Early version 2.3 reports stored degenerate intervals for a single experiment.
+    for name in tuple(confidence):
+        if name.endswith("_percentile_interval"):
+            confidence[name] = [1.0, 1.0]
+    render_model_comparison((first, second), tmp_path / "old")
+    assert json.loads((tmp_path / "old/evaluations.json").read_bytes()) == [first, second]

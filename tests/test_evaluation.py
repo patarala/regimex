@@ -106,7 +106,7 @@ def test_perfect_three_direction_intervals_have_both_metrics_one(
     assert result["boundary_metrics"]["f1"] == 1
     assert result["primary_metric"] == "segment_macro_f1"
     assert result["reference_kind"] == reference_kind
-    assert result["evaluation_version"] == "2.3"
+    assert result["evaluation_version"] == "2.4"
     assert not any("acceptance" in key for key in result)
     assert result["confidence_intervals"] is None
 
@@ -253,6 +253,30 @@ def test_boundary_uncertainty_keeps_instruments_of_one_experiment_together() -> 
     assert result["confidence_intervals"]["boundary_f1_percentile_interval"] is None
     assert "two independent experiments" in result["confidence_intervals"]["limitation"]
     assert result["experiment_statistics"][0]["boundary_counts"] == [2, 0, 2]
+
+
+def test_undefined_boundary_draws_do_not_become_zero_scores() -> None:
+    observations = rows(96)
+    flat = intervals(observations, [(0, 96, Direction.GROWTH)])
+    change = intervals(observations, [(0, 48, Direction.GROWTH), (48, 96, Direction.DECLINE)])
+    split = intervals(observations, [(0, 48, Direction.GROWTH), (48, 96, Direction.GROWTH)])
+    for reference, predicted, expected_empty in (
+        ((flat, change), (flat, change), (True, True)),
+        ((flat, flat), (split, split), (False, True)),
+        ((flat, flat), (flat, flat), (True, True)),
+    ):
+        report = evaluation.report(sequences(reference), predicted, bootstrap_repetitions=100)
+        confidence = report["confidence_intervals"]
+        for metric, empty in zip(("boundary_f1", "typed_boundary_f1"), expected_empty, strict=True):
+            draws = confidence[f"{metric}_undefined_draws"]
+            if empty:
+                assert draws > 0
+                assert confidence[f"{metric}_percentile_interval"] is None
+            else:
+                assert draws == 0
+                # Predicted boundaries with no reference matches have a defined zero F1.
+                assert confidence[f"{metric}_percentile_interval"] == [0.0, 0.0]
+    assert report["confidence_intervals"]["typed_boundary_f1_undefined_draws"] == 100
 
 
 def test_duplicate_experiment_instrument_cannot_inflate_evaluation_support() -> None:
