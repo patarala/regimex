@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -356,11 +357,78 @@ def test_interrupted_verification_start_stops_its_cluster(
         assert list((root / "verification").iterdir()) == []
 
 
+def test_native_idle_check_reads_the_configured_schema(managed: Maintenance) -> None:
+    if not os.environ.get("REGIMEX_TEST_DATABASE_DSN"):
+        pytest.skip("native queue inspection requires the PostgreSQL integration environment")
+    psycopg = pytest.importorskip("psycopg")
+    pytest.importorskip("procrastinate")
+    pytest.importorskip("alembic")
+    from regimex.infrastructure.database import DatabaseRepository
+    from regimex.local_installation import probe
+    from regimex.recovery_contracts import PostgresTools
+
+    try:
+        pg = PostgresTools.discover().pg_dump.parent
+    except ValueError, FileNotFoundError:
+        pytest.skip("native queue inspection requires PostgreSQL tools")
+    if not all((pg / tool).is_file() for tool in ("initdb", "pg_ctl")):
+        pytest.skip("native queue inspection requires initdb and pg_ctl beside pg_dump")
+    # The native probe requires the installation's private Unix socket.
+    with tempfile.TemporaryDirectory(prefix="rx-idle-", dir="/tmp") as tmp:
+        root = Path(tmp)
+        socket = root / "postgres/socket"
+        socket.mkdir(parents=True)
+        (root / "credentials").mkdir()
+        install.write_private(root / "credentials/postgres-bootstrap.password", uuid4().hex)
+        data = root / "postgres/data"
+        subprocess.run(
+            [
+                pg / "initdb",
+                "-D",
+                data,
+                "-U",
+                "regimex_bootstrap",
+                "-A",
+                "trust",
+                "--no-locale",
+                "--encoding=UTF8",
+            ],
+            capture_output=True,
+            check=True,
+        )
+        control: list[str | Path] = [pg / "pg_ctl", "-D", data, "-w", "-t", "30"]
+        subprocess.run(
+            [*control, "-l", root / "pg.log", "-o", f"-h '' -k {socket} -p 5432", "start"],
+            check=True,
+        )
+        try:
+            probe.provision(root, 5432)
+            dsn = probe.private(root / "credentials/database.dsn")
+            repository = DatabaseRepository(dsn, schema="market")
+            repository.migrate()
+            managed.root = root
+            managed.environment = {
+                **install.environment_file(root, 18000, existing=False),
+                "REGIMEX_DATABASE_SCHEMA": "market",
+            }
+            with psycopg.connect(dsn) as connection:
+                connection.execute("CREATE TABLE public.regimex_operations(state text)")
+                connection.execute("CREATE TABLE public.procrastinate_jobs(status text)")
+            managed.idle()
+            with repository.connection() as connection:
+                connection.execute(
+                    "INSERT INTO procrastinate_jobs(queue_name,task_name,status) "
+                    "VALUES ('maintenance','regimex.recover','doing')"
+                )
+            with pytest.raises(MaintenanceError, match="wait for queued/running work"):
+                managed.idle()
+        finally:
+            subprocess.run([*control, "-m", "fast", "stop"], check=True)
+
+
 def test_real_isolated_restore_preserves_live_source(
     managed: Maintenance, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import tempfile
-
     psycopg = pytest.importorskip("psycopg")
     pytest.importorskip("numpy")
     pytest.importorskip("sklearn")
