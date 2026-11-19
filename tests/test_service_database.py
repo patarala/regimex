@@ -881,6 +881,74 @@ def test_failed_delivery_before_claim_is_repaired_with_a_bounded_budget(
     assert repository.claim_operation(operation_id) is None
 
 
+@pytest.mark.parametrize("lost_worker", ["unregistered", "stale"])
+def test_abandoned_delivery_before_claim_consumes_one_attempt(
+    repository: DatabaseRepository, lost_worker: str
+) -> None:
+    operation_id = _submit(repository)
+    for attempt in range(1, 4):
+        with repository.connection() as connection:
+            # Make a scheduled retry eligible without sleeping through its backoff.
+            connection.execute(
+                "UPDATE procrastinate_jobs SET scheduled_at=now() WHERE status='todo'"
+            )
+            worker = connection.execute(
+                "SELECT * FROM procrastinate_register_worker_v1()"
+            ).fetchone()
+            assert worker is not None
+            delivery = connection.execute(
+                "SELECT id FROM procrastinate_fetch_job_v2(ARRAY['analysis']::varchar[],%s)",
+                worker,
+            ).fetchone()
+            assert delivery is not None and delivery[0] is not None
+        assert repository.recover_queued_deliveries(stalled_worker_seconds=60) == ()
+        with repository.connection() as connection:
+            if lost_worker == "unregistered":
+                connection.execute("SELECT procrastinate_unregister_worker_v1(%s)", worker)
+            else:
+                connection.execute(
+                    "UPDATE procrastinate_workers SET last_heartbeat=now()-interval '5 minutes' "
+                    "WHERE id=%s",
+                    worker,
+                )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            repairs = list(
+                executor.map(
+                    lambda _: repository.recover_queued_deliveries(stalled_worker_seconds=60),
+                    range(2),
+                )
+            )
+        assert sum(map(len, repairs)) == 1
+        operation = repository.get_operation(_principal(), operation_id)
+        assert operation.attempt == attempt
+        assert operation.state == ("failed" if attempt == 3 else "queued")
+    assert repository.claim_operation(operation_id) is None
+
+
+def test_recovery_closes_lost_maintenance_jobs_and_leaves_other_tasks_alone(
+    repository: DatabaseRepository,
+) -> None:
+    with repository.connection() as connection:
+        for task in ("regimex.recover", "unrelated"):
+            repository.queue_app.configure_task(
+                name=task, queue="maintenance", connection=connection
+            ).defer()
+        worker = connection.execute("SELECT * FROM procrastinate_register_worker_v1()").fetchone()
+        assert worker is not None
+        for _ in range(2):
+            job = connection.execute(
+                "SELECT id FROM procrastinate_fetch_job_v2(ARRAY['maintenance']::varchar[],%s)",
+                worker,
+            ).fetchone()
+            assert job is not None and job[0] is not None
+        connection.execute("SELECT procrastinate_unregister_worker_v1(%s)", worker)
+    assert repository.recover_queued_deliveries(stalled_worker_seconds=60) == ()
+    with repository.connection() as connection:
+        assert connection.execute(
+            "SELECT task_name,status FROM procrastinate_jobs ORDER BY task_name"
+        ).fetchall() == [("regimex.recover", "failed"), ("unrelated", "doing")]
+
+
 def test_pruned_delivery_and_concurrent_repair_do_not_lose_or_duplicate_work(
     repository: DatabaseRepository,
 ) -> None:
