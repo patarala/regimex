@@ -100,3 +100,46 @@ def test_stand_freezes_the_normalized_runtime(tmp_path: Path) -> None:
     policy.write_bytes(b" " * 8193)
     with pytest.raises(ValueError, match="8 KiB"):
         stand["inference_policy"](policy)
+
+
+def test_stop_failure_preserves_private_data_and_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+
+    def unverifiable(unit: str) -> None:
+        raise OSError(f"Cannot reach manager for {unit}")
+
+    globals_ = stand["private_scratch"].__wrapped__.__globals__
+    monkeypatch.setitem(globals_, "stop_unit", unverifiable)
+    with (
+        pytest.raises(ValueError, match="k6 failed") as failure,
+        stand["private_scratch"](tmp_path, "regimex-load-test.service") as scratch,
+    ):
+        marker = scratch / "query-in-progress"
+        marker.write_text("data")
+        raise ValueError("k6 failed")
+    assert marker.is_file()
+    assert str(scratch) in failure.value.__notes__[0]
+
+
+def test_stop_confirmation_only_removes_the_original_scratch_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    globals_ = stand["private_scratch"].__wrapped__.__globals__
+    monkeypatch.setitem(globals_, "stop_unit", lambda _unit: None)
+    with (
+        pytest.raises(RuntimeError, match="scratch path changed"),
+        stand["private_scratch"](tmp_path, "regimex-load-test.service") as scratch,
+    ):
+        scratch.rename(tmp_path / "moved")
+        scratch.mkdir()
+        marker = scratch / "unrelated"
+        marker.touch()
+    assert marker.is_file()
+    with stand["private_scratch"](tmp_path, "regimex-load-second.service") as clean:
+        assert clean.is_dir()
+    assert not clean.exists()

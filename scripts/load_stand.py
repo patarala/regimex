@@ -160,6 +160,46 @@ def finish_with(action):
         action()
 
 
+def stop_unit(unit):
+    stop = subprocess.run(
+        ["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=20
+    )
+    if stop.returncode == 0:
+        return
+    # Transient units are normally collected before the runner's wait returns.
+    status = subprocess.run(
+        ["systemctl", "--user", "show", unit, "-p", "LoadState", "-p", "ActiveState"],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if status.returncode == 0 and {"LoadState=not-found", "ActiveState=inactive"} <= set(
+        status.stdout.splitlines()
+    ):
+        return
+    raise RuntimeError(f"Cannot verify {unit} has stopped: {stop.stderr.strip()}")
+
+
+@contextmanager
+def private_scratch(out, unit):
+    scratch = Path(tempfile.mkdtemp(prefix="runtime-", dir=out))
+    created = scratch.lstat()
+
+    def cleanup():
+        try:
+            stop_unit(unit)
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            raise RuntimeError(
+                f"Preserved private data at {scratch}. Verify {unit} has stopped before removal."
+            ) from exc
+        if not os.path.samestat(created, scratch.lstat()):
+            raise RuntimeError(f"The private scratch path changed. Inspect {scratch}")
+        shutil.rmtree(scratch)
+
+    with finish_with(cleanup):
+        yield scratch
+
+
 def phase(config, cell, env, name):
     summary = cell / f"{name}.json"
     events = cell / f"{name}-points.jsonl"
@@ -639,7 +679,7 @@ def main():
         print(f"Running {name}, {steps} steps, {workers} worker(s)", flush=True)
         unit = f"regimex-load-{uuid4().hex}.service"
         runtime = (options.duration_seconds if name == "sustained" else 300) + 600
-        with tempfile.TemporaryDirectory(prefix="runtime-", dir=out) as tmp:
+        with private_scratch(out, unit) as tmp:
             command = [
                 runner,
                 "--user",
@@ -666,18 +706,12 @@ def main():
                 str(Path(__file__).resolve()),
                 "--cell",
                 str(config_file),
-                tmp,
+                str(tmp),
                 str(steps),
                 str(workers),
                 name,
             ]
-            try:
-                subprocess.run(command, check=True, timeout=runtime + 30)
-            finally:
-                # Also stop isolated computation children on interruption or a failed setup.
-                subprocess.run(
-                    ["systemctl", "--user", "stop", unit], capture_output=True, timeout=20
-                )
+            subprocess.run(command, check=True, timeout=runtime + 30)
         row = json.loads((out / f"{name}-{steps}-{workers}w" / "result.json").read_bytes())
         rows.append(row)
         report(out, rows, len(cells))
