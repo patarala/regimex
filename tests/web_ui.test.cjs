@@ -1001,6 +1001,31 @@ test("two completed runs from different pages of one experiment can be compared"
   assert.equal(ui.get("comparison-actions").hidden, false);
 });
 
+test("refreshing history updates the expanded analysis page and its comparison choices", async () => {
+  const ui = await groupedWorkspace();
+  const card = ui.get("history-list").children[0];
+  const runs = byClass(card, "experiment-run-list");
+  ui.items[20].job.state = "running";
+  ui.items[20].result_available = false;
+  await byClass(card, "experiment-expand").click();
+  runs.children[0].children[0].checked = true;
+  await runs.children[0].children[0].emit("change");
+  await byClass(card, "experiment-run-pages").children[1].click();
+  assert.equal(runs.children[0].children[0].disabled, true);
+  ui.items[20].job.state = "succeeded";
+  ui.items[20].result_available = true;
+
+  await ui.get("refresh-history").click();
+  await flush();
+  const [checkbox, entry] = runs.children[0].children;
+  assert.equal(entry.dataset.analysisId, id(21));
+  assert.equal(entry.children.at(-1).textContent, "Complete");
+  assert.equal(checkbox.disabled, false);
+  checkbox.checked = true;
+  await checkbox.emit("change");
+  assert.equal(byClass(card, "experiment-compare").disabled, false);
+});
+
 test("group comparison cannot replace an analysis selected while its first result loads", async () => {
   const ui = await groupedWorkspace();
   const card = ui.get("history-list").children[0];
@@ -1180,6 +1205,22 @@ test("diagnostic failure does not interrupt polling or loading a completed resul
   assert.equal(ui.get("job-detail").textContent, "");
   assert.equal(ui.get("result").hidden, false);
   assert.equal(ui.get("report-preview").hidden, false);
+});
+
+test("queued analyses describe pending retries and worker recovery", async () => {
+  const ui = await workspace();
+  await flush();
+  for (const [stage, waiting] of [
+    ["retry_pending", "Waiting to retry"],
+    ["recovery_pending", "Waiting to restart after a worker interruption"],
+  ]) {
+    void ui.select(0);
+    const value = queuedMetadata();
+    value.job.stage = stage;
+    ui.pending(`/api/v1/analyses/${id(1)}`).reply(value);
+    await flush();
+    assert.ok(ui.get("job-detail").textContent.startsWith(`${waiting} · 20s.`));
+  }
 });
 
 test("an outstanding diagnostic cannot overwrite a running analysis or a new selection", async () => {

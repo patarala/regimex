@@ -135,7 +135,10 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     renderHistory();
     return load(0);
   }
-  $("refresh-history").addEventListener("click", () => load(0));
+  $("refresh-history").addEventListener("click", () => {
+    const expandedPages = Array.from(records.values(), (record) => record.refreshRuns());
+    return Promise.all([load(0), ...expandedPages]);
+  });
   $("history-filters").addEventListener("submit", applyHistoryFilters);
   $("history-state").addEventListener("change", applyHistoryFilters);
   $("history-clear").addEventListener("click", () => {

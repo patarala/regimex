@@ -1,6 +1,11 @@
 import {$} from "./ui.js";
 
 const QUEUE_CHECK_INTERVAL = 5000;
+const queuedStages = {
+  retry_pending: "Waiting to retry",
+  retry_wait: "Waiting to retry",
+  recovery_pending: "Waiting to restart after a worker interruption",
+};
 
 export function createQueueStatus({session, getSelection}) {
   let queueStatus = null;
@@ -24,7 +29,7 @@ export function createQueueStatus({session, getSelection}) {
     if (getSelection() !== selection || selection?.metadata?.job.state !== "queued") return;
     const job = selection.metadata.job;
     const duration = queueWait(job);
-    const waiting = job.stage === "retry_wait" ? "Waiting to retry" : "Waiting to start";
+    const waiting = queuedStages[job.stage] || "Waiting to start";
     $("job-detail").textContent = `${waiting}${duration ? ` · ${duration}` : ""}. `
       + (queueStatus?.message || "Checking worker availability…");
   }
