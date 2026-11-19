@@ -192,6 +192,7 @@ def render_analysis_report(
             {
                 "export": export.model_dump(mode="json", exclude={"observations"}),
                 "result": result.model_dump(mode="json", exclude={"sequences"}),
+                "last_bin_fraction": float(export.time_grid.last_bin_fraction),
                 "observation_fields": fields,
                 "observations": observations,
                 "sequences": sequences,

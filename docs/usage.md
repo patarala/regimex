@@ -26,6 +26,11 @@ run, model or analysis ID. **Rename** changes the display name in your workspace
 
 ## Read a report
 
+When absolute timestamps are too close together to plot accurately, the HTML
+report uses bins from the start. The instrument details show the original time
+range and the width of one bin. If a partial final bin is too small even on the
+relative scale, the axis shows each bin at equal width and is labelled “Bin index”.
+
 For an experiment with two instruments, the report shows both sets of
 predicted intervals on a shared timeline. Select a lane or choose its instrument
 in the dropdown to see its prices and trading activity at the current zoom.

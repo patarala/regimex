@@ -97,6 +97,48 @@ def test_offline_download_preserves_original_export(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
+def test_high_resolution_report_preserves_each_bin(
+    browser: Any, tmp_path: Path, width: int
+) -> None:
+    from test_analysis_report import digest, report_inputs
+
+    from regimex.application.report import render_analysis_report
+
+    export, result = report_inputs(steps=100)
+    grid = export.time_grid.model_copy(
+        update={
+            "origin": 1.7e18,
+            "bin_width": 10.0,
+            "completed_horizon": 1.700000000000001e18,
+            "unit": "nanoseconds",
+        }
+    )
+    payload = export.model_dump(exclude={"content_sha256"})
+    export = seal_export(ExportPayloadV2(**{**payload, "time_grid": grid}))
+    result = result.model_copy(update={"time_grid": grid, "snapshot_sha256": export.content_sha256})
+    path = tmp_path / "high-resolution.html"
+    path.write_bytes(render_analysis_report(export, result, result_sha256=digest(result)).html)
+    page = browser.new_page(viewport={"width": width, "height": 860}, offline=True)
+    try:
+        page.goto(path.as_uri())
+        page.locator("#price .main-svg").first.wait_for()
+        price = page.locator("#price")
+        assert price.evaluate("(node) => node.data[0].x") == [i + 0.5 for i in range(100)]
+        assert price.evaluate("(node) => node.layout.xaxis.title.text") == "Bins from start"
+        assert page.locator("#timeline").evaluate(
+            "(node) => node.data.every(t => t.x.every(w => w > 0))"
+        )
+        page.evaluate("() => Plotly.relayout('price', {'xaxis.range': [71, 76]})")
+        page.wait_for_function(
+            "document.getElementById('probability').layout.xaxis.range[0] === 71"
+        )
+        page.get_by_role("button", name="Reset zoom").click()
+        page.wait_for_function("document.getElementById('price').layout.xaxis.range[1] === 100")
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
 def test_cli_report_switches_lanes_within_the_zoomed_experiment(
     browser: Any, tmp_path: Path, width: int
 ) -> None:

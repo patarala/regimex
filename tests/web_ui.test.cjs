@@ -1258,7 +1258,7 @@ test("offline chart rendering removes the PNG export control", async () => {
   assert.equal(configurations[0].toImageButtonOptions, undefined);
 });
 
-async function drawAnalysisReport(timeGrid) {
+async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
   const elements = new Map();
   const get = (name) => {
     if (!elements.has(name)) {
@@ -1277,6 +1277,7 @@ async function drawAnalysisReport(timeGrid) {
       time_grid: {...timeGrid, step_count: 4, unit: "model-second"},
     },
     result: {class_names: ["sideways", "growth", "decline"]},
+    last_bin_fraction: lastBinFraction,
     observation_fields: ["step", "last_price", "trade_count", "trade_volume", "buy_order_count",
       "buy_order_volume", "sell_order_count", "sell_order_volume", "best_bid", "best_ask"],
     observations: [
@@ -1306,13 +1307,13 @@ async function drawAnalysisReport(timeGrid) {
 }
 
 test("analysis report keeps sample times finite for large origins and offsets", async () => {
-  for (const [grid, expected] of [
+  for (const [grid, expected, lastBinFraction] of [
     [{origin: 1e308, completed_horizon: 1.4e308, bin_width: 1e307},
       [1.05e308, 1.15e308, 1.25e308, 1.35e308]],
     [{origin: -1.5e308, completed_horizon: 1.25e308, bin_width: 7e307},
-      [-1.15e308, -4.5e307, 2.5e307, 9.25e307]],
+      [0.5, 1.5, 2.5, 3 + (65 / 70) / 2], 65 / 70],
   ]) {
-    const {get} = await drawAnalysisReport(grid);
+    const {get} = await drawAnalysisReport(grid, lastBinFraction);
     const times = get("price").data[0].x;
     assert.equal(times.length, expected.length);
     times.forEach((time, step) => {
@@ -1320,6 +1321,14 @@ test("analysis report keeps sample times finite for large origins and offsets", 
       assert.ok(Math.abs(time / expected[step] - 1) <= 4 * Number.EPSILON);
     });
   }
+});
+
+test("analysis report shows each bin when even the relative terminal width underflows", async () => {
+  const {get} = await drawAnalysisReport({
+    origin: -3e90, completed_horizon: Number.MIN_VALUE, bin_width: 1e90,
+  }, 0);
+  assert.equal(get("price").layout.xaxis.title.text, "Bin index");
+  assert.deepEqual(Array.from(get("price").data[0].x), [0.5, 1.5, 2.5, 3.5]);
 });
 
 test("analysis report reset restores the full extent after repeated linked drag zooms", async () => {

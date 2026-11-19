@@ -62,18 +62,20 @@ class ModelTimeGrid(StrictModel):
     interval_bounds: Literal["[start,stop)"]
     terminal_bin: Literal["full_bins_only", "include_partial_bin"]
 
+    @property
+    def last_bin_fraction(self) -> Fraction:
+        """Width of the terminal bin in bins, using the export's decimal coordinates."""
+        duration = Fraction(str(self.completed_horizon)) - Fraction(str(self.origin))
+        return duration / Fraction(str(self.bin_width)) - (self.step_count - 1)
+
     @model_validator(mode="after")
     def executed_horizon(self) -> Self:
-        # Use exact decimal values without binary rounding or the caller's
-        # Decimal context silently discarding a small origin/horizon difference.
-        duration = Fraction(str(self.completed_horizon)) - Fraction(str(self.origin))
-        width = Fraction(str(self.bin_width))
-        stop = width * self.step_count
-        if duration <= 0:
+        if self.completed_horizon <= self.origin:
             raise ValueError("completed horizon must be after the model-time origin")
-        if self.terminal_bin == "full_bins_only" and duration != stop:
+        fraction = self.last_bin_fraction
+        if self.terminal_bin == "full_bins_only" and fraction != 1:
             raise ValueError("full bins must cover the entire completed horizon exactly")
-        if self.terminal_bin == "include_partial_bin" and not stop - width < duration <= stop:
+        if self.terminal_bin == "include_partial_bin" and not 0 < fraction <= 1:
             raise ValueError("terminal bin must contain the completed horizon without truncation")
         return self
 
