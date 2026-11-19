@@ -24,9 +24,11 @@ def test_load_summary_uses_arrival_window_and_drain(
         "analysis_queued_first_half": {"med": 1, "max": 1},
         "analysis_queued_second_half": {"med": 2, "max": 2},
         "analysis_active_after_drain": {"max": 0},
+        "analysis_queue_first_half_samples": {"count": 2},
+        "analysis_queue_second_half_samples": {"count": 3},
+        "analysis_after_drain_samples": {"count": 1},
     }
     (tmp_path / "sustained.json").write_text(json.dumps({"metrics": metrics}))
-    (tmp_path / "memory.peak").write_text("123456")
     points = [
         (0, "analyses_started", 0),
         (0, "analyses_verified", 0),
@@ -49,7 +51,7 @@ def test_load_summary_uses_arrival_window_and_drain(
                 )
                 + "\n"
             )
-    summary = stand["summarize"](tmp_path, "sustained", tmp_path, 12)
+    summary = stand["summarize"](tmp_path, "sustained", 123456, 12)
     assert summary["completed_per_minute"] == 120 / window
     assert summary["throughput_window_seconds"] == window
     assert summary["observed_seconds"] == 6
@@ -73,3 +75,28 @@ def test_secondary_evidence_failure_preserves_the_load_error() -> None:
     ):
         raise RuntimeError("k6 failed")
     assert "queue evidence unavailable" in failure.value.__notes__[0]
+
+
+def test_stand_freezes_the_normalized_runtime(tmp_path: Path) -> None:
+    from regimex.data_catalog import content_hash
+    from regimex.model_registry import InferenceRuntime
+
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    policy = tmp_path / "runtime.json"
+    policy.write_text('{"threads":1}')
+    frozen = stand["inference_policy"](policy)
+    policy.write_text('{"threads":3}')
+    expected = InferenceRuntime(threads=1).model_dump(mode="json")
+    assert frozen == {
+        "inference_runtime": expected,
+        "inference_policy_sha256": content_hash(expected),
+        "runtime_override": True,
+    }
+    default = stand["inference_policy"](None)
+    assert default["inference_policy_sha256"] == content_hash(
+        InferenceRuntime().model_dump(mode="json")
+    )
+    policy.write_bytes(b" " * 8193)
+    with pytest.raises(ValueError, match="8 KiB"):
+        stand["inference_policy"](policy)

@@ -23,6 +23,10 @@ from uuid import UUID, uuid4
 
 import psycopg
 
+from regimex.data_catalog import content_hash
+from regimex.model_registry import InferenceRuntime
+from regimex.storage import write_json
+
 ROOT = Path(__file__).resolve().parents[1]
 CLI = [sys.executable, "-m", "regimex"]
 SEEDS = (42, 43, 44, 45)
@@ -94,6 +98,23 @@ def bin_path(name, directory=None):
     if location is None:
         raise ValueError(f"Missing {name}. Check PATH or REGIMEX_PG_BINDIR for PostgreSQL.")
     return str(Path(location).absolute())
+
+
+def inference_policy(path):
+    if path is None:
+        runtime = InferenceRuntime()
+    else:
+        with path.open("rb") as stream:
+            raw = stream.read(8193)
+        if len(raw) > 8192:
+            raise ValueError("Inference runtime JSON exceeds 8 KiB")
+        runtime = InferenceRuntime.model_validate_json(raw)
+    resolved = runtime.model_dump(mode="json")
+    return {
+        "inference_runtime": resolved,
+        "inference_policy_sha256": content_hash(resolved),
+        "runtime_override": path is not None,
+    }
 
 
 def versions(config):
@@ -194,7 +215,7 @@ def phase(config, cell, env, name):
         )
 
 
-def summarize(cell, name, cgroup, arrival_seconds):
+def summarize(cell, name, peak_bytes, arrival_seconds):
     metrics = json.loads((cell / f"{name}.json").read_bytes())["metrics"]
     starts, finishes, accounted = [], [], []
     with (cell / f"{name}-points.jsonl").open() as stream:
@@ -208,7 +229,6 @@ def summarize(cell, name, cgroup, arrival_seconds):
                 finishes.append(datetime.fromisoformat(point["data"]["time"]))
             elif point["metric"] == "analyses_accounted":
                 accounted.append(datetime.fromisoformat(point["data"]["time"]))
-    peak = int((cgroup / "memory.peak").read_text())
     completed = metrics["analyses_verified"]["count"]
     if not starts or not finishes or len(finishes) != completed:
         raise ValueError("k6 completion samples do not match the summary")
@@ -236,8 +256,13 @@ def summarize(cell, name, cgroup, arrival_seconds):
     if name == "sustained":
         for half in ("first", "second"):
             trend = metrics[f"analysis_queued_{half}_half"]
-            queue[f"queued_{half}_half"] = {key: trend[key] for key in ("med", "max")}
+            queue[f"queued_{half}_half"] = {
+                "med": trend["med"],
+                "max": trend["max"],
+                "samples": metrics.get(f"analysis_queue_{half}_half_samples", {}).get("count"),
+            }
         queue["active_after_drain"] = metrics["analysis_active_after_drain"]["max"]
+        queue["after_drain_samples"] = metrics.get("analysis_after_drain_samples", {}).get("count")
     return {
         **counters,
         **queue,
@@ -247,7 +272,7 @@ def summarize(cell, name, cgroup, arrival_seconds):
         "result_median_ms": metrics["analysis_to_result"]["med"],
         "result_p95_ms": metrics["analysis_to_result"]["p(95)"],
         "intake_median_ms": metrics["analysis_intake"]["med"],
-        "cgroup_peak_bytes": peak,
+        "cgroup_peak_bytes": peak_bytes,
     }
 
 
@@ -343,10 +368,16 @@ def run_cell(config_file, scratch, steps, workers, name):
                 env,
                 setup_log,
             )
+        policy_options = []
+        if config["runtime_override"]:
+            snapshot = scratch / "inference-runtime.json"
+            write_json(snapshot, config["inference_runtime"])
+            policy_options = ["--runtime-file", snapshot]
         once(
             [
                 *service,
                 "register-model",
+                *policy_options,
                 "--bundle",
                 config["bundle"],
                 "--manifest-sha256",
@@ -388,6 +419,8 @@ def run_cell(config_file, scratch, steps, workers, name):
             REGIMEX_LOAD_TOKEN=(scratch / "user").read_text().strip(),
             REGIMEX_LOAD_PORT=str(api_port),
             REGIMEX_LOAD_MODEL=config["model"],
+            REGIMEX_LOAD_EXPECTED_BUNDLE_SHA256=config["manifest_sha256"],
+            REGIMEX_LOAD_EXPECTED_POLICY_SHA256=config["inference_policy_sha256"],
             REGIMEX_LOAD_DIR=str(out / "inputs" / str(steps)),
         )
 
@@ -416,7 +449,9 @@ def run_cell(config_file, scratch, steps, workers, name):
                 "phase": name,
                 "steps": steps,
                 "workers": workers,
-                **summarize(cell, name, group, config["duration_seconds"]),
+                **summarize(
+                    cell, name, int((group / "memory.peak").read_text()), config["duration_seconds"]
+                ),
             }
         timings = json.loads((cell / "timings.json").read_bytes())
         row["median_stage_ms"] = timings["phases"][name]["median_ms"]
@@ -456,8 +491,8 @@ def report(out, rows, total):
             "## Median stage durations in milliseconds",
             "",
             "| Phase | Steps | Workers | Queue wait | Worker occupancy | Child process | "
-            "Model load | Prediction | HTML report |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "Model load | Prediction | Backend predict | HTML report |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in rows:
@@ -468,14 +503,17 @@ def report(out, rows, total):
             "child_process",
             "model_load",
             "prediction",
+            "backend_predict",
             "report",
         )
-        values = ["unavailable" if stages[k] is None else f"{stages[k]:.1f}" for k in fields]
+        values = ["unavailable" if stages.get(k) is None else f"{stages[k]:.1f}" for k in fields]
         lines.append(
             f"| {row['phase']} | {row['steps']} | {row['workers']} | " + " | ".join(values) + " |"
         )
     for row in rows:
         if row["phase"] == "sustained":
+            counts = [row[f"queued_{half}_half"].get("samples") for half in ("first", "second")]
+            coverage = " and ".join("unavailable" if n is None else str(n) for n in counts)
             lines.extend(
                 [
                     "",
@@ -484,6 +522,7 @@ def report(out, rows, total):
                     f"failed {row['failed']} and dropped {row['dropped']}. "
                     f"Queued jobs peaked at {row['queued_first_half']['max']} in the "
                     f"first half and {row['queued_second_half']['max']} in the second. "
+                    f"Completed samples by half: {coverage}. "
                     f"Active after drain: {row['active_after_drain']}.",
                 ]
             )
@@ -495,6 +534,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=("matrix", "sustained", "all"), default="all")
     parser.add_argument("--bundle", type=Path, default=ROOT / "release/models/tcn")
+    parser.add_argument("--runtime-file", type=Path, help="inference runtime JSON for all cells")
     parser.add_argument("--output", type=Path, help="new directory (default var/load-test/run-*)")
     parser.add_argument("--cpus", type=int, default=2)
     parser.add_argument("--memory-mib", type=int, default=3072)
@@ -536,6 +576,7 @@ def main():
     if not pgdir and not shutil.which("initdb") and shutil.which("pg_config"):
         pgdir = subprocess.check_output(["pg_config", "--bindir"], text=True).strip()
     config = {
+        **inference_policy(options.runtime_file),
         "cpu_ids": cpus[: options.cpus],
         "memory_bytes": options.memory_mib * 2**20,
         "bundle": str(bundle),
