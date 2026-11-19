@@ -119,9 +119,16 @@ count is set on registration. More threads and more workers can compete for the
 same CPUs.
 
 If upload or polling latency rises while workers have spare capacity, measure
-the API and database separately. Uvicorn's `REGIMEX_HTTP_CONCURRENCY_LIMIT`
-controls admission per API process. Raising it permits more simultaneous
-request bodies and database connections. The supplied Compose API publishes
+the API and database separately. If the API logs `Exceeded concurrency limit`
+and returns HTTP 503, repeat the same load with a higher
+`REGIMEX_HTTP_CONCURRENCY_LIMIT`. This per-process limit includes open
+connections. Raising it permits more simultaneous request bodies and database
+connections. When a submission returns `429 capacity_limit` because the queue
+quota is full, wait for an outstanding job to finish. By default, a single owner
+can have eight outstanding operations, and an integration can have 32 analyses
+in flight across its users. See [request and queue limits](access.md#request-and-queue-limits).
+
+The supplied Compose API publishes
 one host port. Multiple API replicas would need a shared HTTPS entry point
 that preserves the configured origin and authentication checks.
 
@@ -129,7 +136,9 @@ that preserves the configured origin and authentication checks.
 
 The baseline uses CPU numerical libraries, and the released TCN uses a CPU
 PyTorch build. Device selection forms part of the immutable inference policy.
-The packaged workers validate CPU execution and reject a CUDA request.
+Operators can pin the device, thread count and batch limit when
+[registering a model](models.md#saved-models). The packaged workers validate
+CPU execution and reject a CUDA request.
 Before adding a GPU worker, measure the part of worker time spent in model
 prediction. Model restoration, report generation and storage also contribute
 to latency.
