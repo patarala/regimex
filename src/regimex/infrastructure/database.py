@@ -17,11 +17,8 @@ from uuid import UUID, uuid4
 
 import procrastinate
 import psycopg
-from alembic import command
-from alembic.config import Config
 from psycopg.types.json import Json, Jsonb
 from pydantic import JsonValue, TypeAdapter, ValidationError
-from sqlalchemy import create_engine
 
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.heartbeat_connection import HeartbeatConnection
@@ -136,6 +133,10 @@ class DatabaseRepository:
 
     def migrate(self) -> None:
         """Explicit operator action; API startup never creates or changes schema."""
+        from alembic import command
+        from alembic.config import Config
+        from sqlalchemy import create_engine
+
         engine = create_engine(
             "postgresql+psycopg://",
             creator=lambda: psycopg.connect(

@@ -171,6 +171,8 @@ services:
     healthcheck:
       <<: *service-healthcheck
       test: [CMD, regimex, service, health, --component, worker, --queue, maintenance]
+      # The probe shares half a CPU with the maintenance scheduler during startup.
+      timeout: 20s
     cpus: 0.5
     mem_limit: 256m
 
