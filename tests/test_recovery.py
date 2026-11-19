@@ -27,7 +27,7 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from test_object_store_contract import cleanup_owned_test_prefix, s3_configuration
 
-from regimex.application import recovery
+from regimex.application import recovery, recovery_objects
 from regimex.application.service import AnalysisService
 from regimex.exports import ExportPayloadV2, ExportV2, seal_export
 from regimex.infrastructure.database import DatabaseRepository
@@ -153,7 +153,6 @@ def restore(
         store,
         minimal.directory,
         expected_manifest_sha256=minimal.backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -224,7 +223,6 @@ def test_cross_timezone_restore_through_a_service_without_object_scratch(
         store,
         minimal.directory,
         expected_manifest_sha256=minimal.backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -262,7 +260,6 @@ def test_recovery_uses_the_guard_endpoint_from_libpq_defaults(
         store,
         directory,
         expected_manifest_sha256=backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -303,7 +300,6 @@ def test_restore_object_larger_than_compose_tmpfs(
         target_store,
         directory,
         expected_manifest_sha256=saved.manifest_sha256,
-        assert_empty_store=target_store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -345,7 +341,6 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
         store,
         directory,
         expected_manifest_sha256=hashlib.sha256(data).hexdigest(),
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -401,7 +396,6 @@ def test_recovery_preserves_committed_usage_and_uncertain_upload_reservations(
         store,
         directory,
         expected_manifest_sha256=backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -483,7 +477,6 @@ def test_recovery_preserves_integration_access_subjects_and_request_budgets(
         store,
         directory,
         expected_manifest_sha256=backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -565,7 +558,6 @@ def test_backup_evidence_distinguishes_signed_zero_and_float_integer_types(
             store,
             directory,
             expected_manifest_sha256=backup.manifest_sha256,
-            assert_empty_store=store.assert_empty_store,
             tools=tools,
             attestation=stopped(),
         )
@@ -641,7 +633,6 @@ def test_s3_backup_round_trip_into_new_local_storage(
             objects,
             directory,
             expected_manifest_sha256=backup.manifest_sha256,
-            assert_empty_store=objects.assert_empty_store,
             tools=tools,
             attestation=stopped(),
         )
@@ -747,7 +738,7 @@ def test_object_transfer_checks_recovery_deadline_before_completion(
     transfer = getattr(adapter, stage)
     expired = False
     finished = False
-    original_deadline = recovery._deadline
+    original_deadline = recovery_objects.check_deadline
 
     def deadline(limit: float) -> None:
         original_deadline(0 if expired else limit)
@@ -759,7 +750,7 @@ def test_object_transfer_checks_recovery_deadline_before_completion(
         finished = True
         return result
 
-    monkeypatch.setattr(recovery, "_deadline", deadline)
+    monkeypatch.setattr(recovery_objects, "check_deadline", deadline)
     monkeypatch.setattr(adapter, stage, delayed)
     destination = tmp_path / "interrupted-backup"
     with pytest.raises(TimeoutError, match="wall-time"):
@@ -1162,7 +1153,6 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
             objects,
             original.directory,
             expected_manifest_sha256=original.backup.manifest_sha256,
-            assert_empty_store=objects.assert_empty_store,
             tools=tools,
             attestation=stopped(),
         )
@@ -1295,7 +1285,7 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
     ["unrecognized-schema", "9999_future", ""],
 )
 def test_unsupported_backup_revisions_are_rejected_before_target_access(
-    minimal: MinimalBackup, tmp_path: Path, revision: str
+    minimal: MinimalBackup, tmp_path: Path, revision: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backup = tmp_path / "unsupported-archive"
     backup.mkdir()
@@ -1308,13 +1298,14 @@ def test_unsupported_backup_revisions_are_rejected_before_target_access(
     def forbidden_target_access() -> None:
         pytest.fail("An unsupported archive reached the target store.")
 
+    monkeypatch.setattr(store, "assert_empty_store", forbidden_target_access)
+
     with pytest.raises(ValueError, match="schema validation"):
         recovery.restore_service(
             SecretStr("invalid target DSN must not be read"),
             store,
             backup,
             expected_manifest_sha256=hashlib.sha256(data).hexdigest(),
-            assert_empty_store=forbidden_target_access,
             tools=PostgresTools(
                 pg_dump=tmp_path / "absent-dump", pg_restore=tmp_path / "absent-restore"
             ),

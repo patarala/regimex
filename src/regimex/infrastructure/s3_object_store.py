@@ -35,6 +35,7 @@ from regimex.infrastructure.object_store import (
     ObjectIntegrityError,
     _abort_local_upload,
     _absolute_parts,
+    _anonymous_temporary_file,
     _check_digest,
     _child_directory,
     _incomplete_uploads,
@@ -508,7 +509,7 @@ class S3ObjectStore:
             raise ValueError("upload source must be outside the S3 coordination directory")
         with (
             self._locked_root(checkpoint=checkpoint) as root,
-            _temporary_file(root) as (temporary, _),
+            _anonymous_temporary_file(root) as temporary,
         ):
             client = self._ready()
             with (

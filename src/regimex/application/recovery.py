@@ -15,7 +15,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
-from functools import partial, wraps
+from functools import wraps
 from pathlib import Path
 from typing import BinaryIO
 from uuid import uuid4
@@ -27,7 +27,7 @@ from psycopg.types.json import Json, Jsonb
 from pydantic import JsonValue, SecretStr, TypeAdapter, ValidationError
 
 from regimex.admin_contracts import DatasetRecord, EvaluationRecord, ReferenceSetRecord
-from regimex.application.service import materialize_object
+from regimex.application.recovery_objects import check_deadline, transfer_objects
 from regimex.contracts import StrictModel
 from regimex.infrastructure.maintenance import (
     Connection,
@@ -107,11 +107,6 @@ def _first(connection: Connection, query: str) -> object:
     return row[0]
 
 
-def _deadline(deadline: float) -> None:
-    if time.monotonic() > deadline:
-        raise TimeoutError("Offline recovery exceeded its wall-time budget.")
-
-
 def _attestation(value: ServicesStoppedAttestation) -> ServicesStoppedAttestation:
     result = ServicesStoppedAttestation.model_validate_json(value.model_dump_json())
     if result.stopped_at > datetime.now(UTC):
@@ -139,9 +134,9 @@ def _postgres_major(value: str) -> str:
 def _stream_digest(stream: BinaryIO, deadline: float) -> str:
     checksum_value = hashlib.sha256()
     while block := stream.read(1024 * 1024):
-        _deadline(deadline)
+        check_deadline(deadline)
         checksum_value.update(block)
-    _deadline(deadline)
+    check_deadline(deadline)
     return checksum_value.hexdigest()
 
 
@@ -252,7 +247,7 @@ def _run_tool(
     stdout: BinaryIO | None = None,
     output_limit: int,
 ) -> None:
-    _deadline(deadline)
+    check_deadline(deadline)
     # libpq diagnostics may contain connection details. Keep stderr private.
     with tempfile.TemporaryFile() as stderr:
         process = subprocess.Popen(
@@ -272,10 +267,10 @@ def _run_tool(
 
         try:
             while process.poll() is None:
-                _deadline(deadline)
+                check_deadline(deadline)
                 within_output_limit()
                 time.sleep(0.05)
-            _deadline(deadline)
+            check_deadline(deadline)
             if process.returncode:
                 raise RuntimeError("The PostgreSQL recovery tool failed; no target is ready.")
             within_output_limit()
@@ -406,7 +401,7 @@ def _table_evidence(
                 )
             )
             for (raw,) in cursor:
-                _deadline(deadline)
+                check_deadline(deadline)
                 row = _json_object(raw)
                 if (
                     table == "regimex_object_version_claims"
@@ -455,7 +450,6 @@ def backup_service(
 ) -> BackupResult:
     schema = _schema(schema)
     deadline = time.monotonic() + limits.timeout_seconds
-    checkpoint = partial(_deadline, deadline)
     attestation = _attestation(attestation)
     if destination.exists() or destination.is_symlink():
         raise ValueError("A backup destination must be new; existing paths are never overwritten.")
@@ -527,20 +521,7 @@ def backup_service(
                 output_limit=limits.max_dump_bytes,
                 output=dump,
             )
-            for info in objects:
-                _deadline(deadline)
-                path = destination / "objects" / info.sha256
-                # Different logical keys can share a content digest. Verify every
-                # source revision, even when one archive payload already exists.
-                with tempfile.TemporaryDirectory(dir=destination, prefix=".copy-") as temporary:
-                    copy = Path(temporary) / "payload"
-                    materialize_object(store, info, copy, checkpoint=checkpoint)
-                    copy.chmod(0o600)
-                    with copy.open("rb") as stream:
-                        os.fsync(stream.fileno())
-                    if not path.exists():
-                        os.link(copy, path)
-                _deadline(deadline)
+            transfer_objects("backup", store, objects, destination, deadline=deadline)
     manifest = BackupManifest(
         backup_id=uuid4(),
         schema_name=schema,
@@ -559,6 +540,7 @@ def backup_service(
     data = json_bytes(manifest.model_dump(mode="json"))
     if len(data) > limits.max_manifest_bytes:
         raise ValueError("The backup manifest exceeds its byte limit.")
+    check_deadline(deadline)
     _private_write(destination / "manifest.json", data)
     with dump.open("rb") as stream:
         os.fsync(stream.fileno())
@@ -640,14 +622,12 @@ def restore_service(
     backup: Path,
     *,
     expected_manifest_sha256: str,
-    assert_empty_store: Callable[[], None],
     tools: PostgresTools,
     attestation: ServicesStoppedAttestation,
     limits: RecoveryLimits = _DEFAULT_LIMITS,
 ) -> RestoreReceipt:
     attestation = _attestation(attestation)
     deadline = time.monotonic() + limits.timeout_seconds
-    checkpoint = partial(_deadline, deadline)
     data = _read(backup / "manifest.json", limits.max_manifest_bytes)
     if hashlib.sha256(data).hexdigest() != expected_manifest_sha256:
         raise ValueError("The backup manifest differs from the trusted external digest.")
@@ -693,27 +673,9 @@ def restore_service(
         _empty_database(
             guard, target_dsn, tools, deadline=deadline, metadata_limit=limits.max_manifest_bytes
         )
-        assert_empty_store()
-        replacements = {}
-        for info in manifest.objects:
-            checkpoint()
-            restored = store.put(
-                info.key,
-                backup / "objects" / info.sha256,
-                expected_sha256=info.sha256,
-                checkpoint=checkpoint,
-            )
-            if (restored.key, restored.sha256, restored.size_bytes) != (
-                info.key,
-                info.sha256,
-                info.size_bytes,
-            ):
-                raise ValueError("The target object adapter changed object content identity.")
-            replacements[info.key] = restored
-            # Both providers stream the current bytes to calculate stat's digest.
-            if store.stat(restored.key, checkpoint=checkpoint) != restored:
-                raise ValueError("The restored object differs from its verified generation.")
-            _deadline(deadline)
+        replacements = transfer_objects(
+            "restore", store, manifest.objects, backup, deadline=deadline
+        )
         command = [
             str(tools.pg_restore),
             "--no-owner",
@@ -807,7 +769,7 @@ def restore_service(
             all_claims = frozenset((info.key, info.version_id) for info in replacements.values())
             added_claims = all_claims - _registered_claims(connection, replacements)
             for key, info in replacements.items():
-                _deadline(deadline)
+                check_deadline(deadline)
                 connection.execute(
                     "UPDATE regimex_objects SET version_id=%s,document=%s WHERE object_key=%s",
                     (info.version_id, Jsonb(info.model_dump(mode="json")), key),
@@ -821,7 +783,7 @@ def restore_service(
                         )
                     )
                     for identifier, document in rows:
-                        _deadline(deadline)
+                        check_deadline(deadline)
                         replacement = _rewrite_document(
                             table, _json_object(document), replacements, old
                         )
@@ -864,6 +826,7 @@ def restore_service(
                 if added_claims
                 else None,
             )
+            check_deadline(deadline)
             connection.execute(
                 "INSERT INTO regimex_restore_state(singleton,ready) VALUES (true,true)"
             )

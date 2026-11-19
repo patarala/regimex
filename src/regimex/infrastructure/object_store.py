@@ -6,6 +6,7 @@ Filesystem access outside this adapter is not an authorized way to mutate stored
 objects. Callers must authorize deletion and establish that an object is unused.
 """
 
+import errno
 import fcntl
 import hashlib
 import os
@@ -175,15 +176,44 @@ def _regular_file(parent: int, name: str) -> Iterator[int]:
         os.close(descriptor)
 
 
-@contextmanager
-def _temporary_file(parent: int) -> Iterator[tuple[int, str]]:
+def _create_temporary_file(parent: int) -> tuple[int, str]:
     name = _INTERNAL_PREFIX + "temporary-" + uuid.uuid4().hex
     descriptor = os.open(name, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=parent)
+    return descriptor, name
+
+
+@contextmanager
+def _temporary_file(parent: int) -> Iterator[tuple[int, str]]:
+    descriptor, name = _create_temporary_file(parent)
     try:
         yield descriptor, name
     finally:
         os.close(descriptor)
         os.unlink(name, dir_fd=parent)
+
+
+@contextmanager
+def _anonymous_temporary_file(parent: int) -> Iterator[int]:
+    if hasattr(os, "O_TMPFILE"):
+        try:
+            descriptor = os.open(".", os.O_RDWR | os.O_TMPFILE, 0o600, dir_fd=parent)
+        except OSError as error:
+            if error.errno not in (errno.EOPNOTSUPP, errno.EISDIR, errno.EINVAL, errno.ENOSYS):
+                raise
+        else:
+            try:
+                yield descriptor
+            finally:
+                os.close(descriptor)
+            return
+
+    # Unlink before the first transfer so killing the uploader releases its staging space.
+    descriptor, name = _create_temporary_file(parent)
+    try:
+        os.unlink(name, dir_fd=parent)
+        yield descriptor
+    finally:
+        os.close(descriptor)
 
 
 def _revision(metadata: os.stat_result) -> str:

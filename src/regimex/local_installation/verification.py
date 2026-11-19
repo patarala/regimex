@@ -193,7 +193,6 @@ def verify_restore(maintenance: Maintenance, source: Path, expected: str) -> dic
                 store,
                 source,
                 expected_manifest_sha256=expected,
-                assert_empty_store=store.assert_empty_store,
                 tools=tools,
                 attestation=ServicesStoppedAttestation.model_validate(stopped_attestation()),
             )
