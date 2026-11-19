@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -12,8 +13,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from collections.abc import Callable
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 from urllib.request import urlopen
@@ -94,6 +96,49 @@ def bin_path(name, directory=None):
     return str(Path(location).absolute())
 
 
+def versions(config):
+    env = clean_env()
+    recorded = {
+        "regimex": tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"],
+        "python": sys.version.split()[0],
+        "k6": subprocess.check_output(
+            [config["k6"], "version"], env=env, text=True, timeout=10
+        ).strip(),
+    }
+    for name in ("postgres", "initdb"):
+        output = subprocess.check_output(
+            [config[name], "--version"], env=env, text=True, timeout=10
+        ).strip()
+        if not re.fullmatch(rf"{name} \(PostgreSQL\) 16\.\d+(?: \([^\r\n]+\))?", output):
+            raise ValueError(f"PostgreSQL 16 is required; found {output!r} for {name}")
+        recorded[name] = output
+    if (ROOT / ".git").exists() and shutil.which("git"):
+        recorded["git_commit"] = subprocess.check_output(
+            ["git", "-C", ROOT, "rev-parse", "HEAD"], env=env, text=True, timeout=10
+        ).strip()
+        recorded["git_dirty"] = bool(
+            subprocess.check_output(
+                ["git", "-C", ROOT, "status", "--porcelain"], env=env, text=True, timeout=10
+            )
+        )
+    return recorded
+
+
+@contextmanager
+def finish_with(action):
+    """Keep the load failure and attach any secondary diagnostic or cleanup failure."""
+    try:
+        yield
+    except BaseException as failure:
+        try:
+            action()
+        except Exception as secondary:
+            failure.add_note(f"Additional failure while finishing the phase: {secondary}")
+        raise
+    else:
+        action()
+
+
 def phase(config, cell, env, name):
     summary = cell / f"{name}.json"
     events = cell / f"{name}-points.jsonl"
@@ -107,7 +152,27 @@ def phase(config, cell, env, name):
         "REGIMEX_LOAD_DURATION_SECONDS": str(config["duration_seconds"]),
         "REGIMEX_LOAD_MAX_VUS": str(config["max_vus"]),
     }
-    try:
+
+    def save_accepted():
+        ids = set()
+        if console.is_file():
+            with (cell / "jobs.jsonl").open("a") as jobs:
+                for line in console.read_text().splitlines():
+                    if line.startswith("REGIMEX_ACCEPTED "):
+                        record = json.loads(line.removeprefix("REGIMEX_ACCEPTED "))
+                        if record["phase"] != name:
+                            raise ValueError("k6 acceptance marker has the wrong phase")
+                        identity = UUID(record["analysis_id"])
+                        if identity in ids:
+                            raise ValueError("k6 reused an analysis ID within a phase")
+                        ids.add(identity)
+                        jobs.write(json.dumps(record) + "\n")
+        if summary.exists():
+            accepted = json.loads(summary.read_bytes())["metrics"]["analyses_accepted"]["count"]
+            if len(ids) != accepted:
+                raise ValueError(f"Missing acceptance records for {name}. See {console}")
+
+    with finish_with(save_accepted):
         once(
             [
                 config["k6"],
@@ -127,27 +192,11 @@ def phase(config, cell, env, name):
             cell / f"{name}-k6.log",
             timeout=(config["duration_seconds"] if name == "sustained" else 300) + 300,
         )
-    finally:
-        ids = set()
-        if console.is_file():
-            with (cell / "jobs.jsonl").open("a") as jobs:
-                for line in console.read_text().splitlines():
-                    if line.startswith("REGIMEX_ACCEPTED "):
-                        record = json.loads(line.removeprefix("REGIMEX_ACCEPTED "))
-                        if record["phase"] != name:
-                            raise ValueError("k6 acceptance marker has the wrong phase")
-                        identity = UUID(record["analysis_id"])
-                        if identity in ids:
-                            raise ValueError("k6 reused an analysis ID within a phase")
-                        ids.add(identity)
-                        jobs.write(json.dumps(record) + "\n")
-    if len(ids) != json.loads(summary.read_bytes())["metrics"]["analyses_accepted"]["count"]:
-        raise ValueError(f"Missing acceptance records for {name}. See {console}")
 
 
-def summarize(cell, name, cgroup):
+def summarize(cell, name, cgroup, arrival_seconds):
     metrics = json.loads((cell / f"{name}.json").read_bytes())["metrics"]
-    starts, finishes = [], []
+    starts, finishes, accounted = [], [], []
     with (cell / f"{name}-points.jsonl").open() as stream:
         for line in stream:
             point = json.loads(line)
@@ -157,11 +206,20 @@ def summarize(cell, name, cgroup):
                 starts.append(datetime.fromisoformat(point["data"]["time"]))
             elif point["metric"] == "analyses_verified":
                 finishes.append(datetime.fromisoformat(point["data"]["time"]))
+            elif point["metric"] == "analyses_accounted":
+                accounted.append(datetime.fromisoformat(point["data"]["time"]))
     peak = int((cgroup / "memory.peak").read_text())
     completed = metrics["analyses_verified"]["count"]
     if not starts or not finishes or len(finishes) != completed:
         raise ValueError("k6 completion samples do not match the summary")
     seconds = (max(finishes) - min(starts)).total_seconds()
+    throughput_window = seconds
+    if name == "sustained":
+        if len(accounted) != metrics["analyses_scheduled"]["count"]:
+            raise ValueError("Missing sustained completion or quota-refusal samples")
+        throughput_window = max(
+            arrival_seconds, (max(accounted) - min(starts)).total_seconds(), seconds
+        )
     counters = {
         key: metrics.get(metric, {}).get("count", 0)
         for key, metric in {
@@ -184,7 +242,8 @@ def summarize(cell, name, cgroup):
         **counters,
         **queue,
         "observed_seconds": seconds,
-        "completed_per_minute": completed * 60 / seconds,
+        "throughput_window_seconds": throughput_window,
+        "completed_per_minute": completed * 60 / throughput_window,
         "result_median_ms": metrics["analysis_to_result"]["med"],
         "result_p95_ms": metrics["analysis_to_result"]["p(95)"],
         "intake_median_ms": metrics["analysis_intake"]["med"],
@@ -331,17 +390,17 @@ def run_cell(config_file, scratch, steps, workers, name):
             REGIMEX_LOAD_MODEL=config["model"],
             REGIMEX_LOAD_DIR=str(out / "inputs" / str(steps)),
         )
-        phase(config, cell, env, "warmup")
-        phase(config, cell, env, name)
-        row = {"phase": name, "steps": steps, "workers": workers, **summarize(cell, name, group)}
-        collector = ROOT / "scripts/load_timings.py"
-        if collector.is_file():
+
+        def collect():
+            jobs = cell / "jobs.jsonl"
+            if not jobs.is_file() or not jobs.stat().st_size:
+                return
             once(
                 [
                     sys.executable,
-                    collector,
+                    ROOT / "scripts/load_timings.py",
                     "--jobs",
-                    cell / "jobs.jsonl",
+                    jobs,
                     *(arg for log in logs for arg in ("--worker-log", log)),
                     "--output",
                     cell / "timings.json",
@@ -349,14 +408,27 @@ def run_cell(config_file, scratch, steps, workers, name):
                 env,
                 cell / "timings.log",
             )
-            timings = json.loads((cell / "timings.json").read_bytes())
-            row["median_stage_ms"] = timings["phases"][name]["median_ms"]
+
+        with finish_with(collect):
+            phase(config, cell, env, "warmup")
+            phase(config, cell, env, name)
+            row = {
+                "phase": name,
+                "steps": steps,
+                "workers": workers,
+                **summarize(cell, name, group, config["duration_seconds"]),
+            }
+        timings = json.loads((cell / "timings.json").read_bytes())
+        row["median_stage_ms"] = timings["phases"][name]["median_ms"]
         save(cell / "result.json", row)
 
 
-def report(out, rows):
+def report(out, rows, total):
     save(out / "comparison.json", rows)
+    status = "Complete" if len(rows) == total else "Partial"
     lines = [
+        f"# {status} load comparison ({len(rows)} of {total} cells)",
+        "",
         "| Phase | Steps | Workers | Completed / requested | Jobs/min | Median result s | "
         "p95 result s | Peak MiB |",
         "|---|---:|---:|---:|---:|---:|---:|---:|",
@@ -371,11 +443,37 @@ def report(out, rows):
     lines.extend(
         [
             "",
-            "Jobs/min uses the first measured submission through the last verified download. "
+            "Matrix jobs/min uses the first measured submission through the last verified "
+            "download. Sustained jobs/min includes the full arrival window and any further time "
+            "through the final verification or quota refusal. "
             "Peak memory is the fresh unit's kernel high-water mark from bootstrap through that "
             "phase, including PostgreSQL, API, worker trees, k6 and charged file cache.",
         ]
     )
+    lines.extend(
+        [
+            "",
+            "## Median stage durations in milliseconds",
+            "",
+            "| Phase | Steps | Workers | Queue wait | Worker occupancy | Child process | "
+            "Model load | Prediction | HTML report |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for row in rows:
+        stages = row["median_stage_ms"]
+        fields = (
+            "queue_wait",
+            "worker_occupancy",
+            "child_process",
+            "model_load",
+            "prediction",
+            "report",
+        )
+        values = ["unavailable" if stages[k] is None else f"{stages[k]:.1f}" for k in fields]
+        lines.append(
+            f"| {row['phase']} | {row['steps']} | {row['workers']} | " + " | ".join(values) + " |"
+        )
     for row in rows:
         if row["phase"] == "sustained":
             lines.extend(
@@ -432,6 +530,8 @@ def main():
     manifest = bundle / "manifest.json"
     if not manifest.is_file():
         parser.error("supply --bundle pointing to an unpacked Regimex model directory")
+    if not (ROOT / "scripts/load_timings.py").is_file():
+        parser.error("the disposable stand requires the scripts/load_timings.py stage collector")
     pgdir = os.environ.get("REGIMEX_PG_BINDIR")
     if not pgdir and not shutil.which("initdb") and shutil.which("pg_config"):
         pgdir = subprocess.check_output(["pg_config", "--bindir"], text=True).strip()
@@ -449,6 +549,7 @@ def main():
         "initdb": bin_path("initdb", pgdir),
         "postgres": bin_path("postgres", pgdir),
     }
+    config["versions"] = versions(config)
     runner = bin_path("systemd-run")
     if options.output:
         out = options.output.resolve()
@@ -464,6 +565,9 @@ def main():
     if options.profile in ("all", "sustained"):
         cells.append(("sustained", 512, 2))
     config_file = out / "run.json"
+    config["planned_cells"] = [f"{name}-{steps}-{workers}w" for name, steps, workers in cells]
+    rows = []
+    report(out, rows, len(cells))
     config["inputs"] = {}
     for steps in sorted({steps for _, steps, _ in cells}):
         inputs = out / "inputs" / str(steps)
@@ -490,7 +594,6 @@ def main():
                 market.read_bytes()
             ).hexdigest()
     save(config_file, config)
-    rows = []
     for name, steps, workers in cells:
         print(f"Running {name}, {steps} steps, {workers} worker(s)", flush=True)
         unit = f"regimex-load-{uuid4().hex}.service"
@@ -536,7 +639,7 @@ def main():
                 )
         row = json.loads((out / f"{name}-{steps}-{workers}w" / "result.json").read_bytes())
         rows.append(row)
-        report(out, rows)
+        report(out, rows, len(cells))
 
 
 if __name__ == "__main__":
