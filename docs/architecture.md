@@ -128,12 +128,18 @@ quota is full, wait for an outstanding job to finish. By default, a single owner
 can have eight outstanding operations, and an integration can have 32 analyses
 in flight across its users. See [request and queue limits](access.md#request-and-queue-limits).
 
-The load stand uses one owner. To measure how users affect each other, fill
-one owner's queue with long analyses, then submit a short analysis from a
-second owner. Use the delivery timestamps to count how many waiting jobs from
-the first owner start before the second owner's job. Repeat with the owners
-swapped. If the short job consistently exceeds its queue-wait budget, compare
-per-owner scheduling with the current shared queue at the same total throughput.
+Analysis jobs share a priority. A free worker claims the ready, unlocked
+delivery with the lowest job ID. An owner with room in their quota can still
+wait behind another owner's backlog.
+Two workers can serve the same owner when that owner is the only one waiting.
+
+The load stand uses one owner. To compare scheduling policies, fill one
+owner's queue with long analyses and submit a short analysis from a second
+owner. Count the waiting jobs that start before the short analysis, then swap
+the owners. Also test an older queued job while other owners submit one job
+at a time. A priority fixed from the owner's backlog at submission lets each
+new arrival overtake that older job. Measure both owners' queue delays and
+total completed analyses before changing the scheduling policy.
 
 The supplied Compose API publishes one host port. Multiple API replicas would
 need a shared HTTPS entry point
