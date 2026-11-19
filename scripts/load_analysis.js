@@ -14,6 +14,11 @@ function integer(name, fallback, max, min = 1) {
 const port = integer("REGIMEX_LOAD_PORT", 8001, 65535);
 const api = `http://127.0.0.1:${port}/api/v1`;
 const model = __ENV.REGIMEX_LOAD_MODEL || "tcn-0.2.0";
+const expectedBundle = __ENV.REGIMEX_LOAD_EXPECTED_BUNDLE_SHA256;
+const expectedPolicy = __ENV.REGIMEX_LOAD_EXPECTED_POLICY_SHA256;
+for (const digest of [expectedBundle, expectedPolicy]) {
+  if (digest !== undefined && !validDigest(digest)) throw new Error("Invalid expected model digest");
+}
 const token = __ENV.REGIMEX_LOAD_TOKEN;
 const exportsRaw = [42, 43, 44, 45].map(seed => open(`${__ENV.REGIMEX_LOAD_DIR}/market-${seed}.json`));
 const phase = __ENV.REGIMEX_LOAD_PHASE || "analysis";
@@ -39,7 +44,10 @@ const failed = new Counter("analyses_failed");
 const accounted = new Counter("analyses_accounted");
 const queuedFirst = new Trend("analysis_queued_first_half");
 const queuedSecond = new Trend("analysis_queued_second_half");
+const firstSamples = new Counter("analysis_queue_first_half_samples");
+const secondSamples = new Counter("analysis_queue_second_half_samples");
 const activeAfterDrain = new Trend("analysis_active_after_drain");
+const drainSamples = new Counter("analysis_after_drain_samples");
 const sampleFailed = new Counter("analysis_queue_sample_errors");
 
 const thresholds = {
@@ -52,6 +60,9 @@ const thresholds = {
 if (sustained) {
   thresholds.dropped_iterations = ["count==0"];
   thresholds.analysis_queue_sample_errors = ["count==0"];
+  thresholds.analysis_queue_first_half_samples = ["count>0"];
+  thresholds.analysis_queue_second_half_samples = ["count>0"];
+  thresholds.analysis_after_drain_samples = ["count==1"];
   thresholds.analysis_active_after_drain = ["max==0"];
 }
 if (__ENV.REGIMEX_LOAD_MAX_RESULT_MS) {
@@ -110,7 +121,7 @@ export function setup() {
     counter.add(0);
   }
   if (sustained) {
-    sampleFailed.add(0);
+    for (const counter of [sampleFailed, firstSamples, secondSamples, drainSamples]) counter.add(0);
     if (ownerCount("active") !== 0) fail("The sustained profile needs a dedicated idle test owner");
   }
   return exportsRaw.map(raw => {
@@ -130,10 +141,17 @@ export function setup() {
 
 export function sampleQueue() {
   try {
-    const elapsed = Date.now() - exec.scenario.startTime;
-    const metric = elapsed < seconds * 500 ? queuedFirst : queuedSecond;
     const queued = ownerCount("queued");
-    metric.add(queued);
+    const elapsed = Date.now() - exec.scenario.startTime;
+    // An in-flight poll can finish during the drain, beyond both intake windows.
+    if (elapsed >= seconds * 1000) return;
+    if (elapsed < seconds * 500) {
+      queuedFirst.add(queued);
+      firstSamples.add(1);
+    } else {
+      queuedSecond.add(queued);
+      secondSamples.add(1);
+    }
     console.log(`REGIMEX_QUEUE ${JSON.stringify({ elapsed_ms: elapsed, queued })}`);
   } catch (error) {
     sampleFailed.add(1);
@@ -144,21 +162,62 @@ export function sampleQueue() {
 }
 
 export function teardown() {
-  if (sustained) activeAfterDrain.add(ownerCount("active"));
+  if (sustained) {
+    activeAfterDrain.add(ownerCount("active"));
+    drainSamples.add(1);
+  }
+}
+
+const classNames = ["sideways", "growth", "decline"];
+
+function validDigest(value) {
+  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function checkSequence(sequence, instrument, steps) {
+  if (sequence.instrument_id !== instrument || !Array.isArray(sequence.probabilities) ||
+    sequence.probabilities.length !== steps) {
+    fail("Result differs from the input instrument or time grid");
+  }
+  for (const row of sequence.probabilities) {
+    if (!Array.isArray(row) || row.length !== 3 ||
+      !row.every(p => Number.isFinite(p) && p >= 0 && p <= 1) ||
+      Math.abs(row[0] + row[1] + row[2] - 1) > 1e-6) fail("Invalid direction probabilities");
+  }
+  if (!Array.isArray(sequence.intervals)) fail("Missing direction intervals");
+  let stop = 0;
+  for (const interval of sequence.intervals) {
+    if (interval.instrument_id !== instrument || interval.start !== stop ||
+      !Number.isInteger(interval.stop) || interval.stop <= stop || interval.stop > steps) {
+      fail("Invalid direction interval coverage");
+    }
+    stop = interval.stop;
+  }
+  if (stop !== steps) fail("Direction intervals do not cover the complete grid");
 }
 
 function checkResult(result, id, snapshot, resolved) {
-  if (result.analysis_id !== id || result.snapshot_id !== snapshot.id ||
-    result.snapshot_sha256 !== snapshot.digest || result.model.model_version_id !== model ||
+  if (result.result_version !== "2.0" || result.analysis_id !== id ||
+    result.snapshot_id !== snapshot.id || result.snapshot_sha256 !== snapshot.digest ||
+    result.model.model_version_id !== model ||
     result.model.bundle_sha256 !== resolved.bundle_sha256 ||
     result.model.inference_policy_sha256 !== resolved.inference_policy_sha256) {
     fail("Result belongs to a different submission or model");
   }
+  if (!Array.isArray(result.class_names) || result.class_names.length !== classNames.length ||
+    !classNames.every((name, index) => name === result.class_names[index])) {
+    fail("Invalid direction classes");
+  }
   const gridMatches = Object.entries(snapshot.grid).every(([key, value]) => result.time_grid[key] === value);
-  const instrumentsMatch = result.sequences.length === snapshot.instruments.length &&
-    result.sequences.every((sequence, index) => sequence.instrument_id === snapshot.instruments[index] &&
-      sequence.probabilities.length === snapshot.grid.step_count);
-  if (!gridMatches || !instrumentsMatch) fail("Result differs from the input instrument or time grid");
+  if (!gridMatches || !Array.isArray(result.instruments) || !Array.isArray(result.sequences) ||
+    result.instruments.length !== snapshot.instruments.length ||
+    result.sequences.length !== snapshot.instruments.length) {
+    fail("Result differs from the input instrument or time grid");
+  }
+  snapshot.instruments.forEach((instrument, index) => {
+    if (result.instruments[index].instrument_id !== instrument) fail("Result instrument differs from input");
+    checkSequence(result.sequences[index], instrument, snapshot.grid.step_count);
+  });
 }
 
 function rejectionCode(response) {
@@ -191,7 +250,10 @@ function submitAndVerify(snapshot) {
   if (!id) fail("Accepted analysis has no ID");
   console.log(`REGIMEX_ACCEPTED ${JSON.stringify({ phase, analysis_id: id })}`);
   const resolved = analysis.job.model;
-  if (analysis.snapshot_id !== snapshot.id || resolved.model_version_id !== model) {
+  if (analysis.snapshot_id !== snapshot.id || resolved.model_version_id !== model ||
+    !validDigest(resolved.bundle_sha256) || !validDigest(resolved.inference_policy_sha256) ||
+    (expectedBundle !== undefined && resolved.bundle_sha256 !== expectedBundle) ||
+    (expectedPolicy !== undefined && resolved.inference_policy_sha256 !== expectedPolicy)) {
     fail("Accepted analysis differs from submission");
   }
   const created = Date.parse(analysis.job.created_at);
