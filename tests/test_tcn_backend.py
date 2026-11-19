@@ -354,6 +354,7 @@ def no_sklearn(name, *args, **kwargs):
     return original_import(name, *args, **kwargs)
 builtins.__import__ = no_sklearn
 import numpy as np
+import torch
 from regimex.backends.tcn import TCNBackend
 from regimex.model_contracts import ObservationInputs
 from regimex.model_registry import InferenceRuntime
@@ -376,9 +377,13 @@ inputs = ObservationInputs(
 )
 runtime = InferenceRuntime(threads=1)
 predictor = TCNBackend().load_bundle(root / 'bundle', manifest_sha256=sys.argv[2], runtime=runtime)
+torch.set_deterministic_debug_mode('warn')
 np.testing.assert_array_equal(
     predictor.predict(inputs, runtime=runtime), np.load(root / 'expected.npy')
 )
+assert torch.are_deterministic_algorithms_enabled()
+assert not torch.is_deterministic_algorithms_warn_only_enabled()
+assert 'torch._inductor' not in sys.modules
 assert not any(name.split('.')[0] == 'sklearn' for name in sys.modules)
 """
     completed = subprocess.run(
