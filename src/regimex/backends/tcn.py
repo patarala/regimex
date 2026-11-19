@@ -288,7 +288,8 @@ class TCNPredictor:
             raise ResourceBudgetExceeded("TCN model exceeds the inference model cache budget")
         # These process-global settings are applied only inside computation workers.
         torch.set_num_threads(runtime.threads)
-        torch.use_deterministic_algorithms(True)
+        # Eager operators honor error mode without loading TorchInductor in each fresh worker.
+        torch.set_deterministic_debug_mode("error")
         result = predict_tcn(
             self.model, _prepared(inputs, self.preprocessor), runtime.max_batch_size
         )
