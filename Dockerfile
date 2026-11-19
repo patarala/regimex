@@ -11,7 +11,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --only-group build --no-install-project
 COPY README.md LICENSE ./
 COPY src/regimex ./src/regimex
-RUN --network=none uv build --no-build-isolation --wheel
+RUN --network=none uv build --python /opt/venv/bin/python --no-build-isolation --wheel
 
 FROM locked-environment AS api-environment
 RUN --mount=type=cache,target=/root/.cache/uv \
