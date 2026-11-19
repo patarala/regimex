@@ -69,7 +69,7 @@ class AnalysisAPIService(Protocol):
 
     def authenticate(self, raw_token: str) -> Principal: ...
 
-    def readiness(self) -> dict[str, JsonValue]: ...
+    def is_ready(self, *, require_model: bool = False) -> bool: ...
 
     def get_service_status(self, principal: Principal) -> QueueStatus: ...
 
@@ -624,15 +624,13 @@ def create_app(
 
     @app.get("/health/ready", include_in_schema=False)
     def ready(response: Response) -> dict[str, JsonValue]:
-        state = service.readiness()
-        database = state.get("database") is True
+        database = service.is_ready()
         response.status_code = 200 if database else 503
         return {"status": "ready" if database else "unavailable", "database": database}
 
     @app.get("/health/models", include_in_schema=False)
     def model_readiness(response: Response) -> dict[str, JsonValue]:
-        state = service.readiness()
-        configured = state.get("database") is True and state.get("active_model") is True
+        configured = service.is_ready(require_model=True)
         response.status_code = 200 if configured else 503
         return {"deployment_configured": configured, "worker_capability": "not_probed"}
 

@@ -61,8 +61,8 @@ class _ValidationService:
             raise Unauthorized()
         return self.principal
 
-    def readiness(self) -> dict[str, bool]:
-        return {"database": True, "active_model": False}
+    def is_ready(self, *, require_model: bool = False) -> bool:
+        return not require_model
 
 
 @pytest.fixture

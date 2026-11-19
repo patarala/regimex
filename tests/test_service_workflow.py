@@ -116,6 +116,31 @@ def published_model(service: AnalysisService, tmp_path: Path) -> None:
     )
 
 
+def test_schema_probe_remains_ready_when_active_model_metadata_is_invalid(
+    service: AnalysisService, tmp_path: Path
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from regimex.api import create_app
+
+    published_model(service, tmp_path)
+    with TestClient(create_app(service), raise_server_exceptions=False) as client:
+        assert client.get("/health/models").status_code == 200
+        with service.repository.connection() as connection:
+            connection.execute(
+                "UPDATE regimex_models SET document = document - 'inference_runtime' "
+                "WHERE model_version_id = (SELECT model_version_id FROM regimex_deployment)"
+            )
+        ready = client.get("/health/ready")
+        assert ready.status_code == 200 and ready.json()["database"] is True
+        model_health = client.get("/health/models")
+        assert model_health.status_code == 503
+        assert model_health.json() == {
+            "deployment_configured": False,
+            "worker_capability": "not_probed",
+        }
+
+
 def test_doctor_restores_saved_model_in_a_child_and_detects_corrupted_storage(
     service: AnalysisService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

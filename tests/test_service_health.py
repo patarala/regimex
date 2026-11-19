@@ -395,6 +395,30 @@ def certificate(root: Path, name: str) -> tuple[Path, Path]:
     return cert, key
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        b"Incomplete HTTP status line\r\n",
+        b'HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n{"database":true}',
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n20\r\n{",
+    ],
+)
+def test_api_probe_reports_incomplete_http_as_unhealthy(
+    response: bytes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = ServiceSettings(
+        database_dsn=SecretStr("unused"),
+        public_origin="http://127.0.0.1",
+        allow_loopback_http=True,
+    )
+    client, server = socket.socketpair()
+    with client, server:
+        server.sendall(response)
+        server.shutdown(socket.SHUT_WR)
+        monkeypatch.setattr(socket, "create_connection", lambda *args, **kwargs: client)
+        assert not api_healthy(config, component="ready", port=8000)
+
+
 def test_direct_tls_readiness_sni_ca_origin_and_redacted_request_logs(
     database: DatabaseRepository, tmp_path: Path
 ) -> None:

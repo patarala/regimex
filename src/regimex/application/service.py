@@ -284,12 +284,8 @@ class AnalysisService:
     def authenticate(self, raw_token: str) -> Principal:
         return self.repository.authenticate(raw_token)
 
-    def readiness(self) -> dict[str, JsonValue]:
-        database = self.repository.readiness()
-        return {
-            "database": database,
-            "active_model": database and self.repository.get_active_model() is not None,
-        }
+    def is_ready(self, *, require_model: bool = False) -> bool:
+        return self.repository.readiness(require_model=require_model)
 
     def get_service_status(self, principal: Principal) -> QueueStatus:
         from regimex.service_health import analysis_queue_status

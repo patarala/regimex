@@ -20,7 +20,7 @@ import psycopg
 from alembic import command
 from alembic.config import Config
 from psycopg.types.json import Json, Jsonb
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue, TypeAdapter, ValidationError
 from sqlalchemy import create_engine
 
 from regimex.contracts import MAX_INPUT_BYTES
@@ -183,7 +183,7 @@ class DatabaseRepository:
         finally:
             engine.dispose()
 
-    def readiness(self) -> bool:
+    def readiness(self, *, require_model: bool = False) -> bool:
         try:
             with self.connection() as connection:
                 row = connection.execute(
@@ -196,8 +196,12 @@ class DatabaseRepository:
                 queue_schema = connection.execute(
                     "SELECT schema_sha256 FROM regimex_queue_schema WHERE singleton"
                 ).fetchone()
-                return revision == (_REVISION,) and queue_schema == (self._queue_schema_sha256(),)
-        except psycopg.Error, ServiceError:
+                if revision != (_REVISION,) or queue_schema != (self._queue_schema_sha256(),):
+                    return False
+                if require_model:
+                    self._model(connection, "active")
+                return True
+        except psycopg.Error, ServiceError, ValidationError:
             return False
 
     def _queue_schema_sha256(self) -> str:

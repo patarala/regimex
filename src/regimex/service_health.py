@@ -9,7 +9,7 @@ import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from http.client import HTTPResponse
+from http.client import HTTPException, HTTPResponse
 from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
@@ -263,8 +263,11 @@ def api_healthy(
                 )
                 with HTTPResponse(connection) as response:
                     response.begin()
+                    length = response.length
+                    if response.status != 200 or (length is not None and length > 4096):
+                        return False
                     payload = response.read(4097)
-                    if response.status != 200 or len(payload) > 4096:
+                    if len(payload) > 4096 or (length is not None and len(payload) != length):
                         return False
                 data = json.loads(payload)
                 return isinstance(data, dict) and (
@@ -275,5 +278,5 @@ def api_healthy(
             finally:
                 if connection is not raw:
                     connection.close()
-    except OSError, ValueError:
+    except OSError, ValueError, HTTPException:
         return False
