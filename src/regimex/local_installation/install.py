@@ -20,7 +20,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
 
 from . import systemd
-from .archive import Release
+from .archive import Release, extraction_scratch
 
 
 @dataclass(frozen=True)
@@ -105,7 +105,7 @@ def postgres_bin(selected: Path | None) -> Path:
                 capture_output=True,
                 text=True,
             ).stdout
-            if re.fullmatch(r"postgres \(PostgreSQL\) 16\.\d+\s*", version):
+            if re.fullmatch(r"postgres \(PostgreSQL\) 16\.\d+(?: \([^\r\n]+\))?", version.strip()):
                 return candidate
     raise ValueError("Install PostgreSQL 16 binaries or pass --postgres-bin /path/to/pg16/bin.")
 
@@ -242,9 +242,12 @@ class Installer:
                 )
 
     def stage(self) -> None:
-        self.state_change("staging")
-        self.release.extract(self.source)
         marker = self.source.parent / "staged.json"
+        with extraction_scratch(self.root / "releases/.regimex-unpack") as draft:
+            self.state_change("staging")
+            if not marker.exists() and shutil.disk_usage(self.root).free < 3 * 1024**3:
+                raise ValueError("Dependency staging requires at least 3 GiB of free disk space.")
+            self.release.extract(self.source, draft=draft)
         identity = {"archive_sha256": self.release.sha256, "wheel": self.release.wheel}
         if marker.exists():
             if json.loads(read_private(marker)) != identity or not self.python.is_file():
@@ -253,8 +256,6 @@ class Installer:
             # Completed candidate environments are immutable, including on retry.
             self.state_change("staged")
             return
-        if shutil.disk_usage(self.root).free < 3 * 1024**3:
-            raise ValueError("Dependency staging requires at least 3 GiB of free disk space.")
         configuration = tomllib.loads((self.source / "pyproject.toml").read_text())
         required = configuration["tool"]["uv"]["required-version"].removeprefix("==")
         uv = shutil.which("uv")

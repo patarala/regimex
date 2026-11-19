@@ -3,13 +3,16 @@
 import hashlib
 import json
 import os
+import shutil
+import signal
 import socket
 import stat
 import subprocess
 import sys
 import time
 from pathlib import Path
-from zipfile import ZipFile, ZipInfo
+from types import SimpleNamespace
+from zipfile import ZipExtFile, ZipFile, ZipInfo
 
 import pytest
 
@@ -69,7 +72,10 @@ def test_standalone_installer_checks_existing_data_without_dependencies(
     for name in ("postgres", "pg_ctl", "initdb", "systemctl"):
         command = binaries / name
         body = {
-            "postgres": '[ "$1" = "--version" ] || exit 99\necho "postgres (PostgreSQL) 16.2"',
+            "postgres": (
+                '[ "$1" = "--version" ] || exit 99\n'
+                'echo "postgres (PostgreSQL) 16.14 (Ubuntu 16.14-0ubuntu0.24.04.1)"'
+            ),
             "systemctl": '[ "$*" = "--user show-environment" ] || exit 99',
         }.get(name, "exit 99")
         command.write_text("#!/bin/sh\n" + body + "\n")
@@ -114,6 +120,114 @@ def test_archive_extracts_once_and_refuses_modified_stage(tmp_path: Path) -> Non
     (destination / "uv.lock").write_bytes(b"tampered")
     with pytest.raises(ValueError, match="staged release differs"):
         value.extract(destination)
+
+
+def test_interrupted_member_is_not_published_and_can_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, checksum = release_zip(tmp_path)
+    release = Release(path, checksum)
+    read = ZipExtFile.read
+    started = False
+
+    def interrupt(stream: ZipExtFile, n: int = -1) -> bytes:
+        nonlocal started
+        if stream.name.endswith("/uv.lock"):
+            if started:
+                raise OSError("write interrupted")
+            started = True
+            return read(stream, 1)
+        return read(stream, n)
+
+    stage = tmp_path / "stage"
+    with monkeypatch.context() as patch:
+        patch.setattr(ZipExtFile, "read", interrupt)
+        with pytest.raises(OSError, match="interrupted"):
+            release.extract(stage)
+    assert not (stage / "uv.lock").exists()
+    release.extract(stage)
+    assert archive.digest(stage / "uv.lock") == release.hashes["uv.lock"]
+
+
+def test_killed_extractor_reclaims_its_draft_before_the_staging_space_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = installer(tmp_path, monkeypatch)
+    scratch = value.root / "releases/.regimex-unpack"
+    scratch.mkdir(mode=0o700, parents=True)
+    neighbor = scratch / "operator-note"
+    neighbor.write_bytes(b"preserve")
+    child = """
+import os, signal, sys
+from pathlib import Path
+from regimex.local_installation.archive import Release, extraction_scratch
+from regimex.local_installation.install import installation_lock
+
+archive, checksum, root, destination, scratch = sys.argv[1:]
+release = Release(Path(archive), checksum)
+with installation_lock(Path(root)), extraction_scratch(Path(scratch)) as draft:
+    os.link = lambda *args: os.kill(os.getpid(), signal.SIGKILL)
+    release.extract(Path(destination), draft=draft)
+"""
+    killed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            child,
+            str(value.release.path),
+            value.release.sha256,
+            str(value.root),
+            str(value.source),
+            str(scratch),
+        ],
+        timeout=15,
+        check=False,
+    )
+    assert killed.returncode == -signal.SIGKILL
+    draft = scratch / "member.partial"
+    assert draft.stat().st_size > 0
+    assert not (value.source / "BUILD.json").exists()
+
+    def space_after_recovery(_root: Path) -> SimpleNamespace:
+        assert not draft.exists()
+        return SimpleNamespace(free=4 * 1024**3)
+
+    monkeypatch.setattr(shutil, "disk_usage", space_after_recovery)
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    with install.installation_lock(value.root), pytest.raises(ValueError, match="Install uv"):
+        value.stage()
+    assert archive.digest(value.source / "uv.lock") == value.release.hashes["uv.lock"]
+    assert neighbor.read_bytes() == b"preserve"
+    assert not draft.exists()
+
+
+def test_extraction_refuses_unexpected_draft_type(tmp_path: Path) -> None:
+    path, checksum = release_zip(tmp_path)
+    scratch = tmp_path / ".regimex-unpack"
+    scratch.mkdir(mode=0o700)
+    unrelated = tmp_path / "unrelated"
+    unrelated.write_bytes(b"keep")
+    (scratch / "member.partial").symlink_to(unrelated)
+    with pytest.raises(ValueError, match="draft"):
+        Release(path, checksum).extract(tmp_path / "stage")
+    assert unrelated.read_bytes() == b"keep"
+    assert (scratch / "member.partial").is_symlink()
+
+
+def test_scratch_does_not_follow_releases_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = installer(tmp_path, monkeypatch)
+    elsewhere = tmp_path / "other" / ".regimex-unpack"
+    elsewhere.mkdir(parents=True, mode=0o700)
+    draft = elsewhere / "member.partial"
+    draft.write_bytes(b"leave alone")
+    draft.chmod(0o600)
+    (value.root / "releases").symlink_to(elsewhere.parent, target_is_directory=True)
+    with pytest.raises(ValueError, match="scratch parent"):
+        value.stage()
+    assert draft.read_bytes() == b"leave alone"
 
 
 @pytest.mark.parametrize(

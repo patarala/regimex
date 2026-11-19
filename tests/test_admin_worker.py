@@ -60,6 +60,34 @@ def test_finished_leader_stays_waitable_until_group_cleanup(
         child.wait(timeout=5)
 
 
+def test_fast_child_completes_with_one_second_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launch = subprocess.Popen
+
+    def fast_child(*args: Any, **kwargs: Any) -> Popen[bytes]:
+        return cast(
+            Popen[bytes],
+            launch(
+                [
+                    sys.executable,
+                    "-c",
+                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{}')",
+                    str(tmp_path / "child-result.json"),
+                ],
+                **kwargs,
+            ),
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", fast_child)
+    assert (
+        supervise_child(
+            {}, tmp_path, limits=ChildLimits(1, 1024**3, 4096, 1), heartbeat=lambda: None
+        )
+        == {}
+    )
+
+
 @pytest.mark.parametrize("leader_outcome", ["success", "cancelled"])
 @pytest.mark.parametrize("descendant_stop", ["graceful", "forced", "oversized"])
 def test_supervisor_stops_its_descendants_after_leader_exit(

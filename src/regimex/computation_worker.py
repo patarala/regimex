@@ -192,17 +192,33 @@ def _stop_child(child: subprocess.Popen[bytes]) -> None:
         child.wait(timeout=5)
         return
 
-    deadline = time.monotonic() + 1
-    while time.monotonic() < deadline:
-        try:
-            os.killpg(child.pid, 0)
-        except ProcessLookupError:
-            child.wait(timeout=5)
-            return
-        time.sleep(0.05)
+    # A waitable leader keeps its PGID reserved. killpg(pgid, 0) would see
+    # that leader for the entire grace period even after all work has exited.
+    if not _child_finished(child) or _has_group_members(child.pid):
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            if _child_finished(child) and not _has_group_members(child.pid):
+                break
+            time.sleep(0.05)
     with suppress(ProcessLookupError):
         os.killpg(child.pid, signal.SIGKILL)
     child.wait(timeout=5)
+
+
+def _has_group_members(leader: int) -> bool:
+    try:
+        with os.scandir("/proc") as entries:
+            for entry in entries:
+                if entry.name.isdecimal() and int(entry.name) != leader:
+                    try:
+                        if os.getpgid(int(entry.name)) == leader:
+                            return True
+                    except ProcessLookupError:
+                        continue
+    except OSError:
+        # An unavailable process table still permits group-wide cleanup.
+        return True
+    return False
 
 
 def supervise_child(
@@ -281,8 +297,8 @@ def supervise_child(
     ]
     started = time.monotonic()
 
-    def check_limits() -> None:
-        if time.monotonic() - started > limits.seconds:
+    def check_limits(observed_at: float) -> None:
+        if observed_at - started > limits.seconds:
             raise ComputationFailure(
                 OperationFailure(
                     code="capacity_limit",
@@ -309,15 +325,16 @@ def supervise_child(
         try:
             while not _child_finished(child):
                 heartbeat()
-                check_limits()
+                check_limits(time.monotonic())
                 time.sleep(0.1)
+            finished = time.monotonic()
         finally:
             _stop_child(child)
         heartbeat()
         # Descendants can finish writing after their leader exits. Stop the
         # whole group before the final budget scan and output validation.
         # Per-file RLIMIT_FSIZE does not bound the aggregate scratch size.
-        check_limits()
+        check_limits(finished)
         if child.returncode != 0:
             failure_path = root / "child-failure.json"
             if failure_path.is_file() and not failure_path.is_symlink():

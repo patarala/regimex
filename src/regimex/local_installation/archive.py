@@ -2,8 +2,11 @@
 
 import hashlib
 import json
+import os
 import re
 import stat
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
@@ -18,6 +21,52 @@ def digest(path: Path) -> str:
         while block := source.read(1024**2):
             checksum.update(block)
     return checksum.hexdigest()
+
+
+@contextmanager
+def extraction_scratch(directory: Path) -> Iterator[Path]:
+    """Keep one recoverable draft outside the archive tree under the install lock."""
+    if directory.parent.is_symlink():
+        raise ValueError("The extraction scratch parent cannot be a symbolic link.")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    info = directory.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError("The extraction scratch directory must be private and owned by this user.")
+    draft = directory / "member.partial"
+    try:
+        info = draft.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError("The extraction draft must be a private, owned regular file.")
+        draft.unlink()
+    try:
+        yield draft
+    finally:
+        draft.unlink(missing_ok=True)
+
+
+def _publish_member(
+    archive: ZipFile, member: str, target: Path, expected: str, partial: Path
+) -> None:
+    descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as output, archive.open(member) as source:
+        checksum = hashlib.sha256()
+        while block := source.read(1024**2):
+            output.write(block)
+            checksum.update(block)
+        if checksum.hexdigest() != expected:
+            raise ValueError("A release member failed checksum verification.")
+        output.flush()
+        os.fsync(output.fileno())
+    os.link(partial, target)
+    descriptor = os.open(target.parent, os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    partial.unlink()
 
 
 def relative(name: str) -> str:
@@ -120,12 +169,17 @@ class Release:
                 raise ValueError("Release must contain exactly one wheel.")
             self.wheel = wheels[0]
 
-    def extract(self, destination: Path) -> None:
+    def extract(self, destination: Path, *, draft: Path | None = None) -> None:
         """Write once; existing release directories must still match immutable input."""
         if digest(self.path) != self.sha256:
             raise ValueError("Release archive changed after verification.")
         destination.mkdir(parents=True, exist_ok=True, mode=0o700)
-        with ZipFile(self.path) as archive:
+        scratch = (
+            extraction_scratch(destination.parent / ".regimex-unpack")
+            if draft is None
+            else nullcontext(draft)
+        )
+        with scratch as partial, ZipFile(self.path) as archive:
             for name, member in self.members.items():
                 target = destination / name
                 parent = destination
@@ -134,16 +188,15 @@ class Release:
                     if parent.is_symlink():
                         raise ValueError("Staged release contains a symbolic link.")
                     parent.mkdir(exist_ok=True, mode=0o700)
-                expected = self.hashes.get(name)
-                if name == "SHA256SUMS":
-                    expected = hashlib.sha256(archive.read(member)).hexdigest()
+                expected = (
+                    hashlib.sha256(archive.read(member)).hexdigest()
+                    if name == "SHA256SUMS"
+                    else self.hashes[name]
+                )
                 if target.exists() or target.is_symlink():
                     if target.is_symlink() or not target.is_file() or digest(target) != expected:
                         raise ValueError(
                             "Existing staged release differs from its verified archive."
                         )
                 else:
-                    with target.open("xb") as output, archive.open(member) as source:
-                        while block := source.read(1024**2):
-                            output.write(block)
-                    target.chmod(0o600)
+                    _publish_member(archive, member, target, expected, partial)
