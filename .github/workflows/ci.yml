@@ -166,5 +166,5 @@ jobs:
         with:
           python-version-file: .python-version
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      - name: Verify migrations, health, saved-model analysis and persistent restart
+      - name: Verify saved-model analysis and recovery in a fresh Compose project
         run: python tests/support/compose_service_smoke.py

@@ -1,9 +1,4 @@
-"""Build an artificial saved baseline for deployment smoke, using production codecs.
-
-This helper is mounted read-only into the CPU image; it is never packaged in the
-runtime wheel or copied into the Docker build context. Automatic controlled
-fixtures do not establish independent accuracy, market realism or transfer.
-"""
+"""Prepare a controlled snapshot and, when requested, a saved baseline for Compose."""
 
 import argparse
 import json
@@ -42,7 +37,6 @@ from regimex.model_registry import (
     TrainingRuntime,
 )
 from regimex.segmentation import DECODER_VERSION, annotate
-from regimex.storage import json_bytes
 
 
 @dataclass(frozen=True)
@@ -92,8 +86,7 @@ def source(template: Path, index: int) -> SourceSnapshot:
     )
 
 
-def build(template: Path, output: Path) -> None:
-    output.mkdir(mode=0o700)
+def build_baseline(template: Path, bundle: Path) -> dict[str, str]:
     sources = tuple(source(template, index) for index in range(3))
     partitions: tuple[Partition, ...] = ("train", "validation", "test")
     dataset = seal_dataset(
@@ -159,28 +152,22 @@ def build(template: Path, output: Path) -> None:
             analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
             build_id="deployment-behavior-only",
         ),
-        output / "bundle",
+        bundle,
         registry=ArchitectureRegistry.discover(),
         worker_id="deployment-smoke",
     )
-    (output / "export.json").write_bytes(
-        json_bytes(source(template, 3).export.model_dump(mode="json"))
-    )
-    (output / "fixture.json").write_bytes(json_bytes(candidate.model_dump(mode="json")))
-    print(
-        json.dumps(
-            {
-                "fixture": "artificial-automatic",
-                "model_version_id": candidate.model_version_id,
-                "manifest_sha256": candidate.manifest_sha256,
-            }
-        )
-    )
+    return {
+        "model_version_id": candidate.model_version_id,
+        "bundle_sha256": candidate.manifest_sha256,
+    }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--template", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--baseline-bundle", type=Path)
     args = parser.parse_args()
-    build(args.template, args.output)
+    fixture = {"export": source(args.template, 3).export.model_dump(mode="json")}
+    if args.baseline_bundle is not None:
+        fixture["model"] = build_baseline(args.template, args.baseline_bundle)
+    print(json.dumps(fixture))

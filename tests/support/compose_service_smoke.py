@@ -1,9 +1,6 @@
-"""Exercise the actual locked Compose service with artificial saved-model fixtures.
+"""Run an analysis, back it up and restore it into a fresh Compose project.
 
-Run only against a disposable Docker engine/project. The helper creates private
-credentials, a local test CA, its own volumes and PostgreSQL database, and always
-tears down that project. It neither publishes images nor reads reserved data.
-Docker and host permission to chown secret files to container users are required.
+Requires Docker and permission to assign secret files to the container users.
 """
 
 import argparse
@@ -17,7 +14,10 @@ import ssl
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import cast
 from urllib.error import HTTPError
@@ -34,6 +34,26 @@ def text(value: dict[str, JSONValue], key: str) -> str:
     return item
 
 
+def release_tcn_model(assets: Path) -> dict[str, str]:
+    name = "models/tcn/manifest.json"
+    data = (assets / name).read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    entries = [
+        line
+        for line in (assets / "SHA256SUMS").read_text(encoding="utf-8").splitlines()
+        if line.partition("  ")[2] == name
+    ]
+    if entries != [f"{digest}  {name}"]:
+        raise ValueError("The release SHA256SUMS must pin the TCN manifest exactly once.")
+    manifest = json.loads(data)
+    if manifest["architecture_id"] != "tcn":
+        raise ValueError("The supplied release bundle must contain a TCN.")
+    return {
+        "model_version_id": text(manifest, "model_version_id"),
+        "bundle_sha256": digest,
+    }
+
+
 def command(
     arguments: list[str], environment: dict[str, str], *, required: bool = True
 ) -> subprocess.CompletedProcess[bytes]:
@@ -48,7 +68,18 @@ def command(
     else:
         failure = f"exit_code={result.returncode}"
     if required and result.returncode:
-        categories = {"build", "pull", "up", "exec", "run", "stop", "config", "down", "image"}
+        categories = {
+            "build",
+            "pull",
+            "up",
+            "exec",
+            "run",
+            "stop",
+            "config",
+            "down",
+            "image",
+            "volume",
+        }
         category = next((value for value in arguments if value in categories), "other")
         names = {
             "postgres",
@@ -127,18 +158,30 @@ def start_services(compose: list[str], environment: dict[str, str], *, build: bo
     # BuildKit's FROM postgres layer cache is not the daemon's runtime image store.
     # A clean engine still needs this image before the no-pull service startup.
     command([*compose, "pull", "postgres"], environment)
-    up = [
-        *compose,
-        "up",
-        "--detach",
-        "--no-build",
-        "--pull",
-        "never",
-        "--wait",
-        "--wait-timeout",
-        "180",
-    ]
-    command([*up, "postgres"], environment)
+    start_empty_database(compose, environment)
+    start_application(compose, environment)
+
+
+def compose_up(compose: list[str], environment: dict[str, str], *services: str) -> None:
+    command(
+        [
+            *compose,
+            "up",
+            "--detach",
+            "--no-build",
+            "--pull",
+            "never",
+            "--wait",
+            "--wait-timeout",
+            "180",
+            *services,
+        ],
+        environment,
+    )
+
+
+def start_empty_database(compose: list[str], environment: dict[str, str]) -> None:
+    compose_up(compose, environment, "postgres")
     # Offline restore inspects this inventory before writing to a fresh deployment.
     inventory = command(
         [
@@ -156,17 +199,17 @@ def start_services(compose: list[str], environment: dict[str, str], *, build: bo
     )
     if any(line.strip() and not line.startswith(b";") for line in inventory.stdout.splitlines()):
         raise RuntimeError("The newly provisioned database contains objects before migration.")
-    command(
-        [
-            *up,
-            "postgres",
-            "migrate",
-            "api",
-            "analysis-worker",
-            "admin-worker",
-            "maintenance-worker",
-        ],
+
+
+def start_application(compose: list[str], environment: dict[str, str]) -> None:
+    compose_up(
+        compose,
         environment,
+        "migrate",
+        "api",
+        "analysis-worker",
+        "admin-worker",
+        "maintenance-worker",
     )
 
 
@@ -301,13 +344,193 @@ def prepare_secrets(secret_root: Path, *, s3_credentials: Path | None, s3_ca: Pa
     return ca
 
 
+def compose_command(docker: str, files: list[Path], project: str) -> list[str]:
+    compose = [docker, "compose", "--env-file", os.devnull, "--project-name", project]
+    for file in files:
+        compose.extend(["--file", str(file.resolve())])
+    return [*compose, "--profile", "service", "--profile", "ops"]
+
+
+def run_operator(
+    compose: list[str],
+    environment: dict[str, str],
+    *args: str,
+    entrypoint: str | None = None,
+    volumes: tuple[str, ...] = (),
+) -> bytes:
+    arguments = [*compose, "run", "--rm", "--no-deps", "-T"]
+    if entrypoint is not None:
+        arguments.extend(["--entrypoint", entrypoint])
+    for volume in volumes:
+        arguments.extend(["--volume", volume])
+    return command([*arguments, "ops", *args], environment).stdout
+
+
+def attest_no_writers(path: Path, project: str) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "stopped_at": datetime.now(UTC).isoformat(),
+                "statement": f"The disposable project {project} has no running writers.",
+                "api_stopped": True,
+                "analysis_workers_stopped": True,
+                "administrative_workers_stopped": True,
+                "maintenance_stopped": True,
+                "garbage_collection_stopped": True,
+                "exclusive_object_access": True,
+            }
+        )
+    )
+    path.chmod(0o444)
+
+
+def worker_probe_history(
+    docker: str, container_id: str, environment: dict[str, str]
+) -> list[dict[str, str | int]]:
+    if not 12 <= len(container_id) <= 64 or any(c not in "0123456789abcdef" for c in container_id):
+        return []
+    inspected = command(
+        [
+            docker,
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{json .State.Health.Log}}",
+            container_id,
+        ],
+        environment,
+        required=False,
+    )
+    if inspected.returncode or len(inspected.stdout) > 65536:
+        return []
+    try:
+        checks = json.loads(inspected.stdout)
+    except ValueError:
+        return []
+    if not isinstance(checks, list):
+        return []
+    history: list[dict[str, str | int]] = []
+    for check in checks[-5:]:
+        if not isinstance(check, dict) or type(code := check.get("ExitCode")) is not int:
+            continue
+        output = check.get("Output")
+        reason = "probe_error"
+        if code == 0:
+            reason = "healthy"
+        elif isinstance(output, str):
+            if code == -1 and output.startswith(
+                (
+                    "Health check exceeded timeout (",
+                    "timed out starting health check for container ",
+                )
+            ):
+                reason = "timed_out"
+            elif code == 1:
+                try:
+                    # Docker combines stderr messages and the probe's final JSON response.
+                    probe = json.loads(output.rstrip().rsplit("\n", 1)[-1])
+                except ValueError:
+                    probe = None
+                if (
+                    isinstance(probe, dict)
+                    and probe.get("component") == "worker"
+                    and probe.get("status") == "unhealthy"
+                ):
+                    reason = "worker_unhealthy"
+        history.append({"exit_code": code, "reason": reason})
+    return history
+
+
+@contextmanager
+def disposable_project(
+    project: str, compose: list[str], environment: dict[str, str]
+) -> Iterator[None]:
+    failed = False
+    try:
+        yield
+    except BaseException as error:
+        failed = True
+        diagnostic: dict[str, object] = {
+            "status": "failed",
+            "project": project,
+            "error_type": type(error).__name__,
+        }
+        if isinstance(error, RuntimeError) and str(error).startswith("Compose command category="):
+            diagnostic["command"] = str(error)
+        # Only allowlisted probe outcomes may enter diagnostics. A failed
+        # probe's raw output can contain credentials or connection details.
+        try:
+            status = command(
+                [*compose, "ps", "--all", "--format", "json"], environment, required=False
+            )
+            if status.returncode == 0 and len(status.stdout) <= 65536:
+                raw = status.stdout.decode()
+                records = (
+                    json.loads(raw)
+                    if raw.lstrip().startswith("[")
+                    else [json.loads(line) for line in raw.splitlines() if line.strip()]
+                )
+                allowed = {
+                    "postgres",
+                    "migrate",
+                    "api",
+                    "analysis-worker",
+                    "admin-worker",
+                    "maintenance-worker",
+                    "ops",
+                }
+                states: list[dict[str, object]] = []
+                for item in records:
+                    if not isinstance(item, dict) or item.get("Service") not in allowed:
+                        continue
+                    state: dict[str, object] = {
+                        name: str(item.get(name, ""))[:64]
+                        for name in ("Service", "State", "Health", "ExitCode")
+                    }
+                    if state["Health"] == "unhealthy" and item["Service"].endswith("-worker"):
+                        state["probes"] = worker_probe_history(
+                            compose[0], str(item.get("ID", "")), environment
+                        )
+                    states.append(state)
+                diagnostic["services"] = states
+        except OSError, ValueError, subprocess.TimeoutExpired:
+            diagnostic["services"] = "unavailable"
+        print(json.dumps(diagnostic), flush=True)
+        raise
+    finally:
+        cleanup_failure: dict[str, object] | None = None
+        try:
+            cleanup = command(
+                [*compose, "down", "--volumes", "--remove-orphans"], environment, required=False
+            )
+            if cleanup.returncode:
+                cleanup_failure = {
+                    "status": "cleanup_failed",
+                    "project": project,
+                    "exit_code": cleanup.returncode,
+                }
+        except (OSError, subprocess.SubprocessError, RuntimeError) as cleanup_error:
+            cleanup_failure = {
+                "status": "cleanup_failed",
+                "project": project,
+                "error_type": type(cleanup_error).__name__,
+            }
+        if cleanup_failure is not None:
+            print(json.dumps(cleanup_failure), flush=True)
+            if not failed:
+                raise RuntimeError("The disposable Compose project could not be fully removed")
+
+
 def run(
     files: list[Path] | None,
     *,
     build: bool,
     s3_credentials: Path | None = None,
     s3_ca: Path | None = None,
+    release_tcn: Path | None = None,
 ) -> None:
+    expected_model = release_tcn_model(release_tcn) if release_tcn else None
     docker = shutil.which("docker")
     if docker is None:
         raise RuntimeError(
@@ -315,7 +538,10 @@ def run(
         )
     workspace = Path(__file__).resolve().parents[2]
     project = "regimex-smoke-" + uuid4().hex[:12]
-    with tempfile.TemporaryDirectory(prefix="regimex-compose-smoke-") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="regimex-compose-smoke-") as temporary,
+        ExitStack() as resources,
+    ):
         root = Path(temporary)
         if (s3_credentials is None) != (s3_ca is None):
             raise ValueError("S3 smoke requires both a credentials file and trusted CA")
@@ -336,25 +562,12 @@ def run(
             REGIMEX_HTTPS_PORT=str(port),
             REGIMEX_BIND_ADDRESS="127.0.0.1",
         )
-        compose = [docker, "compose", "--env-file", os.devnull, "--project-name", project]
-        for file in files:
-            compose.extend(["--file", str(file.resolve())])
-        compose.extend(["--profile", "service", "--profile", "ops"])
-        failed = False
-        success: dict[str, object] | None = None
-        try:
+        compose = compose_command(docker, files, project)
+        if build:
+            resources.callback(remove_smoke_images, docker, project, environment)
+        with disposable_project(project, compose, environment):
             start_services(compose, environment, build=build)
-
-            def ops(
-                *args: str, entrypoint: str | None = None, volumes: tuple[str, ...] = ()
-            ) -> bytes:
-                arguments = [*compose, "run", "--rm", "--no-deps", "-T"]
-                if entrypoint is not None:
-                    arguments.extend(["--entrypoint", entrypoint])
-                for volume in volumes:
-                    arguments.extend(["--volume", volume])
-                return command([*arguments, "ops", *args], environment).stdout
-
+            ops = partial(run_operator, compose, environment)
             backend = "s3" if s3_credentials is not None else "local"
             storage = json.loads(ops("service", "storage-check"))
             if storage["backend"] != backend or storage["retained_versions"] != 0:
@@ -370,43 +583,41 @@ def run(
                     "--output",
                     f"/operator-output/{name}.token",
                 )
+            bundle = "/operator-output/baseline" if release_tcn is None else "/release-tcn"
+            model_volumes = (
+                (f"{release_tcn.resolve() / 'models/tcn'}:{bundle}:ro",) if release_tcn else ()
+            )
             fixture = json.loads(
                 ops(
                     "/smoke/support/container_fixture.py",
                     "--template",
                     "/smoke/fixtures/experiment-v2.json",
-                    "--output",
-                    "/operator-output/fixture",
+                    *(("--baseline-bundle", bundle) if release_tcn is None else ()),
                     entrypoint="python",
                     volumes=(f"{workspace / 'tests'}:/smoke:ro",),
                 )
             )
-            payload = json.loads(
-                ops(
-                    "-c",
-                    (
-                        "import json;from pathlib import Path;p=Path('/operator-output');"
-                        "print(json.dumps({'tokens':{n:(p/(n+'.token')).read_text().strip() "
-                        "for n in ['admin','alice','bob']},"
-                        "'export':json.loads((p/'fixture/export.json').read_text())}))"
-                    ),
-                    entrypoint="python",
-                )
-            )
-            tokens = payload["tokens"]
+            if expected_model is None:
+                expected_model = cast(dict[str, str], fixture["model"])
+            architecture = "tcn" if release_tcn else "baseline"
+            tokens = {
+                name: ops(f"/operator-output/{name}.token", entrypoint="cat").decode().strip()
+                for name in ("alice", "bob")
+            }
             api = API(origin, ca, tokens)
             ops(
                 "service",
                 "register-model",
                 "--bundle",
-                "/operator-output/fixture/bundle",
+                bundle,
                 "--manifest-sha256",
-                fixture["manifest_sha256"],
+                expected_model["bundle_sha256"],
                 "--token-file",
                 "/operator-output/admin.token",
                 "--activate",
                 "--threads",
                 "1",
+                volumes=model_volumes,
             )
             # Both image flavors contain the same wheel and assets. Only the CPU
             # flavor has scientific packages; ordinary API startup stays light.
@@ -425,7 +636,7 @@ def run(
                 ],
                 environment,
             )
-            snapshot = api.json("/api/v1/snapshots", body=payload["export"], expected=201)
+            snapshot = api.json("/api/v1/snapshots", body=fixture["export"], expected=201)
             key = "persistent-container-analysis"
             body: dict[str, JSONValue] = {
                 "snapshot_id": snapshot["snapshot_id"],
@@ -433,7 +644,19 @@ def run(
             }
             analysis = api.json("/api/v1/analyses", body=body, key=key, expected=202)
             completed = api.completed(analysis)
-            saved = api.json(text(completed, "result_url"))
+            saved_result = api.raw(text(completed, "result_url"))
+            saved = json.loads(saved_result)
+            if not isinstance(saved, dict):
+                raise AssertionError("The saved analysis result is not an object.")
+            model = saved["model"]
+            if (
+                saved["architecture_id"] != architecture
+                or not isinstance(model, dict)
+                or any(model.get(k) != v for k, v in expected_model.items())
+            ):
+                raise AssertionError(
+                    "The worker used a different model from the registered bundle."
+                )
             report = api.raw(text(completed, "report_url"))
             if (
                 not report.startswith(b"<!doctype html>")
@@ -481,21 +704,11 @@ def run(
                 environment,
             )
             attestation = root / "stopped.json"
-            attestation.write_text(
-                json.dumps(
-                    {
-                        "stopped_at": datetime.now(UTC).isoformat(),
-                        "statement": "All writers in the disposable Compose project have stopped.",
-                        "api_stopped": True,
-                        "analysis_workers_stopped": True,
-                        "administrative_workers_stopped": True,
-                        "maintenance_stopped": True,
-                        "garbage_collection_stopped": True,
-                        "exclusive_object_access": True,
-                    }
-                )
-            )
-            attestation.chmod(0o444)
+            attest_no_writers(attestation, project)
+            # The transfer volume outlives the source. Its only contents are the backup.
+            transfer = f"{project}-backup"
+            command([docker, "volume", "create", transfer], environment)
+            resources.callback(command, [docker, "volume", "rm", transfer], environment)
             backup = "/operator-output/backup"
             confirmation = ops(
                 "service",
@@ -504,115 +717,102 @@ def run(
                 backup,
                 "--attestation-file",
                 "/stopped.json",
-                volumes=(f"{attestation}:/stopped.json:ro",),
+                volumes=(f"{transfer}:/operator-output", f"{attestation}:/stopped.json:ro"),
             )
-            manifest = ops(f"{backup}/manifest.json", entrypoint="cat")
-            if not confirmation.strip().endswith(hashlib.sha256(manifest).hexdigest().encode()):
+            archive = (f"{transfer}:/recovery:ro",)
+            manifest = ops("/recovery/backup/manifest.json", entrypoint="cat", volumes=archive)
+            manifest_sha256 = hashlib.sha256(manifest).hexdigest()
+            if not confirmation.strip().endswith(manifest_sha256.encode()):
                 raise AssertionError(
                     "Backup manifest differs from the digest reported by the operator CLI."
                 )
             report_digest = hashlib.sha256(report).hexdigest()
             if report_digest not in {obj["sha256"] for obj in json.loads(manifest)["objects"]}:
                 raise AssertionError("The backup does not contain the saved report.")
-            contents = ops("--list", f"{backup}/database.dump", entrypoint="/opt/pg16/pg_restore")
+            contents = ops(
+                "--list",
+                "/recovery/backup/database.dump",
+                entrypoint="/opt/pg16/pg_restore",
+                volumes=archive,
+            )
             if b" TABLE DATA public regimex_operations " not in contents:
                 raise AssertionError(
                     "The operator image could not read the archived operations table."
                 )
-            success = {
-                "status": "passed",
-                "project": project,
-                "storage": backend,
-                "fixture": "artificial-automatic",
-                "checks": [
-                    "migration-before-services",
-                    "direct-TLS-CA-SNI",
-                    "exact-worker-heartbeats",
-                    "lightweight-API-image",
-                    "coordinated-postgres-and-object-backup",
-                    "actual-saved-baseline-analysis",
-                    "offline-report",
-                    "other-owner-denied",
-                    "persistent-recreation-idempotency",
-                    "fresh-worker-saved-model-reload",
-                    "project-teardown",
-                ],
-                "report_sha256": report_digest,
-            }
-        except BaseException as error:
-            failed = True
-            diagnostic: dict[str, object] = {
-                "status": "failed",
-                "project": project,
-                "error_type": type(error).__name__,
-            }
-            if isinstance(error, RuntimeError) and str(error).startswith(
-                "Compose command category="
+
+        # The source network, database and local objects have already been removed.
+        target = f"{project}-restored"
+        target_env = environment.copy()
+        target_secrets = root / "target-secrets"
+        target_ca = prepare_secrets(target_secrets, s3_credentials=s3_credentials, s3_ca=s3_ca)
+        target_env["REGIMEX_SECRETS_DIR"] = str(target_secrets)
+        if s3_credentials is not None:
+            target_env["REGIMEX_S3_PREFIX"] = f"{environment['REGIMEX_S3_PREFIX']}-restored"
+        target_compose = compose_command(docker, files, target)
+        with disposable_project(target, target_compose, target_env):
+            start_empty_database(target_compose, target_env)
+            target_attestation = root / "target-stopped.json"
+            attest_no_writers(target_attestation, target)
+            run_operator(
+                target_compose,
+                target_env,
+                "service",
+                "restore",
+                "--input",
+                "/recovery/backup",
+                "--manifest-sha256",
+                manifest_sha256,
+                "--attestation-file",
+                "/stopped.json",
+                volumes=(*archive, f"{target_attestation}:/stopped.json:ro"),
+            )
+            start_application(target_compose, target_env)
+            destination = API(origin, target_ca, tokens)
+            if (
+                destination.raw(text(completed, "result_url")) != saved_result
+                or destination.raw(text(completed, "report_url")) != report
             ):
-                diagnostic["command"] = str(error)
-            # Filter Docker's ps output to known service names and bounded public
-            # state fields. Do not inspect environments, mounts, commands or logs.
-            try:
-                status = command(
-                    [*compose, "ps", "--all", "--format", "json"], environment, required=False
+                raise AssertionError(
+                    "The restored deployment returned different saved results or report bytes."
                 )
-                if status.returncode == 0 and len(status.stdout) <= 65536:
-                    raw = status.stdout.decode()
-                    records = (
-                        json.loads(raw)
-                        if raw.lstrip().startswith("[")
-                        else [json.loads(line) for line in raw.splitlines() if line.strip()]
-                    )
-                    allowed = {
-                        "postgres",
-                        "migrate",
-                        "api",
-                        "analysis-worker",
-                        "admin-worker",
-                        "maintenance-worker",
-                        "ops",
-                    }
-                    states = []
-                    for item in records:
-                        if not isinstance(item, dict) or item.get("Service") not in allowed:
-                            continue
-                        states.append(
-                            {
-                                name: str(item.get(name, ""))[:64]
-                                for name in ("Service", "State", "Health", "ExitCode")
-                            }
-                        )
-                    diagnostic["services"] = states
-            except OSError, ValueError, subprocess.TimeoutExpired:
-                diagnostic["services"] = "unavailable"
-            print(json.dumps(diagnostic), flush=True)
-            raise
-        finally:
-            cleanup_failure: dict[str, object] | None = None
-            try:
-                cleanup = command(
-                    [*compose, "down", "--volumes", "--remove-orphans"], environment, required=False
-                )
-                if cleanup.returncode:
-                    cleanup_failure = {
-                        "status": "cleanup_failed",
-                        "project": project,
-                        "exit_code": cleanup.returncode,
-                    }
-                elif build:
-                    remove_smoke_images(docker, project, environment)
-            except (OSError, subprocess.SubprocessError, RuntimeError) as cleanup_error:
-                cleanup_failure = {
-                    "status": "cleanup_failed",
-                    "project": project,
-                    "error_type": type(cleanup_error).__name__,
-                }
-            if cleanup_failure is not None:
-                print(json.dumps(cleanup_failure), flush=True)
-                if not failed:
-                    raise RuntimeError("The disposable Compose project could not be fully removed")
-        assert success is not None
-        print(json.dumps(success), flush=True)
+            for field in ("result_url", "report_url", "polling_url"):
+                destination.raw(text(completed, field), owner="bob", expected=404)
+            new_run = destination.json(
+                "/api/v1/analyses", body=body, key="after-restore", expected=202
+            )
+            if new_run["analysis_id"] in (analysis["analysis_id"], second["analysis_id"]):
+                raise AssertionError("The restored deployment replayed an earlier analysis.")
+            finished = destination.completed(new_run)
+            prediction = destination.json(text(finished, "result_url"))
+            for field in ("architecture_id", "model", "snapshot_sha256", "sequences"):
+                if prediction[field] != saved[field]:
+                    raise AssertionError(f"Restored-model analysis changed {field}.")
+
+        success = {
+            "status": "passed",
+            "project": project,
+            "restore_project": target,
+            "storage": backend,
+            "architecture": architecture,
+            "model": expected_model,
+            "checks": [
+                "migration-before-services",
+                "direct-TLS-CA-SNI",
+                "exact-worker-heartbeats",
+                "lightweight-API-image",
+                "coordinated-postgres-and-object-backup",
+                "saved-model-analysis",
+                "offline-report",
+                "other-owner-denied",
+                "persistent-recreation-idempotency",
+                "fresh-worker-saved-model-reload",
+                "restore-into-empty-deployment",
+                "restored-token-report-and-model",
+                "project-teardown",
+            ],
+            "report_sha256": report_digest,
+        }
+    print(json.dumps(success), flush=True)
 
 
 if __name__ == "__main__":
@@ -621,10 +821,19 @@ if __name__ == "__main__":
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--s3-credentials-file", type=Path)
     parser.add_argument("--s3-ca-file", type=Path)
+    parser.add_argument(
+        "--release-tcn",
+        type=Path,
+        nargs="?",
+        const=Path("release"),
+        metavar="ASSET_DIR",
+        help="Use the TCN pinned by the asset pack's SHA256SUMS (default: release/).",
+    )
     args = parser.parse_args()
     run(
         args.files,
         build=not args.no_build,
         s3_credentials=args.s3_credentials_file,
         s3_ca=args.s3_ca_file,
+        release_tcn=args.release_tcn,
     )

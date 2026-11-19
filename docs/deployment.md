@@ -368,17 +368,27 @@ processes outside Compose. Follow the [storage procedure](storage.md).
 ## Verify a container installation
 
 ```sh
-python tests/support/compose_service_smoke.py
+python3.14 tests/support/compose_service_smoke.py
 ```
 
-The test creates a disposable Compose project with its own image tags and
-credentials. It runs an analysis, checks access and persistence after container
-recreation, stops writers and verifies the backup contains the saved report.
-It removes its containers, networks, volumes and image tags. Use `--no-build`
-to reuse existing Regimex images. Docker and permission to assign secret-file
-ownership are required.
+The test runs an analysis with a small baseline, recreates the API and worker,
+then backs up the database and objects. It restores the backup into a second
+Compose project with fresh volumes. The original user token must open the
+saved report, and a new analysis using the restored active model must reproduce
+the predictions. The test removes both projects and its image tags. Use
+`--no-build` to reuse existing images. Docker and permission to assign
+secret-file ownership are required.
+
+To check the TCN you plan to deploy, place the verified
+[release asset pack](releasing.md#include-saved-models-examples-and-editable-documents)
+in `release/` or pass its directory after `--release-tcn`. The test reads the
+manifest digest from the pack's `SHA256SUMS`.
+
+```sh
+python3.14 tests/support/compose_service_smoke.py --release-tcn
+```
 
 For the optional S3 test, set the endpoint, bucket and test prefix in the
-shell, then pass `--s3-credentials-file` and `--s3-ca-file`. The test selects
-the S3 Compose configuration and writes to a unique child prefix. Configure
-the test bucket's lifecycle to expire its object versions.
+shell, then pass `--s3-credentials-file` and `--s3-ca-file`. The source and
+restored installations each use a fresh prefix. Configure the test bucket's
+lifecycle to expire their object versions.

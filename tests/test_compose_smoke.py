@@ -1,5 +1,7 @@
 """The container smoke starts and cleans up its own deployment."""
 
+import hashlib
+import json
 import os
 import shutil
 import stat
@@ -95,6 +97,43 @@ def test_smoke_environment_isolates_images_and_storage(monkeypatch: pytest.Monke
     assert "REGIMEX_S3_BUCKET" not in local
 
 
+def test_failed_worker_probe_history_distinguishes_timeout_without_exposing_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probe_log = [
+        {"ExitCode": 0, "Output": ""},
+        {"ExitCode": -1, "Output": "Health check exceeded timeout (8s): private fixture"},
+        {
+            "ExitCode": 1,
+            "Output": 'private log line\n{"component":"worker","status":"unhealthy"}\n',
+        },
+        {"ExitCode": 1, "Output": "unrecognized private fixture"},
+    ]
+    container_id = "b5" * 32
+
+    def engine(
+        arguments: list[str], environment: dict[str, str], *, required: bool = True
+    ) -> subprocess.CompletedProcess[bytes]:
+        assert arguments == [
+            "docker",
+            "inspect",
+            "--type",
+            "container",
+            "--format",
+            "{{json .State.Health.Log}}",
+            container_id,
+        ]
+        return subprocess.CompletedProcess(arguments, 0, json.dumps(probe_log).encode(), b"")
+
+    monkeypatch.setattr(compose_service_smoke, "command", engine)
+    assert compose_service_smoke.worker_probe_history("docker", container_id, {}) == [
+        {"exit_code": 0, "reason": "healthy"},
+        {"exit_code": -1, "reason": "timed_out"},
+        {"exit_code": 1, "reason": "worker_unhealthy"},
+        {"exit_code": 1, "reason": "probe_error"},
+    ]
+
+
 def test_partial_build_removes_only_its_own_tags(monkeypatch: pytest.MonkeyPatch) -> None:
     removed = []
 
@@ -151,6 +190,31 @@ def test_mounted_secrets_work_with_private_host_umask(
     }
     for name in ownership:
         assert stat.S_IMODE((mounts / name).stat().st_mode) == 0o600
+
+
+def test_release_tcn_requires_the_pinned_manifest_and_architecture(tmp_path: Path) -> None:
+    name = "models/tcn/manifest.json"
+    manifest = tmp_path / name
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text(json.dumps({"architecture_id": "tcn", "model_version_id": "saved-tcn"}))
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    checksums = tmp_path / "SHA256SUMS"
+    entry = f"{digest}  {name}\n"
+    checksums.write_text(entry)
+    assert compose_service_smoke.release_tcn_model(tmp_path) == {
+        "model_version_id": "saved-tcn",
+        "bundle_sha256": digest,
+    }
+    manifest.write_text(json.dumps({"architecture_id": "baseline", "model_version_id": "other"}))
+    with pytest.raises(ValueError, match="SHA256SUMS"):
+        compose_service_smoke.release_tcn_model(tmp_path)
+    checksum = f"{hashlib.sha256(manifest.read_bytes()).hexdigest()}  {name}\n"
+    checksums.write_text(checksum + checksum)
+    with pytest.raises(ValueError, match="exactly once"):
+        compose_service_smoke.release_tcn_model(tmp_path)
+    checksums.write_text(checksum)
+    with pytest.raises(ValueError, match="must contain a TCN"):
+        compose_service_smoke.release_tcn_model(tmp_path)
 
 
 @pytest.mark.parametrize("timeout", [False, True])
