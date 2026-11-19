@@ -128,8 +128,15 @@ quota is full, wait for an outstanding job to finish. By default, a single owner
 can have eight outstanding operations, and an integration can have 32 analyses
 in flight across its users. See [request and queue limits](access.md#request-and-queue-limits).
 
-The supplied Compose API publishes
-one host port. Multiple API replicas would need a shared HTTPS entry point
+The load stand uses one owner. To measure how users affect each other, fill
+one owner's queue with long analyses, then submit a short analysis from a
+second owner. Use the delivery timestamps to count how many waiting jobs from
+the first owner start before the second owner's job. Repeat with the owners
+swapped. If the short job consistently exceeds its queue-wait budget, compare
+per-owner scheduling with the current shared queue at the same total throughput.
+
+The supplied Compose API publishes one host port. Multiple API replicas would
+need a shared HTTPS entry point
 that preserves the configured origin and authentication checks.
 
 ### Accelerators and multiple hosts
