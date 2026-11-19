@@ -95,6 +95,12 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
         ("GET", "/api/v1/datasets/{identifier}", None),
         ("GET", "/api/v1/reference-sets/{identifier}/annotations", None),
         ("POST", "/api/v1/benchmarks/{identifier}/open", None),
+        ("GET", "/api/v1/benchmarks?benchmark_id=desk%00north", None),
+        (
+            "POST",
+            "/api/v1/benchmarks",
+            {"benchmark_id": "desk\x00north", "dataset_id": "dataset", "reference_set_id": "set"},
+        ),
         ("GET", "/api/v1/metrics?model_version_id={identifier}", None),
     ],
 )
@@ -559,18 +565,22 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         },
     )
     assert attestation.status_code == 200, attestation.text
+    benchmark_id = "東京/November + models" if architecture == "tcn" else "registry"
+    benchmark_query = {"benchmark_id": benchmark_id}
     reservation = context.client.post(
         "/api/v1/benchmarks",
         headers=headers,
         json={
-            "benchmark_id": "software-control",
+            "benchmark_id": benchmark_id,
             "dataset_id": final_dataset_id,
             "reference_set_id": final_reference_id,
         },
     )
     assert reservation.status_code == 201, reservation.text
+    detail = context.client.get(reservation.headers["Location"], headers=headers)
+    assert detail.status_code == 200 and detail.json() == reservation.json()
     started = context.client.post(
-        "/api/v1/benchmarks/software-control/selection-start", headers=headers
+        "/api/v1/benchmarks/selection-start", params=benchmark_query, headers=headers
     )
     assert started.status_code == 200, started.text
     tcn = architecture == "tcn"
@@ -593,7 +603,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         },
         "training_runtime": {"threads": 1, "time_budget_seconds": 90},
         "inference_runtime": {"threads": 1, "max_batch_size": 1},
-        "benchmark_selection_id": "software-control",
+        "benchmark_selection_id": benchmark_id,
     }
     training_headers = context.headers
     response = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
@@ -655,7 +665,8 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     )
     assert metrics.status_code == 200 and metrics.json()["quality_status"] == "validation_only"
     frozen = context.client.post(
-        "/api/v1/benchmarks/software-control/freeze",
+        "/api/v1/benchmarks/freeze",
+        params=benchmark_query,
         headers=headers,
         json={"model_version_id": model_id},
     )
@@ -669,7 +680,8 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     replay = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert replay.status_code == 202 and replay.json()["run_id"] == str(run.run_id)
     unopened = context.client.post(
-        "/api/v1/benchmarks/software-control/evaluations",
+        "/api/v1/benchmarks/evaluations",
+        params=benchmark_query,
         headers=context.headers,
         json={"model_version_id": model_id},
     )
@@ -687,10 +699,11 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         ).status_code
         == 422
     )
-    opened = context.client.post("/api/v1/benchmarks/software-control/open", headers=headers)
+    opened = context.client.post("/api/v1/benchmarks/open", params=benchmark_query, headers=headers)
     assert opened.status_code == 200, opened.text
     final_evaluation_response = context.client.post(
-        "/api/v1/benchmarks/software-control/evaluations",
+        "/api/v1/benchmarks/evaluations",
+        params=benchmark_query,
         headers=context.headers,
         json={"model_version_id": model_id},
     )

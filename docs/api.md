@@ -214,8 +214,13 @@ Automatic test references use `POST /reference-sets` with that dataset ID and
 | `POST /benchmarks/history/import` | Register other known data exposures |
 | `POST /benchmarks/attest` | Declare the inventory scope and source namespaces |
 | `POST /benchmarks` | Reserve the complete test partition and its references |
-| `POST /benchmarks/{id}/selection-start` | Begin model selection under that reservation |
+| `GET /benchmarks?benchmark_id=ID` | Read one reservation |
+| `POST /benchmarks/selection-start?benchmark_id=ID` | Begin model selection under that reservation |
 | `GET /benchmarks/registry` | Inspect persisted inventory and reservation metadata |
+
+The reservation response includes its URL in `Location`. For actions, pass the
+original ID as a URL-encoded query parameter. IDs can contain Unicode, spaces
+and slashes. The registry has its own URL.
 
 Regimex checks the proposed final dataset against the content, seed groups,
 runs and reservations in the registry. Include known external exposures and
@@ -262,10 +267,10 @@ evaluated on the development validation set has quality status
 
 ### 4. Freeze and evaluate final data
 
-After selection, call `POST /benchmarks/{id}/freeze` with one concrete model
+After selection, call `POST /benchmarks/freeze?benchmark_id=ID` with one concrete model
 version. Pending training blocks this action; further training under the frozen
-reservation is rejected. Then call `/benchmarks/{id}/open` and
-`/benchmarks/{id}/evaluations`. The worker evaluates only the exact frozen bundle,
+reservation is rejected. Then call `/benchmarks/open?benchmark_id=ID` and
+`/benchmarks/evaluations?benchmark_id=ID`. The worker evaluates only the exact frozen bundle,
 runtime, decoder and bound test references. Access and identity are checked before
 reading payloads and again at commit. Further selection requires fresh final data.
 
