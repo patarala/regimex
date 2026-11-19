@@ -122,7 +122,7 @@ def authenticate_token(
 
 
 def require_integration(
-    connection: Connection, principal: Principal, scope: IntegrationScope | None = None
+    connection: Connection, principal: Principal, scopes: tuple[IntegrationScope, ...] = ()
 ) -> None:
     """Recheck delegated permissions while intake holds its integration lock."""
     current = _active_token(connection, "t.token_id=%s", principal.token_id)
@@ -134,7 +134,7 @@ def require_integration(
         or current.source_namespace != principal.source_namespace
     ):
         raise Forbidden()
-    if scope is not None and scope not in current.integration_scopes:
+    if not set(scopes).issubset(current.integration_scopes):
         raise Forbidden("The integration key does not permit this action.")
     if principal.run_scope is None:
         if principal.owner_id != current.owner_id:

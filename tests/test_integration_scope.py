@@ -1,12 +1,16 @@
 """Trusted subject delegation and owner/source/run boundaries over actual PostgreSQL."""
 
+import hashlib
 import json
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from uuid import UUID, uuid4
+from zipfile import ZIP_STORED, ZipFile
 
 import pytest
 
@@ -17,6 +21,7 @@ pytest.importorskip("httpx2", reason="install the service-test group")
 import psycopg
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
+from test_api import analysis_result_fixture
 from test_service_database import _model
 
 from regimex.api import create_app
@@ -28,7 +33,9 @@ from regimex.infrastructure.auth_repository import AuthRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import LocalObjectStore
 from regimex.model_registry import ArchitectureRegistry, baseline_descriptor
+from regimex.report_contracts import AnalysisReportRecord
 from regimex.service_contracts import CapacityExceeded, Conflict, Forbidden, NotFound, Principal
+from regimex.storage import json_bytes
 
 ORIGIN = "https://regimex.example"
 PREFIX = "/api/v1/integration"
@@ -104,6 +111,110 @@ def export(run: str = "run-1", source: str = "test-simulator") -> ExportV2:
     value["source"]["run_id"] = run
     value["source"]["source_id"] = source
     return seal_export(ExportPayloadV2.model_validate_json(json.dumps(value)))
+
+
+def test_single_request_intake_respects_the_subject_rate_limit(context: IntegrationContext) -> None:
+    context.authentication.integration_limits.subject_requests_per_minute = 1
+    payload = export()
+    headers = {
+        **context.headers(),
+        "Idempotency-Key": "single-call",
+        "Content-Type": "application/json",
+    }
+    reply = context.client.post(
+        PREFIX + "/analysis-intake", content=payload.model_dump_json(), headers=headers
+    )
+    assert reply.status_code == 202, reply.text
+    snapshot, analysis = reply.json()["snapshot"], reply.json()["analysis"]
+    assert snapshot["snapshot_id"] == analysis["snapshot_id"]
+    assert snapshot["content_sha256"] == analysis["snapshot_sha256"] == payload.content_sha256
+    assert reply.headers["Location"] == analysis["polling_url"]
+    limited = context.client.post(
+        PREFIX + "/analysis-intake", content=payload.model_dump_json(), headers=headers
+    )
+    assert limited.status_code == 429 and limited.json()["error"]["code"] == "rate_limit"
+
+
+def test_analysis_intake_replays_and_checks_historical_retry(context: IntegrationContext) -> None:
+    payload = export().model_dump(mode="json")
+    url = PREFIX + "/analysis-intake"
+    headers = {**context.headers(), "Idempotency-Key": "first"}
+    first = context.client.post(url, json=payload, headers=headers).json()["analysis"]
+    assert context.client.post(url, json=payload, headers=headers).json()["analysis"] == first
+    params = {"retry_of": first["analysis_id"]}
+    headers["Idempotency-Key"] = "retry"
+    refused = context.client.post(url, params=params, json=payload, headers=headers)
+    assert refused.status_code == 409 and refused.json()["error"]["code"] == "retry_not_available"
+    context.database.cancel_operation(context.identity(), UUID(first["analysis_id"]))
+    retry = context.client.post(url, params=params, json=payload, headers=headers)
+    assert retry.status_code == 202, retry.text
+    assert retry.json()["analysis"]["analysis_id"] != first["analysis_id"]
+    assert (
+        context.client.post(url, params=params, json=payload, headers=headers).json()
+        == retry.json()
+    )
+
+
+def test_combined_intake_recovers_an_accepted_two_request_retry(
+    context: IntegrationContext,
+) -> None:
+    snapshot = upload(context)
+    first = submit(context, snapshot)
+    context.database.cancel_operation(context.identity(), first)
+    headers = {**context.headers(), "Idempotency-Key": "same-retry"}
+    alternate = context.service.submit_analysis(
+        context.identity(), snapshot, idempotency_key="alternate"
+    )
+    context.database.cancel_operation(context.identity(), alternate.operation.operation_id)
+    stored_digest = hashlib.sha256(
+        json_bytes({"snapshot_id": str(snapshot), "model_version_id": "active"})
+    ).hexdigest()
+    accepted = context.database.submit_analysis(
+        context.identity(), snapshot, idempotency_key="same-retry", request_sha256=stored_digest
+    )
+    replay = context.client.post(
+        PREFIX + "/analysis-intake",
+        params={"retry_of": str(first)},
+        json=export().model_dump(mode="json"),
+        headers=headers,
+    )
+    assert replay.status_code == 202
+    assert replay.json()["analysis"]["analysis_id"] == str(accepted.analysis_id)
+    switched = context.client.post(
+        PREFIX + "/analysis-intake",
+        params={"retry_of": str(alternate.analysis_id)},
+        json=export().model_dump(mode="json"),
+        headers=headers,
+    )
+    assert switched.status_code == 409 and switched.json()["error"]["code"] == "conflict"
+    assert (
+        context.database.get_operation(
+            context.identity(), accepted.operation.operation_id
+        ).request_sha256
+        == stored_digest
+    )
+    different_run = context.client.post(
+        PREFIX + "/analysis-intake",
+        params={"retry_of": str(first)},
+        json=export("run-2").model_dump(mode="json"),
+        headers={**context.headers(run="run-2"), "Idempotency-Key": "different-run"},
+    )
+    assert different_run.status_code == 404
+
+
+def test_intake_distinguishes_storage_and_model_configuration(context: IntegrationContext) -> None:
+    url = PREFIX + "/analysis-intake"
+    payload = export().model_dump(mode="json")
+    headers = {**context.headers(), "Idempotency-Key": "single-call"}
+    context.service.storage_quotas.max_owner_storage_bytes = 1
+    quota = context.client.post(url, json=payload, headers=headers)
+    assert quota.status_code == 429 and quota.json()["error"]["code"] == "storage_quota_exceeded"
+    assert "Retry-After" not in quota.headers
+    context.service.storage_quotas.max_owner_storage_bytes = 1024**2
+    with context.database.connection() as connection:
+        connection.execute("DELETE FROM regimex_deployment")
+    model = context.client.post(url, json=payload, headers=headers)
+    assert model.status_code == 409 and model.json()["error"]["code"] == "model_unavailable"
 
 
 def upload(context: IntegrationContext, run: str = "run-1") -> UUID:
@@ -276,6 +387,7 @@ def test_every_analysis_job_result_and_report_route_hides_other_run_or_subject(
             f"/analyses/{first}",
             f"/analyses/{first}/result",
             f"/analyses/{first}/report",
+            f"/analyses/{first}/delivery?include_report=true",
             f"/jobs/{first}",
         ):
             assert context.client.get(PREFIX + route, headers=headers).status_code == 404
@@ -313,6 +425,7 @@ def test_every_analysis_job_result_and_report_route_hides_other_run_or_subject(
         f"/analyses/{foreign.analysis_id}",
         f"/analyses/{foreign.analysis_id}/result",
         f"/analyses/{foreign.analysis_id}/report",
+        f"/analyses/{foreign.analysis_id}/delivery",
         f"/jobs/{foreign.analysis_id}",
     ):
         assert context.client.get(PREFIX + route, headers=context.headers()).status_code == 404
@@ -321,6 +434,125 @@ def test_every_analysis_job_result_and_report_route_hides_other_run_or_subject(
         context.client.post(PREFIX + f"/jobs/{first}/cancel", headers=context.headers()).status_code
         == 200
     )
+
+
+def test_delivery_rejects_pending_analysis_before_creating_a_response(
+    context: IntegrationContext,
+) -> None:
+    queued = submit(context, upload(context))
+    response = context.client.get(
+        PREFIX + f"/analyses/{queued}/delivery",
+        params={"include_report": True},
+        headers=context.headers(),
+    )
+    assert response.status_code == 409 and response.json()["error"]["code"] == "result_pending"
+
+
+@pytest.mark.parametrize("include_report", [False, True])
+def test_delivery_binds_saved_documents_in_one_request(
+    context: IntegrationContext,
+    tmp_path: Path,
+    include_report: bool,
+) -> None:
+    identity = context.identity()
+    observations = export()
+    snapshot = context.service.create_snapshot(identity, observations)
+    analysis = context.service.submit_analysis(
+        identity, snapshot.snapshot_id, idempotency_key="delivery"
+    )
+    operation = context.database.claim_operation(analysis.analysis_id)
+    assert (
+        operation is not None
+        and operation.attempt_token is not None
+        and operation.model is not None
+    )
+    result = analysis_result_fixture(observations, snapshot.snapshot_id, operation).model_dump(
+        mode="json"
+    )
+    # The committed numeric spelling survives validation and delivery.
+    result["sequences"][0]["probabilities"][0] = [1, 0, 0]
+    result_hash = hashlib.sha256(json_bytes(result)).hexdigest()
+    html = b"<!doctype html><title>Bound report</title>"
+    html_path = tmp_path / "report.html"
+    html_path.write_bytes(html)
+    stored = context.service.store.put(
+        "reports/bound.html", html_path, expected_sha256=hashlib.sha256(html).hexdigest()
+    )
+    context.database.complete_analysis(
+        analysis.analysis_id,
+        operation.attempt_token,
+        result,
+        report=AnalysisReportRecord(
+            analysis_id=analysis.analysis_id,
+            owner_id=identity.owner_id,
+            snapshot_id=snapshot.snapshot_id,
+            snapshot_sha256=observations.content_sha256,
+            source=observations.source,
+            model=operation.model,
+            result_sha256=result_hash,
+            plotly_version="fixture",
+            object=stored,
+            created_at=datetime.now(UTC),
+        ),
+    )
+    context.authentication.integration_limits.subject_requests_per_minute = 1
+    url = PREFIX + f"/analyses/{analysis.analysis_id}/delivery"
+    response = context.client.get(
+        url, params={"include_report": True} if include_report else {}, headers=context.headers()
+    )
+    assert response.status_code == 200, response.text[:256]
+    assert response.headers["Content-Type"] == "application/zip"
+    assert response.headers["Cache-Control"] == "private, no-store"
+    with ZipFile(BytesIO(response.content)) as archive:
+        names = ["analysis.json", "result.json"] + (["report.html"] if include_report else [])
+        assert archive.namelist() == names
+        assert all(member.compress_type == ZIP_STORED for member in archive.infolist())
+        detail = json.loads(archive.read("analysis.json"))
+        assert detail["analysis_id"] == str(analysis.analysis_id)
+        assert detail["snapshot_id"] == str(snapshot.snapshot_id)
+        assert detail["snapshot_sha256"] == observations.content_sha256
+        assert detail["job"]["state"] == "succeeded" and detail["polling_url"].startswith(PREFIX)
+        assert archive.read("result.json") == json_bytes(result)
+        if include_report:
+            assert archive.read("report.html") == html
+    limited = context.client.get(url, headers=context.headers())
+    assert limited.status_code == 429 and limited.json()["error"]["code"] == "rate_limit"
+
+
+def test_delivery_distinguishes_successful_analysis_without_html(
+    context: IntegrationContext,
+) -> None:
+    from psycopg.types.json import Json
+
+    from regimex.operations import succeed
+
+    snapshot_id = upload(context)
+    analysis_id = submit(context, snapshot_id)
+    operation = context.database.claim_operation(analysis_id)
+    assert operation is not None and operation.attempt_token is not None
+    result = analysis_result_fixture(export(), snapshot_id, operation).model_dump(mode="json")
+    # A successful analysis created before report publication has only its JSON.
+    with context.database.connection() as connection:
+        context.database._save(
+            connection,
+            succeed(
+                operation,
+                operation.attempt_token,
+                hashlib.sha256(json_bytes(result)).hexdigest(),
+                datetime.now(UTC),
+            ),
+        )
+        connection.execute(
+            "UPDATE regimex_analyses SET result=%s WHERE analysis_id=%s",
+            (Json(result), analysis_id),
+        )
+    url = PREFIX + f"/analyses/{analysis_id}/delivery"
+    response = context.client.get(url, params={"include_report": True}, headers=context.headers())
+    assert response.status_code == 404 and response.json()["error"]["code"] == "report_unavailable"
+    response = context.client.get(url, headers=context.headers())
+    assert response.status_code == 200
+    with ZipFile(BytesIO(response.content)) as archive:
+        assert archive.read("result.json") == json_bytes(result)
 
 
 def test_cookie_authentication_guards_real_api_upload_submit_and_cancel(

@@ -288,8 +288,10 @@ render_model_comparison(evaluations, Path("var/comparison"))
 
 The output directory must be absent or empty. Open `var/comparison/index.html`.
 The first model is the reference. Paired differences use the same whole-experiment
-bootstrap samples for both models. Incompatible reference grids, populations,
-datasets, policies or bootstrap settings are rejected. See [metrics](quality.md).
+bootstrap samples for both models. With one independent experiment, scores and
+paired differences remain available. Sampling intervals require at least two
+independent experiments. Incompatible reference grids, populations, datasets,
+policies or bootstrap settings are rejected. See [metrics](quality.md).
 
 ## Health and error handling
 
@@ -307,6 +309,8 @@ model restoration. See the [usage guide](usage.md).
 A `409` can mean changed content under an existing key, an outdated revision or
 a conflict with the current job state. Read the error code and message before
 resubmitting. For an integration rate limit (`429`, `rate_limit`), wait for
-`Retry-After`. For a queue or storage limit (`429`, `capacity_limit`), free the
-reported capacity first. After a lost response, retry a queued submission with
+`Retry-After`. A storage quota refusal (`429`, `storage_quota_exceeded`) requires
+freeing storage or raising the quota. For other capacity limits, read the
+reported reason. If intake returns `409 model_unavailable`, an administrator
+needs to activate a published model. After a lost response, retry a queued submission with
 its original idempotency key.

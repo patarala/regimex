@@ -48,6 +48,18 @@ def key(context: IntegrationContext, scopes: tuple[str, ...]) -> str:
     return issued.token.get_secret_value()
 
 
+@pytest.mark.parametrize("scopes", [("read", "upload"), ("read", "analyze")])
+def test_combined_intake_requires_both_capabilities(
+    context: IntegrationContext, scopes: tuple[str, ...]
+) -> None:
+    headers = {**context.headers(token=key(context, scopes)), "Idempotency-Key": "analysis"}
+    response = context.client.post(
+        f"{PREFIX}/analysis-intake", json=export().model_dump(mode="json"), headers=headers
+    )
+    assert response.status_code == 403
+    assert not context.service.repository.list_snapshots(context.identity())
+
+
 def test_scopes_apply_to_delegated_and_ordinary_routes(context: IntegrationContext) -> None:
     snapshot = upload(context)
     reader = key(context, ("read",))

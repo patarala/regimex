@@ -596,6 +596,22 @@ class DatabaseRepository:
             (operation.operation_id, job_id),
         )
 
+    def _retry_predecessor(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        principal: Principal,
+        snapshot_id: UUID,
+        retry_of: UUID,
+    ) -> Operation:
+        previous = self._summary(connection, principal, retry_of)
+        if previous.snapshot_id != snapshot_id:
+            raise NotFound()
+        if previous.operation.state not in {"failed", "cancelled"}:
+            raise ServiceError(
+                "retry_not_available", "Only a failed or cancelled analysis can be retried.", 409
+            )
+        return previous.operation
+
     def submit_analysis(
         self,
         principal: Principal,
@@ -606,6 +622,7 @@ class DatabaseRepository:
         request_sha256: str,
         max_pending: int = 8,
         integration_max_pending: int = 32,
+        retry_of: UUID | None = None,
     ) -> AnalysisRecord:
         if max_pending < 1 or not 1 <= integration_max_pending <= 1000:
             raise ValueError("pending quotas must be positive and integration quota at most 1000")
@@ -615,23 +632,48 @@ class DatabaseRepository:
                 from regimex.infrastructure.integration_repository import require_integration
 
                 lock_integration(self, connection, principal)
-                require_integration(connection, principal, scope="analyze")
+                require_integration(connection, principal, scopes=("analyze",))
             # One owner lock protects the shared quota across keys. Check for a
             # replay before resolving "active" so it returns the original model.
             self._lock(connection, f"owner:{principal.owner_id}")
             row = connection.execute(
-                "SELECT operation_id,request_sha256 FROM regimex_operations "
-                "WHERE owner_id=%s AND kind='analysis' AND idempotency_key=%s",
+                "SELECT o.operation_id,o.request_sha256,a.retry_of FROM regimex_operations o "
+                "LEFT JOIN regimex_analyses a ON a.operation_id=o.operation_id "
+                "WHERE o.owner_id=%s AND o.kind='analysis' AND o.idempotency_key=%s",
                 (principal.owner_id, idempotency_key),
             ).fetchone()
             if row is not None:
                 replay = self._analysis(connection, cast(UUID, row[0]))
                 self._authorize_snapshot(principal, self._snapshot(connection, replay.snapshot_id))
-                if row[1] != request_sha256:
-                    raise Conflict("The idempotency key was already used for a different request.")
-                return replay
+                if row[1] == request_sha256:
+                    return replay
+                # A stored request can predate recording the retry's predecessor.
+                # Preserve its digest and bind an eligible predecessor once under the owner lock.
+                intake = {"snapshot_id": str(snapshot_id), "model_version_id": model_version_id}
+                if (
+                    replay.snapshot_id == snapshot_id
+                    and hashlib.sha256(json_bytes(intake)).hexdigest() == row[1]
+                ):
+                    if retry_of is None or retry_of == row[2]:
+                        return replay
+                    if row[2] is None:
+                        previous = self._retry_predecessor(
+                            connection, principal, snapshot_id, retry_of
+                        )
+                        if (
+                            previous.operation_id != replay.operation.operation_id
+                            and previous.updated_at <= replay.operation.created_at
+                        ):
+                            connection.execute(
+                                "UPDATE regimex_analyses SET retry_of=%s WHERE analysis_id=%s",
+                                (retry_of, replay.analysis_id),
+                            )
+                            return replay
+                raise Conflict("The idempotency key was already used for a different request.")
             snapshot = self._snapshot(connection, snapshot_id)
             self._authorize_snapshot(principal, snapshot)
+            if retry_of is not None:
+                self._retry_predecessor(connection, principal, snapshot_id, retry_of)
             count = connection.execute(
                 "SELECT count(*) FROM regimex_operations WHERE owner_id=%s "
                 "AND state IN ('queued','running','cancel_requested')",
@@ -644,7 +686,16 @@ class DatabaseRepository:
                 from regimex.infrastructure.integration_limits import check_pending
 
                 check_pending(connection, principal, integration_max_pending)
-            model = self._model(connection, model_version_id)
+            try:
+                model = self._model(connection, model_version_id)
+            except NotFound:
+                if model_version_id != "active":
+                    raise
+                raise ServiceError(
+                    "model_unavailable",
+                    "Ask an administrator to activate a published model.",
+                    409,
+                ) from None
             if not self._published(connection, model.model_version_id):
                 raise NotFound("Analysis requires an explicitly published model version.")
             operation_id = uuid4()
@@ -681,14 +732,15 @@ class DatabaseRepository:
             connection.execute(
                 "INSERT INTO regimex_analyses "
                 "(analysis_id,operation_id,snapshot_id,model_version_id,"
-                "model_version_search) "
-                "VALUES (%s,%s,%s,%s,%s)",
+                "model_version_search,retry_of) "
+                "VALUES (%s,%s,%s,%s,%s,%s)",
                 (
                     operation_id,
                     operation_id,
                     snapshot_id,
                     model.model_version_id,
                     search_text(model.model_version_id),
+                    retry_of,
                 ),
             )
             self._enqueue(connection, operation)
@@ -736,6 +788,7 @@ class DatabaseRepository:
         summary = AnalysisSummary(
             analysis_id=cast(UUID, row[0]),
             snapshot_id=cast(UUID, row[1]),
+            snapshot_sha256=snapshot.content_sha256,
             source_id=snapshot.source_id,
             run_id=snapshot.run_id,
             source_snapshot_id=snapshot.source_snapshot_id,

@@ -91,7 +91,7 @@ class DeletionRepository:
             from regimex.infrastructure.integration_repository import require_integration
 
             lock_integration(self.database, connection, principal)
-            require_integration(connection, principal, scope="delete")
+            require_integration(connection, principal, scopes=("delete",))
 
     def _selection(
         self, connection: Connection, principal: Principal, kind: DeletionKind, target_id: UUID

@@ -134,7 +134,7 @@ class AuthRepository:
         run_id: str,
         *,
         maximum_subjects: int = 100_000,
-        required_scope: IntegrationScope | None = None,
+        required_scopes: tuple[IntegrationScope, ...] = (),
         limits: IntegrationLimitsRepository | None = None,
     ) -> Principal:
         subject = _EXTERNAL.validate_python(subject, strict=True)
@@ -151,7 +151,7 @@ class AuthRepository:
                     )
                 lock_integration(self.database, connection, principal, token_update=True)
                 principal = authenticate_token(connection, raw_token)
-                require_integration(connection, principal, scope=required_scope)
+                require_integration(connection, principal, scopes=required_scopes)
                 self.database._lock(
                     connection,
                     "integration:" + content_hash([principal.owner_id, principal.source_namespace]),

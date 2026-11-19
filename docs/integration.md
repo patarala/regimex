@@ -59,19 +59,34 @@ backend keys out of exports and browser links.
 ## Request sequence
 
 1. Build the export from one consistent view of the completed run.
-2. Send it to `POST /api/v1/integration/snapshots`. Check the source, run,
-   source snapshot ID and content hash in the response against the export.
-3. Send the returned snapshot ID and a model version to
-   `POST /api/v1/integration/analyses`. The value `"active"` selects the
-   deployment at acceptance. Set an `Idempotency-Key` for this analysis request
-   and keep it when retrying after a timeout. A deliberate second analysis of
-   the same snapshot uses a new key. A new simulation run gets a new run ID.
-4. Poll `GET /api/v1/integration/analyses/{id}` using the returned analysis ID.
-   Recheck simulator ownership and the snapshot binding before serving status or
-   downloads. Use the job's state and failure information to update the page.
-5. On success, proxy the saved `/result` JSON or `/report` HTML. Construct the
-   endpoint from the configured service origin and the verified analysis ID.
-   Keep the simulator results available if classification fails.
+2. Send the export to `POST /api/v1/integration/analysis-intake` with an
+   `Idempotency-Key`. This takes one request from the connection and subject
+   budgets, and requires both `upload` and `analyze` scopes. A successful
+   response contains the accepted `snapshot` and its `analysis`. Check their IDs,
+   source, run and content hashes against the submitted export. The active model
+   is resolved when the analysis is accepted.
+3. Retry a lost response with the same key. To retry a failed or cancelled
+   classification, send the same export with `?retry_of=<analysis-id>` and a
+   new key for that attempt. A submission failure may leave its valid snapshot
+   available for reuse. Separate `/snapshots` and `/analyses` endpoints are
+   available for explicit model selection or upload without analysis.
+4. Poll `GET /api/v1/integration/analyses/{id}`. List and detail responses
+   include `snapshot_sha256` so the simulator can check the binding in that
+   request. Recheck simulator ownership before serving status or downloads.
+5. After success, fetch the committed classification and its binding in one
+   `GET /api/v1/integration/analyses/{id}/delivery`. Add `?include_report=true`
+   to include the saved HTML. This consumes one request and requires the `read`
+   scope. Construct the URL from the configured origin and the verified ID.
+
+The delivery response is an `application/zip` attachment with uncompressed
+members. `analysis.json` contains the scoped analysis detail (up to 128 KiB).
+`result.json` contains the exact canonical bytes of the saved result (up to
+16 MiB). `report.html` is present only when requested and is limited to 16 MiB.
+Verify the analysis ID, snapshot ID, source, run and snapshot digest against the
+selected run before serving the requested content. A pending analysis returns
+`409 result_pending`, and requesting an absent report on a successful analysis
+returns `404 report_unavailable`. An unknown analysis returns `404 not_found`.
+The individual `/result` and `/report` routes are also available.
 
 Report download returns `409` before success, `404` if no report was committed,
 and `200` for the HTML attachment. Use verified HTTPS, reject redirects and

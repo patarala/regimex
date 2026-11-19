@@ -33,5 +33,6 @@ class StorageQuotaExceeded(CapacityExceeded):
         subject = "connection" if integration else "account"
         super().__init__(
             f"This {subject} has reached its storage limit. "
-            "Ask an administrator to review storage usage or increase the limit."
+            "Ask an administrator to review storage usage or increase the limit.",
+            code="storage_quota_exceeded",
         )

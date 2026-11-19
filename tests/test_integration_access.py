@@ -175,16 +175,16 @@ def test_intake_revalidates_key_scope_and_owner_binding(access: AccessContext) -
         issued.token.get_secret_value(), "alice", "run-1"
     )
     with access.database.connection() as connection:
-        require_integration(connection, principal, "read")
+        require_integration(connection, principal, ("read",))
         with pytest.raises(Forbidden):
-            require_integration(connection, principal, "upload")
+            require_integration(connection, principal, ("upload",))
         with pytest.raises(Forbidden):
             require_integration(
-                connection, principal.model_copy(update={"owner_id": "somebody-else"}), "read"
+                connection, principal.model_copy(update={"owner_id": "somebody-else"}), ("read",)
             )
     access.repository.revoke_key(access.admin, access.integration_id, issued.key.token_id)
     with access.database.connection() as connection, pytest.raises(Unauthorized):
-        require_integration(connection, principal, "read")
+        require_integration(connection, principal, ("read",))
 
 
 def test_management_checks_current_administrator_credential(access: AccessContext) -> None:
@@ -412,7 +412,9 @@ def test_delegated_denials_attribute_only_verified_credential_ids(access: Access
     )
     auth = AuthRepository(access.database)
     with pytest.raises(Forbidden) as denied:
-        auth.bind_subject(key.token.get_secret_value(), "alice", "run-1", required_scope="upload")
+        auth.bind_subject(
+            key.token.get_secret_value(), "alice", "run-1", required_scopes=("upload",)
+        )
     assert denied.value.integration_id == access.integration_id
     assert denied.value.token_id == key.key.token_id
     limits = IntegrationLimitsRepository(

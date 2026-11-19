@@ -214,7 +214,7 @@ class AuthService:
         request: RequestAuth,
         *,
         delegated: bool = False,
-        integration_scope: IntegrationScope | None = None,
+        integration_scopes: tuple[IntegrationScope, ...] = (),
     ) -> Principal:
         self._transport(request, browser=False)
         raw_token, raw_session = self._credentials(request)
@@ -235,7 +235,7 @@ class AuthService:
                     subject,
                     run_id,
                     maximum_subjects=self.policy.max_subjects_per_integration,
-                    required_scope=integration_scope,
+                    required_scopes=integration_scopes,
                     limits=self.integration_limits,
                 )
             except ValidationError as exc:

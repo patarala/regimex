@@ -5,7 +5,7 @@ import math
 import os
 import stat
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
@@ -48,6 +48,7 @@ from regimex.service_contracts import (
     ModelRecord,
     NotFound,
     Principal,
+    ServiceError,
     SnapshotRecord,
     UnsupportedContract,
 )
@@ -400,12 +401,16 @@ class AnalysisService:
         *,
         model_version_id: str = "active",
         idempotency_key: str,
+        retry_of: UUID | None = None,
     ) -> AnalysisRecord:
         # Hash the requested alias, not today's active resolution: a replay must
         # retain the immutable model selected by the first accepted request.
-        request_sha256 = hashlib.sha256(
-            json_bytes({"snapshot_id": str(snapshot_id), "model_version_id": model_version_id})
-        ).hexdigest()
+        request = {
+            "snapshot_id": str(snapshot_id),
+            "model_version_id": model_version_id,
+            "retry_of": str(retry_of) if retry_of is not None else None,
+        }
+        request_sha256 = hashlib.sha256(json_bytes(request)).hexdigest()
         return self.repository.submit_analysis(
             principal,
             snapshot_id,
@@ -414,6 +419,7 @@ class AnalysisService:
             request_sha256=request_sha256,
             max_pending=self.max_pending,
             integration_max_pending=self.integration_max_pending,
+            retry_of=retry_of,
         )
 
     def list_analyses(
@@ -493,25 +499,35 @@ class AnalysisService:
     ) -> ExperimentName:
         return HistoryRepository(self.repository).rename(principal, snapshot_id, update)
 
-    def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]:
+    def _verified_result(
+        self, principal: Principal, analysis_id: UUID
+    ) -> tuple[bytes, AnalysisResult]:
         record = self.get_analysis(principal, analysis_id)
         if record.operation.state != "succeeded" or record.result is None:
             raise Conflict("The analysis has no committed successful result.")
         if record.result.get("result_version") != "2.0":
             raise UnsupportedContract()
-        result = AnalysisResult.model_validate_json(json_bytes(record.result))
+        payload = json_bytes(record.result)
+        if (
+            len(payload) > MAX_INPUT_BYTES
+            or hashlib.sha256(payload).hexdigest() != record.operation.result_sha256
+        ):
+            raise ObjectIntegrityError("analysis result bytes differ from the committed result")
+        result = AnalysisResult.model_validate_json(payload)
         snapshot = self.get_snapshot(principal, record.snapshot_id)
         if (
             result.analysis_id != analysis_id
             or result.snapshot_id != record.snapshot_id
-            or hashlib.sha256(json_bytes(record.result)).hexdigest()
-            != record.operation.result_sha256
             or result.snapshot_sha256 != snapshot.content_sha256
             or result.model != record.operation.model
             or (result.source.source_id, result.source.run_id, result.source.snapshot_id)
             != (snapshot.source_id, snapshot.run_id, snapshot.source_snapshot_id)
         ):
             raise ObjectIntegrityError("analysis result identity differs from its resource")
+        return payload, result
+
+    def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]:
+        result = self._verified_result(principal, analysis_id)[1]
         return result.model_dump(mode="json")
 
     def get_report_metadata(
@@ -546,8 +562,11 @@ class AnalysisService:
         report = self.get_report_metadata(principal, analysis_id)
         if report is None:
             raise NotFound("This saved analysis has no available offline report.")
-        result = self.get_result(principal, analysis_id)
-        if result["source"] != report.source.model_dump(mode="json"):
+        source = self._verified_result(principal, analysis_id)[1].source
+        return self._read_report_file(report, source)
+
+    def _read_report_file(self, report: AnalysisReportRecord, source: SourceIdentity) -> bytes:
+        if report.source != source:
             raise ObjectIntegrityError("report source differs from its saved result")
         with tempfile.TemporaryDirectory(prefix="report-read-", dir=self.work_root) as temporary:
             path = Path(temporary) / "report.html"
@@ -556,6 +575,24 @@ class AnalysisService:
         if len(payload) > MAX_REPORT_BYTES:
             raise ObjectIntegrityError("the stored report exceeds its download limit")
         return payload
+
+    def delivery_documents(
+        self, principal: Principal, analysis_id: UUID, *, include_report: bool
+    ) -> Iterator[tuple[str, bytes]]:
+        payload, result = self._verified_result(principal, analysis_id)
+        source = result.source
+        del result
+        yield "result.json", payload
+        del payload
+        if include_report:
+            report = self.get_report_metadata(principal, analysis_id)
+            if report is None:
+                raise ServiceError(
+                    "report_unavailable",
+                    "This saved analysis has no available offline report.",
+                    404,
+                )
+            yield "report.html", self._read_report_file(report, source)
 
     def get_operation(self, principal: Principal, operation_id: UUID) -> Operation:
         return self.repository.get_operation(principal, operation_id)

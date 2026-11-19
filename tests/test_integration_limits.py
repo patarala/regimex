@@ -179,7 +179,7 @@ def test_rejected_concurrent_delegations_do_not_allocate_subjects(
     def bind(index: int) -> bool:
         try:
             AuthRepository(database).bind_subject(
-                token, f"subject-{index}", "run-1", required_scope="read", limits=limits
+                token, f"subject-{index}", "run-1", required_scopes=("read",), limits=limits
             )
             return True
         except IntegrationRateLimited:
@@ -211,7 +211,7 @@ def test_scope_denial_cannot_allocate_a_subject_or_consume_request_budget(
         )
     with pytest.raises(Forbidden):
         AuthRepository(database).bind_subject(
-            token, "new-subject", "run-1", required_scope="upload", limits=_limits(database)
+            token, "new-subject", "run-1", required_scopes=("upload",), limits=_limits(database)
         )
     with database.connection() as connection:
         assert connection.execute(
@@ -239,7 +239,7 @@ def test_delegation_authentication_and_key_rotation_share_a_safe_lock_order(
     def bind() -> None:
         for index in range(8):
             AuthRepository(database).bind_subject(
-                token, f"subject-{index}", "run-1", required_scope="read", limits=limits
+                token, f"subject-{index}", "run-1", required_scopes=("read",), limits=limits
             )
 
     def authenticate() -> None:

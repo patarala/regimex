@@ -15,17 +15,19 @@ _MUTATIONS: dict[tuple[str, str], IntegrationScope] = {
 }
 
 
-def required_scope(method: str, route: str) -> IntegrationScope:
+def required_scopes(method: str, route: str) -> tuple[IntegrationScope, ...]:
     """Reject integration mutations without an explicitly assigned capability."""
     ordinary_route = route.replace("/api/v1/integration/", "/api/v1/", 1)
+    if method == "POST" and route == "/api/v1/integration/analysis-intake":
+        return ("upload", "analyze")
     if method in {"GET", "HEAD"}:
         if ordinary_route in {"/api/v1/deletions", "/api/v1/deletions/{plan_id}"}:
-            return "delete"
-        return "read"
+            return ("delete",)
+        return ("read",)
     permission = _MUTATIONS.get((method, ordinary_route))
     if permission is None:
         raise Forbidden("This operation is unavailable to integration credentials.")
-    return permission
+    return (permission,)
 
 
 def authorize_request(principal: Principal, method: str, route: str) -> None:
@@ -36,5 +38,5 @@ def authorize_request(principal: Principal, method: str, route: str) -> None:
         # Introspection describes the caller's own key, including absent read
         # permission. It grants no access to models, subjects or observations.
         return
-    if required_scope(method, route) not in principal.integration_scopes:
+    if not set(required_scopes(method, route)).issubset(principal.integration_scopes):
         raise Forbidden("This integration key does not allow the requested operation.")

@@ -91,6 +91,7 @@ class AnalysisSummary(StrictModel):
 
     analysis_id: UUID
     snapshot_id: UUID
+    snapshot_sha256: Sha256
     source_id: Identifier
     run_id: Identifier
     source_snapshot_id: Identifier
@@ -141,8 +142,13 @@ class Unauthorized(ServiceError):
 
 
 class CapacityExceeded(ServiceError):
-    def __init__(self, message: str = "The owner's pending operation quota is exhausted.") -> None:
-        super().__init__("capacity_limit", message, 429)
+    def __init__(
+        self,
+        message: str = "The owner's pending operation quota is exhausted.",
+        *,
+        code: str = "capacity_limit",
+    ) -> None:
+        super().__init__(code, message, 429)
 
 
 class StaleAttempt(Conflict):

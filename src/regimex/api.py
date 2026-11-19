@@ -5,9 +5,11 @@ backend, probe computation dependencies, fit a model, or accept local file paths
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from io import BytesIO
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
 from uuid import UUID
+from zipfile import ZIP_STORED, ZipFile
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security
 from fastapi.exceptions import RequestValidationError
@@ -38,6 +40,7 @@ from regimex.operations import (
     OperationKind,
     OperationState,
     ResolvedModel,
+    Sha256,
 )
 from regimex.service_contracts import (
     AnalysisRecord,
@@ -51,6 +54,7 @@ from regimex.service_contracts import (
     SnapshotRecord,
     Unauthorized,
 )
+from regimex.storage import json_bytes
 from regimex.storage_contracts import StorageUsage
 
 if TYPE_CHECKING:
@@ -88,6 +92,7 @@ class AnalysisAPIService(Protocol):
         *,
         model_version_id: str = "active",
         idempotency_key: str,
+        retry_of: UUID | None = None,
     ) -> AnalysisRecord: ...
 
     def list_analysis_summaries(
@@ -106,6 +111,10 @@ class AnalysisAPIService(Protocol):
     def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]: ...
 
     def read_report(self, principal: Principal, analysis_id: UUID) -> bytes: ...
+
+    def delivery_documents(
+        self, principal: Principal, analysis_id: UUID, *, include_report: bool
+    ) -> Iterator[tuple[str, bytes]]: ...
 
     def compare_analyses(self, principal: Principal, first_id: UUID, second_id: UUID) -> bytes: ...
 
@@ -185,6 +194,7 @@ class OperationView(StrictModel):
 class AnalysisView(StrictModel):
     analysis_id: UUID
     snapshot_id: UUID
+    snapshot_sha256: Sha256
     source_id: Identifier
     run_id: Identifier
     source_snapshot_id: Identifier
@@ -196,6 +206,11 @@ class AnalysisView(StrictModel):
     report_url: str
     report_available: bool = False
     polling_url: str
+
+
+class AnalysisIntakeView(StrictModel):
+    snapshot: SnapshotView
+    analysis: AnalysisView
 
 
 class AnalysisPage(StrictModel):
@@ -378,6 +393,7 @@ def _analysis(record: AnalysisSummary, *, prefix: str = "/api/v1") -> AnalysisVi
     return AnalysisView(
         analysis_id=record.analysis_id,
         snapshot_id=record.snapshot_id,
+        snapshot_sha256=record.snapshot_sha256,
         source_id=record.source_id,
         run_id=record.run_id,
         source_snapshot_id=record.source_snapshot_id,
@@ -554,7 +570,7 @@ def create_app(
     ) -> Principal:
         response.headers["Cache-Control"] = "private, no-store"
         if auth_service is not None:
-            from regimex.application.integration_access import required_scope
+            from regimex.application.integration_access import required_scopes
             from regimex.auth_api import request_auth
 
             delegated = request.url.path.startswith("/api/v1/integration/")
@@ -562,7 +578,7 @@ def create_app(
             identity = auth_service.resolve(
                 request_auth(request),
                 delegated=delegated,
-                integration_scope=required_scope(request.method, route_path) if delegated else None,
+                integration_scopes=required_scopes(request.method, route_path) if delegated else (),
             )
         else:
             if credentials is None or credentials.scheme.lower() != "bearer":
@@ -858,6 +874,85 @@ def create_app(
         from regimex.integration_api import install_integration_routes
 
         install_session_routes(app, auth_service)
+
+        @app.post(
+            "/api/v1/integration/analysis-intake",
+            status_code=202,
+            openapi_extra=_request_body(ExportV2),
+            tags=["Integration backend"],
+        )
+        def integration_analysis_intake(
+            identity: Identity,
+            export: Export,
+            request: Request,
+            response: Response,
+            idempotency_key: Annotated[Identifier, Header(alias="Idempotency-Key")],
+            retry_of: UUID | None = None,
+        ) -> AnalysisIntakeView:
+            snapshot = service.create_snapshot(identity, export)
+            record = service.submit_analysis(
+                identity, snapshot.snapshot_id, idempotency_key=idempotency_key, retry_of=retry_of
+            )
+            request.state.operation_id = record.operation.operation_id
+            prefix = _prefix(identity)
+            analysis = _analysis(
+                service.get_analysis_summary(identity, record.analysis_id), prefix=prefix
+            )
+            response.headers["Location"] = analysis.polling_url
+            return AnalysisIntakeView(
+                snapshot=_snapshot(snapshot, prefix=prefix), analysis=analysis
+            )
+
+        @app.get(
+            "/api/v1/integration/analyses/{analysis_id}/delivery",
+            response_class=Response,
+            responses={
+                200: {
+                    "content": {
+                        "application/zip": {"schema": {"type": "string", "format": "binary"}}
+                    }
+                }
+            },
+            tags=["Integration backend"],
+        )
+        def integration_delivery(
+            analysis_id: UUID, identity: Identity, include_report: bool = False
+        ) -> Response:
+            summary = service.get_analysis_summary(identity, analysis_id)
+            if summary.operation.state != "succeeded" or not summary.result_available:
+                raise ServiceError(
+                    "result_pending", "The analysis has no committed successful result.", 409
+                )
+            if include_report and not summary.report_available:
+                raise ServiceError(
+                    "report_unavailable",
+                    "This saved analysis has no available offline report.",
+                    404,
+                )
+            analysis = json_bytes(
+                _analysis(summary, prefix=_prefix(identity)).model_dump(mode="json")
+            )
+            if len(analysis) > 128 * 1024:
+                raise ObjectIntegrityError("analysis metadata exceeds the delivery limit")
+            with BytesIO() as buffer:
+                # Finish authorization and integrity checks before sending any response bytes.
+                with ZipFile(buffer, "w", compression=ZIP_STORED) as archive:
+                    archive.writestr("analysis.json", analysis)
+                    for name, document in service.delivery_documents(
+                        identity, analysis_id, include_report=include_report
+                    ):
+                        archive.writestr(name, document)
+                        del document
+                return Response(
+                    buffer.getvalue(),
+                    media_type="application/zip",
+                    headers={
+                        "Cache-Control": "private, no-store",
+                        "X-Content-Type-Options": "nosniff",
+                        "Content-Disposition": f'attachment; filename="regimex-{analysis_id}.zip"',
+                    },
+                )
+
         install_integration_routes(
             app, IntegrationRepository(auth_service.repository.database), authenticate=principal
         )

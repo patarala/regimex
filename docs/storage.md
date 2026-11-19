@@ -23,7 +23,7 @@ their bytes before the failure became visible. Offline maintenance can release a
 reservation only after proving that its unregistered object is absent.
 
 Open the workspace to see the current owner's usage. Administrators can see a
-connection's total in **Connections**. A quota refusal returns `capacity_limit`.
+connection's total in **Connections**. A quota refusal returns `storage_quota_exceeded`.
 If a quota is lowered below current usage, existing files can still be read.
 Delete saved resources to release their bytes. For a failed upload, use the
 offline [orphan cleanup procedure](#orphan-cleanup).
