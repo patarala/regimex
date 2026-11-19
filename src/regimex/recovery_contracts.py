@@ -13,8 +13,8 @@ from regimex.contracts import StrictModel
 from regimex.infrastructure.maintenance import ServicesStoppedAttestation
 from regimex.infrastructure.object_store import ObjectInfo
 
-RecoveryRevision = Literal["0007_resource_deletion"]
-RECOVERY_REVISION: RecoveryRevision = "0007_resource_deletion"
+RecoveryRevision = Literal["0007_resource_deletion", "0008_analysis_metadata"]
+RECOVERY_REVISION: RecoveryRevision = "0008_analysis_metadata"
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -61,6 +61,7 @@ class BackupManifest(StrictModel):
     dump_sha256: Sha256
     objects: Annotated[tuple[ObjectInfo, ...], Field(max_length=100_000)]
     tables: Annotated[dict[str, TableEvidence], Field(min_length=1, max_length=1000)]
+    evidence_timezone: Literal["UTC"] | None = None
     source_maintenance_identity: MaintenanceIdentity
     scope: Literal["all_registered_objects"] = "all_registered_objects"
 

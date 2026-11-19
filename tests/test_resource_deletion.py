@@ -1,9 +1,7 @@
 """Real ownership, concurrency and failure recovery for resource removal."""
 
 import hashlib
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event
@@ -400,6 +398,30 @@ def test_failed_physical_removal_is_discoverable_charged_and_retryable(
             == 0
         )
     monkeypatch.setattr(value.store, "delete_version", remove)
+    from test_retention import stopped
+
+    from regimex.application.retention import RetentionService
+    from regimex.infrastructure.retention_repository import RetentionRepository
+
+    orphan_path = tmp_path / "orphan"
+    orphan_path.write_bytes(b"old unregistered content")
+    orphan = value.store.put(
+        "orphan/object",
+        orphan_path,
+        expected_sha256=hashlib.sha256(orphan_path.read_bytes()).hexdigest(),
+    )
+    collector = RetentionService(
+        RetentionRepository(database),
+        value.store,
+        clock=lambda: datetime.now(UTC) + timedelta(days=2),
+    )
+    operator = principal("operator", admin=True)
+    cleanup = collector.plan(operator, attestation=stopped())
+    assert [item.object for item in cleanup.objects] == [orphan]
+    assert collector.apply(
+        operator, cleanup.plan_id, expected_sha256=cleanup.sha256, attestation=stopped()
+    ).complete
+    assert value.store.stat(snapshot.object.key) == snapshot.object
     restored_controller = deletion(value)
     completed = restored_controller.apply(
         owner, receipt.deletion_id, expected_sha256=receipt.sha256
@@ -435,7 +457,7 @@ def test_retry_after_crash_between_unlink_and_quota_commit(
     )
 
 
-def test_inflight_upload_cannot_recreate_deleted_bytes(
+def test_snapshot_replay_is_serialized_with_confirmed_deletion(
     database: DatabaseRepository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     value = service(database, tmp_path)
@@ -444,20 +466,14 @@ def test_inflight_upload_cannot_recreate_deleted_bytes(
     deleter = deletion(value)
     preview = deleter.preview(owner, "experiment", snapshot.snapshot_id)
     started, release = Event(), Event()
-    put = value.store.put
+    stat = value.store.stat
 
-    def paused_put(
-        key: str,
-        path: Path,
-        *,
-        expected_sha256: str,
-        checkpoint: Callable[[], None] | None = None,
-    ) -> ObjectInfo:
+    def paused_stat(key: str) -> ObjectInfo:
         started.set()
         assert release.wait(5)
-        return put(key, path, expected_sha256=expected_sha256, checkpoint=checkpoint)
+        return stat(key)
 
-    monkeypatch.setattr(value.store, "put", paused_put)
+    monkeypatch.setattr(value.store, "stat", paused_stat)
     with ThreadPoolExecutor(max_workers=2) as executor:
         upload = executor.submit(value.create_snapshot, owner, export())
         assert started.wait(5)
@@ -465,9 +481,7 @@ def test_inflight_upload_cannot_recreate_deleted_bytes(
             deleter.apply, owner, preview.plan_id, expected_sha256=preview.sha256
         )
         release.set()
-        # Metadata registration may lose to the confirmed deletion.
-        with suppress(Conflict):
-            upload.result(timeout=10)
+        assert upload.result(timeout=10) == snapshot
         assert removal.result(timeout=10).state == "completed"
     with pytest.raises(FileNotFoundError):
         value.store.stat(snapshot.object.key)

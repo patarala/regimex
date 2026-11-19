@@ -25,7 +25,7 @@ from sqlalchemy import create_engine
 
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.heartbeat_connection import HeartbeatConnection
-from regimex.infrastructure.history_repository import analysis_filters, analysis_scope
+from regimex.infrastructure.history_repository import analysis_filters, analysis_scope, search_text
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.operations import (
     OPERATION_VERSION,
@@ -62,7 +62,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0007_resource_deletion"
+_REVISION = "0008_analysis_metadata"
 
 
 def _read_operation(document: object) -> Operation:
@@ -291,27 +291,55 @@ class DatabaseRepository:
         with self.connection() as connection:
             return self._add_snapshot(connection, record)
 
+    @staticmethod
+    def existing_snapshot(
+        connection: psycopg.Connection[tuple[object, ...]],
+        owner_id: str,
+        source_id: str,
+        run_id: str,
+        source_snapshot_id: str,
+        content_sha256: str,
+    ) -> SnapshotRecord | None:
+        from regimex.infrastructure.resource_lifecycle import require_snapshot_identity
+
+        require_snapshot_identity(connection, owner_id, source_id, run_id, source_snapshot_id)
+        row = connection.execute(
+            "SELECT document FROM regimex_snapshots WHERE "
+            "owner_id=%s AND source_id=%s AND run_id=%s AND source_snapshot_id=%s",
+            (owner_id, source_id, run_id, source_snapshot_id),
+        ).fetchone()
+        if row is None:
+            return None
+        existing = SnapshotRecord.model_validate_json(json_bytes(row[0]))
+        if existing.content_sha256 != content_sha256:
+            raise Conflict("The source snapshot identity already has different content.")
+        return existing
+
     def _add_snapshot(
         self, connection: psycopg.Connection[tuple[object, ...]], record: SnapshotRecord
     ) -> SnapshotRecord:
-        from regimex.infrastructure.resource_lifecycle import require_snapshot_identity
         from regimex.infrastructure.storage_quotas import record_owned_object
 
+        self._lock(connection, f"owner-payload:{record.owner_id}")
         self._lock(connection, f"owner:{record.owner_id}")
-        require_snapshot_identity(
+        existing = self.existing_snapshot(
             connection,
             record.owner_id,
             record.source_id,
             record.run_id,
             record.source_snapshot_id,
+            record.content_sha256,
         )
+        if existing is not None:
+            if existing.object.key == record.object.key and existing.object != record.object:
+                raise Conflict("The immutable object key already identifies another generation.")
+            return existing
         record_owned_object(connection, record.owner_id, record.source_id, record.object)
         self._object(connection, record.object)
         connection.execute(
             "INSERT INTO regimex_snapshots "
             "(snapshot_id,owner_id,source_id,run_id,source_snapshot_id,content_sha256,"
-            "object_key,document) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
-            "ON CONFLICT (owner_id,source_id,run_id,source_snapshot_id) DO NOTHING",
+            "object_key,document,identifiers_search) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
             (
                 record.snapshot_id,
                 record.owner_id,
@@ -321,18 +349,15 @@ class DatabaseRepository:
                 record.content_sha256,
                 record.object.key,
                 Jsonb(record.model_dump(mode="json")),
+                search_text(
+                    record.source_id,
+                    record.run_id,
+                    record.source_snapshot_id,
+                    *record.instrument_ids,
+                ),
             ),
         )
-        row = connection.execute(
-            "SELECT document FROM regimex_snapshots WHERE "
-            "owner_id=%s AND source_id=%s AND run_id=%s AND source_snapshot_id=%s",
-            (record.owner_id, record.source_id, record.run_id, record.source_snapshot_id),
-        ).fetchone()
-        assert row is not None
-        existing = SnapshotRecord.model_validate_json(json_bytes(row[0]))
-        if existing.content_sha256 != record.content_sha256:
-            raise Conflict("The source snapshot identity already has different content.")
-        return existing
+        return record
 
     def get_snapshot_internal(self, snapshot_id: UUID) -> SnapshotRecord:
         with self.connection() as connection:
@@ -655,8 +680,16 @@ class DatabaseRepository:
             )
             connection.execute(
                 "INSERT INTO regimex_analyses "
-                "(analysis_id,operation_id,snapshot_id,model_version_id) VALUES (%s,%s,%s,%s)",
-                (operation_id, operation_id, snapshot_id, model.model_version_id),
+                "(analysis_id,operation_id,snapshot_id,model_version_id,"
+                "model_version_search) "
+                "VALUES (%s,%s,%s,%s,%s)",
+                (
+                    operation_id,
+                    operation_id,
+                    snapshot_id,
+                    model.model_version_id,
+                    search_text(model.model_version_id),
+                ),
             )
             self._enqueue(connection, operation)
             return AnalysisRecord(

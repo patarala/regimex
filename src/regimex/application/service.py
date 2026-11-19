@@ -31,6 +31,10 @@ from regimex.infrastructure.object_store import (
     ObjectIntegrityError,
     ObjectStore,
 )
+from regimex.infrastructure.resource_lifecycle import (
+    owner_payload_lock,
+    require_object_key,
+)
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle, verify_model_bundle
 from regimex.model_registry import ArchitectureInfo, ArchitectureRegistry, InferenceRuntime
 from regimex.operations import Operation, ResolvedModel
@@ -51,6 +55,8 @@ from regimex.storage import json_bytes
 from regimex.storage_contracts import StorageUsage
 
 if TYPE_CHECKING:
+    import psycopg
+
     from regimex.infrastructure.database import DatabaseRepository
     from regimex.service_contracts import AnalysisSummary
 
@@ -225,30 +231,47 @@ class AnalysisService:
         *,
         expected_sha256: str,
         principal: Principal | None = None,
-        snapshot_identity: tuple[str, str] | None = None,
+        generated_snapshot: tuple[UUID, ExportV2] | None = None,
         checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
         """Charge an immutable snapshot/report before writing any object bytes."""
+        with owner_payload_lock(self.repository, owner_id) as connection:
+            if generated_snapshot is not None:
+                snapshot_id, export = generated_snapshot
+                existing = self.repository.existing_snapshot(
+                    connection,
+                    owner_id,
+                    source_id,
+                    export.source.run_id,
+                    export.source.snapshot_id,
+                    export.content_sha256,
+                )
+                if existing is not None and existing.snapshot_id != snapshot_id:
+                    raise Conflict("Generation cannot replace another registered source snapshot.")
+            return self._upload_owned(
+                connection, owner_id, source_id, key, path, expected_sha256, principal, checkpoint
+            )
+
+    def _upload_owned(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        owner_id: str,
+        source_id: str,
+        key: str,
+        path: Path,
+        expected_sha256: str,
+        principal: Principal | None,
+        checkpoint: Callable[[], None] | None = None,
+    ) -> ObjectInfo:
+        require_object_key(connection, key)
         expected = ObjectInfo(
             key=key,
             size_bytes=path.stat().st_size,
             sha256=expected_sha256,
             version_id="reservation",
         )
-        from regimex.infrastructure.resource_lifecycle import (
-            owner_payload_lock,
-            require_object_key,
-            require_snapshot_identity,
-        )
-
-        with owner_payload_lock(self.repository, owner_id) as connection:
-            require_object_key(connection, key)
-            if snapshot_identity is not None:
-                require_snapshot_identity(connection, owner_id, source_id, *snapshot_identity)
-            self.storage_quotas.reserve(owner_id, source_id, expected, principal=principal)
-            actual = self.store.put(
-                key, path, expected_sha256=expected_sha256, checkpoint=checkpoint
-            )
+        self.storage_quotas.reserve(owner_id, source_id, expected, principal=principal)
+        actual = self.store.put(key, path, expected_sha256=expected_sha256, checkpoint=checkpoint)
         if (actual.key, actual.sha256, actual.size_bytes) != (
             expected.key,
             expected.sha256,
@@ -284,39 +307,56 @@ class AnalysisService:
         data = json_bytes(export.model_dump(mode="json"))
         if len(data) > MAX_INPUT_BYTES:
             raise ValueError("export exceeds the 16 MiB input size limit")
-        snapshot_id = uuid4()
-        data_sha256 = hashlib.sha256(data).hexdigest()
-        owner_key = hashlib.sha256(json_bytes(principal.owner_id)).hexdigest()
-        with tempfile.TemporaryDirectory(prefix="snapshot-", dir=self.work_root) as temporary:
-            path = Path(temporary) / "export.json"
-            path.write_bytes(data)
-            try:
-                info = self.store_owned_object(
-                    principal.owner_id,
-                    export.source.source_id,
-                    f"snapshots/{owner_key}/{data_sha256}.json",
-                    path,
-                    expected_sha256=data_sha256,
-                    principal=principal,
-                    snapshot_identity=(export.source.run_id, export.source.snapshot_id),
+        source = export.source
+        with owner_payload_lock(self.repository, principal.owner_id) as connection:
+            existing = self.repository.existing_snapshot(
+                connection,
+                principal.owner_id,
+                source.source_id,
+                source.run_id,
+                source.snapshot_id,
+                export.content_sha256,
+            )
+            if existing is not None:
+                self.storage_quotas.reserve(
+                    principal.owner_id, source.source_id, existing.object, principal=principal
                 )
-            except ObjectCapacityError as exc:
-                raise CapacityExceeded("Snapshot storage capacity is exhausted.") from exc
-        record = SnapshotRecord(
-            snapshot_id=snapshot_id,
-            owner_id=principal.owner_id,
-            source_id=export.source.source_id,
-            run_id=export.source.run_id,
-            source_snapshot_id=export.source.snapshot_id,
-            content_sha256=export.content_sha256,
-            object=info,
-            created_at=datetime.now(UTC),
-            instrument_ids=tuple(item.instrument_id for item in export.instruments),
-            step_count=export.time_grid.step_count,
-        )
-        # A failed database commit leaves an unreferenced immutable object. Cleanup
-        # requires a separate authorized reconciliation with reference checks.
-        return self.repository.add_snapshot(record)
+                if self.store.stat(existing.object.key) != existing.object:
+                    raise ObjectIntegrityError(
+                        "Stored snapshot differs from its registered generation."
+                    )
+                return existing
+            data_sha256 = hashlib.sha256(data).hexdigest()
+            owner_key = hashlib.sha256(json_bytes(principal.owner_id)).hexdigest()
+            with tempfile.TemporaryDirectory(prefix="snapshot-", dir=self.work_root) as temporary:
+                path = Path(temporary) / "export.json"
+                path.write_bytes(data)
+                try:
+                    info = self._upload_owned(
+                        connection,
+                        principal.owner_id,
+                        source.source_id,
+                        f"snapshots/{owner_key}/{data_sha256}.json",
+                        path,
+                        data_sha256,
+                        principal,
+                    )
+                except ObjectCapacityError as exc:
+                    raise CapacityExceeded("Snapshot storage capacity is exhausted.") from exc
+            record = SnapshotRecord(
+                snapshot_id=uuid4(),
+                owner_id=principal.owner_id,
+                source_id=source.source_id,
+                run_id=source.run_id,
+                source_snapshot_id=source.snapshot_id,
+                content_sha256=export.content_sha256,
+                object=info,
+                created_at=datetime.now(UTC),
+                instrument_ids=tuple(item.instrument_id for item in export.instruments),
+                step_count=export.time_grid.step_count,
+            )
+            with connection.transaction():
+                return self.repository._add_snapshot(connection, record)
 
     def get_snapshot(self, principal: Principal, snapshot_id: UUID) -> SnapshotRecord:
         return self.repository.get_snapshot(principal, snapshot_id)

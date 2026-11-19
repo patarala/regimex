@@ -6,8 +6,9 @@ Only offline maintenance with a complete inventory can release absent objects.
 """
 
 from datetime import datetime
+from itertools import batched
 from typing import TYPE_CHECKING, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.service_contracts import Conflict, NotFound, Principal
@@ -185,12 +186,20 @@ def release_absent_reservations(
     Registered objects remain charged even if missing from a damaged store. The
     grace cutoff keeps a recent failed upload available for an idempotent retry.
     """
-    result = connection.execute(
-        "DELETE FROM regimex_storage_reservations r WHERE created_at<%s "
-        "AND NOT (r.object_key=ANY(%s)) AND NOT EXISTS "
-        "(SELECT 1 FROM regimex_objects o WHERE o.object_key=r.object_key) AND NOT EXISTS "
-        "(SELECT 1 FROM regimex_deletion_objects d WHERE d.object_key=r.object_key "
-        "AND d.state='pending')",
-        (created_before, list(existing_keys)),
-    )
-    return result.rowcount
+    released = 0
+    with connection.cursor(name="orphan_reservations_" + uuid4().hex) as cursor:
+        cursor.itersize = 1000
+        cursor.execute(
+            "SELECT r.object_key FROM regimex_storage_reservations r WHERE created_at<%s "
+            "AND NOT EXISTS (SELECT 1 FROM regimex_objects o WHERE o.object_key=r.object_key) "
+            "AND NOT EXISTS (SELECT 1 FROM regimex_deletion_objects d "
+            "WHERE d.object_key=r.object_key AND d.state='pending')",
+            (created_before,),
+        )
+        for page in batched(cursor, 1000, strict=False):
+            absent = [key for (key,) in page if key not in existing_keys]
+            if absent:
+                released += connection.execute(
+                    "DELETE FROM regimex_storage_reservations WHERE object_key=ANY(%s)", (absent,)
+                ).rowcount
+    return released

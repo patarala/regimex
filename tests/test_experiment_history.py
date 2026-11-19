@@ -475,3 +475,18 @@ def test_name_search_supports_unicode_without_database_locale_rules(
         "/api/v1/analyses", params={"q": query}, headers=api.headers()
     ).json()["items"]
     assert [item["analysis_id"] for item in children] == [str(analysis.analysis_id)]
+
+
+def test_history_search_normalizes_identifiers_and_model_versions(
+    persistent_api: PersistentAPI,
+) -> None:
+    api = persistent_api
+    _publish(api, "Straße")
+    snapshot_id = upload(api, suffix="-A\u0308rger")
+    analysis = _submit(api, snapshot_id, "unicode-ids", cancel=True)
+    for query in ("ärger", "A\u0308RGER", "STRASSE"):
+        assert [group["snapshot_id"] for group in _groups(api, q=query)] == [str(snapshot_id)]
+        response = api.client.get("/api/v1/analyses", params={"q": query}, headers=api.headers())
+        assert [row["analysis_id"] for row in response.json()["items"]] == [
+            str(analysis.analysis_id)
+        ]

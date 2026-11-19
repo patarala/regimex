@@ -161,7 +161,7 @@ stopped-writer attestations.
 Use PostgreSQL 16 `pg_dump` and `pg_restore`, or the Compose `ops` image.
 Set `PGDUMP_BIN` and `PGRESTORE_BIN` or pass `--pg-dump` and `--pg-restore`
 to select the binaries. Backups require the schema revision supported by the
-running release (currently `0007_resource_deletion`).
+running release (currently `0008_analysis_metadata`).
 
 With all writers stopped:
 
@@ -174,8 +174,9 @@ Keep the printed manifest SHA-256 separately from the archive, along with the
 matching application release. Protect access to the archive. It includes
 authentication hashes, experiment metadata and all registered files.
 
-Restore with the release that created the archive. Point its configuration at
-a **new, empty database** and a **fresh local object root or S3 prefix**. Use
+This release restores archives from schemas `0007_resource_deletion` and
+`0008_analysis_metadata`. Point its configuration at a **new, empty database**
+and a **fresh local object root or S3 prefix**. Use
 the original schema name. Leave the target offline and skip migrations until
 restoration succeeds.
 
@@ -189,6 +190,10 @@ Restore verifies the database dump and objects, then records their new physical
 versions. Existing dataset and model identities are preserved. The target gets
 a new maintenance identity, so cleanup plans from the original installation
 cannot be applied there.
+
+New backups use UTC when hashing database timestamps and can be restored across
+server time zones. For an archive without `evidence_timezone`, use the time
+zone of its source connection during restoration.
 
 If restore fails, discard the partial target and start again with an empty one.
 Its readiness guard blocks intake with `503`. After success, apply any required

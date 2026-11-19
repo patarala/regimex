@@ -24,7 +24,7 @@ pytest.importorskip("alembic")
 pytest.importorskip("procrastinate")
 
 from psycopg import sql
-from psycopg.conninfo import make_conninfo
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from test_object_store_contract import cleanup_owned_test_prefix, s3_configuration
 
 from regimex.application import recovery
@@ -189,6 +189,141 @@ def test_custom_schema_recovery_preserves_identity_and_rotates_storage(
     )
     assert minimal.token.encode() not in (minimal.directory / "manifest.json").read_bytes()
     assert minimal.source._dsn.encode() not in (minimal.directory / "manifest.json").read_bytes()
+
+
+def test_cross_timezone_restore_through_a_service_without_object_scratch(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = databases(minimal.source.schema)
+    parameters = conninfo_to_dict(target._dsn)
+    name = parameters.pop("dbname")
+    assert isinstance(name, str)
+    with psycopg.connect(target._dsn, autocommit=True) as connection:
+        connection.execute(
+            sql.SQL("ALTER DATABASE {} SET timezone TO 'Europe/Moscow'").format(
+                sql.Identifier(name)
+            )
+        )
+    service_file = tmp_path / "pg_service.conf"
+    service_file.write_text(f"[restore_target]\ndbname={name}\n")
+    monkeypatch.setenv("PGSERVICEFILE", str(service_file))
+    parameters["service"] = "restore_target"
+    service_dsn = make_conninfo("", **parameters)
+    store = local(tmp_path / "restore-objects")
+
+    def unexpected_copy(*args: object, **kwargs: object) -> None:
+        pytest.fail("Restored objects should be verified directly in the target store.")
+
+    monkeypatch.setattr(store, "materialize", unexpected_copy)
+    receipt = recovery.restore_service(
+        SecretStr(service_dsn),
+        store,
+        minimal.directory,
+        expected_manifest_sha256=minimal.backup.manifest_sha256,
+        assert_empty_store=store.assert_empty_store,
+        tools=tools,
+        attestation=stopped(),
+    )
+    assert receipt.object_count == len(minimal.backup.manifest.objects) == 1
+    assert target.readiness()
+
+
+def test_restore_object_larger_than_compose_tmpfs(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+) -> None:
+    size = 65 * 1024**2
+    source_store = LocalObjectStore(
+        minimal.store.root, max_object_bytes=size, max_total_bytes=2 * size
+    )
+    payload = tmp_path / "weights"
+    with payload.open("wb") as file:
+        file.truncate(size)
+    weights = source_store.put("models/large/weights", payload, expected_sha256=digest(payload))
+    with minimal.source.connection() as connection:
+        minimal.source._object(connection, weights)
+    directory = tmp_path / "large-backup"
+    saved = recovery.backup_service(
+        SecretStr(minimal.source._dsn),
+        minimal.source.schema,
+        source_store,
+        directory,
+        tools=tools,
+        attestation=stopped(),
+    )
+    target = databases(minimal.source.schema)
+    target_store = LocalObjectStore(
+        tmp_path / "large-target", max_object_bytes=size, max_total_bytes=2 * size
+    )
+    receipt = recovery.restore_service(
+        SecretStr(target._dsn),
+        target_store,
+        directory,
+        expected_manifest_sha256=saved.manifest_sha256,
+        assert_empty_store=target_store.assert_empty_store,
+        tools=tools,
+        attestation=stopped(),
+    )
+    assert receipt.object_count == 2 and target.readiness()
+    restored = target_store.stat(weights.key)
+    assert (restored.size_bytes, restored.sha256) == (size, weights.sha256)
+
+
+def test_previous_schema_backup_can_be_restored_then_migrated(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Recreate the schema before the two derived history-search fields were added.
+    with minimal.source.connection() as connection:
+        connection.execute("ALTER TABLE regimex_snapshots DROP COLUMN identifiers_search")
+        connection.execute("ALTER TABLE regimex_analyses DROP COLUMN model_version_search")
+        connection.execute("ALTER TABLE regimex_analyses DROP COLUMN retry_of")
+        connection.execute("UPDATE alembic_version SET version_num='0007_resource_deletion'")
+    directory = tmp_path / "previous-backup"
+    with monkeypatch.context() as patch:
+        patch.setattr(recovery, "RECOVERY_REVISION", "0007_resource_deletion")
+        saved = recovery.backup_service(
+            SecretStr(minimal.source._dsn),
+            minimal.source.schema,
+            minimal.store,
+            directory,
+            tools=tools,
+            attestation=stopped(),
+        )
+    data = json_bytes(saved.manifest.model_dump(mode="json", exclude={"evidence_timezone"}))
+    (directory / "manifest.json").write_bytes(data)
+    target = databases(minimal.source.schema)
+    store = local(tmp_path / "previous-schema-objects")
+    recovery.restore_service(
+        SecretStr(target._dsn),
+        store,
+        directory,
+        expected_manifest_sha256=hashlib.sha256(data).hexdigest(),
+        assert_empty_store=store.assert_empty_store,
+        tools=tools,
+        attestation=stopped(),
+    )
+    assert not target.readiness()
+    target.migrate()
+    assert target.readiness()
+    restored = analysis_service(target, store, tmp_path / "restored-work").read_snapshot(
+        target.authenticate(minimal.token), minimal.snapshot_id
+    )
+    assert (
+        restored.content_sha256
+        == minimal.service.read_snapshot(
+            minimal.source.authenticate(minimal.token), minimal.snapshot_id
+        ).content_sha256
+    )
 
 
 def test_recovery_preserves_committed_usage_and_uncertain_upload_reservations(

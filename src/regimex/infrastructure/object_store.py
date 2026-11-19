@@ -94,7 +94,9 @@ class ObjectStore(Protocol):
         checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo: ...
 
-    def stat(self, key: str) -> ObjectInfo: ...
+    def stat(self, key: str) -> ObjectInfo:
+        """Read and hash the current generation, returning its verified identity."""
+        ...
 
     def materialize(
         self,

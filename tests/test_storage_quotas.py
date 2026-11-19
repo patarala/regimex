@@ -233,16 +233,46 @@ def test_failed_object_write_keeps_its_reservation_and_retry_reuses_it(
     assert (usage.used_bytes, usage.reserved_bytes, usage.available_bytes) == (size, 0, 0)
 
 
+def test_concurrent_conflicting_snapshots_only_charge_and_store_the_winner(
+    database: DatabaseRepository, tmp_path: Path
+) -> None:
+    from regimex.exports import ExportPayloadV2, seal_export
+
+    application = service(database, tmp_path)
+    original = export()
+    payload = ExportPayloadV2.model_validate_json(
+        original.model_dump_json(exclude={"content_sha256"})
+    )
+    changed = seal_export(
+        payload.model_copy(
+            update={"source": payload.source.model_copy(update={"state_revision": "updated"})}
+        )
+    )
+
+    def submit(value: ExportV2) -> SnapshotRecord | None:
+        try:
+            return application.create_snapshot(principal(), value)
+        except Conflict:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        winners = [record for record in pool.map(submit, (original, changed)) if record is not None]
+    assert len(winners) == 1
+    assert len(application.store.inventory()) == 1
+    usage = application.storage_usage(principal())
+    assert usage.used_bytes == winners[0].object.size_bytes and usage.reserved_bytes == 0
+
+
 def test_database_commit_failure_keeps_uploaded_bytes_charged(
     database: DatabaseRepository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     application = service(database, tmp_path)
 
-    def fail(record: SnapshotRecord) -> SnapshotRecord:
+    def fail(connection: object, record: SnapshotRecord) -> SnapshotRecord:
         raise OSError("simulated database disconnect")
 
     with monkeypatch.context() as patch:
-        patch.setattr(database, "add_snapshot", fail)
+        patch.setattr(database, "_add_snapshot", fail)
         with pytest.raises(OSError, match="disconnect"):
             application.create_snapshot(principal(), export())
     reserved = application.storage_usage(principal()).reserved_bytes

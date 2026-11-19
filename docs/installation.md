@@ -82,10 +82,10 @@ var/service.sh verify-backup --input var/backups/backup-001 \
 ```
 
 Verification starts a disposable PostgreSQL cluster on a private Unix socket.
-It restores the database and objects, checks readiness and loads the active
-model. Allow space for the restored data. Use a runtime matching the schema
-revision in the backup. Success returns `restore_verified` and removes the
-temporary cluster and files.
+It restores the database and objects, applies any required migration to the
+disposable copy, checks readiness and loads the active model. Allow space for
+the restored data. See [supported archive revisions](storage.md#backup-and-restore).
+Success returns `restore_verified` and removes the temporary cluster and files.
 
 Run maintenance through `service.sh` so that updates, backups and restarts
 share the installation lock. If a backup or restore check is interrupted, run:

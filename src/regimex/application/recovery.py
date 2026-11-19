@@ -223,7 +223,12 @@ def _libpq_environment(dsn: SecretStr) -> dict[str, str]:
         "connect_timeout": "PGCONNECT_TIMEOUT",
         "application_name": "PGAPPNAME",
     }
-    for key, value in conninfo_to_dict(dsn.get_secret_value()).items():
+    parameters = conninfo_to_dict(dsn.get_secret_value())
+    if "service" in parameters:
+        for service_path in ("PGSERVICEFILE", "PGSYSCONFDIR"):
+            if service_path in os.environ:
+                environment[service_path] = os.environ[service_path]
+    for key, value in parameters.items():
         if key not in names:
             raise ValueError("This libpq setting is not supported by offline recovery.")
         if value is not None:
@@ -333,6 +338,7 @@ def _table_evidence(
     old: dict[str, ObjectInfo],
     limits: RecoveryLimits,
     *,
+    expected_revision: str,
     deadline: float,
     added_claims: frozenset[tuple[str, str]] = frozenset(),
     pending_restore: bool = False,
@@ -345,8 +351,8 @@ def _table_evidence(
     }
     evidence = {}
     revision = _first(connection, "SELECT version_num FROM alembic_version")
-    if revision != RECOVERY_REVISION:
-        raise ValueError("Offline recovery requires the current database schema revision.")
+    if revision != expected_revision:
+        raise ValueError("Database archive revision differs from its recovery manifest.")
     if connection.execute(
         "SELECT 1 FROM regimex_deletion_plans "
         "WHERE applied_at IS NOT NULL AND completed_at IS NULL LIMIT 1"
@@ -469,7 +475,15 @@ def backup_service(
             if sum(info.size_bytes for info in objects) > limits.max_total_object_bytes:
                 raise ValueError("Registered objects exceed the backup byte limit.")
             old = {info.key: info for info in objects}
-            table_evidence = _table_evidence(connection, schema, old, limits, deadline=deadline)
+            connection.execute("SET LOCAL TIME ZONE 'UTC'")
+            table_evidence = _table_evidence(
+                connection,
+                schema,
+                old,
+                limits,
+                expected_revision=RECOVERY_REVISION,
+                deadline=deadline,
+            )
             if connection.execute(
                 "SELECT singleton,ready FROM regimex_restore_state"
             ).fetchall() != [(True, True)]:
@@ -497,6 +511,7 @@ def backup_service(
                     "--no-privileges",
                     "--schema=" + schema,
                     "--snapshot=" + snapshot,
+                    "--dbname=" + make_conninfo(dbname=connection.info.dbname),
                     "--file=" + str(dump),
                 ],
                 database_dsn,
@@ -530,6 +545,7 @@ def backup_service(
         dump_sha256=checksum(dump, deadline=deadline),
         objects=objects,
         tables=table_evidence,
+        evidence_timezone="UTC",
         source_maintenance_identity=source_identity,
     )
     data = json_bytes(manifest.model_dump(mode="json"))
@@ -649,6 +665,7 @@ def restore_service(
             manifest.dump_tool_version
         ):
             raise ValueError("Offline restore requires matching PostgreSQL server and tool majors.")
+        target_database = make_conninfo(dbname=guard.info.dbname)
         assert_empty_store()
         replacements = {}
         for info in manifest.objects:
@@ -664,12 +681,10 @@ def restore_service(
             ):
                 raise ValueError("The target object adapter changed object content identity.")
             replacements[info.key] = restored
-            with tempfile.TemporaryDirectory(prefix="regimex-restored-object-") as temporary:
-                materialize_object(store, restored, Path(temporary) / "verified")
+            # Both providers stream the current bytes to calculate stat's digest.
+            if store.stat(restored.key) != restored:
+                raise ValueError("The restored object differs from its verified generation.")
             _deadline(deadline)
-        target_database = make_conninfo(
-            dbname=conninfo_to_dict(target_dsn.get_secret_value())["dbname"]
-        )
         command = [
             str(tools.pg_restore),
             "--no-owner",
@@ -722,9 +737,17 @@ def restore_service(
         old = {info.key: info for info in manifest.objects}
         with quiescent_transaction(guard, schema=schema, maximum_idle_seconds=0):
             connection = guard
+            if manifest.evidence_timezone == "UTC":
+                connection.execute("SET LOCAL TIME ZONE 'UTC'")
             if (
                 _table_evidence(
-                    connection, schema, old, limits, pending_restore=True, deadline=deadline
+                    connection,
+                    schema,
+                    old,
+                    limits,
+                    expected_revision=manifest.migration_revision,
+                    pending_restore=True,
+                    deadline=deadline,
                 )
                 != manifest.tables
             ):
@@ -786,6 +809,7 @@ def restore_service(
                 schema,
                 replacements,
                 limits,
+                expected_revision=manifest.migration_revision,
                 added_claims=added_claims,
                 pending_restore=True,
                 deadline=deadline,

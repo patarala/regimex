@@ -103,7 +103,7 @@ def verify_restore(maintenance: Maintenance, source: Path, expected: str) -> dic
     from regimex.infrastructure.database import DatabaseRepository
     from regimex.infrastructure.maintenance import ServicesStoppedAttestation
     from regimex.infrastructure.object_store import LocalObjectStore
-    from regimex.recovery_contracts import PostgresTools
+    from regimex.recovery_contracts import RECOVERY_REVISION, PostgresTools
     from regimex.service_diagnostics import diagnose
 
     source = source.resolve(strict=True)
@@ -197,6 +197,9 @@ def verify_restore(maintenance: Maintenance, source: Path, expected: str) -> dic
                 tools=tools,
                 attestation=ServicesStoppedAttestation.model_validate(stopped_attestation()),
             )
+            repository = DatabaseRepository(dsn.get_secret_value(), schema=manifest.schema_name)
+            if manifest.migration_revision != RECOVERY_REVISION:
+                repository.migrate()
             settings = configured.model_copy(
                 update={
                     "database_dsn": dsn,
@@ -214,7 +217,6 @@ def verify_restore(maintenance: Maintenance, source: Path, expected: str) -> dic
             raise MaintenanceError(
                 "The restored copy failed readiness or active-model verification."
             )
-        repository = DatabaseRepository(dsn.get_secret_value(), schema=manifest.schema_name)
         model = repository.get_active_model()
         assert model is not None
         return {

@@ -18,6 +18,10 @@ if TYPE_CHECKING:
     from regimex.infrastructure.database import DatabaseRepository
 
 
+def search_text(*parts: str) -> str:
+    return unicodedata.normalize("NFC", " ".join(parts)).casefold()
+
+
 def analysis_scope(principal: Principal) -> tuple[str, list[object]]:
     query = (
         "FROM regimex_analyses a JOIN regimex_operations o "
@@ -43,16 +47,11 @@ def analysis_filters(filters: AnalysisHistoryFilter) -> tuple[str, list[object]]
         clauses.append("o.state=%s")
         parameters.append(filters.state)
     if search := filters.q.strip():
-        # Casefold names independently of the database locale, which may only
-        # handle ASCII under C. Literal matching also keeps % and _ ordinary text.
         clauses.append(
-            "strpos(concat_ws(' ',s.display_name_search,translate(concat_ws(' ',"
-            "s.source_id,s.run_id,"
-            "s.source_snapshot_id,s.document->>'instrument_ids',a.model_version_id,"
-            "a.analysis_id::text),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')),"
-            "%s) > 0"
+            "strpos(concat_ws(' ',s.display_name_search,s.identifiers_search,"
+            "a.model_version_search,a.analysis_id::text),%s) > 0"
         )
-        parameters.append(unicodedata.normalize("NFC", search).casefold())
+        parameters.append(search_text(search))
     return " AND ".join(clauses), parameters
 
 
@@ -145,7 +144,7 @@ class HistoryRepository:
                 "WHERE snapshot_id=%s AND name_revision=%s RETURNING display_name,name_revision",
                 (
                     update.display_name,
-                    None if update.display_name is None else update.display_name.casefold(),
+                    None if update.display_name is None else search_text(update.display_name),
                     snapshot_id,
                     update.expected_revision,
                 ),
