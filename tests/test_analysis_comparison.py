@@ -121,7 +121,7 @@ def test_comparison_is_offline_and_preserves_missing_carried_prices_and_safe_lab
     report = _render(export, first, second)
     document = report.decode()
     payload = _payload(report)
-    assert payload["renderer_version"] == "analysis-comparison/1.1"
+    assert payload["renderer_version"] == "analysis-comparison/1.2"
     assert payload["snapshot_id"] == str(first.snapshot_id)
     assert payload["series"][0]["prices"][8:10] == [None, None]
     assert payload["series"][0]["prices"][14:16] == [101.3, 101.3]
@@ -135,10 +135,6 @@ def test_comparison_is_offline_and_preserves_missing_carried_prices_and_safe_lab
     license_text = distribution("regimex").read_text("licenses/LICENSE")
     assert license_text and license_text in notices[1]
     assert "# Plotly" not in notices[1]
-    script = (
-        Path(__file__).parents[1] / "src/regimex/templates/analysis-comparison.js"
-    ).read_bytes()
-    assert b"<script>" + script + b"</script>" in report
     assert "Differences do not measure accuracy." in document
     assert len(report) < MAX_REPORT_BYTES
 
@@ -288,6 +284,6 @@ rendered = render_analysis_comparison(
     AnalysisResult.model_validate_json(json.dumps(data['second'])),
     first_sha256=data['first_sha256'], second_sha256=data['second_sha256'],
 )
-assert b'analysis-comparison/1.1' in rendered.html
+assert b'analysis-comparison/1.2' in rendered.html
 """
     subprocess.run([sys.executable, "-c", script, str(source)], check=True, timeout=15)

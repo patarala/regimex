@@ -1222,7 +1222,7 @@ test("an earlier session's diagnostics cannot overwrite a new session", async ()
 });
 
 function reportScript(name) {
-  return ["instrument-timeline.js", name]
+  return ["instrument-timeline.js", "report-time.js", name]
     .map((script) => fs.readFileSync(path.join(root, "src/regimex/templates", script), "utf8"))
     .join("\n");
 }

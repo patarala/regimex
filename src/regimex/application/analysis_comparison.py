@@ -17,7 +17,7 @@ from regimex.storage import json_bytes
 if TYPE_CHECKING:
     from regimex.application.service import AnalysisResult
 
-COMPARISON_RENDERER_VERSION = "analysis-comparison/1.1"
+COMPARISON_RENDERER_VERSION = "analysis-comparison/1.2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +141,10 @@ def render_analysis_comparison(
     resources = files("regimex").joinpath("templates")
     template = resources.joinpath("analysis-comparison.html").read_text(encoding="utf-8")
     css = resources.joinpath("analysis-comparison.css").read_text(encoding="utf-8")
-    script = resources.joinpath("analysis-comparison.js").read_text(encoding="utf-8")
+    script = "\n".join(
+        resources.joinpath(name).read_text(encoding="utf-8")
+        for name in ("report-time.js", "analysis-comparison.js")
+    )
     csp = (
         "default-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none'; "
         "img-src data:; style-src 'unsafe-inline'; script-src "

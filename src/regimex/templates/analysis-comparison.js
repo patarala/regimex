@@ -11,6 +11,7 @@
   const laneY = [232, 280];
   const differenceY = 328;
   const grid = data.time_grid;
+  const axis = reportTimeAxis(grid, data.last_bin_fraction);
   const count = grid.step_count;
   const states = {
     growth: {label: "Growth", symbol: "↑", fill: "#d6eadc"},
@@ -26,14 +27,8 @@
   let brush = null;
   let cursor = null;
   const number = (value) => value.toLocaleString(undefined, {maximumSignificantDigits: 6});
-  function time(step) {
-    if (step === count) return grid.completed_horizon;
-    const offset = step * grid.bin_width;
-    // The sum can be finite even when the offset alone is too large to represent.
-    return Number.isFinite(offset) ? grid.origin + offset : (grid.origin / 2 + step * (grid.bin_width / 2)) * 2;
-  }
   function visibleDuration() {
-    return stop === count ? count - 1 - start + data.last_bin_fraction : stop - start;
+    return stop === count ? count - 1 - start + axis.lastBinFraction : stop - start;
   }
   function x(step) {
     if (step === stop) return right;
@@ -175,8 +170,10 @@
       stateLabel(intervals.find((item) => item.start <= step && item.stop > step).state));
     const price = series.prices[step];
     const priceText = price === null ? "unavailable" : `${number(price)} (${series.price_states[step]})`;
+    const bounds = `[${axis.boundary(step)}, ${axis.boundary(step + 1)})`;
+    const interval = axis.relative ? `${axis.unit} ${bounds}` : `Time ${bounds} ${axis.unit}`;
     $("inspection").textContent =
-      `Step ${step} · Time ${time(step)} · Price ${priceText}` +
+      `Step ${step} · ${interval} · Price ${priceText}` +
       ` · A: ${labels[0]} · B: ${labels[1]}`;
     if (cursor) {
       cursor.setAttribute("x1", x(step));
@@ -193,20 +190,25 @@
     definePatterns();
     $("units").textContent =
       `Price: ${instrument.quote_asset} / ${instrument.base_asset} · Time: ${data.time_grid.unit}` +
+      (axis.relative ? ` · Origin: ${grid.origin} · Bin width: ${grid.bin_width}` : "") +
       ` · Step range [${start}, ${stop})`;
     paintPrices(series);
     paintIntervals(series);
     text("Differences", {x: left - 10, y: differenceY + 14, "text-anchor": "end", class: "small-label"});
     differences(series);
     line(left, priceBottom, right, priceBottom, "axis");
-    for (let tick = 0; tick <= 4; tick++) {
+    const first = axis.boundary(start);
+    const last = axis.boundary(stop);
+    const ticks = [0, 0.25, 0.5, 0.75, 1].map((fraction) =>
+      fraction === 1 ? last : first + fraction * (last - first));
+    ticks.forEach((coordinate, tick) => {
+      if (tick > 0 && tick < 4 && (coordinate === ticks[tick - 1] || coordinate === last)) return;
       const fraction = tick / 4;
       const position = left + fraction * (right - left);
-      const coordinate = (1 - fraction) * time(start) + fraction * time(stop);
       line(position, 351, position, 357, "axis");
       text(String(coordinate), {x: position, y: 377, "text-anchor": tick === 4 ? "end" : tick === 0 ? "start" : "middle"});
-    }
-    text(`Time (${data.time_grid.unit})`, {x: (left + right) / 2, y: 399, "text-anchor": "middle"});
+    });
+    text(axis.relative ? axis.unit : `Time (${axis.unit})`, {x: (left + right) / 2, y: 399, "text-anchor": "middle"});
     cursor = element("line", {x1: left, x2: left, y1: top, y2: 347, class: "cursor"});
     svg.append(cursor);
     $("range-start").value = String(start);
@@ -240,7 +242,7 @@
     const offset = fraction * visibleDuration();
     const fullBins = count - 1 - start;
     if (stop === count && offset > fullBins)
-      return count - 1 + (offset - fullBins) / data.last_bin_fraction;
+      return count - 1 + (offset - fullBins) / axis.lastBinFraction;
     return start + offset;
   }
   svg.addEventListener("pointerdown", (event) => {

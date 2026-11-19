@@ -172,7 +172,7 @@ def render_analysis_report(
     css = resources.joinpath("analysis-report.css").read_text()
     script = "\n".join(
         resources.joinpath(name).read_text()
-        for name in ("instrument-timeline.js", "analysis-report.js")
+        for name in ("instrument-timeline.js", "report-time.js", "analysis-report.js")
     )
     # Row order is part of the export digest. Use instrument indexes so long
     # identifiers are not repeated in every observation of a multi-instrument run.

@@ -281,6 +281,45 @@ def test_report_switches_between_sources_with_the_same_snapshot_id(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
+def test_comparison_keeps_nanosecond_bins_distinct_when_zoomed(
+    browser: Any, tmp_path: Path, width: int
+) -> None:
+    raw = _export(steps=100).model_dump(mode="json", exclude={"content_sha256"})
+    raw["time_grid"].update(
+        origin=1.7e18, bin_width=10.0, completed_horizon=1.700000000000001e18, unit="ns"
+    )
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(raw)))
+    report = tmp_path / "comparison.html"
+    report.write_bytes(
+        _render(export, prediction_for(export), prediction_for(export, direction=Direction.DECLINE))
+    )
+    page = browser.new_page(viewport={"width": width, "height": 860}, offline=True)
+    try:
+        page.goto(report.as_uri())
+        page.get_by_label("Start step").fill("10")
+        page.get_by_label("Stop step").fill("14")
+        page.get_by_role("button", name="Apply range").click()
+        assert page.locator('#chart text[y="377"]').all_text_contents() == [
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+        ]
+        assert page.locator('#chart text[y="399"]').text_content() == "Bins from start"
+        assert "Bin width: 10" in page.locator("#units").inner_text()
+        for step in (10, 11, 12, 13):
+            page.get_by_label("Inspect step").fill(str(step))
+            assert (
+                f"Bins from start [{step}, {step + 1})" in page.locator("#inspection").inner_text()
+            )
+        page.get_by_role("button", name="Reset zoom").click()
+        assert page.get_by_label("Stop step").input_value() == "100"
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
 def test_difference_zoom_and_partial_terminal_bin(browser: Any, tmp_path: Path, width: int) -> None:
     raw = _export(steps=8).model_dump(mode="json", exclude={"content_sha256"})
     raw["time_grid"].update(
