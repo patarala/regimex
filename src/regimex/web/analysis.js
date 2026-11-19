@@ -1,4 +1,4 @@
-import {$, notice} from "./ui.js";
+import {$, analysisStateLabel, notice} from "./ui.js";
 import {createQueueStatus} from "./queue-status.js";
 
 const MAX_BYTES = 16 * 1024 * 1024;
@@ -175,7 +175,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
         headers: { "Idempotency-Key": submission.key },
       });
       if (current === selection) await openAnalysis(analysis.analysis_id);
-      if (workspace === session.epoch) await history.load(0).catch((error) => notice(error.message, true));
+      if (workspace === session.epoch) await history.load(0);
     } catch (error) {
       if (current !== selection || workspace !== session.epoch) return;
       $("progress").hidden = true;
@@ -241,8 +241,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       $("analysis-identity").textContent =
         `${id} · Model ${job.model?.model_version_id || "pending"}` +
         (value.run_id ? ` · Run ${value.run_id}` : "");
-      $("job-state").textContent =
-        job.state === "succeeded" ? "Complete" : job.state.replaceAll("_", " ");
+      $("job-state").textContent = analysisStateLabel(job.state);
       const pending = ["queued", "running", "cancel_requested"].includes(job.state);
       $("delete-analysis").hidden = pending;
       $("progress").hidden = !pending;
@@ -408,7 +407,6 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       $("report-preview").hidden = !current.metadata?.report_available;
     }
   }
-  window.addEventListener("pagehide", clearReport);
   return {reset, open: openAnalysis, forgetDeleted, get current() { return current; },
     get busy() { return busy; }, get exportText() { return exportText; }};
 }

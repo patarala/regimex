@@ -26,22 +26,13 @@
   const quotes = $("quotes");
   const colors = { growth: "#147d64", decline: "#b84c34", sideways: "#416ea7", no_trades: "#8a8e98", insufficient_data: "#a29b84" };
   const nodes = ["price", "timeline", "activity", "volume", "coverage", "probability"].map($);
-  function coordinate(step) {
-    if (step === grid.step_count) return grid.completed_horizon;
-    const offset = step * grid.bin_width;
-    // A negative origin can bring an otherwise overflowing offset back into range.
-    return Number.isFinite(offset)
-      ? grid.origin + offset
-      : (grid.origin / 2 + step * (grid.bin_width / 2)) * 2;
-  }
-  const extent = [grid.origin, grid.completed_horizon];
+  const axis = reportTimeAxis(grid, data.last_bin_fraction);
+  delete data.last_bin_fraction;
+  const coordinate = axis.boundary;
+  const timeUnit = axis.unit;
+  const extent = [coordinate(0), coordinate(grid.step_count)];
   let visibleRange = [...extent];
-  function sampleTime(row) {
-    const start = coordinate(row.step);
-    const stop = coordinate(row.step + 1);
-    const sum = start + stop;
-    return Number.isFinite(sum) ? sum / 2 : start / 2 + stop / 2;
-  }
+  const sampleTime = (row) => axis.center(row.step);
   const sequences = input.instruments.map((instrument) =>
     result.sequences.find((sequence) => sequence.instrument_id === instrument.instrument_id));
   const paired = sequences.length > 1;
@@ -65,7 +56,7 @@
       paper_bgcolor: "white", plot_bgcolor: "#fbfcfe",
       font: { family: "system-ui, sans-serif", color: "#17283d" },
       xaxis: {
-        title: { text: plotLabel(grid.unit.length > 24 ? grid.unit.slice(0, 24) + "…" : grid.unit) },
+        title: { text: plotLabel(timeUnit.length > 24 ? timeUnit.slice(0, 24) + "…" : timeUnit) },
         // Plotly mutates axis ranges during interactive zoom.
         range: [...visibleRange], showgrid: true, gridcolor: "#e7edf4",
       },
@@ -130,7 +121,7 @@
       trace(rows, "best_bid", "Best bid", "#247961", "dot"),
       trace(rows, "best_ask", "Best ask", "#a14f48", "dash"),
     );
-    const lanes = instrumentLanes(sequences, selector.value, colors, coordinate, grid.unit);
+    const lanes = instrumentLanes(sequences, selector.value, colors, coordinate, timeUnit);
     const timeline = layout("Predicted directions", "", paired ? 192 : 160);
     timeline.barmode = "overlay";
     timeline.hovermode = "closest";

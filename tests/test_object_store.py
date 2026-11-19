@@ -39,7 +39,7 @@ def assert_no_temporary_files(root: Path) -> None:
     assert not tuple(root.rglob(".regimex-temporary-*"))
 
 
-@pytest.mark.parametrize("operation", ["upload", "download"])
+@pytest.mark.parametrize("operation", ["upload", "download", "stat"])
 def test_interrupted_copy_has_no_partial_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -59,6 +59,8 @@ def test_interrupted_copy_has_no_partial_publication(
     with pytest.raises(TimeBudgetExceeded):
         if operation == "upload":
             objects.put("cancelled", upload, expected_sha256=original.sha256, checkpoint=checkpoint)
+        elif operation == "stat":
+            objects.stat(original.key, checkpoint=checkpoint)
         else:
             objects.materialize(
                 original.key,

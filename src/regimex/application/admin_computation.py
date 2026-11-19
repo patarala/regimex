@@ -36,7 +36,6 @@ from regimex.data_catalog import (
     ReferenceSet,
     SnapshotMember,
     SourceSnapshot,
-    SplitGroup,
     _load_partition,
     analysis_profile_hash,
     content_hash,
@@ -50,6 +49,7 @@ from regimex.data_catalog import (
 from regimex.directions import DIRECTION_POLICY, DirectionAnnotations
 from regimex.exports import ExportInstrument, ExportObservation, ExportV2
 from regimex.market_export import simulate_export
+from regimex.market_identity import market_seed_group
 from regimex.market_sampling import sample_market
 from regimex.model_bundles import ModelBundle, verify_model_bundle
 from regimex.model_contracts import LoadedPredictor, ModelBackend
@@ -170,14 +170,10 @@ def _generation(spec: GenerationSpec, root: Path, owner: str) -> dict[str, JsonV
             configuration_id=identity,
             run_id=external_id,
         )
-        # Native asset names change content identity, not the stochastic market.
-        # Keep earlier same-seed data in this group to prevent split leakage.
         binding = CatalogBinding(
             snapshot_id=snapshot_id,
             source_namespace=namespace,
-            split_group=SplitGroup(
-                namespace="regimex-exchange-seed/3.0", group_id=f"seed:{seed}", seed=seed
-            ),
+            split_group=market_seed_group(seed),
         )
         source = SourceSnapshot(
             source_namespace=namespace, split_group=binding.split_group, export=export

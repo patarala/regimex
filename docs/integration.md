@@ -34,9 +34,11 @@ uv run --locked --all-extras regimex service token-create \
   --output var/credentials/integration.token
 ```
 
-At setup, call `GET /api/v1/connection` with the bearer key alone. Check that
-`source_namespace` matches the export's source and `scopes` includes the
-capabilities the integration uses. See [platform access](access.md) for rotation
+At setup, call `GET /api/v1/connection` with the bearer key alone. The
+`analysis_protocol` value `regimex-analysis/1` identifies the analysis intake
+and verified delivery endpoints. Check this value before enabling those actions.
+Check that `source_namespace` matches the export's source and `scopes` includes
+the required permissions. See [platform access](access.md) for rotation
 and rate limits.
 
 Before forwarding each request, authenticate the user in the simulator and

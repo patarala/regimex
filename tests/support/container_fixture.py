@@ -27,7 +27,7 @@ from regimex.data_catalog import (
     seal_dataset,
     seal_reference_set,
 )
-from regimex.directions import AnalysisConfig, DirectionAnnotations
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
 from regimex.exports import (
     ExportInstrument,
     ExportObservation,
@@ -156,7 +156,7 @@ def build(template: Path, output: Path) -> None:
             policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
             training_runtime=TrainingRuntime(threads=1, time_budget_seconds=90),
             verification_runtime=InferenceRuntime(threads=1),
-            analysis_profile_id="direction-32/2.1",
+            analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
             build_id="deployment-behavior-only",
         ),
         output / "bundle",

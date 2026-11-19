@@ -35,7 +35,7 @@ from regimex.admin_contracts import (
 from regimex.application.admin_results import AdminResultCommitter
 from regimex.application.attempt_supervision import AttemptSupervisor
 from regimex.application.service import AnalysisService, materialize_bundle, materialize_object
-from regimex.benchmark_contracts import FinalEvaluationGrant
+from regimex.benchmark_contracts import FinalEvaluationGrant, require_selection_dataset
 from regimex.benchmarks import DirectionSemantics
 from regimex.computation_worker import (
     ChildLimits,
@@ -60,10 +60,12 @@ from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, Directi
 from regimex.exports import ExportV2
 from regimex.infrastructure.intake_repository import IntakeRequest
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectInfo
+from regimex.market_identity import imported_seed_group
 from regimex.model_registry import FixedUpdatePolicy, RegistryError
 from regimex.operations import OperationFailure
 from regimex.service_contracts import (
     CapacityExceeded,
+    Conflict,
     Forbidden,
     ModelRecord,
     Principal,
@@ -175,6 +177,7 @@ class AdminService:
 
     def _check_training(self, principal: Principal, spec: TrainingSpec) -> None:
         dataset = self.repository.get_dataset(principal, spec.dataset_id)
+        require_selection_dataset(dataset.manifest)
         labels = self.repository.get_reference_set(principal, spec.labels_reference_set_id)
         validation = self.repository.get_reference_set(principal, spec.validation_reference_set_id)
         if (
@@ -405,14 +408,26 @@ class AdminService:
             "metrics": None if evaluation is None else evaluation.metrics,
         }
 
-    def _binding(self, principal: Principal, snapshot: SnapshotRecord) -> CatalogBinding:
+    def _import_binding(
+        self,
+        principal: Principal,
+        snapshot: SnapshotRecord,
+        export: ExportV2,
+        declared: SplitGroup | None,
+    ) -> CatalogBinding:
         existing = self.repository.get_binding(principal, snapshot.snapshot_id)
+        group = _validate_request(
+            imported_seed_group, export, declared or (existing.split_group if existing else None)
+        )
         if existing is not None:
+            if group != existing.split_group:
+                raise Conflict("The split group differs from the snapshot's registered group.")
             return existing
         return CatalogBinding(
             snapshot_id=snapshot.snapshot_id,
             source_namespace=content_hash([snapshot.owner_id, snapshot.source_id, snapshot.run_id]),
-            split_group=SplitGroup(
+            split_group=group
+            or SplitGroup(
                 namespace=content_hash([snapshot.owner_id, snapshot.source_id]),
                 group_id=snapshot.run_id,
                 seed=None,
@@ -447,8 +462,8 @@ class AdminService:
         bindings = []
         for selection in spec.members:
             snapshot = self.analysis_service.get_snapshot(principal, selection.snapshot_id)
-            binding = self._binding(principal, snapshot)
             export = self.analysis_service.read_snapshot(principal, selection.snapshot_id)
+            binding = self._import_binding(principal, snapshot, export, selection.split_group)
             members.append(
                 create_snapshot_member(
                     SourceSnapshot(
@@ -649,7 +664,7 @@ class AdminService:
             instruments = export.instruments
             observations = export.observations
 
-        annotations.validate_for(Grid())
+        annotations.validate_for(Grid(), export_sha256=export.content_sha256)
 
     def get_reference_annotations(
         self, principal: Principal, reference_set_id: str
@@ -715,7 +730,11 @@ class AdminService:
                 if member.partition not in partitions:
                     continue
                 snapshot = self.analysis_service.get_snapshot(principal, snapshot_id)
-                binding = self._binding(principal, snapshot)
+                binding = CatalogBinding(
+                    snapshot_id=snapshot_id,
+                    source_namespace=member.source_namespace,
+                    split_group=member.split_group,
+                )
                 path = f"input/snapshot-{index}.json"
                 copies.append((snapshot.object, root / path))
                 snapshots.append({"binding": binding.model_dump(mode="json"), "path": path})

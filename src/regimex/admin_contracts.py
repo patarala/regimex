@@ -29,16 +29,18 @@ class RequestFingerprint(StrictModel):
     def for_profile_request(cls, request: StrictModel) -> Self:
         expanded = request.model_dump(mode="json")
         current = content_hash(expanded)
-        # Versions 2.0 and 2.1 shared every default except the profile ID
-        # and analysis.version. Preserve the earlier expansion for each future
-        # default change and pin a digest from that release in the replay tests.
-        if "analysis_profile_id" not in request.model_fields_set:
-            expanded["analysis_profile_id"] = "direction-32/2.0"
+        # Reconstruct exactly what earlier servers persisted for omitted fields.
+        previous = []
         analysis = getattr(request, "analysis", None)
-        if isinstance(analysis, AnalysisConfig) and "version" not in analysis.model_fields_set:
-            expanded["analysis"]["version"] = "2.0"
-        previous = content_hash(expanded)
-        return cls(sha256=current, previous_hashes=() if current == previous else (previous,))
+        for version in ("2.1", "2.0"):
+            if "analysis_profile_id" not in request.model_fields_set:
+                expanded["analysis_profile_id"] = f"direction-32/{version}"
+            if isinstance(analysis, AnalysisConfig) and "version" not in analysis.model_fields_set:
+                expanded["analysis"]["version"] = version
+            digest = content_hash(expanded)
+            if digest != current and digest not in previous:
+                previous.append(digest)
+        return cls(sha256=current, previous_hashes=tuple(previous))
 
 
 type RequestDigest = Sha256 | RequestFingerprint
@@ -83,6 +85,7 @@ class CatalogBinding(StrictModel):
 class DatasetSelection(StrictModel):
     snapshot_id: UUID
     partition: Partition
+    split_group: SplitGroup | None = Field(default=None, exclude_if=lambda group: group is None)
 
 
 class DatasetSpec(StrictModel):

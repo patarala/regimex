@@ -9,11 +9,12 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta, tzinfo
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, SecretStr
 
 from regimex.exports import SourceIdentity
 from regimex.infrastructure.object_store import ObjectInfo
@@ -32,6 +33,7 @@ from regimex.service_contracts import (
     StaleAttempt,
     Unauthorized,
 )
+from regimex.service_settings import ServiceSettings
 from regimex.storage import json_bytes
 
 if TYPE_CHECKING:
@@ -879,6 +881,132 @@ def test_failed_delivery_before_claim_is_repaired_with_a_bounded_budget(
         assert repository.recover_queued_deliveries() == ()
     assert _counts(repository) == (1, 3)
     assert repository.claim_operation(operation_id) is None
+
+
+@pytest.mark.parametrize("lost_worker", ["unregistered", "stale"])
+def test_abandoned_delivery_before_claim_consumes_one_attempt(
+    repository: DatabaseRepository, lost_worker: str
+) -> None:
+    operation_id = _submit(repository)
+    for attempt in range(1, 4):
+        with repository.connection() as connection:
+            # Make a scheduled retry eligible without sleeping through its backoff.
+            connection.execute(
+                "UPDATE procrastinate_jobs SET scheduled_at=now() WHERE status='todo'"
+            )
+            worker = connection.execute(
+                "SELECT * FROM procrastinate_register_worker_v1()"
+            ).fetchone()
+            assert worker is not None
+            delivery = connection.execute(
+                "SELECT id FROM procrastinate_fetch_job_v2(ARRAY['analysis']::varchar[],%s)",
+                worker,
+            ).fetchone()
+            assert delivery is not None and delivery[0] is not None
+        assert repository.recover_queued_deliveries(stalled_worker_seconds=60) == ()
+        with repository.connection() as connection:
+            if lost_worker == "unregistered":
+                connection.execute("SELECT procrastinate_unregister_worker_v1(%s)", worker)
+            else:
+                connection.execute(
+                    "UPDATE procrastinate_workers SET last_heartbeat=now()-interval '5 minutes' "
+                    "WHERE id=%s",
+                    worker,
+                )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            repairs = list(
+                executor.map(
+                    lambda _: repository.recover_queued_deliveries(stalled_worker_seconds=60),
+                    range(2),
+                )
+            )
+        assert sum(map(len, repairs)) == 1
+        operation = repository.get_operation(_principal(), operation_id)
+        assert operation.attempt == attempt
+        assert operation.state == ("failed" if attempt == 3 else "queued")
+    assert repository.claim_operation(operation_id) is None
+
+
+def test_recovery_closes_lost_maintenance_jobs_and_leaves_other_tasks_alone(
+    repository: DatabaseRepository,
+) -> None:
+    with repository.connection() as connection:
+        for task in ("regimex.recover", "unrelated"):
+            repository.queue_app.configure_task(
+                name=task, queue="maintenance", connection=connection
+            ).defer()
+        worker = connection.execute("SELECT * FROM procrastinate_register_worker_v1()").fetchone()
+        assert worker is not None
+        for _ in range(2):
+            job = connection.execute(
+                "SELECT id FROM procrastinate_fetch_job_v2(ARRAY['maintenance']::varchar[],%s)",
+                worker,
+            ).fetchone()
+            assert job is not None and job[0] is not None
+        connection.execute("SELECT procrastinate_unregister_worker_v1(%s)", worker)
+    assert repository.recover_queued_deliveries(stalled_worker_seconds=60) == ()
+    with repository.connection() as connection:
+        assert connection.execute(
+            "SELECT task_name,status FROM procrastinate_jobs ORDER BY task_name"
+        ).fetchall() == [("regimex.recover", "failed"), ("unrelated", "doing")]
+
+
+def test_recovery_prunes_successful_ticks_and_preserves_periodic_deduplication(
+    repository: DatabaseRepository, tmp_path: Path
+) -> None:
+    from regimex.service_bootstrap import create_service
+    from regimex.service_worker import recover_operations
+
+    settings = ServiceSettings(
+        database_dsn=SecretStr(repository._dsn),
+        database_schema=repository.schema,
+        object_root=tmp_path / "objects",
+        work_root=tmp_path / "work",
+    )
+    service = create_service(settings)
+    defer_tick = (
+        "SELECT procrastinate_defer_periodic_job_v2("
+        "'maintenance',NULL,NULL,'regimex.recover',0,'',17,'{}'::jsonb)"
+    )
+    with repository.connection() as connection:
+        connection.execute(
+            "INSERT INTO procrastinate_jobs(queue_name,task_name,status) "
+            "SELECT 'maintenance','regimex.recover','succeeded' FROM generate_series(1,1000)"
+        )
+        tick = connection.execute(defer_tick).fetchone()
+        assert tick is not None and tick[0] is not None
+        connection.execute("UPDATE procrastinate_jobs SET status='doing' WHERE id=%s", tick)
+        connection.execute("UPDATE procrastinate_jobs SET status='succeeded' WHERE id=%s", tick)
+        connection.execute(
+            "INSERT INTO procrastinate_jobs(queue_name,task_name,status) VALUES "
+            "('maintenance','regimex.recover','failed'), ('maintenance','regimex.recover','todo'),"
+            "('maintenance','unrelated','succeeded'), ('analysis','regimex.analysis','succeeded'),"
+            "('analysis','regimex.recover','succeeded')"
+        )
+    assert recover_operations(settings, service) == 0
+    with repository.connection() as connection:
+        assert connection.execute(
+            "SELECT id FROM procrastinate_jobs WHERE queue_name='maintenance' "
+            "AND task_name='regimex.recover' AND status='succeeded'"
+        ).fetchall() == [tick]
+        assert connection.execute(
+            "SELECT count(*) FROM procrastinate_events WHERE job_id=%s", tick
+        ).fetchone() == (3,)
+    assert recover_operations(settings, service) == 0
+    with repository.connection() as connection:
+        assert connection.execute(
+            "SELECT queue_name,task_name,status FROM procrastinate_jobs ORDER BY id"
+        ).fetchall() == [
+            ("maintenance", "regimex.recover", "failed"),
+            ("maintenance", "regimex.recover", "todo"),
+            ("maintenance", "unrelated", "succeeded"),
+            ("analysis", "regimex.analysis", "succeeded"),
+            ("analysis", "regimex.recover", "succeeded"),
+        ]
+        assert connection.execute(
+            "SELECT count(*) FROM procrastinate_events WHERE job_id=%s", tick
+        ).fetchone() == (0,)
+        assert connection.execute(defer_tick).fetchone() == (None,)
 
 
 def test_pruned_delivery_and_concurrent_repair_do_not_lose_or_duplicate_work(

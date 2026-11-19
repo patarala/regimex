@@ -65,7 +65,6 @@ def test_completed_deletion_survives_backup_and_restore(
         target_store,
         backup_path,
         expected_manifest_sha256=backup.manifest_sha256,
-        assert_empty_store=target_store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )

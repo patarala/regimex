@@ -20,7 +20,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from uuid import uuid4
 
 from . import systemd
-from .archive import Release, extraction_scratch
+from .archive import Release, digest, extraction_scratch
 
 
 @dataclass(frozen=True)
@@ -166,8 +166,9 @@ class Installer:
         }
 
     def state_change(self, phase: str) -> None:
-        self.state["phase"] = phase
-        write_private(self.state_path, json.dumps(self.state, indent=2, sort_keys=True) + "\n")
+        updated = {**self.state, "phase": phase}
+        write_private(self.state_path, json.dumps(updated, indent=2, sort_keys=True) + "\n")
+        self.state = updated
         print(phase.replace("_", " "), flush=True)
 
     def run(self, command: list[str], *, timeout: int = 180, capture: bool = False) -> str:
@@ -244,7 +245,6 @@ class Installer:
     def stage(self) -> None:
         marker = self.source.parent / "staged.json"
         with extraction_scratch(self.root / "releases/.regimex-unpack") as draft:
-            self.state_change("staging")
             if not marker.exists() and shutil.disk_usage(self.root).free < 3 * 1024**3:
                 raise ValueError("Dependency staging requires at least 3 GiB of free disk space.")
             self.release.extract(self.source, draft=draft)
@@ -254,7 +254,6 @@ class Installer:
                 raise ValueError("Staged runtime metadata differs; inspect it before recovery.")
             # Activation may have completed immediately before an interruption.
             # Completed candidate environments are immutable, including on retry.
-            self.state_change("staged")
             return
         configuration = tomllib.loads((self.source / "pyproject.toml").read_text())
         required = configuration["tool"]["uv"]["required-version"].removeprefix("==")
@@ -300,7 +299,6 @@ class Installer:
             ]
         )
         write_private(marker, json.dumps(identity) + "\n")
-        self.state_change("staged")
 
     def write_commands(self, environment: dict[str, str]) -> None:
         """Keep adoption's documented operator commands on the newly installed runtime."""
@@ -327,7 +325,6 @@ class Installer:
         (self.root / "service.sh").chmod(0o700)
 
     def provision(self) -> None:
-        self.state_change("provisioning")
         for name in ("postgres", "postgres/socket", "credentials", "objects", "work"):
             private_directory(self.root / name)
         data = self.root / "postgres/data"
@@ -367,9 +364,23 @@ class Installer:
         self.probe("provision")
 
     def quiesce(self) -> None:
-        self.state_change("checking_pending_jobs")
-        self.control("stop", "api")
+        api = systemd.unit_name(self.options.name, "api")
+        active = self.run(
+            systemd.command("show", "--property=ActiveState", "--value", api), capture=True
+        ).strip()
+        if active not in {"active", "inactive", "failed"}:
+            raise ValueError("Wait for the API unit to finish its transition before updating.")
+        # After an interrupted migration, a refusal must leave intake closed.
+        resume = active == "active" and self.state.get("phase") in {
+            None,
+            "ready",
+            "staging",
+            "staged",
+            "intake_resumed",
+            "checking_pending_jobs",
+        }
         try:
+            self.control("stop", "api")
             status = self.probe("inspect")
             if status is not None and status.get("postgres_port") != self.options.postgres_port:
                 raise ValueError("Use the existing database's --postgres-port for adoption/update.")
@@ -377,9 +388,11 @@ class Installer:
                 raise ValueError(
                     "Update refused: wait for all queued/running work to finish, then retry."
                 )
+            # The previous release remains operable until worker shutdown starts.
+            self.state_change("stopping_services")
         except BaseException:
-            self.control("start", "api")
-            self.state_change("intake_resumed")
+            if resume:
+                self.control("start", "api")
             raise
         self.control("stop", *systemd.WORKERS, "migrate")
         self.state_change("services_stopped")
@@ -444,6 +457,47 @@ class Installer:
                         "Service health/doctor checks failed; inspect the installation status."
                     ) from None
                 time.sleep(1)
+
+    def recover_active_record(self) -> None:
+        """Rebuild metadata overwritten while an earlier installer staged an update."""
+        marker = json.loads(read_private(self.source.parent / "staged.json"))
+        if (
+            marker != {"archive_sha256": self.release.sha256, "wheel": self.release.wheel}
+            or digest(self.source / "BUILD.json") != self.release.hashes["BUILD.json"]
+            or f"exec {self.python} -m regimex.local_installation.maintenance "
+            not in read_private(self.root / "service.sh")
+        ):
+            raise ValueError("The active installation cannot be verified against this archive.")
+        systemd.check_existing(self.root, self.options.name, adopt=True, require_complete=True)
+        rendered = systemd.units(
+            self.root, self.python, self.pg, self.options.name, self.options.port
+        )
+        app_units = {
+            systemd.unit_name(self.options.name, part) for part in ("api", *systemd.WORKERS)
+        }
+        for unit, body in rendered.items():
+            properties = self.run(
+                systemd.command("show", "--property=NeedDaemonReload,DropInPaths,MainPID", unit),
+                capture=True,
+            )
+            loaded = dict(line.split("=", 1) for line in properties.splitlines())
+            if (
+                (self.root / "systemd" / unit).read_text() != body
+                or loaded.get("NeedDaemonReload") != "no"
+                or loaded.get("DropInPaths") != ""
+            ):
+                raise ValueError("The service units differ from the recorded active release.")
+            if unit in app_units:
+                process = Path("/proc") / str(int(loaded.get("MainPID", "0"))) / "cmdline"
+                if process.read_bytes().split(b"\0", 1)[0] != os.fsencode(self.python):
+                    raise ValueError("A running service uses a different release.")
+        self.verify()
+        self.state.update(
+            archive_sha256=self.release.sha256,
+            source_commit=self.release.commit,
+            postgres_bin=str(self.pg),
+        )
+        self.state_change("ready")
 
     def install(self) -> None:
         systemd.available()
@@ -520,6 +574,13 @@ class Installer:
                 if self.state["phase"] == "verifying":
                     self.state_change("ready")
                 return
+            if (
+                existing
+                and self.state.get("phase") in {"staging", "staged", "intake_resumed"}
+                and self.state.get("active_release") == str(self.source.parent)
+            ):
+                self.recover_active_record()
+                return
             self.state.update(
                 {
                     "schema_version": 1,
@@ -547,6 +608,7 @@ class Installer:
                     self.quiesce()
                     stopped = True
                 else:
+                    self.state_change("provisioning")
                     write_private(
                         self.root / "service.env",
                         "".join(f"{key}={value}\n" for key, value in environment.items()),
@@ -572,7 +634,7 @@ class Installer:
                 self.state["active_release"] = str(self.source.parent)
                 self.state_change("ready")
             except BaseException:
-                if stopped or self.state.get("phase") == "services_stopped":
+                if stopped or self.state.get("phase") in {"stopping_services", "services_stopped"}:
                     self.control("stop", "api", *systemd.WORKERS, "migrate")
                     self.state_change("recovery_required")
                 raise

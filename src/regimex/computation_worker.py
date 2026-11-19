@@ -1,7 +1,6 @@
 """Isolate computation from credentials, commits and serving workers."""
 
 import argparse
-import ctypes
 import errno
 import math
 import os
@@ -24,6 +23,7 @@ from regimex.data_catalog import NoValidationDirections
 from regimex.infrastructure.object_store import ObjectCapacityError
 from regimex.model_registry import RegistryError
 from regimex.operations import OperationFailure
+from regimex.process_lifetime import bind_to_parent
 from regimex.resource_limits import ResourceBudgetExceeded, TimeBudgetExceeded
 from regimex.storage import json_bytes
 from regimex.storage_contracts import StorageBusy, StorageQuotaExceeded
@@ -369,10 +369,7 @@ def _child_main(
     scratch: int,
     task: Literal["administration", "analysis", "model_probe"] = "administration",
 ) -> int:
-    # Set the death signal before importing any scientific implementation, and
-    # close the race where the parent dies just before prctl is installed.
-    libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(1, signal.SIGKILL, 0, 0, 0) != 0 or os.getppid() != parent:
+    if not bind_to_parent(parent):
         return 70
     try:
         resource.setrlimit(resource.RLIMIT_AS, (memory, memory))

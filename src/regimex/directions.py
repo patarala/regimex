@@ -13,7 +13,7 @@ from regimex.contracts import MAX_STEPS, Identifier, Instrument, Observation, St
 from regimex.observation_availability import known_no_executions
 
 DIRECTION_POLICY = "retrospective-directions/3.0"
-DEFAULT_ANALYSIS_PROFILE = "direction-32/2.1"
+DEFAULT_ANALYSIS_PROFILE = "direction-32/2.2"
 
 
 class AnnotationGrid(Protocol):
@@ -53,7 +53,7 @@ class AnalysisConfig(StrictModel):
     their coverage.
     """
 
-    version: Literal["2.0", "2.1"] = "2.1"
+    version: Literal["2.0", "2.1", "2.2"] = "2.2"
     min_duration: Annotated[int, Field(ge=2, le=MAX_STEPS)] = 32
     boundary_penalty: Annotated[float, Field(gt=0)] = 8.0
     noise_floor: Annotated[float, Field(gt=0)] = 0.001
@@ -71,6 +71,8 @@ class IntervalStatistics(StrictModel):
     Return standard deviation uses population normalization and only adjacent
     observed prices; it is absent when fewer than two returns are available.
     Trade totals include known values only and are absent at zero coverage.
+    A percentage or volume total outside the finite float range is also null.
+    The price endpoints and volume coverage remain available in that case.
     """
 
     price_change_percent: float | None
@@ -123,16 +125,19 @@ def summarize_interval(
     for row in rows:
         run = run + 1 if row.trade_count == 0 else 0
         longest = max(longest, run)
+    change = 100 * (prices[-1][1] / prices[0][1] - 1) if len(prices) >= 2 else None
+    try:
+        volume = math.fsum(volumes) if volumes else None
+    except OverflowError:
+        volume = None
     return IntervalStatistics(
-        price_change_percent=(100 * (prices[-1][1] / prices[0][1] - 1))
-        if len(prices) >= 2
-        else None,
+        price_change_percent=change if change is not None and math.isfinite(change) else None,
         first_price_step=prices[0][0] if prices else None,
         last_price_step=prices[-1][0] if prices else None,
         return_std=pstdev(returns) if len(returns) >= 2 else None,
         return_count=len(returns),
         trade_count=sum(counts) if counts else None,
-        trade_volume=math.fsum(volumes) if volumes else None,
+        trade_volume=volume,
         trade_active_fraction=sum(value > 0 for value in counts) / len(counts) if counts else None,
         price_coverage=len(prices) / len(rows),
         trade_count_coverage=len(counts) / len(rows),
@@ -162,8 +167,8 @@ def observation_blocks(
         (inactive, "no_trades"),
         ([row.last_price is None for row in observations], "insufficient_data"),
     ]
-    if config.version == "2.1":
-        # The last matching rule wins. In 2.1 a known pause takes precedence
+    if config.version != "2.0":
+        # The last matching rule wins. Since 2.1 a known pause takes precedence
         # when the same stretch of steps also lacks prices.
         rules.reverse()
     for predicate, unavailable_status in rules:
@@ -295,9 +300,14 @@ class DirectionAnnotations(StrictModel):
             )
         return self
 
-    def validate_for(self, experiment: AnnotationGrid) -> None:
+    def matches_snapshot(self, snapshot_id: str, export_sha256: str | None) -> bool:
+        return self.experiment_id == snapshot_id or (
+            self.reference_kind == "human" and self.experiment_id == export_sha256
+        )
+
+    def validate_for(self, experiment: AnnotationGrid, *, export_sha256: str | None = None) -> None:
         """Check instrument coverage, interval scale, and observed evidence."""
-        if self.experiment_id != experiment.experiment_id:
+        if not self.matches_snapshot(experiment.experiment_id, export_sha256):
             raise ValueError("annotations reference a different experiment")
         config = AnalysisConfig.model_validate(self.policy_config)
         expected_ids = [instrument.instrument_id for instrument in experiment.instruments]

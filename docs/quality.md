@@ -135,14 +135,29 @@ rows were retained. Further model selection requires a fresh final benchmark.
 
 ### Reproducing the reference scores
 
-The evaluation assets for `tcn-0.2.0` contain the references, per-step
-probabilities and metric reports. After unpacking the assets under `release/`
-in the checkout, recompute the scores with this command.
+The `tcn-0.2.0` release includes the evaluator, references and per-step
+probabilities used for the 384-experiment benchmark. The root of the unpacked
+archive contains `BUILD.json` and `uv.lock`. Run the scoring command there to
+use the evaluator shipped with the model.
 
 ```sh
-uv run --locked --extra ml python release/evaluation/reproduce.py score --output var/reproduced-scores
+uv run --locked --extra ml python -I release/evaluation/reproduce.py score --output var/reproduced-scores
 ```
 
-Choose a new output directory. Add `--predict` to run the saved model as well.
-The recorded verification reproduced its validation and final probabilities
-exactly with Python 3.14.4, NumPy 2.5.4 and PyTorch 2.14.1 on CPU.
+If you have only the assets, unpack them under `release/` in your Regimex
+checkout. A separate Git worktree provides the source revision recorded in
+the release's `BUILD.json`. Run the commands from your current checkout.
+
+```sh
+git worktree add --detach var/tcn-0.2.0-source 6365c9daa4ce41f361ec9c56644905b1cf8e4176
+uv run --project var/tcn-0.2.0-source --locked --extra ml python -I tests/support/check_reference_scores.py release/evaluation
+uv run --project var/tcn-0.2.0-source --locked --extra ml python -I release/evaluation/reproduce.py score --output var/reproduced-scores
+```
+
+The quick check rescores the first experiment's 512 saved predictions and
+compares its statistics with the release. For the full run, choose a new
+output directory. The scorer verifies the packaged hashes and
+compares every scientific field with the archived reports. For this release,
+`verification.json` records 384 experiments, 576 instrument sequences and
+344,064 steps across those sequences. Add `--predict` to also check that the
+saved model produces exactly the archived probabilities on CPU.

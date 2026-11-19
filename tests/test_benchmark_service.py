@@ -45,7 +45,7 @@ from regimex.data_catalog import (
     seal_dataset,
     seal_reference_set,
 )
-from regimex.directions import AnalysisConfig
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
 from regimex.exports import ExportPayloadV2, seal_export
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
 from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, TrainingEvidence
@@ -110,6 +110,7 @@ def dataset(
     *,
     run_id: str | None = None,
     source_namespace: str = "benchmark-fixtures",
+    unknown_native_seed: bool = False,
 ) -> DatasetRecord:
     original = json.loads((Path(__file__).parent / "fixtures" / "experiment-v2.json").read_text())
     original.pop("content_sha256")
@@ -119,6 +120,8 @@ def dataset(
     for index in range(3):
         value = json.loads(json.dumps(original))
         identifier = f"{name}-{index}"
+        if unknown_native_seed and index == 0:
+            value["source"]["source_id"] = "regimex-exchange"
         value["source"].update(
             snapshot_id=identifier,
             run_id=run_id if index == 0 and run_id is not None else identifier,
@@ -141,7 +144,9 @@ def dataset(
         source = SourceSnapshot(
             source_namespace=source_namespace,
             split_group=SplitGroup(
-                namespace="fixture-seeds", group_id=identifier, seed=offset * 3 + index
+                namespace="fixture-seeds",
+                group_id=identifier,
+                seed=None if unknown_native_seed and index == 0 else offset * 3 + index,
             ),
             export=seal_export(ExportPayloadV2.model_validate_json(json.dumps(value))),
         )
@@ -262,7 +267,7 @@ def model(service: BenchmarkService, tmp_path: Path, dataset: DatasetRecord) -> 
         feature_version="3.0",
         preprocessing_version="baseline-standardization/1.0",
         decoder_version="duration-viterbi/1.0",
-        analysis_profile="direction-32/2.1",
+        analysis_profile=DEFAULT_ANALYSIS_PROFILE,
         analysis_profile_sha256=analysis_profile_hash(AnalysisConfig()),
         class_names=("sideways", "growth", "decline"),
         training=TrainingEvidence(
@@ -313,7 +318,7 @@ def training(dataset: DatasetRecord, *, benchmark_id: str | None = "fresh") -> T
         policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
         training_runtime=TrainingRuntime(),
         inference_runtime=InferenceRuntime(),
-        analysis_profile_id="direction-32/2.1",
+        analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
         build_id="test",
         benchmark_selection_id=benchmark_id,
     )
@@ -466,6 +471,49 @@ def test_reservation_checks_whole_B_against_every_prior_partition(
     with pytest.raises(Conflict, match="overlaps"):
         service.reserve(principal(), "fresh", final.dataset_id, f"{final.dataset_id}-test")
     assert service.get_registry(principal()).registry.benchmarks == ()
+
+
+def test_old_native_manifests_remain_readable_but_cannot_enter_new_selection(
+    service: BenchmarkService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex.data_catalog import DatasetManifest
+
+    owner = principal()
+    development = dataset(service, tmp_path, "old-dev", 1, unknown_native_seed=True)
+    final = dataset(service, tmp_path, "old-final", 10, unknown_native_seed=True)
+    verified = dataset(service, tmp_path, "verified", 20)
+    references(service, tmp_path, development, "train")
+    references(service, tmp_path, development, "validation")
+    references(service, tmp_path, final, "test")
+    service.register_dataset_history(owner, development.dataset_id)
+    service.register_dataset_history(owner, verified.dataset_id)
+    service.attest(owner, ("benchmark-fixtures",), "All development exposures in this fixture.")
+    request = training(development)
+    expected = "no registered seed"
+    with pytest.raises(Conflict, match=expected):
+        service.reserve(owner, "fresh", final.dataset_id, "old-final-test")
+    assert service.get_registry(owner).registry.benchmarks == ()
+
+    # Simulate a reservation and accepted training request created before seed admission.
+    with monkeypatch.context() as previous:
+        previous.setattr(DatasetManifest, "require_native_seed_groups", lambda self: None)
+        service.reserve(owner, "fresh", final.dataset_id, "old-final-test")
+    with pytest.raises(Conflict, match=expected):
+        service.start_selection(owner, "fresh")
+    assert service.get_benchmark(owner, "fresh").reservation.selection_started_at is None
+    with monkeypatch.context() as previous:
+        previous.setattr(DatasetManifest, "require_native_seed_groups", lambda self: None)
+        service.start_selection(owner, "fresh")
+        original = service.admin_repository.submit(owner, request, idempotency_key="old-training")
+    with pytest.raises(Conflict, match=expected):
+        service.authorize_selection(owner, training(verified), verified)
+    assert (
+        service.admin_repository.submit(owner, request, idempotency_key="old-training") == original
+    )
+    with pytest.raises(Conflict, match=expected):
+        service.admin_repository.submit(owner, request, idempotency_key="new-training")
+    assert service.admin_repository.get_dataset(owner, development.dataset_id) == development
+    assert service.get_benchmark(owner, "fresh").binding.dataset_id == final.dataset_id
 
 
 def test_training_intake_and_freeze_share_a_transactional_gate(

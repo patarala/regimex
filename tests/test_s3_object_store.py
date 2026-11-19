@@ -2,6 +2,7 @@
 
 import fcntl
 import multiprocessing
+import os
 import subprocess
 import sys
 import time
@@ -112,8 +113,9 @@ def test_readers_share_coordination_but_deletion_waits(
         objects.stat(info.key)
 
 
+@pytest.mark.parametrize("operation", ("materialize", "stat"))
 def test_cancelled_download_closes_body_and_keeps_generation(
-    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     objects = actual_s3.objects
     path = source(tmp_path)
@@ -160,13 +162,16 @@ def test_cancelled_download_closes_body_and_keeps_generation(
     with monkeypatch.context() as patch:
         patch.setattr(client, "get_object", observed_get)
         with pytest.raises(TimeBudgetExceeded):
-            objects.materialize(
-                info.key,
-                destination,
-                expected_sha256=info.sha256,
-                expected_size_bytes=info.size_bytes,
-                checkpoint=checkpoint,
-            )
+            if operation == "stat":
+                objects.stat(info.key, checkpoint=checkpoint)
+            else:
+                objects.materialize(
+                    info.key,
+                    destination,
+                    expected_sha256=info.sha256,
+                    expected_size_bytes=info.size_bytes,
+                    checkpoint=checkpoint,
+                )
     assert closed.is_set()
     assert not destination.exists()
     assert not tuple(tmp_path.rglob(".regimex-temporary-*"))
@@ -675,12 +680,14 @@ def crash_spooling_process(config_json: str, upload: str, ready: str) -> None:
     objects.put("never-published", Path(upload), expected_sha256=digest(b"payload"))
 
 
-def test_sigkill_spooling_leaves_only_pinned_local_upload_for_grace_cleanup(
-    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("disable_tmpfile", [False, True])
+def test_sigkill_during_upload_releases_staging(
+    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, disable_tmpfile: bool
 ) -> None:
+    if disable_tmpfile:
+        monkeypatch.delattr(os, "O_TMPFILE", raising=False)
     objects = actual_s3.objects
     upload = source(tmp_path)
-    committed = objects.put("keep", upload, expected_sha256=digest(b"payload"))
     ready = tmp_path / "child-spooling"
     process = multiprocessing.get_context("fork").Process(
         target=crash_spooling_process,
@@ -692,6 +699,7 @@ def test_sigkill_spooling_leaves_only_pinned_local_upload_for_grace_cleanup(
         while not ready.exists():
             assert process.is_alive() and time.monotonic() < deadline
             time.sleep(0.01)
+        assert not list(objects.root.glob(".regimex-temporary-*"))
         process.kill()
         process.join(10)
         assert process.exitcode == -9
@@ -699,14 +707,25 @@ def test_sigkill_spooling_leaves_only_pinned_local_upload_for_grace_cleanup(
         if process.is_alive():
             process.kill()
             process.join(10)
+    assert objects.list_multipart_uploads() == ()
+    with pytest.raises(FileNotFoundError):
+        objects.stat("never-published")
+    objects.assert_empty_store()
+
+
+def test_abandoned_named_spool_can_be_cleaned_by_identity(
+    actual_s3: Context, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    objects = actual_s3.objects
+    committed = objects.put("keep", source(tmp_path), expected_sha256=digest(b"payload"))
+    leftover = objects.root / (".regimex-temporary-" + "a" * 32)
+    leftover.write_bytes(b"payload")
     uploads = objects.list_multipart_uploads()
     assert len(uploads) == 1
     expected = uploads[0]
     assert expected.upload_id.startswith("local-temporary-v1:")
     assert expected.key.startswith(".regimex-temporary-")
     assert (objects.root / expected.key).read_bytes() == b"payload"
-    with pytest.raises(FileNotFoundError):
-        objects.stat("never-published")
     with pytest.raises(ObjectConflictError, match="newer"):
         objects.abort_multipart(expected, initiated_before=expected.initiated_at)
     with pytest.raises(ObjectConflictError, match="empty S3 coordination"):

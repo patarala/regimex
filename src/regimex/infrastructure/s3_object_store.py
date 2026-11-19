@@ -35,6 +35,7 @@ from regimex.infrastructure.object_store import (
     ObjectIntegrityError,
     _abort_local_upload,
     _absolute_parts,
+    _anonymous_temporary_file,
     _check_digest,
     _child_directory,
     _incomplete_uploads,
@@ -508,7 +509,7 @@ class S3ObjectStore:
             raise ValueError("upload source must be outside the S3 coordination directory")
         with (
             self._locked_root(checkpoint=checkpoint) as root,
-            _temporary_file(root) as (temporary, _),
+            _anonymous_temporary_file(root) as temporary,
         ):
             client = self._ready()
             with (
@@ -592,10 +593,10 @@ class S3ObjectStore:
                 return info
         raise AssertionError("unreachable bounded S3 upload loop")
 
-    def stat(self, key: str) -> ObjectInfo:
+    def stat(self, key: str, *, checkpoint: Callable[[], None] | None = None) -> ObjectInfo:
         self._full_key(key)
-        with self._locked_root(shared=True):
-            return self._read(self._ready(), key)
+        with self._locked_root(shared=True, checkpoint=checkpoint):
+            return self._read(self._ready(), key, checkpoint=checkpoint)
 
     def stat_version(self, key: str, version_id: str) -> ObjectInfo:
         self._full_key(key)

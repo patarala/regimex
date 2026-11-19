@@ -41,7 +41,11 @@ def test_self_check_reports_exact_source_and_permissions_without_creating_subjec
     issued = issue(context, ["upload"])
     response = context.client.get(PATH, headers={"Authorization": "Bearer " + issued["token"]})
     assert response.status_code == 200, response.text
-    assert response.json() == {"source_namespace": "simulator", "scopes": ["upload"]}
+    assert response.json() == {
+        "analysis_protocol": "regimex-analysis/1",
+        "source_namespace": "simulator",
+        "scopes": ["upload"],
+    }
     assert response.headers["cache-control"] == "private, no-store"
     assert issued["token"] not in response.text
     assert issued["key"]["token_id"] not in response.text

@@ -1143,7 +1143,21 @@ class DatabaseRepository:
     def recover_stale(self, stale_before: datetime) -> tuple[Operation, ...]:
         return self.recover_operations(stale_before)
 
-    def recover_queued_deliveries(self, *, limit: int = 100) -> tuple[Operation, ...]:
+    def prune_successful_recovery_deliveries(self) -> None:
+        """Expire successful maintenance ticks, including any backlog from earlier runs."""
+        with self.connection() as connection:
+            # The queue removes the associated events and keeps its periodic
+            # deduplication marker when the completed job is deleted.
+            connection.execute(
+                "WITH finished AS (SELECT id FROM procrastinate_jobs "
+                "WHERE queue_name='maintenance' AND task_name='regimex.recover' "
+                "AND status='succeeded' ORDER BY id LIMIT 1000 FOR UPDATE SKIP LOCKED) "
+                "DELETE FROM procrastinate_jobs j USING finished WHERE j.id=finished.id"
+            )
+
+    def recover_queued_deliveries(
+        self, *, limit: int = 100, stalled_worker_seconds: int | None = None
+    ) -> tuple[Operation, ...]:
         """Bound recovery when delivery dies before the application can claim it.
 
         Scheduled retries count as live deliveries. A lost delivery consumes an
@@ -1152,7 +1166,23 @@ class DatabaseRepository:
         """
         if not 1 <= limit <= 1000:
             raise ValueError("recovery limit must be 1..1000")
+        if stalled_worker_seconds is not None and stalled_worker_seconds < 1:
+            raise ValueError("worker timeout must be positive")
         with self.connection() as connection:
+            if stalled_worker_seconds is not None:
+                # A lost application delivery consumes an attempt below. A lost
+                # periodic maintenance job is superseded by this recovery pass.
+                connection.execute(
+                    "WITH stalled AS MATERIALIZED (SELECT j.id FROM procrastinate_jobs j "
+                    "LEFT JOIN procrastinate_workers w ON w.id=j.worker_id "
+                    "WHERE j.status='doing' AND (w.id IS NULL OR "
+                    "w.last_heartbeat < now()-make_interval(secs => %s)) AND "
+                    "((j.task_name='regimex.recover' AND j.queue_name='maintenance') OR "
+                    "EXISTS (SELECT 1 FROM regimex_deliveries d WHERE d.job_id=j.id)) "
+                    "ORDER BY j.id LIMIT %s FOR UPDATE OF j SKIP LOCKED) "
+                    "SELECT procrastinate_finish_job_v1(id,'failed',false) FROM stalled",
+                    (stalled_worker_seconds, limit),
+                )
             rows = connection.execute(
                 "SELECT o.document FROM regimex_operations o WHERE o.state='queued' "
                 "AND NOT EXISTS (SELECT 1 FROM regimex_deliveries d "

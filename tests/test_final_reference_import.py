@@ -116,7 +116,7 @@ def final_spec(
     dataset: DatasetRecord | None = None,
 ) -> FinalReferenceImportSpec:
     dataset = context.dataset if dataset is None else dataset
-    annotations = []
+    annotations: list[HumanAnnotation] = []
     for snapshot_id, member in zip(dataset.snapshot_ids, dataset.manifest.members, strict=True):
         if member.partition != "test":
             continue
@@ -125,7 +125,9 @@ def final_spec(
             HumanAnnotation(
                 snapshot_id=snapshot_id,
                 annotation=DirectionAnnotations(
-                    experiment_id=export.source.snapshot_id,
+                    experiment_id=export.content_sha256
+                    if not annotations
+                    else export.source.snapshot_id,
                     policy="human-directions/1.0",
                     reference_kind="human",
                     reviewer=REVIEWER,

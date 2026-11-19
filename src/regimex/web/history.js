@@ -22,6 +22,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     $("history-search").value = $("history-state").value = "";
     $("history-clear").hidden = true;
     $("history-loading").hidden = true;
+    $("history-error").hidden = $("history-empty").hidden = true;
     $("history-list").setAttribute("aria-busy", "false");
     $("history-previous").disabled = true;
     $("history-next").disabled = true;
@@ -36,6 +37,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     historyPendingOffset = offset;
     $("history-previous").disabled = $("history-next").disabled = true;
     $("history-loading").hidden = false;
+    $("history-error").hidden = $("history-empty").hidden = true;
     $("history-list").setAttribute("aria-busy", "true");
     try {
       // One lookahead item determines whether another bounded page exists.
@@ -56,7 +58,10 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
       historyItems = items;
       renderHistory();
     } catch (error) {
-      if (generation === historyGeneration && workspace === session.epoch) throw error;
+      if (generation !== historyGeneration || workspace !== session.epoch) return;
+      $("history-error").textContent = error.message;
+      $("history-error").hidden = false;
+      throw error;
     } finally {
       if (generation === historyGeneration && workspace === session.epoch) {
         historyPendingOffset = null;
@@ -66,6 +71,12 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
         $("history-next").disabled = !historyHasMore;
       }
     }
+  }
+
+  // Renaming needs to detect a failed refresh before accepting another edit.
+  // Other callers display the error in this panel and keep the analysis open.
+  function load(offset = historyOffset) {
+    return history(offset).catch(() => {});
   }
 
   function renderHistory() {
@@ -102,7 +113,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     $("history-pages").hidden = true;
     $("history-clear").hidden = !historyQuery && !historyState;
     notice();
-    return history(0).catch((error) => notice(error.message, true));
+    return load(0);
   }
 
   function updateHistory(value, changed) {
@@ -112,7 +123,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     }
     // Refetch after a state transition so an older list response cannot undo it.
     if (changed && (historyState || historyPendingOffset !== null))
-      history(historyPendingOffset ?? historyOffset).catch((error) => notice(error.message, true));
+      void load(historyPendingOffset ?? historyOffset);
   }
   function markSelectedHistory() {
     for (const record of records.values()) record.markSelected();
@@ -122,11 +133,9 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     records = new Map();
     historyItems = [];
     renderHistory();
-    return history(0);
+    return load(0);
   }
-  $("refresh-history").addEventListener("click", () =>
-    history(0).catch((error) => notice(error.message, true)),
-  );
+  $("refresh-history").addEventListener("click", () => load(0));
   $("history-filters").addEventListener("submit", applyHistoryFilters);
   $("history-state").addEventListener("change", applyHistoryFilters);
   $("history-clear").addEventListener("click", () => {
@@ -134,13 +143,11 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     return applyHistoryFilters();
   });
   $("history-previous").addEventListener("click", () =>
-    history(Math.max(0, historyOffset - HISTORY_PAGE_SIZE)).catch((error) =>
-      notice(error.message, true),
-    ),
+    load(Math.max(0, historyOffset - HISTORY_PAGE_SIZE)),
   );
   $("history-next").addEventListener("click", () =>
-    history(historyOffset + HISTORY_PAGE_SIZE).catch((error) => notice(error.message, true)),
+    load(historyOffset + HISTORY_PAGE_SIZE),
   );
-  return {reset, load: history, update: updateHistory, markSelected: markSelectedHistory,
+  return {reset, load, update: updateHistory, markSelected: markSelectedHistory,
     refreshAfterDeletion};
 }

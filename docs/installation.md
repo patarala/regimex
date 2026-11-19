@@ -121,9 +121,26 @@ Check the phase in `var/local-installation.json` and the private log at
 `var/logs/installation.log`. For the default API unit, use
 `journalctl --user -u regimex-api.service`.
 
-A staging failure leaves the original service running. A failure during migration
-or startup leaves the API and workers stopped in `recovery_required`, with
-PostgreSQL available for inspection. Correct the reported problem and rerun
-the same archive and digest before switching releases. Recovery of a migrated
-database requires its coordinated backup. The old staged runtime alone cannot
-roll back the schema.
+While an update stages dependencies, the installation record and `service.sh`
+continue to describe the active release. If the first queue check finds work,
+the installer restores the previous API state. You can use the usual maintenance
+commands after either a staging failure or a refused update.
+Both the updater and the backup command check the queue in the schema set by
+`REGIMEX_DATABASE_SCHEMA` in `service.env`.
+
+An earlier installer may have left `staging`, `staged`, or `intake_resumed` in
+the record while the previous release is still serving. To recover maintenance
+access, run the current installer with the original archive whose SHA-256
+matches the directory name in `active_release`. Use its independently
+recorded digest when invoking the installer. Supply the original installation root,
+service name and ports. The installer checks the release, systemd units, running
+processes, database readiness and model health before restoring the active
+record. This check runs while the services are online. If it fails, inspect
+the installation log and complete the interrupted candidate update once the
+queue is idle.
+
+The installer records the candidate before stopping workers. If shutdown,
+migration or startup fails after that point, inspect the units and the
+installation log, correct the problem and rerun the same archive and digest.
+PostgreSQL stays available for inspection. Restoring an earlier database
+requires its coordinated backup.

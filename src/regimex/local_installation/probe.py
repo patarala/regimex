@@ -103,14 +103,17 @@ def provision(root: Path, port: int) -> None:
 
 
 def inspect(root: Path) -> dict[str, object]:
-    import psycopg
     from psycopg.conninfo import conninfo_to_dict
+
+    from regimex.infrastructure.database import DatabaseRepository
+    from regimex.service_settings import ServiceSettings
 
     dsn = private(root / "credentials/database.dsn")
     parameters = conninfo_to_dict(dsn)
     if parameters.get("host") != str(root / "postgres/socket"):
         raise ValueError("Application connection does not use this installation's private socket.")
-    with psycopg.connect(dsn, connect_timeout=5) as connection:
+    repository = DatabaseRepository(dsn, schema=ServiceSettings.from_env().database_schema)
+    with repository.connection() as connection:
         row = connection.execute(
             "SELECT rolsuper,rolcreatedb,rolcreaterole FROM pg_roles WHERE rolname=current_user"
         ).fetchone()

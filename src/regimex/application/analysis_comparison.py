@@ -3,7 +3,6 @@
 import html
 import re
 from dataclasses import dataclass
-from fractions import Fraction
 from importlib.resources import files
 from typing import TYPE_CHECKING
 
@@ -18,7 +17,7 @@ from regimex.storage import json_bytes
 if TYPE_CHECKING:
     from regimex.application.service import AnalysisResult
 
-COMPARISON_RENDERER_VERSION = "analysis-comparison/1.1"
+COMPARISON_RENDERER_VERSION = "analysis-comparison/1.2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,10 +124,6 @@ def render_analysis_comparison(
             }
         )
     grid = export.time_grid
-    # Match the decimal grid contract even when subtracting two large coordinates
-    # in browser arithmetic would lose the duration of the terminal bin.
-    duration = Fraction(str(grid.completed_horizon)) - Fraction(str(grid.origin))
-    last_bin_fraction = duration / Fraction(str(grid.bin_width)) - (grid.step_count - 1)
     payload = _script_json(
         json_bytes(
             {
@@ -137,7 +132,7 @@ def render_analysis_comparison(
                 "snapshot_id": str(first.snapshot_id),
                 "snapshot_sha256": export.content_sha256,
                 "time_grid": grid.model_dump(mode="json"),
-                "last_bin_fraction": float(last_bin_fraction),
+                "last_bin_fraction": float(grid.last_bin_fraction),
                 "analyses": [_metadata(first, first_sha256), _metadata(second, second_sha256)],
                 "series": series,
             }
@@ -146,7 +141,10 @@ def render_analysis_comparison(
     resources = files("regimex").joinpath("templates")
     template = resources.joinpath("analysis-comparison.html").read_text(encoding="utf-8")
     css = resources.joinpath("analysis-comparison.css").read_text(encoding="utf-8")
-    script = resources.joinpath("analysis-comparison.js").read_text(encoding="utf-8")
+    script = "\n".join(
+        resources.joinpath(name).read_text(encoding="utf-8")
+        for name in ("report-time.js", "analysis-comparison.js")
+    )
     csp = (
         "default-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none'; "
         "img-src data:; style-src 'unsafe-inline'; script-src "

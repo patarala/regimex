@@ -1,6 +1,5 @@
 """Thin operational commands; optional dependencies load only on execution."""
 
-import asyncio
 import ipaddress
 import json
 import logging
@@ -360,16 +359,11 @@ def recover() -> None:
 
     def action() -> None:
         from regimex.service_bootstrap import create_service
-        from regimex.service_worker import create_worker_app, recover_operations
+        from regimex.service_worker import recover_operations
 
         settings = ServiceSettings.from_env()
         service = create_service(settings)
-        queue_app = create_worker_app(settings, service)
-
-        async def run() -> int:
-            async with queue_app.open_async():
-                return await recover_operations(settings, service, queue_app)
-
-        typer.echo(f"Recovered {asyncio.run(run())} stale application operations.")
+        count = recover_operations(settings, service)
+        typer.echo(f"Recovered {count} stale application operations.")
 
     _execute(action)

@@ -8,6 +8,10 @@
   const names = ["sideways", "growth", "decline", "unclassified"];
   const arrows = { sideways: "→", growth: "↗", decline: "↘", unclassified: "—" };
   const human = (value) => String(value).replaceAll("_", " ");
+  const priceChange = (stats) =>
+    stats.price_change_percent == null && stats.first_price_step !== stats.last_price_step
+      ? "out of range"
+      : fmt(stats.price_change_percent);
   const fmt = (value, digits = 2) =>
     value == null || !Number.isFinite(Number(value))
       ? "—"
@@ -69,7 +73,7 @@
   } else {
     $("dataset-counts").textContent =
       countLabel(experiments.size, "experiment") + " · " + countLabel(samples.length, "instrument");
-    download("Input export", "export.json");
+    download("Observations", "observations.json");
     $("eyebrow").textContent = "Regimex / Independent review";
     $("title").textContent = "Review the price history";
     $("purpose").textContent = "Observations for human annotation";
@@ -142,8 +146,9 @@
       " · " +
       (interval.stop - interval.start) +
       " steps · change " +
-      fmt(stats.price_change_percent) +
-      "% · active steps " +
+      priceChange(stats) +
+      (stats.price_change_percent == null ? "" : "%") +
+      " · active steps " +
       pct(stats.trade_active_fraction) +
       "%";
   }
@@ -154,8 +159,7 @@
     const intervals = current.intervals;
     const group = experiments.get(current.experiment_id);
     const paired = predicted && group.length > 1;
-    $("explorer").parentElement?.classList.toggle("paired", paired);
-    const compact = paired && $("explorer").clientWidth < 600;
+    const compact = $("explorer").clientWidth < 600;
     const classified = intervals.reduce(
       (sum, interval) => sum + (interval.direction == null ? 0 : interval.stop - interval.start),
       0,
@@ -186,17 +190,13 @@
     $("time-guide").textContent =
       "Step width: " + fmt(grid.bin_width, 6) + " " + grid.unit +
       " · history [" + fmt(grid.origin, 6) + ", " + fmt(grid.completed_horizon, 6) + ")";
-    const source = current.source;
-    const sourceHash = blind ? report.experiment_hash : sources.get(current.experiment_id).export_sha256;
-    const provenance = [
-      ["Source", source.source_id + " · " + source.source_version],
-      ["Snapshot", source.snapshot_id],
-      ["Run", source.run_id === source.snapshot_id ? null : source.run_id],
-      ["Intervals", blind ? "Independent human review" : "Model predictions"],
-      ["Input SHA-256", sourceHash],
-    ];
+    const provenance = [["Input SHA-256", blind ? report.experiment_hash : sources.get(current.experiment_id).export_sha256]];
     if (!blind) {
+      const source = current.source;
       provenance.push(
+        ["Source", source.source_id + " · " + source.source_version],
+        ["Snapshot", source.snapshot_id],
+        ["Run", source.run_id === source.snapshot_id ? null : source.run_id],
         ["Model", report.summary.model.model_version_id],
         ["Model bundle SHA-256", report.summary.model.bundle_sha256],
         ["Analysis", current.prediction.analysis_id],
@@ -251,7 +251,7 @@
       const stats = interval.statistics;
       [
         label(interval),
-        fmt(stats.price_change_percent),
+        priceChange(stats),
         pct(stats.return_std),
         fmt(stats.trade_count, 0),
         pct(stats.trade_active_fraction),
@@ -263,9 +263,13 @@
     const traces = [];
     function line(name, values, panel, color, extras = {}) {
       const suffix = panel ? String(panel + 1) : "";
+      // A single value between gaps has no line segment to draw.
+      const markerSizes = values.map((value, i) =>
+        value != null && values[i - 1] == null && values[i + 1] == null ? 5 : 0);
       traces.push({
         type: "scatter",
-        mode: "lines",
+        mode: markerSizes.some((size) => size > 0) ? "lines+markers" : "lines",
+        marker: {color, size: markerSizes},
         name,
         x: steps,
         y: values,
@@ -488,6 +492,6 @@
     update();
   };
   $("reset").onclick = () => update();
-  $("quotes").onchange = () => Plotly.restyle("explorer", { visible: $("quotes").checked }, [1, 2]);
+  $("quotes").onchange = () => update(true);
   update();
 })();

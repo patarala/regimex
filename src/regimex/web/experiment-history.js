@@ -1,10 +1,6 @@
-import {notice} from "./ui.js";
+import {analysisStateLabel, notice} from "./ui.js";
 
 const PAGE_SIZE = 20;
-const stateLabels = {
-  queued: "Queued", running: "Running", cancel_requested: "Cancelling",
-  cancelled: "Cancelled", succeeded: "Complete", failed: "Failed",
-};
 
 function element(tag, className = "", text = "") {
   const node = document.createElement(tag);
@@ -109,7 +105,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
     date.dateTime = analysis?.job.created_at || value.created_at;
     date.textContent = shortDate(date.dateTime);
     state.dataset.state = analysis?.job.state || "saved";
-    state.textContent = analysis ? stateLabels[analysis.job.state] || analysis.job.state : "Saved";
+    state.textContent = analysis ? analysisStateLabel(analysis.job.state) : "Saved";
     latest.dataset.analysisId = analysis?.analysis_id || "";
     latest.disabled = !analysis;
     latest.title = analysis ? `Open latest analysis · ${value.run_id}` : value.run_id;
@@ -160,7 +156,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
       entry.dataset.analysisId = item.analysis_id;
       entry.append(element("strong", "", item.job.model?.model_version_id || "Model unavailable"),
         element("time", "", shortDate(item.job.created_at)),
-        element("span", "history-state", stateLabels[item.job.state] || item.job.state));
+        element("span", "history-state", analysisStateLabel(item.job.state)));
       entry.addEventListener("click", () => openAnalysis(item.analysis_id));
       row.append(checkbox, entry);
       list.append(row);

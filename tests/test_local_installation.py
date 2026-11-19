@@ -19,6 +19,7 @@ import pytest
 from regimex.local_installation import archive, install, systemd
 from regimex.local_installation.archive import Release
 from regimex.local_installation.install import Installer, Options
+from regimex.local_installation.maintenance import Maintenance
 
 
 def release_zip(root: Path, *, preview: bool = False) -> tuple[Path, str]:
@@ -289,25 +290,37 @@ def installer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Installer:
     return value
 
 
-def test_pending_work_resumes_existing_api_without_stopping_workers(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("active", "phase", "resumes"),
+    [
+        ("active", "ready", True),
+        ("inactive", "ready", False),
+        ("active", "recovery_required", False),
+    ],
+)
+def test_pending_work_restores_intake_without_stopping_workers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, active: str, phase: str, resumes: bool
 ) -> None:
     value = installer(tmp_path, monkeypatch)
+    value.state = {"phase": phase}
+    install.write_private(value.state_path, json.dumps(value.state))
     commands = []
+    monkeypatch.setattr(value, "run", lambda *args, **kwargs: active)
     monkeypatch.setattr(value, "control", lambda *command: commands.append(command))
     monkeypatch.setattr(
         value, "probe", lambda action: {"pending": 1, "doing": 0, "postgres_port": 55439}
     )
     with pytest.raises(ValueError, match="Update refused"):
         value.quiesce()
-    assert commands == [("stop", "api"), ("start", "api")]
-    assert value.state["phase"] == "intake_resumed"
+    assert commands == ([("stop", "api"), ("start", "api")] if resumes else [("stop", "api")])
+    assert json.loads(value.state_path.read_bytes())["phase"] == phase
 
 
 def test_second_quiescence_check_keeps_workers_stopped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     value = installer(tmp_path, monkeypatch)
+    monkeypatch.setattr(value, "run", lambda *args, **kwargs: "active")
     commands = []
     status = iter(
         (
@@ -361,6 +374,8 @@ def managed(value: Installer) -> None:
         "phase": "ready",
         "archive_sha256": "b" * 64,
         "active_release": str(value.root / "releases/previous"),
+        "postgres_bin": str(value.pg),
+        "source_commit": "c" * 40,
     }
     install.write_private(value.state_path, json.dumps(value.state))
     (value.root / "credentials").mkdir(mode=0o700)
@@ -391,6 +406,8 @@ def test_migration_failure_keeps_services_stopped_and_preserves_existing_data(
     def fail_migration(command: list[str], **kwargs: object) -> str:
         if command[-1] == "daemon-reload":
             return ""
+        if "show" in command:
+            return "active"
         assert command[-1] == "migrate"
         raise RuntimeError("deliberate migration failure")
 
@@ -460,23 +477,93 @@ def test_retry_health_check_of_active_release_keeps_it_running(
         assert value.state_path.read_bytes() == original
 
 
-def test_dependency_staging_failure_keeps_old_services_running(
+def test_dependency_staging_failure_keeps_the_active_release_operable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     value = installer(tmp_path, monkeypatch)
     managed(value)
+    previous = value.state_path.read_bytes()
     monkeypatch.setattr(value, "validate_database_configuration", lambda: None)
     monkeypatch.setattr(systemd, "available", lambda: None)
     monkeypatch.setattr(systemd, "check_existing", lambda *args, **kwargs: None)
     monkeypatch.setattr(value, "control", lambda *args: pytest.fail("must not stop before staging"))
 
-    def unavailable() -> None:
-        raise RuntimeError("dependency download unavailable")
-
-    monkeypatch.setattr(value, "stage", unavailable)
-    with pytest.raises(RuntimeError, match="download unavailable"):
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=1))
+    with pytest.raises(ValueError, match="3 GiB"):
         value.install()
+    assert value.state_path.read_bytes() == previous
+    assert Maintenance(value.root).source_commit == "c" * 40
     assert (value.root / "credentials/user.token").read_text() == "unchanged-private-token"
+
+
+@pytest.mark.parametrize(
+    ("phase", "failure"),
+    [
+        ("staging", None),
+        ("staged", None),
+        ("intake_resumed", None),
+        ("intake_resumed", "unit"),
+        ("staging", "process"),
+        ("staged", "health"),
+    ],
+)
+def test_recover_refused_update_using_verified_active_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, failure: str | None
+) -> None:
+    value = installer(tmp_path, monkeypatch)
+    managed(value)
+    value.state.update(phase=phase, active_release=str(value.source.parent))
+    install.write_private(value.state_path, json.dumps(value.state))
+    original = value.state_path.read_bytes()
+    value.release.extract(value.source)
+    install.write_private(
+        value.source.parent / "staged.json",
+        json.dumps({"archive_sha256": value.release.sha256, "wheel": value.release.wheel}),
+    )
+    value.python.parent.mkdir(parents=True)
+    value.python.symlink_to(sys.executable)
+    value.write_commands(install.environment_file(value.root, value.options.port, existing=True))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    units = systemd.units(
+        value.root, value.python, value.pg, value.options.name, value.options.port
+    )
+    if failure == "unit":
+        api = systemd.unit_name(value.options.name, "api")
+        units[api] = units[api].replace(str(value.python), str(value.root / "other/bin/python"))
+    systemd.write_units(value.root, units)
+    monkeypatch.setattr(systemd, "available", lambda: None)
+    monkeypatch.setattr(value, "validate_database_configuration", lambda: None)
+    monkeypatch.setattr(value, "stage", lambda: pytest.fail("must not change either runtime"))
+    monkeypatch.setattr(value, "control", lambda *args: pytest.fail("must not switch services"))
+    checks = []
+
+    def verify() -> None:
+        checks.append("health")
+        if failure == "health":
+            raise ValueError("unhealthy active service")
+
+    monkeypatch.setattr(value, "verify", verify)
+    with subprocess.Popen(
+        [value.python, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    ) as child:
+
+        def loaded(command: list[str], **kwargs: object) -> str:
+            assert "show" in command
+            pid = os.getpid() if failure == "process" else child.pid
+            return f"NeedDaemonReload=no\nDropInPaths=\nMainPID={pid}\n"
+
+        monkeypatch.setattr(value, "run", loaded)
+        if failure is None:
+            value.install()
+            recovered = json.loads(value.state_path.read_bytes())
+            assert recovered["phase"] == "ready"
+            assert recovered["archive_sha256"] == value.release.sha256
+            assert Maintenance(value.root).source_commit == value.release.commit
+        else:
+            with pytest.raises(ValueError, match=r"units differ|different release|unhealthy"):
+                value.install()
+            assert value.state_path.read_bytes() == original
+    assert checks == (["health"] if failure is None or failure == "health" else [])
 
 
 def test_interrupted_verification_reuses_completed_candidate_without_uv_sync(
@@ -500,7 +587,7 @@ def test_interrupted_verification_reuses_completed_candidate_without_uv_sync(
         value, "run", lambda *args, **kwargs: pytest.fail("must not modify a completed runtime")
     )
     value.stage()
-    assert value.state["phase"] == "staged"
+    assert value.state["phase"] == "verifying"
 
 
 def test_old_requires_target_is_adopted_before_stopping_intake(
@@ -508,6 +595,7 @@ def test_old_requires_target_is_adopted_before_stopping_intake(
 ) -> None:
     value = installer(tmp_path, monkeypatch)
     managed(value)
+    previous = value.state_path.read_bytes()
     monkeypatch.setattr(value, "validate_database_configuration", lambda: None)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     old = systemd.units(
@@ -522,7 +610,7 @@ def test_old_requires_target_is_adopted_before_stopping_intake(
     monkeypatch.setattr(
         value, "probe", lambda action: {"pending": 1, "doing": 0, "postgres_port": 55439}
     )
-    monkeypatch.setattr(value, "run", lambda *args, **kwargs: "")
+    monkeypatch.setattr(value, "run", lambda *args, **kwargs: "active")
 
     def control(action: str, *components: str) -> None:
         if (action, components) == ("stop", ("api",)):
@@ -535,7 +623,8 @@ def test_old_requires_target_is_adopted_before_stopping_intake(
     with pytest.raises(ValueError, match="Update refused"):
         value.install()
     assert events == ["staged", ("stop", ("api",)), ("start", ("api",))]
-    assert json.loads(value.state_path.read_text())["phase"] == "intake_resumed"
+    assert value.state_path.read_bytes() == previous
+    assert Maintenance(value.root).source_commit == "c" * 40
 
 
 def test_credentials_are_atomic_and_never_replace_an_existing_token(
@@ -575,7 +664,7 @@ def test_activation_intent_is_persisted_before_any_application_start(
     monkeypatch.setattr(systemd, "check_existing", lambda *args, **kwargs: None)
     monkeypatch.setattr(systemd, "write_units", lambda *args: None)
     monkeypatch.setattr(value, "stage", lambda: None)
-    monkeypatch.setattr(value, "run", lambda *args, **kwargs: "")
+    monkeypatch.setattr(value, "run", lambda *args, **kwargs: "active")
     monkeypatch.setattr(
         value, "probe", lambda action: {"pending": 0, "doing": 0, "postgres_port": 55439}
     )

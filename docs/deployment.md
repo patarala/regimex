@@ -237,10 +237,15 @@ docker compose --profile service ps --all
 ```
 
 Graceful shutdown waits 30 seconds for jobs; Compose allows 45 seconds. Fencing
-prevents abandoned attempts from overwriting later results. Maintenance recovery
-requeues eligible stale attempts; permanent data/configuration errors are not
-retried. Backups, restoration and orphan cleanup require every writer stopped,
-including processes outside Compose. Follow the exact [storage procedure](storage.md).
+prevents abandoned attempts from overwriting later results. Maintenance retries
+an abandoned job within its operation's attempt limit, including when the worker
+dies after taking a delivery but before starting the operation. The next recovery
+pass also closes abandoned maintenance jobs. Each pass clears up to 1,000
+successful recovery jobs and their queue events. Run `regimex service recover`
+to process another batch immediately. Failed jobs remain available for
+diagnosis. Permanent data or configuration errors end the operation.
+Backups, restoration and orphan cleanup require every writer stopped, including
+processes outside Compose. Follow the [storage procedure](storage.md).
 
 ## Verify a container installation
 

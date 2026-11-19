@@ -6,7 +6,6 @@ import {createAnalysis} from "./analysis.js";
 import {createIntegrations} from "./integrations.js";
 import {createStorage} from "./storage.js";
 import {createDeletion} from "./deletion.js";
-import {notice} from "./ui.js";
 
 const session = createSession({
   onActivate: async () => {
@@ -14,9 +13,11 @@ const session = createSession({
     void storage.load();
     void deletion.load();
     void models.load();
-    await history.load();
     const selected = new URL(location.href).searchParams.get("analysis");
-    if (selected && /^[0-9a-f-]{36}$/.test(selected)) await analysis.open(selected);
+    await Promise.all([
+      history.load(),
+      selected && /^[0-9a-f-]{36}$/.test(selected) ? analysis.open(selected) : undefined,
+    ]);
   },
   onReset: () => {
     integrations.reset();
@@ -44,7 +45,7 @@ const analysis = createAnalysis({session, models, history, comparison,
   deleteAnalysis: (id, title) => deletion.open("analysis", id, title)});
 const deletion = createDeletion({session, onApplied: (target) => {
   analysis.forgetDeleted(target);
-  void history.refreshAfterDeletion().catch((error) => notice(error.message, true));
+  void history.refreshAfterDeletion();
   void storage.load();
 }});
 const integrations = createIntegrations({session});

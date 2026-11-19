@@ -59,9 +59,9 @@ def _hash_source(value: str) -> str:
     return "'sha256-" + base64.b64encode(hashlib.sha256(value.encode()).digest()).decode() + "'"
 
 
-def _number(value: float | int | None, *, percent: bool = False) -> str:
+def _number(value: float | int | None, *, percent: bool = False, out_of_range: bool = False) -> str:
     if value is None:
-        return "unknown"
+        return "out of range" if out_of_range else "unknown"
     return f"{value * 100 if percent else value:.6g}"
 
 
@@ -74,10 +74,13 @@ def _interval_table(result: AnalysisResult) -> str:
                 sequence.instrument_id,
                 f"[{interval.start}, {interval.stop})",
                 interval.direction or interval.status,
-                _number(stats.price_change_percent),
+                _number(
+                    stats.price_change_percent,
+                    out_of_range=stats.first_price_step != stats.last_price_step,
+                ),
                 _number(stats.return_std, percent=True),
                 _number(stats.trade_count),
-                _number(stats.trade_volume),
+                _number(stats.trade_volume, out_of_range=stats.trade_volume_coverage > 0),
                 _number(stats.trade_active_fraction, percent=True),
                 _number(stats.price_coverage, percent=True),
                 _number(stats.trade_count_coverage, percent=True),
@@ -169,7 +172,7 @@ def render_analysis_report(
     css = resources.joinpath("analysis-report.css").read_text()
     script = "\n".join(
         resources.joinpath(name).read_text()
-        for name in ("instrument-timeline.js", "analysis-report.js")
+        for name in ("instrument-timeline.js", "report-time.js", "analysis-report.js")
     )
     # Row order is part of the export digest. Use instrument indexes so long
     # identifiers are not repeated in every observation of a multi-instrument run.
@@ -192,6 +195,7 @@ def render_analysis_report(
             {
                 "export": export.model_dump(mode="json", exclude={"observations"}),
                 "result": result.model_dump(mode="json", exclude={"sequences"}),
+                "last_bin_fraction": float(export.time_grid.last_bin_fraction),
                 "observation_fields": fields,
                 "observations": observations,
                 "sequences": sequences,

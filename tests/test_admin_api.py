@@ -19,6 +19,7 @@ pytest.importorskip("alembic")
 pytest.importorskip("procrastinate")
 
 from fastapi.testclient import TestClient
+from httpx2 import Response
 from pydantic import SecretStr
 
 from regimex.admin_api import (
@@ -47,7 +48,8 @@ from regimex.storage import json_bytes
 
 def test_reference_retries_preserve_published_hashes_and_explicit_profile_fields() -> None:
     body = {"mode": "automatic", "dataset_id": "DATASET_ID", "partition": "train"}
-    current = "3c0ea083342ef7253144818651cba2aeeea838828b5867c09a4c945a5298fdef"
+    current = "117093ab9a5e7a8aebdca2158c21666c0f23576a32447c93eb40130eb98f7cee"
+    previous_21 = "3c0ea083342ef7253144818651cba2aeeea838828b5867c09a4c945a5298fdef"
     previous = "ce2c48baaaaa4d420bf5c12c0d0787e719a2ce0bba97f8cd79b60faaae19f4ed"
 
     def fingerprint(**fields: object) -> RequestFingerprint:
@@ -55,14 +57,22 @@ def test_reference_retries_preserve_published_hashes_and_explicit_profile_fields
             AutomaticReferenceRequest.model_validate({**body, **fields})
         )
 
-    assert fingerprint() == RequestFingerprint(sha256=current, previous_hashes=(previous,))
+    assert fingerprint() == RequestFingerprint(
+        sha256=current, previous_hashes=(previous_21, previous)
+    )
     assert fingerprint(analysis={"min_duration": 32}) == fingerprint()
     for explicit in (
-        fingerprint(analysis={"version": "2.1"}),
-        fingerprint(analysis_profile_id="direction-32/2.1"),
+        fingerprint(analysis={"version": "2.2"}),
+        fingerprint(analysis_profile_id="direction-32/2.2"),
     ):
         assert explicit.sha256 == current
-        assert previous not in explicit.previous_hashes
+        assert (
+            previous not in explicit.previous_hashes and previous_21 not in explicit.previous_hashes
+        )
+    assert (
+        fingerprint(analysis={"version": "2.1"}, analysis_profile_id="direction-32/2.1").sha256
+        == previous_21
+    )
     changed = fingerprint(analysis={"min_duration": 64})
     assert previous not in (changed.sha256, *changed.previous_hashes)
 
@@ -79,13 +89,16 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
     }
     request = TrainingRunRequest.model_validate_json(json_bytes(body))
     original = request.model_dump(mode="json")
-    previous = content_hash({**original, "analysis_profile_id": "direction-32/2.0"})
+    previous = tuple(
+        content_hash({**original, "analysis_profile_id": f"direction-32/{version}"})
+        for version in ("2.1", "2.0")
+    )
     assert RequestFingerprint.for_profile_request(request) == RequestFingerprint(
-        sha256=content_hash(original), previous_hashes=(previous,)
+        sha256=content_hash(original), previous_hashes=previous
     )
     changed = TrainingRunRequest.model_validate_json(json_bytes({**body, "parameters": {}}))
     fingerprint = RequestFingerprint.for_profile_request(changed)
-    assert previous not in (fingerprint.sha256, *fingerprint.previous_hashes)
+    assert not set(previous).intersection((fingerprint.sha256, *fingerprint.previous_hashes))
 
 
 @pytest.mark.parametrize(
@@ -95,6 +108,12 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
         ("GET", "/api/v1/datasets/{identifier}", None),
         ("GET", "/api/v1/reference-sets/{identifier}/annotations", None),
         ("POST", "/api/v1/benchmarks/{identifier}/open", None),
+        ("GET", "/api/v1/benchmarks?benchmark_id=desk%00north", None),
+        (
+            "POST",
+            "/api/v1/benchmarks",
+            {"benchmark_id": "desk\x00north", "dataset_id": "dataset", "reference_set_id": "set"},
+        ),
         ("GET", "/api/v1/metrics?model_version_id={identifier}", None),
     ],
 )
@@ -440,6 +459,108 @@ def test_snapshot_dataset_import_binds_the_owner_idempotency_key(
     assert distinct.json()["dataset_id"] != created.json()["dataset_id"]
 
 
+def test_cli_seed_groups_survive_snapshot_upload_and_dataset_import(
+    administrative_api: AdministrativeAPI, tmp_path: Path
+) -> None:
+    pytest.importorskip("numpy")
+    from typer.testing import CliRunner
+
+    from regimex.cli import app
+    from regimex.market_identity import market_seed_group
+
+    context = administrative_api
+    snapshots = []
+    for seed, steps in ((17, 64), (17, 96), (22, 64), (31, 64)):
+        path = tmp_path / f"{seed}-{steps}.json"
+        args = ["generate", "--seed", str(seed), "--steps", str(steps), "--instruments", "1"]
+        result = CliRunner().invoke(app, [*args, "--output", str(path)])
+        assert result.exit_code == 0, result.output
+        uploaded = context.client.post(
+            "/api/v1/snapshots",
+            content=path.read_bytes(),
+            headers={**context.headers, "Content-Type": "application/json"},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        snapshots.append(uploaded.json()["snapshot_id"])
+    assert len(set(snapshots)) == 4
+
+    def create(indices: tuple[int, int, int], *, override: bool = False) -> Response:
+        members = [
+            {"snapshot_id": snapshots[i], "partition": partition}
+            for i, partition in zip(indices, ("train", "validation", "test"), strict=True)
+        ]
+        if override:
+            members[1]["split_group"] = market_seed_group(123).model_dump(mode="json")
+        return context.client.post(
+            "/api/v1/datasets",
+            json={"mode": "snapshots", "members": members},
+            headers=context.headers,
+        )
+
+    assert create((0, 1, 2)).status_code == 422
+    assert create((0, 1, 2), override=True).status_code == 422
+    distinct = create((0, 2, 3))
+    assert distinct.status_code == 201, distinct.text
+    manifest = context.client.get(
+        f"/api/v1/datasets/{distinct.json()['dataset_id']}/manifest", headers=context.headers
+    )
+    assert manifest.status_code == 200, manifest.text
+    assert [member["split_group"] for member in manifest.json()["members"]] == [
+        market_seed_group(seed).model_dump(mode="json") for seed in (17, 22, 31)
+    ]
+
+
+def test_previously_bound_sample_keeps_its_historical_group(
+    administrative_api: AdministrativeAPI,
+) -> None:
+    pytest.importorskip("numpy")
+    from uuid import NAMESPACE_URL, uuid5
+
+    from regimex.admin_contracts import CatalogBinding, DatasetSelection, DatasetSpec
+    from regimex.data_catalog import SplitGroup
+    from regimex.exports import ExportPayloadV2, seal_export
+    from regimex.market_export import sample_snapshot
+    from regimex.market_identity import market_seed_group
+    from regimex.service_contracts import Conflict
+
+    context = administrative_api
+    owner = context.analysis.authenticate(context.token)
+    export = sample_snapshot(seed=17, steps=64, instruments=1)
+    value = export.model_dump(mode="json", exclude={"content_sha256"})
+    run_id = str(uuid5(NAMESPACE_URL, f"regimex:single-market:{export.source.configuration_id}"))
+    value["source"].update(run_id=run_id, snapshot_id=run_id)
+    old = seal_export(ExportPayloadV2.model_validate_json(json_bytes(value)))
+    uploaded = context.client.post(
+        "/api/v1/snapshots",
+        content=old.model_dump_json(),
+        headers={**context.headers, "Content-Type": "application/json"},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    snapshot_id = UUID(uploaded.json()["snapshot_id"])
+    binding = CatalogBinding(
+        snapshot_id=snapshot_id,
+        source_namespace=content_hash([owner.owner_id, old.source.source_id, run_id]),
+        split_group=SplitGroup(
+            namespace=content_hash([owner.owner_id, old.source.source_id]), group_id=run_id
+        ),
+    )
+    context.service.repository.add_binding(owner, binding)
+    spec = DatasetSpec(
+        dataset_id="new-dataset",
+        members=(
+            DatasetSelection(
+                snapshot_id=snapshot_id, partition="train", split_group=market_seed_group(17)
+            ),
+            DatasetSelection(snapshot_id=uuid4(), partition="validation"),
+            DatasetSelection(snapshot_id=uuid4(), partition="test"),
+        ),
+    )
+    with pytest.raises(Conflict, match="registered group"):
+        context.service.create_dataset(owner, spec)
+    assert context.service.repository.get_binding(owner, snapshot_id) == binding
+    assert context.analysis.read_snapshot(owner, snapshot_id) == old
+
+
 @pytest.mark.parametrize("architecture", ["baseline", "tcn"])
 def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     administrative_api: AdministrativeAPI,
@@ -559,18 +680,22 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         },
     )
     assert attestation.status_code == 200, attestation.text
+    benchmark_id = "東京/November + models" if architecture == "tcn" else "registry"
+    benchmark_query = {"benchmark_id": benchmark_id}
     reservation = context.client.post(
         "/api/v1/benchmarks",
         headers=headers,
         json={
-            "benchmark_id": "software-control",
+            "benchmark_id": benchmark_id,
             "dataset_id": final_dataset_id,
             "reference_set_id": final_reference_id,
         },
     )
     assert reservation.status_code == 201, reservation.text
+    detail = context.client.get(reservation.headers["Location"], headers=headers)
+    assert detail.status_code == 200 and detail.json() == reservation.json()
     started = context.client.post(
-        "/api/v1/benchmarks/software-control/selection-start", headers=headers
+        "/api/v1/benchmarks/selection-start", params=benchmark_query, headers=headers
     )
     assert started.status_code == 200, started.text
     tcn = architecture == "tcn"
@@ -593,7 +718,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         },
         "training_runtime": {"threads": 1, "time_budget_seconds": 90},
         "inference_runtime": {"threads": 1, "max_batch_size": 1},
-        "benchmark_selection_id": "software-control",
+        "benchmark_selection_id": benchmark_id,
     }
     training_headers = context.headers
     response = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
@@ -655,7 +780,8 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     )
     assert metrics.status_code == 200 and metrics.json()["quality_status"] == "validation_only"
     frozen = context.client.post(
-        "/api/v1/benchmarks/software-control/freeze",
+        "/api/v1/benchmarks/freeze",
+        params=benchmark_query,
         headers=headers,
         json={"model_version_id": model_id},
     )
@@ -669,7 +795,8 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     replay = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert replay.status_code == 202 and replay.json()["run_id"] == str(run.run_id)
     unopened = context.client.post(
-        "/api/v1/benchmarks/software-control/evaluations",
+        "/api/v1/benchmarks/evaluations",
+        params=benchmark_query,
         headers=context.headers,
         json={"model_version_id": model_id},
     )
@@ -687,10 +814,11 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         ).status_code
         == 422
     )
-    opened = context.client.post("/api/v1/benchmarks/software-control/open", headers=headers)
+    opened = context.client.post("/api/v1/benchmarks/open", params=benchmark_query, headers=headers)
     assert opened.status_code == 200, opened.text
     final_evaluation_response = context.client.post(
-        "/api/v1/benchmarks/software-control/evaluations",
+        "/api/v1/benchmarks/evaluations",
+        params=benchmark_query,
         headers=context.headers,
         json={"model_version_id": model_id},
     )

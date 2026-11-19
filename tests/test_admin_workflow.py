@@ -47,6 +47,7 @@ from regimex.application.benchmark_service import BenchmarkService
 from regimex.application.service import AnalysisService
 from regimex.data_catalog import Partition, ReferencePayload, seal_reference_set
 from regimex.directions import (
+    DEFAULT_ANALYSIS_PROFILE,
     AnalysisConfig,
     Direction,
     DirectionAnnotations,
@@ -276,7 +277,7 @@ def test_generic_candidate_evaluate_publish_and_saved_analysis(
             ),
             training_runtime=TrainingRuntime(threads=1, time_budget_seconds=120),
             inference_runtime=InferenceRuntime(threads=1),
-            analysis_profile_id="direction-32/2.1",
+            analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
             build_id="behavior-fixture",
             benchmark_selection_id="fixture-final-benchmark",
         ),

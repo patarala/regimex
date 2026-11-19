@@ -88,22 +88,17 @@ def create_worker_app(
     @app.task(name="regimex.recover", queue="maintenance")
     async def recover(timestamp: int) -> None:
         # The timestamp identifies a scheduled delivery, never an observation time.
-        await recover_operations(settings, service, app)
+        await asyncio.to_thread(recover_operations, settings, service)
 
     return app
 
 
-async def recover_operations(
-    settings: ServiceSettings, service: AnalysisService, app: procrastinate.App
-) -> int:
-    """Fence stale application attempts, then redeliver abandoned queue tasks."""
+def recover_operations(settings: ServiceSettings, service: AnalysisService) -> int:
+    """Fence stale attempts and repair operations whose queue deliveries were lost."""
     cutoff = datetime.now(UTC) - timedelta(seconds=settings.stale_seconds)
-    recovered = await asyncio.to_thread(service.repository.recover_stale, cutoff)
-    queued = await asyncio.to_thread(service.repository.recover_queued_deliveries)
-    stalled = await app.job_manager.get_stalled_jobs(seconds_since_heartbeat=settings.stale_seconds)
-    for job in stalled:
-        if job.task_name in {"regimex.analysis", "regimex.admin", "regimex.recover"}:
-            # A delivery abandoned after result commit runs a terminal no-op. A
-            # duplicate abandoned before commit must claim the fenced operation.
-            await app.job_manager.retry_job(job)
+    recovered = service.repository.recover_stale(cutoff)
+    queued = service.repository.recover_queued_deliveries(
+        stalled_worker_seconds=settings.stale_seconds
+    )
+    service.repository.prune_successful_recovery_deliveries()
     return len(recovered) + len(queued)

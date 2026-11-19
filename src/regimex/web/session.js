@@ -22,6 +22,7 @@ export function createSession({onActivate, onReset}) {
     epoch++;
     value = null;
     $("token").value = "";
+    $("owner").textContent = "";
     $("workspace").hidden = true;
     $("account").hidden = true;
     $("login-panel").hidden = false;
@@ -75,6 +76,7 @@ export function createSession({onActivate, onReset}) {
   }
 
   async function activate(next) {
+    epoch++;
     value = next;
     $("token").value = "";
     $("owner").textContent = next.principal.owner_id;
@@ -98,23 +100,36 @@ export function createSession({onActivate, onReset}) {
     }
   });
   $("logout").addEventListener("click", async () => {
+    const workspace = epoch;
     try {
       await request("/api/v1/session", { method: "DELETE" });
-      reset();
-      const url = new URL(location.href);
-      url.searchParams.delete("analysis");
-      window.history.replaceState(null, "", url);
-      notice();
     } catch (error) {
-      notice(error.message, true);
-    }
-  });
-  function start() {
-    return json("/api/v1/session").then(activate).catch((error) => {
-      reset();
-      if (!error.message.includes("credential") && !error.message.includes("session"))
+      if (workspace !== epoch) return;
+      if (error.status !== 401) {
         notice(error.message, true);
-    });
+        return;
+      }
+    }
+    reset();
+    const url = new URL(location.href);
+    url.searchParams.delete("analysis");
+    window.history.replaceState(null, "", url);
+    notice();
+  });
+  async function start() {
+    const workspace = epoch;
+    let next;
+    try {
+      next = await json("/api/v1/session");
+    } catch (error) {
+      if (workspace !== epoch) return;
+      reset();
+      if (error.status !== 401) notice(error.message, true);
+      return;
+    }
+    await activate(next);
   }
+  window.addEventListener("pagehide", (event) => { if (event.persisted) reset(); });
+  window.addEventListener("pageshow", (event) => { if (event.persisted) void start(); });
   return {request, json, start, get value() { return value; }, get epoch() { return epoch; }};
 }

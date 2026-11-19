@@ -3,6 +3,7 @@
 import hashlib
 from collections.abc import Callable
 from typing import Annotated, Literal, Protocol, Self
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, Response
 from pydantic import Field, model_validator
@@ -93,8 +94,11 @@ class InventoryRequest(StrictModel):
     statement: Annotated[str, Field(min_length=1, max_length=4096)]
 
 
+BenchmarkId = Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
+
+
 class BenchmarkRequest(StrictModel):
-    benchmark_id: Identifier
+    benchmark_id: BenchmarkId
     dataset_id: Identifier
     reference_set_id: Identifier
 
@@ -187,34 +191,44 @@ def install_benchmark_routes(
         benchmark = service.reserve(
             identity, intake.benchmark_id, intake.dataset_id, intake.reference_set_id
         )
-        response.headers["Location"] = f"/api/v1/benchmarks/{intake.benchmark_id}"
+        query = urlencode({"benchmark_id": intake.benchmark_id})
+        response.headers["Location"] = f"/api/v1/benchmarks?{query}"
         return benchmark
 
+    @app.get("/api/v1/benchmarks")
     @app.get("/api/v1/benchmarks/{benchmark_id}")
-    def get_benchmark(benchmark_id: Identifier, identity: Identity) -> BenchmarkView:
+    def get_benchmark(benchmark_id: BenchmarkId, identity: Identity) -> BenchmarkView:
         return service.get_benchmark(identity, benchmark_id)
 
+    @app.post("/api/v1/benchmarks/selection-start")
     @app.post("/api/v1/benchmarks/{benchmark_id}/selection-start")
-    def selection_start(benchmark_id: Identifier, identity: Identity) -> BenchmarkView:
+    def selection_start(benchmark_id: BenchmarkId, identity: Identity) -> BenchmarkView:
         return service.start_selection(identity, benchmark_id)
 
+    @app.post("/api/v1/benchmarks/freeze", openapi_extra=_request_body(FrozenModelRequest))
     @app.post(
         "/api/v1/benchmarks/{benchmark_id}/freeze", openapi_extra=_request_body(FrozenModelRequest)
     )
-    def freeze(benchmark_id: Identifier, identity: Identity, intake: ModelBody) -> BenchmarkView:
+    def freeze(benchmark_id: BenchmarkId, identity: Identity, intake: ModelBody) -> BenchmarkView:
         return service.freeze(identity, benchmark_id, intake.model_version_id)
 
+    @app.post("/api/v1/benchmarks/open")
     @app.post("/api/v1/benchmarks/{benchmark_id}/open")
-    def open_references(benchmark_id: Identifier, identity: Identity) -> BenchmarkView:
+    def open_references(benchmark_id: BenchmarkId, identity: Identity) -> BenchmarkView:
         return service.open(identity, benchmark_id)
 
+    @app.post(
+        "/api/v1/benchmarks/evaluations",
+        status_code=202,
+        openapi_extra=_request_body(FrozenModelRequest),
+    )
     @app.post(
         "/api/v1/benchmarks/{benchmark_id}/evaluations",
         status_code=202,
         openapi_extra=_request_body(FrozenModelRequest),
     )
     def evaluate_final(
-        benchmark_id: Identifier,
+        benchmark_id: BenchmarkId,
         identity: Identity,
         intake: ModelBody,
         idempotency_key: Key,

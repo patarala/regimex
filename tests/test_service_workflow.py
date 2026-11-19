@@ -778,7 +778,7 @@ def test_child_process_death_is_fenced_before_real_queue_redelivery(
 
     async def execute() -> None:
         async with app.open_async():
-            assert await recover_operations(settings, service, app) == 1
+            assert await asyncio.to_thread(recover_operations, settings, service) == 1
             await asyncio.wait_for(
                 app.run_worker_async(
                     queues=["analysis"],

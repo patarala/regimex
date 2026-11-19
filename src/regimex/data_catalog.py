@@ -136,6 +136,19 @@ def create_snapshot_member(snapshot: SourceSnapshot, partition: Partition) -> Sn
     )
 
 
+def _record_observations(
+    partition_by_digest: dict[str, str], partition: str, digests: tuple[str, ...]
+) -> None:
+    # Identical instruments within a single experiment still share one statistical unit.
+    for digest in set(digests):
+        previous = partition_by_digest.get(digest)
+        if previous is not None and previous != partition:
+            raise ValueError("dataset partitions overlap by instrument observations")
+        if previous is not None and partition != "train":
+            raise ValueError(f"{partition} snapshots repeat the same instrument observations")
+        partition_by_digest[digest] = partition
+
+
 class DatasetPayload(CatalogRecord):
     version: Literal["raw-dataset/1.0"] = "raw-dataset/1.0"
     dataset_id: Identifier
@@ -147,24 +160,32 @@ class DatasetPayload(CatalogRecord):
             raise ValueError("dataset requires nonempty train, validation and test partitions")
         snapshots: set[tuple[str, str]] = set()
         partition_by_key: dict[tuple[str, ...], Partition] = {}
+        partition_by_digest: dict[str, str] = {}
         for member in self.members:
             identity = (member.source_namespace, member.snapshot_id)
             if identity in snapshots:
                 raise ValueError("dataset contains duplicate snapshot membership")
             snapshots.add(identity)
-            keys = member.run_and_group_keys()
-            keys.update(("observation", value) for value in member.observation_hashes)
-            for key in keys:
+            _record_observations(partition_by_digest, member.partition, member.observation_hashes)
+            for key in member.run_and_group_keys():
                 if key in partition_by_key and partition_by_key[key] != member.partition:
-                    raise ValueError(
-                        "dataset partitions overlap by run, group, seed or observations"
-                    )
+                    raise ValueError("dataset partitions overlap by run, group or seed")
                 partition_by_key[key] = member.partition
         return self
 
 
 class DatasetManifest(DatasetPayload):
     content_sha256: SHA256
+
+    def require_native_seed_groups(self) -> None:
+        if any(
+            member.source_id == "regimex-exchange" and member.split_group.seed is None
+            for member in self.members
+        ):
+            raise ValueError(
+                "A native market snapshot in this dataset has no registered seed. "
+                "Regenerate it with its original seed and create a new dataset for model selection."
+            )
 
     @model_validator(mode="after")
     def immutable_identity(self) -> Self:
@@ -204,7 +225,7 @@ def create_reference_member(
     member: SnapshotMember, annotations: DirectionAnnotations
 ) -> ReferenceMember:
     annotations = DirectionAnnotations.model_validate_json(annotations.model_dump_json())
-    if annotations.experiment_id != member.snapshot_id:
+    if not annotations.matches_snapshot(member.snapshot_id, member.export_sha256):
         raise ValueError("annotations reference a different snapshot")
     return ReferenceMember(
         source_namespace=member.source_namespace,
@@ -329,7 +350,8 @@ class RawTrainingData(CatalogRecord):
             raise ValueError("training direction semantics differ from the analysis profile")
         semantics_sha256 = content_hash(semantics.model_dump(mode="json"))
         identities: set[tuple[str, str]] = set()
-        partition_by_key: dict[tuple[str, ...], str] = {}
+        partition_by_run: dict[tuple[str, str, str], str] = {}
+        partition_by_digest: dict[str, str] = {}
         for partition, samples, identity in (
             ("train", self.train, self.labels),
             ("validation", self.validation, self.validation_references),
@@ -342,11 +364,8 @@ class RawTrainingData(CatalogRecord):
                 annotation_data = sample.annotations.model_dump(mode="json")
                 annotation_data["policy_config"] = annotation_data.pop("analysis_profile")
                 annotation = DirectionAnnotations.model_validate_json(json_bytes(annotation_data))
-                if (
-                    sample.snapshot_id != export.source.snapshot_id
-                    or annotation.experiment_id != sample.snapshot_id
-                ):
-                    raise ValueError("training snapshot/export/annotation identities differ")
+                if sample.snapshot_id != export.source.snapshot_id:
+                    raise ValueError("training snapshot and export identities differ")
                 if (
                     annotation.reference_kind != identity.kind
                     or annotation.policy != identity.policy
@@ -361,27 +380,25 @@ class RawTrainingData(CatalogRecord):
                         step_count=export.time_grid.step_count,
                         instruments=export.instruments,
                         observations=export.observations,
-                    )
+                    ),
+                    export_sha256=export.content_sha256,
                 )
                 snapshot_identity = (sample.source_namespace, sample.snapshot_id)
                 if snapshot_identity in identities:
                     raise ValueError("training values contain duplicate snapshot identities")
                 identities.add(snapshot_identity)
                 run = (
-                    "run",
                     sample.source_namespace,
                     export.source.source_id,
                     export.source.run_id,
                 )
-                keys = (run, *(("observation", digest) for digest in observation_hashes(export)))
-                if partition == "validation" and partition_by_key.get(run) == "validation":
+                previous = partition_by_run.get(run)
+                if previous is not None and previous != partition:
+                    raise ValueError("training and validation overlap by source run")
+                if partition == "validation" and previous == "validation":
                     raise ValueError("Validation requires one snapshot per independent run.")
-                for key in keys:
-                    if key in partition_by_key and partition_by_key[key] != partition:
-                        raise ValueError(
-                            "training and validation overlap by source run or observations"
-                        )
-                    partition_by_key[key] = partition
+                partition_by_run[run] = partition
+                _record_observations(partition_by_digest, partition, observation_hashes(export))
         return self
 
 
@@ -462,7 +479,8 @@ def _load_partition(
                 step_count=export.time_grid.step_count,
                 instruments=export.instruments,
                 observations=export.observations,
-            )
+            ),
+            export_sha256=export.content_sha256,
         )
         result.append(
             LabeledSnapshot(
@@ -497,6 +515,7 @@ def load_training_data(
     or claim to sandbox a callback with broader external permissions.
     """
     dataset = DatasetManifest.model_validate_json(dataset.model_dump_json())
+    dataset.require_native_seed_groups()
     labels = ReferenceSet.model_validate_json(labels.model_dump_json())
     validation_references = ReferenceSet.model_validate_json(
         validation_references.model_dump_json()

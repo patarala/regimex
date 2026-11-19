@@ -119,10 +119,10 @@ for container settings.
 
 Workers renew their database leases while loading inputs, running the model
 and uploading results. The attempt's time budget covers all three stages.
-Transfers check cancellation and deadlines between reads. A blocked storage
-call can delay shutdown until it returns. A cancelled attempt or one that lost
-its lease cannot publish a result. A completed upload left behind by such an
-attempt can appear in an orphan cleanup plan.
+During these transfers, workers check for cancellation and timeouts between
+reads. A blocked storage call can delay shutdown until it returns. A cancelled
+attempt or one that lost its lease cannot publish a result. A completed upload
+left behind by such an attempt can appear in an orphan cleanup plan.
 
 ## Stop writers before maintenance
 
@@ -177,8 +177,11 @@ authentication hashes, experiment metadata and all registered files.
 This release restores archives from schemas `0007_resource_deletion` and
 `0008_analysis_metadata`. Point its configuration at a **new, empty database**
 and a **fresh local object root or S3 prefix**. Use
-the original schema name. Leave the target offline and skip migrations until
-restoration succeeds.
+the original schema name. Restore checks the target's schema inventory and large
+objects before copying files. Database tools use the host, port, database and
+user of the verified connection, including when libpq selects them from a
+service file or environment. Leave the target offline until restoration succeeds
+and any required migrations have run.
 
 ```sh
 uv run --locked --all-extras regimex service restore \
@@ -186,14 +189,23 @@ uv run --locked --all-extras regimex service restore \
   --manifest-sha256 EXTERNALLY_RECORDED_SHA256
 ```
 
-Restore verifies the database dump and objects, then records their new physical
-versions. Existing dataset and model identities are preserved. The target gets
+After checking both targets are empty, restore loads the database with intake
+closed, verifies its contents, then copies the objects. Readiness opens only
+after their new physical versions are committed. Running migrations or
+restarting the API after an interrupted copy leaves intake closed. Existing
+dataset and model identities are preserved. The target gets
 a new maintenance identity, so cleanup plans from the original installation
 cannot be applied there.
 
 New backups use UTC when hashing database timestamps and can be restored across
 server time zones. For an archive without `evidence_timezone`, use the time
 zone of its source connection during restoration.
+
+For offline backup and restore, the overall time limit also covers S3 inventory
+requests, downloads, uploads and verification. On timeout the command stops the
+transfer and releases its locks. A backup that times out copying an S3 object
+stops before publishing its manifest. During restore, S3 may already have
+accepted a write when the command times out waiting for confirmation.
 
 If restore fails, discard the partial target and start again with an empty one.
 Its readiness guard blocks intake with `503`. After success, apply any required

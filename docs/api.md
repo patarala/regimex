@@ -186,8 +186,24 @@ For example:
 }
 ```
 
-The split keeps whole experiments and seed groups together. Download the
-ordered membership with `GET /datasets/{id}/manifest`.
+The split keeps whole experiments and seed groups together. In `snapshots`
+mode, exports from `regimex generate` with the same seed share a group even
+when their lengths or instrument counts differ. If an older native export has
+a UUID-only run ID, supply its original seed group on the member, for example
+`"split_group":{"namespace":"regimex-exchange-seed/3.0","group_id":"seed:17","seed":17}`.
+For other simulators, set `split_group` when different runs share a seed or
+another source of dependence. Without that declaration, each source run is its
+own group. A snapshot keeps its registered group across datasets. Download
+the ordered membership with `GET /datasets/{id}/manifest`.
+
+If a UUID-only native snapshot was already registered without a seed, its
+existing manifest stays readable. To use the observations for new training or
+benchmark selection, regenerate the snapshot with its original seed, steps and
+instrument count, upload it and create a new dataset. The new run ID carries
+the seed. If that seed was used for past development, register the recovered
+seed as supplemental history with `POST /benchmarks/history/import` and renew
+the inventory attestation before reserving a benchmark. Earlier manifests
+cannot identify same-seed runs of a different length from their hashes alone.
 
 Create separate training and validation references with `POST /reference-sets`:
 
@@ -196,7 +212,7 @@ Create separate training and validation references with `POST /reference-sets`:
 ```
 
 Repeat with `partition: "validation"`. The default profile is
-`direction-32/2.1`; automatic labels use `retrospective-directions/3.0`.
+`direction-32/2.2`; automatic labels use `retrospective-directions/3.0`.
 To import human references, provide complete annotations and identify the
 reviewer. The reviewer attests to independence. The ordinary annotation
 download covers the training and validation partitions.
@@ -214,8 +230,13 @@ Automatic test references use `POST /reference-sets` with that dataset ID and
 | `POST /benchmarks/history/import` | Register other known data exposures |
 | `POST /benchmarks/attest` | Declare the inventory scope and source namespaces |
 | `POST /benchmarks` | Reserve the complete test partition and its references |
-| `POST /benchmarks/{id}/selection-start` | Begin model selection under that reservation |
+| `GET /benchmarks?benchmark_id=ID` | Read one reservation |
+| `POST /benchmarks/selection-start?benchmark_id=ID` | Begin model selection under that reservation |
 | `GET /benchmarks/registry` | Inspect persisted inventory and reservation metadata |
+
+The reservation response includes its URL in `Location`. For actions, pass the
+original ID as a URL-encoded query parameter. IDs can contain Unicode, spaces
+and slashes. The registry has its own URL.
 
 Regimex checks the proposed final dataset against the content, seed groups,
 runs and reservations in the registry. Include known external exposures and
@@ -262,10 +283,10 @@ evaluated on the development validation set has quality status
 
 ### 4. Freeze and evaluate final data
 
-After selection, call `POST /benchmarks/{id}/freeze` with one concrete model
+After selection, call `POST /benchmarks/freeze?benchmark_id=ID` with one concrete model
 version. Pending training blocks this action; further training under the frozen
-reservation is rejected. Then call `/benchmarks/{id}/open` and
-`/benchmarks/{id}/evaluations`. The worker evaluates only the exact frozen bundle,
+reservation is rejected. Then call `/benchmarks/open?benchmark_id=ID` and
+`/benchmarks/evaluations?benchmark_id=ID`. The worker evaluates only the exact frozen bundle,
 runtime, decoder and bound test references. Access and identity are checked before
 reading payloads and again at commit. Further selection requires fresh final data.
 

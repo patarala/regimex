@@ -188,6 +188,26 @@ def test_same_external_snapshot_id_keeps_sources_and_results_separate() -> None:
         )
 
 
+def test_extreme_finite_observations_preserve_intervals_and_serializable_statistics() -> None:
+    item = source(0, active=True)
+    payload = item.export.model_dump(mode="json", exclude={"content_sha256"})
+    for row in payload["observations"]:
+        row.update(last_price=1.0 if row["step"] == 0 else 1e308, trade_volume=1e308)
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload)))
+    result = prediction_for(export)
+    stats = result.sequences[0].intervals[0].statistics
+    assert (stats.first_price_step, stats.last_price_step) == (0, 7)
+    assert stats.price_coverage == stats.trade_volume_coverage == 1
+    assert stats.trade_volume is None and stats.price_change_percent is None
+    assert stats.return_std is not None and stats.trade_count == 8
+    updated = item.model_copy(update={"export": export})
+    report = inspect_snapshots((updated,), results=(result,))
+    assert report.samples[0].direction_intervals[0]["statistics"] == stats.model_dump(mode="json")
+    from regimex.application.report import _interval_table
+
+    assert _interval_table(result).count("out of range") == 2
+
+
 @pytest.mark.parametrize(("known", "expected_total"), [(0, None), (3, 0), (8, 0)])
 def test_trade_totals_report_counter_coverage(known: int, expected_total: int | None) -> None:
     item = source(0)
@@ -366,7 +386,7 @@ def test_offline_report_preserves_source_identity_and_canonical_symbols(tmp_path
     )
     data = report_data(output)
     assert data["kind"] == "prediction"
-    assert inspection.summary["report_version"] == "6.1"
+    assert inspection.summary["report_version"] == "6.2"
     assert all("events" not in sample.payload() for sample in inspection.samples)
     assert data["samples"] == json.loads(
         json.dumps([sample.payload() for sample in inspection.samples])
@@ -416,6 +436,11 @@ def test_blind_review_exports_no_automatic_labels_or_seed_metadata(tmp_path: Pat
         assert "simulation" not in sample and "seed" not in sample
         assert sample["observations"]["last_price"] == [None] * 8
         assert sample["observations"]["trade_count"] == [0] * 8
-    assert json.loads((output / "export.json").read_text()) == export.model_dump(mode="json")
+    assert json.loads((output / "observations.json").read_text()) == {
+        "experiment_id": export.content_sha256,
+        **export.model_dump(mode="json", include={"instruments", "time_grid", "observations"}),
+    }
+    assert all(sample["experiment_id"] == export.content_sha256 for sample in samples)
+    assert not (output / "export.json").exists()
     with pytest.raises(ValueError):
         DirectionAnnotations.model_validate_json((output / "annotation-draft.json").read_bytes())

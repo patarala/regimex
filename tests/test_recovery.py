@@ -27,13 +27,15 @@ from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from test_object_store_contract import cleanup_owned_test_prefix, s3_configuration
 
-from regimex.application import recovery
+from regimex.application import recovery, recovery_objects
 from regimex.application.service import AnalysisService
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE
 from regimex.exports import ExportPayloadV2, ExportV2, seal_export
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.maintenance import ServicesStoppedAttestation
 from regimex.infrastructure.object_store import (
     LocalObjectStore,
+    ObjectCapacityError,
     ObjectInfo,
     ObjectIntegrityError,
     ObjectStore,
@@ -41,7 +43,7 @@ from regimex.infrastructure.object_store import (
 from regimex.infrastructure.s3_object_store import S3ObjectStore
 from regimex.model_registry import ArchitectureRegistry
 from regimex.recovery_contracts import BackupResult, PostgresTools, RestoreReceipt
-from regimex.service_contracts import Conflict
+from regimex.service_contracts import Conflict, ServiceError
 from regimex.storage import digest, json_bytes
 
 DatabaseFactory = Callable[[str], DatabaseRepository]
@@ -153,7 +155,6 @@ def restore(
         store,
         minimal.directory,
         expected_manifest_sha256=minimal.backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -224,12 +225,47 @@ def test_cross_timezone_restore_through_a_service_without_object_scratch(
         store,
         minimal.directory,
         expected_manifest_sha256=minimal.backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
     assert receipt.object_count == len(minimal.backup.manifest.objects) == 1
     assert target.readiness()
+
+
+def test_recovery_uses_the_guard_endpoint_from_libpq_defaults(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = databases(minimal.source.schema)
+    with psycopg.connect(minimal.source._dsn) as connection:
+        info = connection.info
+        for variable, value in (
+            ("PGHOST", info.host),
+            ("PGPORT", str(info.port)),
+            ("PGUSER", info.user),
+            ("PGPASSWORD", info.password),
+        ):
+            monkeypatch.setenv(variable, value)
+        source = SecretStr(make_conninfo(dbname=info.dbname))
+    directory = tmp_path / "libpq-backup"
+    backup = recovery.backup_service(
+        source, minimal.source.schema, minimal.store, directory, tools=tools, attestation=stopped()
+    )
+    with psycopg.connect(target._dsn) as connection:
+        destination = SecretStr(make_conninfo(dbname=connection.info.dbname))
+    store = local(tmp_path / "libpq-target")
+    receipt = recovery.restore_service(
+        destination,
+        store,
+        directory,
+        expected_manifest_sha256=backup.manifest_sha256,
+        tools=tools,
+        attestation=stopped(),
+    )
+    assert target.readiness() and receipt.object_count == 1
 
 
 def test_restore_object_larger_than_compose_tmpfs(
@@ -266,7 +302,6 @@ def test_restore_object_larger_than_compose_tmpfs(
         target_store,
         directory,
         expected_manifest_sha256=saved.manifest_sha256,
-        assert_empty_store=target_store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -308,7 +343,6 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
         store,
         directory,
         expected_manifest_sha256=hashlib.sha256(data).hexdigest(),
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -364,7 +398,6 @@ def test_recovery_preserves_committed_usage_and_uncertain_upload_reservations(
         store,
         directory,
         expected_manifest_sha256=backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -446,7 +479,6 @@ def test_recovery_preserves_integration_access_subjects_and_request_budgets(
         store,
         directory,
         expected_manifest_sha256=backup.manifest_sha256,
-        assert_empty_store=store.assert_empty_store,
         tools=tools,
         attestation=stopped(),
     )
@@ -528,7 +560,6 @@ def test_backup_evidence_distinguishes_signed_zero_and_float_integer_types(
             store,
             directory,
             expected_manifest_sha256=backup.manifest_sha256,
-            assert_empty_store=store.assert_empty_store,
             tools=tools,
             attestation=stopped(),
         )
@@ -604,7 +635,6 @@ def test_s3_backup_round_trip_into_new_local_storage(
             objects,
             directory,
             expected_manifest_sha256=backup.manifest_sha256,
-            assert_empty_store=objects.assert_empty_store,
             tools=tools,
             attestation=stopped(),
         )
@@ -669,9 +699,131 @@ def test_restore_refuses_existing_database_or_store(
     existing = tmp_path / "prior"
     existing.write_bytes(b"preexisting target content")
     prior = store.put("preserved", existing, expected_sha256=digest(existing))
+    target = databases(minimal.source.schema)
     with pytest.raises(ValueError, match="empty"):
-        restore(minimal, databases(minimal.source.schema), store, tools)
+        restore(minimal, target, store, tools)
     assert store.stat(prior.key) == prior
+    with psycopg.connect(target._dsn) as connection:
+        assert connection.execute(
+            "SELECT to_regclass(%s)", (target.schema + ".regimex_restore_state",)
+        ).fetchone() == (None,)
+
+
+def test_partial_object_restore_stays_closed_after_migration_and_restart(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+) -> None:
+    owner = minimal.source.authenticate(minimal.token)
+    export = minimal.service.read_snapshot(owner, minimal.snapshot_id)
+    another_snapshot = export.source.model_copy(update={"snapshot_id": "another-snapshot"})
+    minimal.service.create_snapshot(
+        owner, seal_export(export.model_copy(update={"source": another_snapshot}))
+    )
+    directory = tmp_path / "two-snapshot-backup"
+    backup = recovery.backup_service(
+        SecretStr(minimal.source._dsn),
+        minimal.source.schema,
+        minimal.store,
+        directory,
+        tools=tools,
+        attestation=stopped(),
+    )
+    first, second = backup.manifest.objects
+    capacity = max(first.size_bytes, second.size_bytes)
+    target = databases(minimal.source.schema)
+    store = LocalObjectStore(
+        tmp_path / "target-objects", max_object_bytes=capacity, max_total_bytes=capacity
+    )
+    with pytest.raises(ObjectCapacityError):
+        recovery.restore_service(
+            SecretStr(target._dsn),
+            store,
+            directory,
+            expected_manifest_sha256=backup.manifest_sha256,
+            tools=tools,
+            attestation=stopped(),
+        )
+    assert store.stat(first.key).sha256 == first.sha256
+    with pytest.raises(FileNotFoundError):
+        store.stat(second.key)
+    target.migrate()
+    restarted = DatabaseRepository(target._dsn, schema=target.schema)
+    assert not restarted.readiness()
+    with pytest.raises(ServiceError) as blocked:
+        restarted.create_token("new-user", "user")
+    assert (blocked.value.status_code, blocked.value.code) == (503, "restore_incomplete")
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ['CREATE COLLATION public.saved FROM "C"', "SELECT lo_create(0)"],
+)
+def test_restore_checks_other_database_objects_before_writing(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    statement: str,
+) -> None:
+    target = databases(minimal.source.schema)
+    with psycopg.connect(target._dsn) as connection:
+        connection.execute(statement)
+    store = local(tmp_path / "target-objects")
+    with pytest.raises(ValueError, match="empty database"):
+        restore(minimal, target, store, tools)
+    store.assert_empty_store()
+    assert not target.readiness()
+
+
+@pytest.mark.parametrize("stage", ["materialize", "put", "stat"])
+def test_object_transfer_checks_recovery_deadline_before_completion(
+    minimal: MinimalBackup,
+    databases: DatabaseFactory,
+    tools: PostgresTools,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    target = databases(minimal.source.schema)
+    store = local(tmp_path / "target-objects")
+    adapter = minimal.store if stage == "materialize" else store
+    transfer = getattr(adapter, stage)
+    expired = False
+    finished = False
+    original_deadline = recovery_objects.check_deadline
+
+    def deadline(limit: float) -> None:
+        original_deadline(0 if expired else limit)
+
+    def delayed(*args: object, **kwargs: object) -> ObjectInfo:
+        nonlocal expired, finished
+        expired = True
+        result: ObjectInfo = transfer(*args, **kwargs)
+        finished = True
+        return result
+
+    monkeypatch.setattr(recovery_objects, "check_deadline", deadline)
+    monkeypatch.setattr(adapter, stage, delayed)
+    destination = tmp_path / "interrupted-backup"
+    with pytest.raises(TimeoutError, match="wall-time"):
+        if stage == "materialize":
+            recovery.backup_service(
+                SecretStr(minimal.source._dsn),
+                minimal.source.schema,
+                adapter,
+                destination,
+                tools=tools,
+                attestation=stopped(),
+            )
+        else:
+            restore(minimal, target, store, tools)
+    assert expired and not finished
+    assert not (destination / "manifest.json").exists()
+    assert not target.readiness()
+    if stage != "stat":
+        store.assert_empty_store()
 
 
 def test_mid_rebind_failure_rolls_back_and_cannot_be_served_or_reseeded(
@@ -918,7 +1070,7 @@ def scientific_backup(
                     policy=policy,
                     training_runtime=TrainingRuntime(threads=1, time_budget_seconds=90),
                     inference_runtime=InferenceRuntime(threads=1, max_batch_size=1),
-                    analysis_profile_id="direction-32/2.1",
+                    analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
                     build_id="recovery-fixture",
                     benchmark_selection_id="fixture-final-benchmark",
                 ),
@@ -1055,7 +1207,6 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
             objects,
             original.directory,
             expected_manifest_sha256=original.backup.manifest_sha256,
-            assert_empty_store=objects.assert_empty_store,
             tools=tools,
             attestation=stopped(),
         )
@@ -1188,7 +1339,7 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
     ["unrecognized-schema", "9999_future", ""],
 )
 def test_unsupported_backup_revisions_are_rejected_before_target_access(
-    minimal: MinimalBackup, tmp_path: Path, revision: str
+    minimal: MinimalBackup, tmp_path: Path, revision: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     backup = tmp_path / "unsupported-archive"
     backup.mkdir()
@@ -1201,13 +1352,14 @@ def test_unsupported_backup_revisions_are_rejected_before_target_access(
     def forbidden_target_access() -> None:
         pytest.fail("An unsupported archive reached the target store.")
 
+    monkeypatch.setattr(store, "assert_empty_store", forbidden_target_access)
+
     with pytest.raises(ValueError, match="schema validation"):
         recovery.restore_service(
             SecretStr("invalid target DSN must not be read"),
             store,
             backup,
             expected_manifest_sha256=hashlib.sha256(data).hexdigest(),
-            assert_empty_store=forbidden_target_access,
             tools=PostgresTools(
                 pg_dump=tmp_path / "absent-dump", pg_restore=tmp_path / "absent-restore"
             ),

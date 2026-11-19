@@ -137,7 +137,6 @@ def install_storage_commands(
                 store,
                 input_path,
                 expected_manifest_sha256=manifest_sha256,
-                assert_empty_store=store.assert_empty_store,
                 tools=PostgresTools.discover(pg_dump=pg_dump, pg_restore=pg_restore),
                 attestation=_attestation(attestation_file),
             )

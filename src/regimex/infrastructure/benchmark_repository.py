@@ -15,6 +15,7 @@ from regimex.benchmark_contracts import (
     FrozenChoice,
     RegistryState,
     dataset_identity_keys,
+    require_selection_dataset,
 )
 from regimex.benchmarks import (
     BenchmarkRegistry,
@@ -23,6 +24,7 @@ from regimex.benchmarks import (
     _preserves_history,
     exposure_keys_overlap,
 )
+from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.service_contracts import Conflict, Forbidden, ModelRecord, NotFound, Principal
 from regimex.storage import json_bytes
@@ -163,6 +165,13 @@ class BenchmarkRepository:
                 "the reserved and frozen source scope."
             )
 
+    @staticmethod
+    def require_reserved_seed_groups(connection: Connection, view: BenchmarkView) -> None:
+        dataset = AdminRepository._dataset(
+            connection, view.binding.owner_id, view.binding.dataset_id
+        )
+        require_selection_dataset(dataset.manifest)
+
     @classmethod
     def validate_selection(
         cls, connection: Connection, owner_id: str, spec: TrainingSpec, dataset: DatasetRecord
@@ -173,6 +182,8 @@ class BenchmarkRepository:
         state = cls.load(connection)
         view = cls.view(connection, state, owner_id, spec.benchmark_selection_id)
         cls.require_inventory_scope(state, view)
+        require_selection_dataset(dataset.manifest)
+        cls.require_reserved_seed_groups(connection, view)
         reservation = view.reservation
         if (
             reservation.selection_started_at is None

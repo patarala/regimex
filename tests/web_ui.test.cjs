@@ -68,7 +68,7 @@ async function loadWorkspace(context) {
   await entry.evaluate();
 }
 
-async function workspace(count = 45) {
+async function workspace(count = 45, {href = "http://localhost/", holdHistory = false} = {}) {
   const elements = new Map();
   for (const tag of markup.matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/g)) {
     const node = new Element();
@@ -82,10 +82,11 @@ async function workspace(count = 45) {
   };
   const calls = [];
   const timers = new Map();
-  const location = {href: "http://localhost/"};
+  const location = {href};
+  const window = new Element();
   const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
   const state = {
-    holdHistory: false, holdModels: false, holdStorage: false, holdDeletions: false, activeModelId: "tcn-1",
+    holdHistory, holdModels: false, holdStorage: false, holdDeletions: false, holdSession: false, activeModelId: "tcn-1",
     now: Date.parse("2026-01-01T00:00:30Z"), names: new Map(),
   };
   const models = [{model_version_id: "baseline-1"}, {model_version_id: "tcn-1"}];
@@ -118,7 +119,7 @@ async function workspace(count = 45) {
   let requestId = 0;
   const context = {
     document: {getElementById: get, createElement: () => new Element()},
-    window: {history, addEventListener() {}}, location, URL, URLSearchParams, console,
+    window: Object.assign(window, {history}), location, URL, URLSearchParams, console,
     Date: class extends Date { static now() { return state.now; } },
     crypto: {randomUUID: () => `request-key-${++requestId}`},
     setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
@@ -132,7 +133,7 @@ async function workspace(count = 45) {
         resolve(response(value, status));
       }};
       calls.push(call);
-      if (url === "/api/v1/session") call.reply(session);
+      if (url === "/api/v1/session" && !state.holdSession) call.reply(session);
       else if (url.startsWith("/api/v1/deletions?") && !state.holdDeletions) call.reply({items: []});
       else if (url === "/api/v1/storage" && !state.holdStorage) call.reply({
         used_bytes: 1024, reserved_bytes: 0, limit_bytes: 1024 ** 3, available_bytes: 1024 ** 3 - 1024,
@@ -161,7 +162,7 @@ async function workspace(count = 45) {
   };
   await loadWorkspace(context);
   return {
-    get, calls, state, location, timers, items, models, groups,
+    get, calls, state, location, window, timers, items, models, groups,
     select: (index) => get("history-list").children[index].children[0].click(),
     pending: (url) => {
       const call = calls.find((item) => item.url === url && !item.settled);
@@ -472,7 +473,7 @@ test("returning to the same analysis ignores a response from its earlier selecti
   stale.reply(metadata("old-job", "failed"));
   ui.pending(`/api/v1/analyses/${id(2)}`).reply(metadata("other-job", "failed"));
   await flush();
-  assert.equal(ui.get("job-state").textContent, "queued");
+  assert.equal(ui.get("job-state").textContent, "Queued");
   void ui.get("cancel").click();
   assert.ok(ui.pending("/api/v1/jobs/new-job/cancel"));
 });
@@ -496,7 +497,7 @@ test("cancellation invalidates an earlier in-flight poll of the same analysis", 
   stale.reply(metadata("job-A", "running"));
   await flush();
   assert.equal(ui.get("cancel").hidden, true);
-  assert.equal(ui.get("job-state").textContent, "cancel requested");
+  assert.equal(ui.get("job-state").textContent, "Cancelling");
 });
 
 test("a late saved-result response cannot install the previous report", async () => {
@@ -513,7 +514,7 @@ test("a late saved-result response cannot install the previous report", async ()
   assert.equal(ui.get("result").hidden, true);
   assert.equal(ui.get("download-report").hidden, true);
   assert.equal(ui.get("report-preview").src, undefined);
-  assert.equal(ui.get("job-state").textContent, "running");
+  assert.equal(ui.get("job-state").textContent, "Running");
 });
 
 test("history pages reach every analysis without accumulating unbounded DOM rows", async () => {
@@ -693,6 +694,65 @@ test("validation errors identify the rejected field with bounded readable detail
   assert.match(ui.get("notice").textContent, /2 more validation errors/);
   assert.doesNotMatch(ui.get("notice").textContent, /observations\.5/);
   assert.equal(ui.get("classify").disabled, true);
+});
+
+test("a history outage leaves the saved analysis open and refresh recovers the list", async () => {
+  const ui = await workspace(1, {href: `http://localhost/?analysis=${id(1)}`, holdHistory: true});
+  await flush();
+  ui.pending("/api/v1/experiments?limit=21&offset=0").reply({error: {message: "History unavailable."}}, 503);
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("finished", "failed"));
+  await flush();
+  assert.equal(ui.get("login-panel").hidden, true);
+  assert.equal(ui.get("analysis-panel").hidden, false);
+  assert.equal(ui.get("job-state").textContent, "Failed");
+  assert.equal(ui.get("history-empty").hidden, true);
+  assert.equal(ui.get("history-error").textContent, "History unavailable.");
+  ui.state.holdHistory = false;
+  await ui.get("refresh-history").click();
+  assert.equal(ui.get("history-error").hidden, true);
+  assert.equal(ui.get("history-list").children.length, 1);
+});
+
+test("sign-out clears an expired session but allows retry after a service failure", async () => {
+  const ui = await workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("finished", "succeeded"));
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(1)}/result`).reply({instruments: [], time_grid: {step_count: 12}});
+  await flush();
+  ui.state.holdSession = true;
+  void ui.get("logout").click();
+  ui.pending("/api/v1/session").reply({error: {message: "Temporary outage."}}, 503);
+  await flush();
+  assert.equal(ui.get("report-preview").hidden, false);
+  void ui.get("logout").click();
+  ui.pending("/api/v1/session").reply({error: {message: "Expired."}}, 401);
+  await flush();
+  assert.equal(ui.get("login-panel").hidden, false);
+  assert.equal(ui.get("workspace").hidden, true);
+  assert.equal(ui.get("owner").textContent, "");
+  assert.equal(ui.get("report-preview").src, undefined);
+  assert.equal(new URL(ui.location.href).searchParams.has("analysis"), false);
+});
+
+test("a cached page rechecks the session before reopening the saved analysis", async () => {
+  const ui = await workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("finished", "failed"));
+  await flush();
+  ui.state.holdSession = true;
+  await ui.window.emit("pagehide", {persisted: true});
+  await ui.window.emit("pageshow", {persisted: true});
+  assert.equal(ui.get("workspace").hidden, true);
+  ui.pending("/api/v1/session").reply(session);
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("finished", "failed"));
+  await flush();
+  assert.equal(ui.get("workspace").hidden, false);
+  assert.equal(ui.get("job-state").textContent, "Failed");
 });
 
 test("an old authentication error cannot reset a newly opened session", async () => {
@@ -1162,7 +1222,7 @@ test("an earlier session's diagnostics cannot overwrite a new session", async ()
 });
 
 function reportScript(name) {
-  return ["instrument-timeline.js", name]
+  return ["instrument-timeline.js", "report-time.js", name]
     .map((script) => fs.readFileSync(path.join(root, "src/regimex/templates", script), "utf8"))
     .join("\n");
 }
@@ -1198,7 +1258,7 @@ test("offline chart rendering removes the PNG export control", async () => {
   assert.equal(configurations[0].toImageButtonOptions, undefined);
 });
 
-async function drawAnalysisReport(timeGrid) {
+async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
   const elements = new Map();
   const get = (name) => {
     if (!elements.has(name)) {
@@ -1217,6 +1277,7 @@ async function drawAnalysisReport(timeGrid) {
       time_grid: {...timeGrid, step_count: 4, unit: "model-second"},
     },
     result: {class_names: ["sideways", "growth", "decline"]},
+    last_bin_fraction: lastBinFraction,
     observation_fields: ["step", "last_price", "trade_count", "trade_volume", "buy_order_count",
       "buy_order_volume", "sell_order_count", "sell_order_volume", "best_bid", "best_ask"],
     observations: [
@@ -1246,13 +1307,13 @@ async function drawAnalysisReport(timeGrid) {
 }
 
 test("analysis report keeps sample times finite for large origins and offsets", async () => {
-  for (const [grid, expected] of [
+  for (const [grid, expected, lastBinFraction] of [
     [{origin: 1e308, completed_horizon: 1.4e308, bin_width: 1e307},
       [1.05e308, 1.15e308, 1.25e308, 1.35e308]],
     [{origin: -1.5e308, completed_horizon: 1.25e308, bin_width: 7e307},
-      [-1.15e308, -4.5e307, 2.5e307, 9.25e307]],
+      [0.5, 1.5, 2.5, 3 + (65 / 70) / 2], 65 / 70],
   ]) {
-    const {get} = await drawAnalysisReport(grid);
+    const {get} = await drawAnalysisReport(grid, lastBinFraction);
     const times = get("price").data[0].x;
     assert.equal(times.length, expected.length);
     times.forEach((time, step) => {
@@ -1260,6 +1321,14 @@ test("analysis report keeps sample times finite for large origins and offsets", 
       assert.ok(Math.abs(time / expected[step] - 1) <= 4 * Number.EPSILON);
     });
   }
+});
+
+test("analysis report shows each bin when even the relative terminal width underflows", async () => {
+  const {get} = await drawAnalysisReport({
+    origin: -3e90, completed_horizon: Number.MIN_VALUE, bin_width: 1e90,
+  }, 0);
+  assert.equal(get("price").layout.xaxis.title.text, "Bin index");
+  assert.deepEqual(Array.from(get("price").data[0].x), [0.5, 1.5, 2.5, 3.5]);
 });
 
 test("analysis report reset restores the full extent after repeated linked drag zooms", async () => {
