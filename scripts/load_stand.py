@@ -25,7 +25,7 @@ from uuid import UUID, uuid4
 import psycopg
 
 from regimex.data_catalog import content_hash
-from regimex.model_registry import InferenceRuntime
+from regimex.model_registry import InferenceRuntime, read_inference_runtime
 from regimex.storage import write_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,14 +102,7 @@ def bin_path(name, directory=None):
 
 
 def inference_policy(path):
-    if path is None:
-        runtime = InferenceRuntime()
-    else:
-        with path.open("rb") as stream:
-            raw = stream.read(8193)
-        if len(raw) > 8192:
-            raise ValueError("Inference runtime JSON exceeds 8 KiB")
-        runtime = InferenceRuntime.model_validate_json(raw)
+    runtime = InferenceRuntime() if path is None else read_inference_runtime(path)
     resolved = runtime.model_dump(mode="json")
     return {
         "inference_runtime": resolved,
