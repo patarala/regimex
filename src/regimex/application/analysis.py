@@ -2,6 +2,7 @@
 
 import fcntl
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -150,6 +151,9 @@ class _ComputedFiles(StrictModel):
     result_sha256: Sha256
     report_sha256: Sha256
     plotly_version: Annotated[str, Field(min_length=1, max_length=128)]
+    model_load_ms: Annotated[float, Field(ge=0)]
+    prediction_ms: Annotated[float, Field(ge=0)]
+    report_ms: Annotated[float, Field(ge=0)]
 
 
 def _read_output(path: Path, limit: int, expected_sha256: str) -> bytes:
@@ -210,6 +214,7 @@ def run_analysis(
                     "parameter_schema": descriptor.parameters_model.model_json_schema(),
                 }
                 remaining = heartbeat.remaining_seconds
+                child_started = time.perf_counter_ns()
                 files = _ComputedFiles.model_validate_json(
                     json_bytes(
                         supervise_child(
@@ -225,6 +230,18 @@ def run_analysis(
                             task="analysis",
                         )
                     )
+                )
+                logging.getLogger("regimex.analysis").info(
+                    "Analysis child finished",
+                    extra={
+                        "action": "analysis_child_finished",
+                        "operation_id": str(operation_id),
+                        "attempt": operation.attempt,
+                        "child_process_ms": (time.perf_counter_ns() - child_started) / 1_000_000,
+                        "model_load_ms": files.model_load_ms,
+                        "prediction_ms": files.prediction_ms,
+                        "report_ms": files.report_ms,
+                    },
                 )
                 heartbeat.check("rendering")
                 result_bytes = _read_output(

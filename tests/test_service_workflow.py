@@ -4,6 +4,7 @@ import asyncio
 import errno
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -627,8 +628,10 @@ def test_snapshot_source_and_owner_checks_precede_reading(service: AnalysisServi
 
 
 def test_actual_queue_executes_registered_baseline(
-    service: AnalysisService, tmp_path: Path
+    service: AnalysisService, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    from regimex.application.load_timings import collect_timings
+    from regimex.service_logging import RedactingJSONFormatter
     from regimex.service_worker import create_worker_app
 
     published_model(service, tmp_path)
@@ -659,13 +662,24 @@ def test_actual_queue_executes_registered_baseline(
                 timeout=30,
             )
 
-    asyncio.run(execute())
+    with caplog.at_level(logging.INFO, logger="regimex.analysis"):
+        asyncio.run(execute())
     result = service.get_analysis(owner, queued.analysis_id)
     assert result.operation.state == "succeeded" and result.result is not None
-    with service.repository.connection() as connection:
-        assert connection.execute(
-            "SELECT status FROM procrastinate_jobs WHERE task_name='regimex.analysis'"
-        ).fetchall() == [("succeeded",)]
+    log = tmp_path / "worker.log"
+    formatter = RedactingJSONFormatter(())
+    log.write_text("\n".join(formatter.format(record) for record in caplog.records))
+    jobs = tmp_path / "jobs.jsonl"
+    jobs.write_text(json.dumps({"phase": "serial", "analysis_id": str(queued.analysis_id)}))
+    output = tmp_path / "timings.json"
+    assert collect_timings(service.repository, jobs, [log], output)
+    report = json.loads(output.read_bytes())
+    (timing,) = report["analyses"]
+    assert timing["events"] == ["deferred", "started", "succeeded"]
+    assert timing["queue_wait_ms"] >= 0
+    assert timing["worker_occupancy_ms"] >= timing["child_process_ms"]
+    assert all(timing[stage] > 0 for stage in ("model_load_ms", "prediction_ms", "report_ms"))
+    assert report["phases"]["serial"]["median_ms"]["prediction"] == timing["prediction_ms"]
 
 
 def test_unavailable_worker_model_and_cache_budget_fail_explicitly(

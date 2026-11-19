@@ -1,6 +1,7 @@
 """Observation-only prediction and rendering inside a bounded computation child."""
 
 import hashlib
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -202,17 +203,24 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
     ):
         raise RegistryError("installed child metadata differs from the configured worker")
     descriptor.validate_observation_fields(_available_fields(export))
+    load_started = time.perf_counter_ns()
     predictor, manifest = restore_predictor(
         Path(bundle_path), model, registry, worker_id="analysis-child"
     )
+    prediction_started = time.perf_counter_ns()
     result = build_analysis_result(export, snapshot, analysis, model, predictor, manifest)
     result_bytes = json_bytes(result.model_dump(mode="json"))
     result_sha256 = hashlib.sha256(result_bytes).hexdigest()
+    report_started = time.perf_counter_ns()
     rendered = render_analysis_report(export, result, result_sha256=result_sha256)
+    report_finished = time.perf_counter_ns()
     (root / "analysis-result.json").write_bytes(result_bytes)
     (root / "analysis-report.html").write_bytes(rendered.html)
     return {
         "result_sha256": result_sha256,
         "report_sha256": hashlib.sha256(rendered.html).hexdigest(),
         "plotly_version": rendered.plotly_version,
+        "model_load_ms": (prediction_started - load_started) / 1_000_000,
+        "prediction_ms": (report_started - prediction_started) / 1_000_000,
+        "report_ms": (report_finished - report_started) / 1_000_000,
     }
