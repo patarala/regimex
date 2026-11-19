@@ -1127,8 +1127,9 @@ class DatabaseRepository:
             rows = connection.execute(
                 "SELECT document FROM regimex_operations WHERE "
                 "state IN ('running','cancel_requested') AND heartbeat_at<=%s "
+                "AND document->'version'=%s "
                 "ORDER BY heartbeat_at LIMIT %s FOR UPDATE SKIP LOCKED",
-                (stale_before, limit),
+                (stale_before, Jsonb(OPERATION_VERSION), limit),
             ).fetchall()
             recovered: list[Operation] = []
             for row in rows:
@@ -1185,11 +1186,12 @@ class DatabaseRepository:
                 )
             rows = connection.execute(
                 "SELECT o.document FROM regimex_operations o WHERE o.state='queued' "
+                "AND o.document->'version'=%s "
                 "AND NOT EXISTS (SELECT 1 FROM regimex_deliveries d "
                 "JOIN procrastinate_jobs j ON j.id=d.job_id "
                 "WHERE d.operation_id=o.operation_id AND j.status IN ('todo','doing')) "
                 "ORDER BY o.operation_id LIMIT %s FOR UPDATE OF o SKIP LOCKED",
-                (limit,),
+                (Jsonb(OPERATION_VERSION), limit),
             ).fetchall()
             recovered: list[Operation] = []
             for row in rows:
