@@ -9,7 +9,7 @@ exports, model files and HTML reports.
 
 ```mermaid
 sequenceDiagram
-    actor User as Browser or simulator backend
+    actor User as Browser or CLI
     participant API as Regimex API
     participant DB as PostgreSQL
     participant Store as Local files or S3
@@ -30,6 +30,12 @@ sequenceDiagram
     Worker->>DB: Commit result JSON and report reference under the attempt token
     User->>API: Check status and download the result or report
 ```
+
+The browser and CLI upload the snapshot and request an analysis in two calls.
+A simulator backend can do both in one request to
+`POST /api/v1/integration/analysis-intake`. The service saves the snapshot
+first, so it can be reused if analysis submission fails. Both paths enqueue
+the same worker task. [Simulator request sequence](integration.md#request-sequence)
 
 The worker renews its claim while downloading inputs, computing and saving the
 report. A retry gets a new attempt token. The database checks the token and

@@ -1,7 +1,21 @@
-# Logistic regression across a price gap
+# Logistic baseline
 
-A gap in one instrument changes its whole-sequence means, spreads and extremes.
-The original logistic baseline receives those same features at every step.
+The baseline scores one instrument at a time. It starts with price, return,
+trade and order activity, order imbalance and bid–ask spread. Each numeric
+feature has a missing-value indicator. At each step it collects the mean,
+population standard deviation, minimum and maximum of these channels in
+centered windows of 32 and 128 steps by default.
+
+The model standardizes the summaries with statistics fitted on labeled
+training steps, then applies a linear score for each direction. A softmax
+turns the three scores into probabilities. Training uses class-balanced
+logistic regression with the LBFGS solver. Both this model and the TCN use
+the same [decoder and interval rules](models.md#observations-and-intervals).
+
+## How a price gap affects the default model
+
+A gap in one instrument can change its whole-sequence means, spreads and extremes.
+The default summary mode supplies those same features at every step.
 We tested the effect of removing them independently of how the model handles
 missing values inside each window.
 

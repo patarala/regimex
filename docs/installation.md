@@ -60,8 +60,10 @@ again after stopping the workers and before migrating the database.
 
 ## Back up and check restoration
 
-With PostgreSQL running, use a fresh backup directory. Finish any pending
-deletion cleanup first. Run the commands from the directory containing `var/`:
+The installer's PostgreSQL binary directory must also contain `pg_dump` and
+`pg_restore` from PostgreSQL 16. With PostgreSQL running, use a fresh backup
+directory and finish any pending deletion cleanup. Run the commands from the
+directory containing `var/`.
 
 ```sh
 var/service.sh backup --output var/backups/backup-001

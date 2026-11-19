@@ -2,7 +2,9 @@
 
 Regimex labels sustained price direction in a completed experiment. Both models
 can use prices before and after the step they are classifying. This makes their
-intervals suitable for retrospective analysis.
+intervals suitable for retrospective analysis. For the inputs and prediction
+path of each model, see the [logistic baseline](baseline-context.md) and the
+[temporal convolutional network](tcn.md).
 
 ## Observations and intervals
 
@@ -108,10 +110,10 @@ Both backends return one probability for each of the three directions at every
 original step. A shared decoder chooses intervals using the probabilities, a
 penalty for switching direction and the availability and duration rules above.
 
-| Backend | What it uses |
+| Backend | How it scores a step |
 | --- | --- |
-| Logistic baseline | Price, trade and order activity, spread and missing-value indicators. It computes the mean, population standard deviation, minimum and maximum over centered windows (32 and 128 steps by default). The training configuration selects whether to include whole-instrument summaries and how to handle gaps. |
-| Temporal convolutional network (TCN) | Log prices, returns and price shape in centered windows of 32, 64, 128, 256 and 512 steps. The network receives 25 numeric channels and their 25 missing-value indicators. |
+| Logistic baseline | Applies fitted linear weights to summaries of price, trades, orders, spread and missingness. [Window settings and gap behavior](baseline-context.md) |
+| Temporal convolutional network (TCN) | Learns price patterns from centered windows and whole-instrument statistics using dilated convolutions. [Inputs, network and training](tcn.md) |
 
 Training and validation contain separate experiments. All instruments from one
 experiment and all members of a split group stay together. Validation and test
@@ -126,20 +128,6 @@ validation interval with a known direction. The decoded validation interval
 macro-F1 selects the settings or checkpoint, with the first best score winning a
 tie. The administrative workflow covers benchmark reservation, freezing the
 model and final evaluation. [API guide](api.md#administration)
-
-The baseline uses class-balanced logistic regression with the LBFGS solver.
-The [baseline window comparison](baseline-context.md) explains its summary
-settings and the measured effect of missing prices.
-The TCN uses AdamW and class-balanced cross-entropy. Within a known training
-direction it can penalize changes in adjacent log probabilities. The four steps
-on each side of a direction change receive double classification weight.
-The weighting stops at gaps and sequence edges.
-
-TCN training supports epoch-based early stopping and fixed optimizer updates.
-For a fixed budget, set `budget` to `updates`, set the number of updates per
-seed, and list checkpoints in `validation_updates`, ending at the last update.
-Batches without known targets do not consume an update. The history records
-the validation scores and the bundle identifies the selected seed and update.
 
 ## Saved models
 

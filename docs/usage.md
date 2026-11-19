@@ -5,15 +5,13 @@ of a completed experiment. The default local address is `http://127.0.0.1:8000/`
 To start a service, use the [Linux installer](installation.md), [Docker
 Compose](deployment.md) or the [manual setup](#start-locally) below.
 
-If you have the reference TCN asset pack, open its `examples/index.html` in
-your browser to see the saved reports.
-
 ## Analyze an experiment
 
 1. Paste your token into **Access token** and select **Sign in**. With the
    default local installation, use the contents of `var/credentials/user.token`.
 2. Under **New analysis**, select **Choose JSON file** or drop an export there.
-   Try `examples/1-instrument/snapshot.json` from the reference TCN pack.
+   For a first run from a checkout, [generate a 512-step example](#terminal-tools)
+   and choose `var/run.json`.
 3. Check the run and instruments, select a published model, then choose
    **Analyze**. The analysis keeps that model version.
 4. When the job finishes, read the preview or select **Download HTML** for
@@ -26,11 +24,9 @@ run, model or analysis ID. **Rename** changes the display name in your workspace
 
 ## Read a report
 
-When absolute timestamps are too close together to plot accurately, the analysis
-and comparison reports use bins from the start. The instrument details show the
-origin and bin width in the original time unit. If a partial final bin is too
-small even on the relative scale, the axis shows equal-width bins and is labelled
-“Bin index”.
+To try a saved classification without starting the service, open
+`examples/index.html` inside the reference TCN asset pack. In an unpacked
+source release containing those assets, the same page is at `release/examples/index.html`.
 
 For an experiment with two instruments, the report shows both sets of
 predicted intervals on a shared timeline. Select a lane or choose its instrument
@@ -51,6 +47,12 @@ too little information to assign a direction. Return standard deviation
 measures the spread of adjacent log price changes within an interval. The
 missing-data plot shows fields with gaps. For quotes, an empty book side means
 there was no resting order on that side. See [interval definitions](models.md).
+
+When absolute timestamps are too close together to plot accurately, the analysis
+and comparison reports use bins from the start. The instrument details show the
+origin and bin width in the original time unit. If a partial final bin is too
+small even on the relative scale, the axis shows equal-width bins and is labelled
+“Bin index”.
 
 ## Run again and compare
 

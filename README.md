@@ -1,68 +1,60 @@
 # Regimex
 
 Regimex labels periods of growth, decline and sideways movement in completed
-market experiments. Upload an experiment, choose a saved model and inspect its
-predictions on the price chart. You can compare two models on the same
-observations or download a report to open offline.
+market experiments. Upload a run, choose a saved model and see its intervals
+on the price chart. You can compare two models on the same observations and
+download an HTML report that works offline.
 
 ## Getting started
 
-- **Try a report.** Open a saved HTML report from the release assets in your
-  browser. The reference TCN pack includes `examples/1-instrument/tcn-report.html`.
-- **Run the service.** The Linux installer sets up a private PostgreSQL
-  database, imports the bundled models and starts the API and workers.
-  See [local installation](docs/installation.md). For containers, use the
-  [Compose deployment guide](docs/deployment.md).
-- **Analyze your first file.** Sign in with the token supplied by your
-  administrator. Under **New analysis**, choose a JSON file and select
-  **Analyze**. The [usage guide](docs/usage.md) covers reports, comparisons,
-  saved experiments and running the service from source.
+**With a running service**, sign in with your access token. Under **New
+analysis**, choose a JSON export, select a model and click **Analyze**. Once
+the job finishes, open the report or download it. [Using Regimex](docs/usage.md#analyze-an-experiment)
 
-From a source checkout you can validate the included example without starting
-a server. To generate your own reproducible experiment, use
-[`regimex generate`](docs/usage.md#terminal-tools). The project uses Python
-3.14.4 and uv 0.13.0.
+**From a checkout**, use Python 3.14.4 and uv 0.13.0. This command validates
+the included export locally and prints `Valid snapshot: snapshot-1`.
 
 ```sh
 uv run --locked regimex validate --input tests/fixtures/experiment-v2.json
 ```
+
+To start your own service, follow the [Linux installation guide](docs/installation.md),
+[Docker Compose guide](docs/deployment.md) or [setup from source](docs/usage.md#start-locally).
+To create an experiment to analyze, use [`regimex generate`](docs/usage.md#terminal-tools).
+If you have the reference TCN asset pack, you can preview a classification
+directly in a browser by opening `examples/1-instrument/tcn-report.html` inside the pack.
 
 ## Data and models
 
 A version 2.1 export contains one completed run with one or two instruments,
 up to 4,096 time steps and a maximum file size of 16 MiB. An analysis preserves
 that grid and returns direction intervals, class probabilities and trading
-statistics. The report distinguishes steps with missing observations from
-steps with known zero activity. See the [export contract](docs/integration.md)
-and [model and interval definitions](docs/models.md).
+statistics. Steps with missing observations and steps with known zero activity
+have different meanings. [Export contract](docs/integration.md#export-contract) ·
+[Interval definitions](docs/models.md#observations-and-intervals)
 
-Regimex includes a market generator and two model backends, logistic regression
-and a temporal convolutional network (TCN). On the same 72 held-out synthetic
+| Model | How it uses an instrument's history |
+| --- | --- |
+| [Logistic baseline](docs/baseline-context.md) | Classifies each step using summaries of price, trading activity and quotes over centered windows. |
+| [Temporal convolutional network (TCN)](docs/tcn.md) | Combines price and return features across several time scales with convolutions that look before and after each step. |
+
+Both models feed the same interval decoder. On 72 held-out synthetic
 experiments with profile `direction-32/2.1`, interval macro-F1 against automatic
-labels was 0.408 for logistic regression and 0.669 for the TCN. See
-[model quality](docs/quality.md) for results by sequence length and the separate
-evaluation of the reference TCN distributed with the release assets.
+labels was 0.408 for the baseline and 0.669 for the TCN. The quality guide
+also reports how closely the reference TCN placed interval boundaries.
+[Model quality](docs/quality.md)
 
-## Running and maintaining Regimex
+## Guides
 
 | Task | Guide |
 | --- | --- |
 | Understand the data flow and design choices | [Architecture](docs/architecture.md) |
 | Automate analysis, train a model or publish a version | [API workflows](docs/api.md) |
-| Connect a simulator and manage its keys | [Platform access](docs/access.md) |
+| Connect a simulator and manage its keys | [Integration protocol](docs/integration.md) · [Platform access](docs/access.md) |
 | Configure storage, back up data or recover an installation | [Storage and recovery](docs/storage.md) |
 | Compare worker capacity and measure queueing under sustained load | [Load testing](docs/load-testing.md) |
+| Work on the code and run the relevant tests | [Development](docs/development.md) |
 | Package the service and its optional assets | [Building a release](docs/releasing.md) |
-
-## Development
-
-The code lives in `src/regimex/`. See [AGENTS.md](AGENTS.md) for development
-conventions and local test commands.
-
-Every push runs formatting, lint, core tests, JavaScript checks and packaging.
-Pull requests into `main` also run the scientific, PostgreSQL, HTTPS S3, Chromium and
-container tests. For a direct push to `main`, run **Actions → CI → Run workflow**
-with **full_checks** enabled before releasing.
 
 ## License
 
