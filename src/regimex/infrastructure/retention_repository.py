@@ -17,7 +17,7 @@ from regimex.infrastructure.maintenance import (
     quiescent_transaction,
 )
 from regimex.retention_contracts import CleanupEvent, CleanupStatus, OrphanPlan
-from regimex.service_contracts import CapacityExceeded, Conflict, NotFound, Principal
+from regimex.service_contracts import Conflict, NotFound, Principal
 from regimex.storage import json_bytes
 
 Connection = psycopg.Connection[tuple[object, ...]]
@@ -63,14 +63,16 @@ class RetentionRepository:
         return cast(UUID, row[0])
 
     @staticmethod
-    def registered_keys(connection: Connection, candidates: tuple[str, ...]) -> frozenset[str]:
+    def protected_keys(connection: Connection, candidates: tuple[str, ...]) -> frozenset[str]:
         # No age, publication or reachability heuristic permits collecting a
         # registered artifact. Older and otherwise unreferenced ledger rows stay.
         return frozenset(
             cast(str, row[0])
             for row in connection.execute(
-                "SELECT object_key FROM regimex_objects WHERE object_key=ANY(%s)",
-                (list(candidates),),
+                "SELECT object_key FROM regimex_objects WHERE object_key=ANY(%s) UNION ALL "
+                "SELECT object_key FROM regimex_deletion_objects "
+                "WHERE state='pending' AND object_key=ANY(%s)",
+                (list(candidates), list(candidates)),
             )
         )
 
@@ -82,13 +84,8 @@ class RetentionRepository:
         return cast(int, row[0])
 
     @staticmethod
-    def registered(connection: Connection, key: str) -> bool:
-        return (
-            connection.execute(
-                "SELECT 1 FROM regimex_objects WHERE object_key=%s", (key,)
-            ).fetchone()
-            is not None
-        )
+    def protected(connection: Connection, key: str) -> bool:
+        return key in RetentionRepository.protected_keys(connection, (key,))
 
     @staticmethod
     def add_plan(connection: Connection, plan: OrphanPlan) -> None:
@@ -125,7 +122,7 @@ class RetentionRepository:
     def fence(connection: Connection, plan: OrphanPlan) -> None:
         for item in plan.objects:
             info = item.object
-            if RetentionRepository.registered(connection, info.key):
+            if RetentionRepository.protected(connection, info.key):
                 raise Conflict("An orphan candidate became registered; create a fresh review plan.")
             connection.execute(
                 "INSERT INTO regimex_object_version_claims(object_key,version_id,state) "
@@ -176,15 +173,33 @@ class RetentionRepository:
         )
 
     @staticmethod
-    def events(connection: Connection, plan_id: UUID) -> tuple[CleanupEvent, ...]:
+    def latest_statuses(
+        connection: Connection, plan_id: UUID
+    ) -> dict[tuple[str, str, str], CleanupStatus]:
+        rows = connection.execute(
+            "SELECT DISTINCT ON (kind,object_key,identity) kind,object_key,identity,status "
+            "FROM regimex_orphan_cleanup_events WHERE plan_id=%s "
+            "ORDER BY kind,object_key,identity,event_id DESC",
+            (plan_id,),
+        )
+        return {
+            (cast(str, kind), cast(str, key), cast(str, identity)): cast(CleanupStatus, status)
+            for kind, key, identity, status in rows
+        }
+
+    @staticmethod
+    def events(
+        connection: Connection, plan_id: UUID, *, after_event_id: int, limit: int
+    ) -> tuple[tuple[CleanupEvent, ...], int | None]:
+        if after_event_id < 0 or not 1 <= limit <= 1000:
+            raise ValueError("Use a nonnegative event cursor and a page size between 1 and 1000.")
         rows = connection.execute(
             "SELECT event_id,kind,object_key,identity,status,occurred_at "
-            "FROM regimex_orphan_cleanup_events WHERE plan_id=%s ORDER BY event_id LIMIT 10001",
-            (plan_id,),
+            "FROM regimex_orphan_cleanup_events WHERE plan_id=%s AND event_id>%s "
+            "ORDER BY event_id LIMIT %s",
+            (plan_id, after_event_id, limit + 1),
         ).fetchall()
-        if len(rows) > 10_000:
-            raise CapacityExceeded("This plan has reached its bounded audit retrieval limit.")
-        return tuple(
+        events = tuple(
             CleanupEvent.model_validate(
                 {
                     "event_id": row[0],
@@ -197,5 +212,6 @@ class RetentionRepository:
                 },
                 strict=True,
             )
-            for row in rows
+            for row in rows[:limit]
         )
+        return events, events[-1].event_id if len(rows) > limit else None

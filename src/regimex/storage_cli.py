@@ -199,11 +199,16 @@ def install_storage_commands(
     def gc_receipt(
         plan_id: Annotated[UUID, typer.Option()],
         token_file: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+        after_event_id: Annotated[int, typer.Option(min=0)] = 0,
+        limit: Annotated[int, typer.Option(min=1, max=1000)] = 1000,
     ) -> None:
         """Inspect the append-only cleanup audit after completion or interruption."""
 
         def action() -> None:
             service, principal = _retention(ServiceSettings.from_env(), token_file)
-            typer.echo(service.get_receipt(principal, plan_id).model_dump_json())
+            receipt = service.get_receipt(
+                principal, plan_id, after_event_id=after_event_id, limit=limit
+            )
+            typer.echo(receipt.model_dump_json())
 
         execute(action)

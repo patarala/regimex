@@ -219,8 +219,12 @@ Inspect the plan before applying its recorded digest. Plans bind installation,
 namespace, cutoff and exact generations; durable deletion fences prevent a stale
 uploader from later registering a removed generation. Changed/young files and
 registered hard-link aliases are preserved. Unknown private entries fail planning.
-Receipts retain partial failures and support safe replay; incomplete cleanup exits
-nonzero. Never replace this workflow with manual deletion in the object root.
+Each plan includes up to 1,000 candidates. Create another plan after applying a
+full batch. A pending resource deletion keeps its objects until its own retry.
+Receipts report completion for the entire plan and return up to 1,000 audit
+events per page. To read the next page, run `storage-gc-receipt` with
+`--after-event-id` set to the returned `next_after_event_id`. Incomplete cleanup
+exits nonzero. Manual deletion in the object root bypasses ownership accounting.
 
 ## Integration test setup
 

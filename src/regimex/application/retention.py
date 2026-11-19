@@ -2,9 +2,10 @@
 
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import batched
 from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
@@ -20,7 +21,6 @@ from regimex.infrastructure.object_store import (
 from regimex.infrastructure.retention_repository import Connection, RetentionRepository
 from regimex.infrastructure.storage_quotas import release_absent_reservations
 from regimex.retention_contracts import (
-    CleanupEvent,
     CleanupReceipt,
     CleanupStatus,
     OrphanObject,
@@ -47,7 +47,6 @@ class MaintenanceStore(Protocol):
 @dataclass(frozen=True, slots=True)
 class RetentionLimits:
     minimum_grace_seconds: int = 86400
-    max_inventory_entries: int = 10_000
     max_plan_entries: int = 1000
     max_verified_bytes: int = 2 * 1024**3
     max_plan_bytes: int = 4 * 1024**2
@@ -100,6 +99,16 @@ class RetentionService:
                 "The reviewed plan exceeds the configured verification byte limit."
             )
 
+    def _unprotected[T: (StoredVersion, IncompleteUpload)](
+        self, connection: Connection, entries: Iterable[T], deadline: float
+    ) -> Iterator[T]:
+        for page in batched(entries, 1000, strict=False):
+            self._check_time(deadline)
+            protected = self.repository.protected_keys(
+                connection, tuple(entry.key for entry in page)
+            )
+            yield from (entry for entry in page if entry.key not in protected)
+
     def plan(
         self,
         principal: Principal,
@@ -118,30 +127,24 @@ class RetentionService:
         ):
             created_at = self.clock()
             cutoff = created_at - timedelta(seconds=grace_seconds)
-            inventory = self.store.inventory()
-            multipart = self.store.list_multipart_uploads()
-            if len(inventory) + len(multipart) > self.limits.max_inventory_entries:
-                raise CapacityExceeded("Object inventory exceeds the configured entry limit.")
-            registered = self.repository.registered_keys(
-                connection,
-                tuple({item.key for item in inventory} | {item.key for item in multipart}),
+            inventory = sorted(self.store.inventory(), key=lambda item: (item.key, item.version_id))
+            multipart = sorted(
+                self.store.list_multipart_uploads(), key=lambda item: (item.key, item.upload_id)
             )
             objects: list[OrphanObject] = []
             uploads: list[IncompleteUpload] = []
             verified_bytes = 0
-            for version in sorted(inventory, key=lambda item: (item.key, item.version_id)):
+            for version in self._unprotected(connection, inventory, deadline):
                 self._check_time(deadline)
-                if (
-                    version.is_delete_marker
-                    or version.key in registered
-                    or version.last_modified >= cutoff
-                ):
+                if version.is_delete_marker or version.last_modified >= cutoff:
                     continue
-                verified_bytes += version.size_bytes
-                if verified_bytes > self.limits.max_verified_bytes:
-                    raise CapacityExceeded("Orphan verification exceeds its byte limit.")
                 if len(objects) >= self.limits.max_plan_entries:
-                    raise CapacityExceeded("Orphan inventory exceeds its review plan limit.")
+                    break
+                if verified_bytes + version.size_bytes > self.limits.max_verified_bytes:
+                    if objects:
+                        break
+                    raise CapacityExceeded("Orphan verification exceeds its byte limit.")
+                verified_bytes += version.size_bytes
                 info = self.store.stat_version(version.key, version.version_id)
                 if (info.key, info.version_id, info.size_bytes) != (
                     version.key,
@@ -150,12 +153,12 @@ class RetentionService:
                 ):
                     raise ObjectIntegrityError("Object inventory changed during verification.")
                 objects.append(OrphanObject(object=info, last_modified=version.last_modified))
-            for upload in sorted(multipart, key=lambda item: (item.key, item.upload_id)):
+            for upload in self._unprotected(connection, multipart, deadline):
                 self._check_time(deadline)
-                if upload.key in registered or upload.initiated_at >= cutoff:
+                if upload.initiated_at >= cutoff:
                     continue
                 if len(objects) + len(uploads) >= self.limits.max_plan_entries:
-                    raise CapacityExceeded("Orphan inventory exceeds its review plan limit.")
+                    break
                 uploads.append(upload)
             payload = OrphanPlanPayload(
                 plan_id=uuid4(),
@@ -219,7 +222,7 @@ class RetentionService:
                     raise Conflict("The supplied review digest does not identify this orphan plan.")
                 self._check_plan(connection, plan)
                 for upload in plan.multipart:
-                    if self.repository.registered(connection, upload.key):
+                    if self.repository.protected(connection, upload.key):
                         raise Conflict(
                             "A multipart candidate became registered; create a fresh plan."
                         )
@@ -229,9 +232,9 @@ class RetentionService:
             # Registration inserts every ObjectInfo; the SQL trigger fences its
             # exact version before an external object can be deleted.
             successful = {
-                (item.kind, item.key, item.identity)
-                for item in self.repository.events(connection, plan_id)
-                if item.status
+                identity
+                for identity, status in self.repository.latest_statuses(connection, plan_id).items()
+                if status
                 in {"deleted", "already_missing", "protected", "mpu_aborted", "mpu_already_missing"}
             }
             for item in plan.objects:
@@ -239,7 +242,7 @@ class RetentionService:
                 info = item.object
                 if ("object", info.key, info.version_id) in successful:
                     continue
-                if self.repository.registered(connection, info.key):
+                if self.repository.protected(connection, info.key):
                     status: CleanupStatus = "protected"
                 else:
                     try:
@@ -266,7 +269,7 @@ class RetentionService:
                 self._check_time(deadline)
                 if ("multipart", upload.key, upload.upload_id) in successful:
                     continue
-                if self.repository.registered(connection, upload.key):
+                if self.repository.protected(connection, upload.key):
                     status = "protected"
                 else:
                     try:
@@ -291,8 +294,6 @@ class RetentionService:
             # remains charged. Database registration always wins over inventory.
             inventory = self.store.inventory()
             multipart = self.store.list_multipart_uploads()
-            if len(inventory) + len(multipart) > self.limits.max_inventory_entries:
-                raise CapacityExceeded("Object inventory exceeds the configured entry limit.")
             self._check_time(deadline)
             # Local staging names do not identify their eventual destination.
             # Until they are gone, no absent reservation is provably unused.
@@ -308,11 +309,18 @@ class RetentionService:
                     )
             return self._receipt(connection, plan)
 
-    def _receipt(self, connection: Connection, plan: OrphanPlan) -> CleanupReceipt:
-        events = self.repository.events(connection, plan.plan_id)
-        latest: dict[tuple[str, str, str], CleanupEvent] = {}
-        for event in events:
-            latest[(event.kind, event.key, event.identity)] = event
+    def _receipt(
+        self,
+        connection: Connection,
+        plan: OrphanPlan,
+        *,
+        after_event_id: int = 0,
+        limit: int = 1000,
+    ) -> CleanupReceipt:
+        events, cursor = self.repository.events(
+            connection, plan.plan_id, after_event_id=after_event_id, limit=limit
+        )
+        latest = self.repository.latest_statuses(connection, plan.plan_id)
         return CleanupReceipt(
             plan_id=plan.plan_id,
             plan_sha256=plan.sha256,
@@ -320,14 +328,18 @@ class RetentionService:
             store_scope_id=plan.store_scope_id,
             inspected_at=self.clock(),
             events=events,
+            next_after_event_id=cursor,
             complete=len(latest) == len(plan.objects) + len(plan.multipart)
             and all(
-                item.status not in {"changed", "failed", "mpu_changed", "mpu_failed"}
-                for item in latest.values()
+                status not in {"changed", "failed", "mpu_changed", "mpu_failed"}
+                for status in latest.values()
             ),
         )
 
-    def get_receipt(self, principal: Principal, plan_id: UUID) -> CleanupReceipt:
+    def get_receipt(
+        self, principal: Principal, plan_id: UUID, *, after_event_id: int = 0, limit: int = 1000
+    ) -> CleanupReceipt:
         self.repository.database._admin(principal)
         with self.repository.database.connection() as connection:
-            return self._receipt(connection, self.repository.plan(connection, principal, plan_id))
+            plan = self.repository.plan(connection, principal, plan_id)
+            return self._receipt(connection, plan, after_event_id=after_event_id, limit=limit)

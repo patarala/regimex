@@ -96,4 +96,5 @@ class CleanupReceipt(StrictModel):
     store_scope_id: StoreScope
     inspected_at: AwareDatetime
     events: tuple[CleanupEvent, ...]
+    next_after_event_id: int | None
     complete: bool

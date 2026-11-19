@@ -34,7 +34,6 @@ from regimex.infrastructure.retention_repository import RetentionRepository
 from regimex.model_registry import InferenceRuntime
 from regimex.operations import Operation
 from regimex.service_contracts import (
-    CapacityExceeded,
     Conflict,
     Forbidden,
     ModelRecord,
@@ -412,7 +411,7 @@ def test_plan_is_bound_to_admin_owner_installation_and_store(context: Context) -
     assert context.store.stat(orphan.key) == orphan
 
 
-def test_plan_limits_fail_before_admitting_evidence_or_fences(context: Context) -> None:
+def test_plan_limit_allows_collecting_one_reviewed_batch_at_a_time(context: Context) -> None:
     first = upload(context, "orphan/first")
     second = upload(context, "orphan/second")
     service = RetentionService(
@@ -421,14 +420,56 @@ def test_plan_limits_fail_before_admitting_evidence_or_fences(context: Context) 
         clock=context.clock,
         limits=RetentionLimits(max_plan_entries=1),
     )
-    with pytest.raises(CapacityExceeded):
-        service.plan(context.principal, attestation=stopped())
+    for expected in (first, second):
+        plan = service.plan(context.principal, attestation=stopped())
+        assert [item.object for item in plan.objects] == [expected]
+        assert service.apply(
+            context.principal, plan.plan_id, expected_sha256=plan.sha256, attestation=stopped()
+        ).complete
+    assert context.store.inventory() == ()
+
+
+def test_cleanup_scans_large_registered_inventory_for_a_single_orphan(
+    context: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registered = upload(context, "registered/retained", register=True)
+    orphan = upload(context, "orphan/one")
+    inventory = context.store.inventory
+    sample = next(item for item in inventory() if item.key == registered.key)
+    history = tuple(
+        sample.model_copy(update={"version_id": f"retained-{i}"}) for i in range(10_000)
+    )
+    monkeypatch.setattr(context.store, "inventory", lambda: history + inventory())
+    plan = context.service.plan(context.principal, attestation=stopped())
+    assert [item.object for item in plan.objects] == [orphan]
+    receipt = context.service.apply(
+        context.principal, plan.plan_id, expected_sha256=plan.sha256, attestation=stopped()
+    )
+    assert receipt.complete
+    assert context.store.stat(registered.key) == registered
+
+
+def test_cleanup_resumes_after_a_long_retry_history_and_pages_the_receipt(context: Context) -> None:
+    orphan = upload(context, "orphan/retry")
+    plan = context.service.plan(context.principal, attestation=stopped())
     with context.repository.database.connection() as connection:
-        assert connection.execute("SELECT count(*) FROM regimex_orphan_plans").fetchone() == (0,)
-        assert connection.execute(
-            "SELECT count(*) FROM regimex_object_delete_fences"
-        ).fetchone() == (0,)
-    assert context.store.stat(first.key) == first and context.store.stat(second.key) == second
+        connection.execute(
+            "INSERT INTO regimex_orphan_cleanup_events(plan_id,kind,object_key,identity,status) "
+            "SELECT %s, 'object', %s, %s, 'failed' FROM generate_series(1,10001)",
+            (plan.plan_id, orphan.key, orphan.version_id),
+        )
+    receipt = context.service.apply(
+        context.principal, plan.plan_id, expected_sha256=plan.sha256, attestation=stopped()
+    )
+    events = list(receipt.events)
+    while receipt.next_after_event_id is not None:
+        assert receipt.complete and len(receipt.events) == 1000
+        receipt = context.service.get_receipt(
+            context.principal, plan.plan_id, after_event_id=receipt.next_after_event_id
+        )
+        events.extend(receipt.events)
+    assert receipt.complete and len(events) == 10002 and events[-1].status == "deleted"
+    assert [item.event_id for item in events] == sorted({item.event_id for item in events})
 
 
 def test_cleanup_audit_fences_and_claim_states_cannot_be_rewritten(context: Context) -> None:
