@@ -159,6 +159,52 @@ def test_steps_without_executions_use_inactivity_evidence_when_counts_are_missin
     assert all(row.trade_count is None for row in inspection.samples[0].rows)
 
 
+def test_same_external_snapshot_id_keeps_sources_and_results_separate() -> None:
+    first, other = source(0), source(1, active=True)
+    payload = other.export.model_dump(mode="json", exclude={"content_sha256"})
+    payload["source"].update(snapshot_id=first.export.source.snapshot_id, source_version="engine-3")
+    payload["producer"]["version"] = "adapter-1"
+    second = other.model_copy(
+        update={
+            "source_namespace": "second-installation",
+            "export": seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload))),
+        }
+    )
+    sources = (first, second)
+    result = inspect_snapshots(sources, results=predictions(sources))
+    digests = {item.export.content_sha256 for item in sources}
+    assert {item.experiment_id for item in result.samples} == digests
+    coverage = result.summary["configuration_coverage"]
+    assert isinstance(coverage, dict)
+    assert set(coverage["source_versions"]) == {first.export.source.source_version, "engine-3"}
+    assert result.samples[0].source["snapshot_id"] == result.samples[1].source["snapshot_id"]
+    selected = inspect_snapshots(
+        sources, results=predictions(sources), experiment_id=second.export.content_sha256
+    )
+    assert selected.samples[0].experiment_id == second.export.content_sha256
+    with pytest.raises(ValueError, match="Ambiguous snapshot identifier"):
+        inspect_snapshots(
+            sources, results=predictions(sources), experiment_id=first.export.source.snapshot_id
+        )
+
+
+@pytest.mark.parametrize(("known", "expected_total"), [(0, None), (3, 0), (8, 0)])
+def test_trade_totals_report_counter_coverage(known: int, expected_total: int | None) -> None:
+    item = source(0)
+    payload = item.export.model_dump(mode="json", exclude={"content_sha256"})
+    payload["capabilities"]["trade_aggregates"] = "partial"
+    for row in payload["observations"][known:]:
+        row.update(trade_count=None, trade_volume=None)
+    updated = item.model_copy(
+        update={"export": seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload)))}
+    )
+    report = inspect_snapshots((updated,), results=predictions((updated,)))
+    experiments = report.summary["experiments"]
+    assert isinstance(experiments, list)
+    assert experiments[0]["observed_trade_total"] == expected_total
+    assert experiments[0]["steps_with_trade_count"] == known
+
+
 def test_report_preserves_saved_directions_instead_of_annotating_prices() -> None:
     sources = (source(0, active=True),)
     result = prediction_for(sources[0].export, direction=Direction.DECLINE)

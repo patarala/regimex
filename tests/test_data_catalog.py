@@ -234,6 +234,32 @@ def test_partitions_reject_overlapping_experiments_groups_and_observations(kind:
         seal_dataset("invalid", (train, validation, test))
 
 
+@pytest.mark.parametrize("kind", ["run", "group", "seed"])
+@pytest.mark.parametrize("partition", ["validation", "test"])
+def test_evaluation_rejects_dependent_runs_within_a_partition(
+    kind: str, partition: Partition
+) -> None:
+    manifest, sources = dataset()
+    extra = snapshot(3)
+    previous = next(item for item in manifest.members if item.partition == partition)
+    member = create_snapshot_member(extra, partition)
+    if kind == "run":
+        member = member.model_copy(update={"run_id": previous.run_id})
+    else:
+        group = member.split_group.model_copy(
+            update={
+                "seed" if kind == "seed" else "group_id": previous.split_group.seed
+                if kind == "seed"
+                else previous.split_group.group_id
+            }
+        )
+        member = member.model_copy(update={"split_group": group})
+    updated = seal_dataset("with-revision", (*manifest.members, member))
+    refs = reference_set(updated, (*sources, extra), partition)
+    with pytest.raises(ValueError, match="one snapshot per independent run"):
+        validate_reference_membership(updated, refs)
+
+
 def test_seed_namespaces_do_not_conflate_unrelated_generators() -> None:
     manifest, _ = dataset()
     train, validation, test = manifest.members

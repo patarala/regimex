@@ -99,6 +99,16 @@ class SnapshotMember(CatalogRecord):
     split_group: SplitGroup
     partition: Partition
 
+    def run_and_group_keys(self) -> set[tuple[str, ...]]:
+        group = self.split_group
+        keys: set[tuple[str, ...]] = {
+            ("run", self.source_namespace, self.source_id, self.run_id),
+            ("group", group.namespace, group.group_id),
+        }
+        if group.seed is not None:
+            keys.add(("seed", group.namespace, str(group.seed)))
+        return keys
+
     @model_validator(mode="after")
     def complete_instruments(self) -> Self:
         if len(set(self.instrument_ids)) != len(self.instrument_ids):
@@ -142,14 +152,8 @@ class DatasetPayload(CatalogRecord):
             if identity in snapshots:
                 raise ValueError("dataset contains duplicate snapshot membership")
             snapshots.add(identity)
-            group = member.split_group
-            keys = [
-                ("run", member.source_namespace, member.source_id, member.run_id),
-                ("group", group.namespace, group.group_id),
-                *(("observation", value) for value in member.observation_hashes),
-            ]
-            if group.seed is not None:
-                keys.append(("seed", group.namespace, str(group.seed)))
+            keys = member.run_and_group_keys()
+            keys.update(("observation", value) for value in member.observation_hashes)
             for key in keys:
                 if key in partition_by_key and partition_by_key[key] != member.partition:
                     raise ValueError(
@@ -363,10 +367,15 @@ class RawTrainingData(CatalogRecord):
                 if snapshot_identity in identities:
                     raise ValueError("training values contain duplicate snapshot identities")
                 identities.add(snapshot_identity)
-                keys = (
-                    ("run", sample.source_namespace, export.source.source_id, export.source.run_id),
-                    *(("observation", digest) for digest in observation_hashes(export)),
+                run = (
+                    "run",
+                    sample.source_namespace,
+                    export.source.source_id,
+                    export.source.run_id,
                 )
+                keys = (run, *(("observation", digest) for digest in observation_hashes(export)))
+                if partition == "validation" and partition_by_key.get(run) == "validation":
+                    raise ValueError("Validation requires one snapshot per independent run.")
                 for key in keys:
                     if key in partition_by_key and partition_by_key[key] != partition:
                         raise ValueError(
@@ -399,10 +408,18 @@ def validate_reference_membership(dataset: DatasetManifest, references: Referenc
     references = ReferenceSet.model_validate_json(references.model_dump_json())
     if references.dataset_sha256 != dataset.content_sha256:
         raise ValueError("reference set belongs to a different dataset identity")
+    members = [member for member in dataset.members if member.partition == references.partition]
+    if references.partition in {"validation", "test"}:
+        seen: set[tuple[str, ...]] = set()
+        for member in members:
+            keys = member.run_and_group_keys()
+            if seen.intersection(keys):
+                raise ValueError(
+                    "Evaluation requires one snapshot per independent run and seed group."
+                )
+            seen.update(keys)
     expected = tuple(
-        (member.source_namespace, member.snapshot_id, member.export_sha256)
-        for member in dataset.members
-        if member.partition == references.partition
+        (member.source_namespace, member.snapshot_id, member.export_sha256) for member in members
     )
     actual = tuple(
         (member.source_namespace, member.snapshot_id, member.export_sha256)

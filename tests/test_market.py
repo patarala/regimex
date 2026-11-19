@@ -116,6 +116,19 @@ def test_invalid_strategy_and_market_settings_are_rejected() -> None:
         MarketConfig(initial_prices=(100.001,))
 
 
+@pytest.mark.parametrize(("price", "tick", "lot"), [(1.0, 1.0, 1e-19), (1e-19, 1e-19, 1.0)])
+def test_generator_rejects_unexportable_precision(price: float, tick: float, lot: float) -> None:
+    profile = ParticipantProfile(count=1, cash=0)
+    with pytest.raises(ValidationError, match="18 decimal places"):
+        MarketConfig(
+            initial_prices=(price,),
+            tick_size=tick,
+            lot_size=lot,
+            profiles=(profile,),
+            test_participant=profile,
+        )
+
+
 def test_initial_price_rejects_fractional_ticks_even_when_close_to_a_tick() -> None:
     with pytest.raises(ValidationError, match="multiples"):
         MarketConfig(initial_prices=(0.010000001,), tick_size=0.01)

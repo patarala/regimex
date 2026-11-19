@@ -94,8 +94,8 @@ def observation_inputs(snapshots: tuple[LabeledSnapshot, ...]) -> ObservationInp
     grids = []
     instruments = []
     for item in snapshots:
-        # Namespace-local IDs are insufficient for grouping/bootstrap identity.
-        # This composite ID is for alignment, never a numerical model feature.
+        # Evaluation membership admits one revision per independent run. Its
+        # namespace and snapshot ID align instruments without exposing seed metadata.
         experiment_id = content_hash([item.source_namespace, item.snapshot_id])
         for instrument in item.export.instruments:
             rows = tuple(

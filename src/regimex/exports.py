@@ -28,7 +28,8 @@ from regimex.observation_availability import known_no_executions
 
 SHA256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 Explanation = Annotated[str, Field(min_length=1, max_length=4096, pattern=r"\S")]
-DecimalPlaces = Annotated[int, Field(ge=0, le=18)]
+MAX_DECIMAL_PLACES = 18
+DecimalPlaces = Annotated[int, Field(ge=0, le=MAX_DECIMAL_PLACES)]
 Coverage = Literal["complete", "partial", "unavailable"]
 PriceState = Literal["observed", "carried", "no_execution", "unknown"]
 QuoteState = Literal["observed", "empty", "unknown"]
@@ -86,18 +87,20 @@ class InstrumentUnits(StrictModel):
     volume_decimal_places: DecimalPlaces
 
 
+def decimal_places(value: float) -> int:
+    # Decimal.normalize() could round significant digits under the caller's context.
+    decimal = Decimal(str(value)).as_tuple()
+    places = max(0, -int(decimal.exponent))
+    for digit in reversed(decimal.digits):
+        if digit != 0 or places == 0:
+            break
+        places -= 1
+    return places
+
+
 def _check_precision(value: float | None, places: int) -> None:
-    if value is not None:
-        # Inspect digits directly: Decimal.normalize() rounds under the caller's
-        # context and could erase the very digits this boundary must reject.
-        decimal = Decimal(str(value)).as_tuple()
-        decimal_places = max(0, -int(decimal.exponent))
-        for digit in reversed(decimal.digits):
-            if digit != 0 or decimal_places == 0:
-                break
-            decimal_places -= 1
-        if decimal_places > places:
-            raise ValueError("observation exceeds its instrument's declared numeric precision")
+    if value is not None and decimal_places(value) > places:
+        raise ValueError("observation exceeds its instrument's declared numeric precision")
 
 
 class ExportInstrument(Instrument):

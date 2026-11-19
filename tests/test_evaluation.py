@@ -250,9 +250,8 @@ def test_boundary_uncertainty_keeps_instruments_of_one_experiment_together() -> 
     data = sequences((first, second), ("shared-experiment", "shared-experiment"))
     result = evaluation.report(data, (first, missed), bootstrap_repetitions=100)
     assert result["boundary_metrics"]["f1"] == pytest.approx(2 / 3)
-    assert result["confidence_intervals"]["boundary_f1_percentile_interval"] == pytest.approx(
-        [2 / 3, 2 / 3]
-    )
+    assert result["confidence_intervals"]["boundary_f1_percentile_interval"] is None
+    assert "two independent experiments" in result["confidence_intervals"]["limitation"]
     assert result["experiment_statistics"][0]["boundary_counts"] == [2, 0, 2]
 
 

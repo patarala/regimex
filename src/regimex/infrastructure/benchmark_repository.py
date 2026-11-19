@@ -16,7 +16,13 @@ from regimex.benchmark_contracts import (
     RegistryState,
     dataset_identity_keys,
 )
-from regimex.benchmarks import BenchmarkRegistry, RegistryRevision, _member_keys, _preserves_history
+from regimex.benchmarks import (
+    BenchmarkRegistry,
+    RegistryRevision,
+    _member_keys,
+    _preserves_history,
+    exposure_keys_overlap,
+)
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.service_contracts import Conflict, Forbidden, ModelRecord, NotFound, Principal
 from regimex.storage import json_bytes
@@ -207,11 +213,9 @@ class BenchmarkRepository:
             for membership in history.memberships
             for key in _member_keys(membership.member)
         }
-        if (
-            dataset.manifest.content_sha256
-            in {history.dataset_sha256 for history in state.registry.history}
-            or keys & historical
-        ):
+        if dataset.manifest.content_sha256 in {
+            history.dataset_sha256 for history in state.registry.history
+        } or exposure_keys_overlap(keys, historical):
             raise Forbidden(
                 "Final references require a dataset independent of all exposure history."
             )

@@ -367,6 +367,22 @@ def _bootstrap(
     groups = [grouped[key] for key in sorted(grouped)]
     if not groups:
         raise ValueError("bootstrap requires at least one experiment")
+    metadata: dict[str, JsonValue] = {
+        "method": "Whole experiments sampled with replacement, including all their instruments.",
+        "seed": BOOTSTRAP_SEED,
+        "repetitions": repetitions,
+        "confidence_level": 0.95,
+        "experiment_count": len(groups),
+    }
+    if len(groups) == 1:
+        return {
+            **metadata,
+            "segment_macro_f1_percentile_interval": None,
+            "point_macro_f1_percentile_interval": None,
+            "boundary_f1_percentile_interval": None,
+            "typed_boundary_f1_percentile_interval": None,
+            "limitation": "A sampling interval requires at least two independent experiments.",
+        }
     segment_counts = np.stack([item[0] for item in groups])
     point_counts = np.stack([item[1] for item in groups])
     boundary_counts = np.stack([item[2] for item in groups])
@@ -383,11 +399,7 @@ def _bootstrap(
         boundary_values.append(_boundary_score(boundary_counts[chosen].sum(axis=0)))
         typed_values.append(_boundary_score(typed_counts[chosen].sum(axis=0)))
     return {
-        "method": "Whole experiments sampled with replacement, including all their instruments.",
-        "seed": BOOTSTRAP_SEED,
-        "repetitions": repetitions,
-        "confidence_level": 0.95,
-        "experiment_count": len(groups),
+        **metadata,
         "segment_macro_f1_percentile_interval": cast(
             JsonValue,
             np.quantile(np.asarray(segment_values, dtype=np.float64), [0.025, 0.975]).tolist(),
@@ -448,8 +460,9 @@ def paired_bootstrap(
         return cast(float, _metrics(counts)["macro_f1"]) if index < 2 else _boundary_score(counts)
 
     rng = np.random.Generator(np.random.PCG64(seed))
-    samples = np.empty((repetitions, 4), dtype=np.float64)
-    for repeat in range(repetitions):
+    draws = repetitions if len(identifiers) > 1 else 0
+    samples = np.empty((draws, 4), dtype=np.float64)
+    for repeat in range(draws):
         chosen = rng.integers(0, len(identifiers), size=len(identifiers))
         for index, (left, right) in enumerate(zip(left_arrays, right_arrays, strict=True)):
             samples[repeat, index] = score(right[chosen].sum(axis=0), index) - score(
@@ -467,7 +480,11 @@ def paired_bootstrap(
         changes = [score(b, index) - score(a, index) for a, b in zip(left, right, strict=True)]
         values = samples[:, index]
         # A reflected lower quantile makes swapping models exactly negate the interval.
-        interval = [float(np.quantile(values, 0.025)), -float(np.quantile(-values, 0.025))]
+        interval = (
+            [float(np.quantile(values, 0.025)), -float(np.quantile(-values, 0.025))]
+            if draws
+            else None
+        )
         metrics[name] = {
             "delta": score(right.sum(axis=0), index) - score(left.sum(axis=0), index),
             "percentile_interval": cast(JsonValue, interval),
@@ -485,7 +502,9 @@ def paired_bootstrap(
         "confidence_level": 0.95,
         "experiment_count": len(identifiers),
         "metrics": metrics,
-        "limitation": (
+        "limitation": "A sampling interval requires at least two independent experiments."
+        if not draws
+        else (
             "Sampling uncertainty conditional on these models and references; "
             "not independent label accuracy, training-seed variation "
             "or model-selection uncertainty. "

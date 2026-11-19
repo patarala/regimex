@@ -7,6 +7,7 @@ from typing import Annotated, Literal, Self
 from pydantic import Field, model_validator
 
 from regimex.contracts import Nonnegative, Positive, StrictModel
+from regimex.exports import MAX_DECIMAL_PLACES, decimal_places
 
 Probability = Annotated[float, Field(ge=0, le=1)]
 Lots = Annotated[int, Field(ge=0, le=10**12)]
@@ -68,6 +69,10 @@ class MarketConfig(StrictModel):
             raise ValueError("the test participant must have count=1")
         if sum(profile.count for profile in self.profiles) > 256:
             raise ValueError("at most 256 background participants are supported")
+        if max(decimal_places(self.tick_size), decimal_places(self.lot_size)) > MAX_DECIMAL_PLACES:
+            raise ValueError(
+                f"tick_size and lot_size support at most {MAX_DECIMAL_PLACES} decimal places"
+            )
         for price in self.initial_prices:
             self.price_ticks(price)
         unit = self.tick_size * self.lot_size

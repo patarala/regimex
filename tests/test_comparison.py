@@ -76,7 +76,7 @@ def test_comparison_preserves_downloads_and_escapes_embedded_script(tmp_path: Pa
     paired = json.loads((target / "paired-comparisons.json").read_text())
     assert paired[0]["reference_model_version_id"] == "baseline"
     assert paired[0]["candidate_model_version_id"] == "tcn"
-    assert paired[0]["metrics"]["segment_macro_f1"]["percentile_interval"] == [0, 0]
+    assert paired[0]["metrics"]["segment_macro_f1"]["percentile_interval"] is None
     assert not list(target.glob("*.png"))
 
 
@@ -128,6 +128,7 @@ console.log(JSON.stringify({
     )
     displayed = json.loads(executed.stdout)
     assert "do not include training-seed variation" in displayed["note"]
+    assert "at least two independent experiments" in displayed["note"]
     if scope == "fixed_model_validation":
         assert "validation" in displayed["population"]
         assert "Reused selection data" in displayed["note"]

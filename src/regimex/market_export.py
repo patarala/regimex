@@ -1,6 +1,5 @@
 """Produce sealed observation exports from the native market simulator."""
 
-from decimal import Decimal
 from uuid import NAMESPACE_URL, uuid5
 
 from regimex.contracts import Producer
@@ -15,15 +14,12 @@ from regimex.exports import (
     ModelTimeGrid,
     SourceCapabilities,
     SourceIdentity,
+    decimal_places,
     seal_export,
 )
 from regimex.market import MarketAudit, simulate
 from regimex.market_config import MarketConfig
 from regimex.market_sampling import GENERATOR_VERSION, sample_market
-
-
-def _precision(number: float) -> int:
-    return max(0, -int(Decimal(str(number)).normalize().as_tuple().exponent))
 
 
 def simulate_export(
@@ -75,8 +71,8 @@ def simulate_export(
                     units=InstrumentUnits(
                         price_unit="quote_asset_per_base_asset",
                         volume_unit="base_asset",
-                        price_decimal_places=_precision(market.tick_size),
-                        volume_decimal_places=_precision(market.lot_size),
+                        price_decimal_places=decimal_places(market.tick_size),
+                        volume_decimal_places=decimal_places(market.lot_size),
                     ),
                 )
                 for instrument in run.instruments

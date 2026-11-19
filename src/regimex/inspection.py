@@ -99,7 +99,9 @@ def validate_series(series: Series) -> None:
             )
 
 
-def observed_series(export: ExportV2, prediction: AnalysisResult) -> tuple[Series, ...]:
+def observed_series(
+    export: ExportV2, prediction: AnalysisResult, experiment_id: str
+) -> tuple[Series, ...]:
     result_sha256 = content_hash(prediction.model_dump(mode="json"))
     export, prediction = validate_analysis_result(export, prediction, result_sha256=result_sha256)
     series = []
@@ -116,7 +118,7 @@ def observed_series(export: ExportV2, prediction: AnalysisResult) -> tuple[Serie
         returns, imbalance = _observed_values(rows)
         series.append(
             Series(
-                experiment_id=export.source.snapshot_id,
+                experiment_id=experiment_id,
                 instrument_id=instrument.instrument_id,
                 initial_price=instrument.initial_price,
                 base_asset=instrument.base_asset,
@@ -203,7 +205,19 @@ def inspect_snapshots(
     )
     names = [item.export.source.snapshot_id for item in checked]
     if len(set(names)) != len(names):
-        raise ValueError("report snapshot identifiers must be unique across input namespaces")
+        # Independent exporters can issue the same local ID. A content digest
+        # also distinguishes raw exports from installations sharing a source name.
+        names = [item.export.content_sha256 for item in checked]
+        if experiment_id is not None and experiment_id not in names:
+            matches = [
+                item.export.content_sha256
+                for item in checked
+                if item.export.source.snapshot_id == experiment_id
+            ]
+            if len(matches) > 1:
+                raise ValueError("Ambiguous snapshot identifier. Select its export SHA-256.")
+            if matches:
+                experiment_id = matches[0]
     if dataset is not None:
         dataset = DatasetManifest.model_validate_json(dataset.model_dump_json())
         if len(dataset.members) != len(checked) or any(
@@ -232,9 +246,9 @@ def inspect_snapshots(
         raise ValueError("report results must use the same immutable model, profile and runtime")
     groups = {}
     prediction_identities: list[dict[str, JsonValue]] = []
-    for source in checked:
+    for name, source in zip(names, checked, strict=True):
         prediction = by_hash[source.export.content_sha256]
-        groups[source.export.source.snapshot_id] = observed_series(source.export, prediction)
+        groups[name] = observed_series(source.export, prediction, name)
         prediction_identities.append(
             {
                 "snapshot_id": source.export.source.snapshot_id,
@@ -260,14 +274,19 @@ def inspect_snapshots(
     status_counts: Counter[str] = Counter()
     for name, series_group in groups.items():
         totals[f"experiments_with_{len(series_group)}_instruments"] += 1
+        trade_counts = [
+            row.trade_count
+            for series in series_group
+            for row in series.rows
+            if row.trade_count is not None
+        ]
         experiments.append(
             {
                 "experiment_id": name,
                 "instrument_count": len(series_group),
                 "observations": sum(len(series.rows) for series in series_group),
-                "observed_trade_total": sum(
-                    row.trade_count or 0 for series in series_group for row in series.rows
-                ),
+                "observed_trade_total": sum(trade_counts) if trade_counts else None,
+                "steps_with_trade_count": len(trade_counts),
                 "classified_steps": sum(
                     label != "unclassified" for series in series_group for label in series.regimes
                 ),
@@ -311,12 +330,14 @@ def inspect_snapshots(
         }
         for source in checked
     ]
-    versions = sorted({source.export.producer.version for source in checked})
+    versions = sorted({source.export.source.source_version for source in checked})
     summary: dict[str, object] = {
         "report_version": REPORT_VERSION,
         "source_content_sha256": content_hash(identity),
         "dataset_sha256": dataset.content_sha256 if dataset else None,
-        "sources": identity,
+        "sources": [
+            {**item, "experiment_id": name} for item, name in zip(identity, names, strict=True)
+        ],
         "model": model,
         "results": prediction_identities,
         "generator_version": ", ".join(versions),

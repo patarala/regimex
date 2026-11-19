@@ -22,6 +22,9 @@ def benchmark_member(member: SnapshotMember) -> BenchmarkMember:
         group_id="raw-group:"
         + content_hash(member.split_group.model_dump(mode="json", exclude={"seed"})),
         seed=member.split_group.seed,
+        seed_namespace=member.split_group.namespace
+        if member.split_group.seed is not None
+        else None,
         observation_hashes=member.observation_hashes,
     )
 

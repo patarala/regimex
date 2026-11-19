@@ -29,7 +29,7 @@
   const score = (value, interval) => {
     const element = document.createElement("span");
     element.textContent = number(value);
-    if (value !== null) {
+    if (value !== null && interval && first.experiment_count > 1) {
       const range = document.createElement("span");
       range.className = "range";
       range.textContent = `[${number(interval[0])}, ${number(interval[1])}]`;
@@ -37,11 +37,14 @@
     }
     return element;
   };
-  document.getElementById("population").textContent = `${first.experiment_count} experiments · ${first.instrument_sequence_count} instrument series · ${first.scope === "fixed_model_validation" ? "validation" : "final benchmark"}`;
+  document.getElementById("population").textContent = `${first.experiment_count} experiment${first.experiment_count === 1 ? "" : "s"} · ${first.instrument_sequence_count} instrument series · ${first.scope === "fixed_model_validation" ? "validation" : "final benchmark"}`;
   document.getElementById("reference-note").textContent = first.reference_kind === "automatic"
     ? `Agreement with automatic labels (${first.reference_policy}). These scores do not measure independent human accuracy.`
     : `Agreement with attributed human references (${first.reference_policy}).`;
-  document.getElementById("metric-note").textContent = `Higher F1 is better. Interval IoU ≥ 0.50; boundary tolerance ${first.boundary_metrics.tolerance_steps} steps. Typed boundaries also require both directions to agree. Brackets: 95% whole-experiment intervals. Lag is prediction − reference among aligned typed transitions, without a distance cutoff; positive means later. Distant pairs can represent different events.`;
+  const intervalNote = first.experiment_count === 1
+    ? "Sampling intervals require at least two independent experiments."
+    : "Brackets show 95% whole-experiment intervals.";
+  document.getElementById("metric-note").textContent = `Higher F1 is better. Interval IoU ≥ 0.50; boundary tolerance ${first.boundary_metrics.tolerance_steps} steps. Typed boundaries also require both directions to agree. ${intervalNote} Lag is prediction − reference among aligned typed transitions, without a distance cutoff; positive means later. Distant pairs can represent different events.`;
   table("overview", ["Model", "Interval macro-F1 ↑", "Step macro-F1 ↑", "Boundary timing F1 ↑", "Typed boundary F1 ↑", "Median typed lag, steps"], evaluations.map(item => [
     item.model_version_id,
     score(item.segment_macro_f1, item.confidence_intervals.segment_macro_f1_percentile_interval),
@@ -62,7 +65,9 @@
   const selectionNote = first.scope === "fixed_model_validation"
     ? "Reused selection data limits conclusions about unseen experiments."
     : "Models were fixed before opening this final benchmark; these data were not used for selection.";
-  document.getElementById("paired-note").textContent = `Candidate − ${first.model_version_id}; 95% paired intervals use the same ${first.confidence_intervals.repetitions} experiment draws for both models. Counts compare individual experiment scores; overall Δ pools counts. ${selectionNote} Intervals condition on the saved models and do not include training-seed variation.`;
+  const pairedIntervalNote = first.experiment_count === 1 ? intervalNote
+    : `95% paired intervals use the same ${first.confidence_intervals.repetitions} experiment draws for both models.`;
+  document.getElementById("paired-note").textContent = `Candidate − ${first.model_version_id}. ${pairedIntervalNote} Counts compare individual experiment scores; overall Δ pools counts. ${selectionNote} Intervals condition on the saved models and do not include training-seed variation.`;
   const directions = () => {
     const metric = document.getElementById("metric-kind").value;
     table("directions", ["Model / direction", "Precision", "Recall", "F1", "Reference count", "Predicted count", "Matched"], evaluations.flatMap(item => first.segment_metrics.class_names.map(direction => {

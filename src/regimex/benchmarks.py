@@ -30,7 +30,15 @@ class BenchmarkMember(Record):
     experiment_id: Identifier
     group_id: Identifier
     seed: Seed | None = None
+    # Omit absent scope to retain the digests of historical attestations.
+    seed_namespace: Identifier | None = Field(default=None, exclude_if=lambda value: value is None)
     observation_hashes: Annotated[tuple[SHA256, ...], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def scoped_seed(self) -> Self:
+        if self.seed_namespace is not None and self.seed is None:
+            raise ValueError("a seed namespace requires a seed")
+        return self
 
 
 def _member_keys(member: BenchmarkMember) -> set[tuple[str, ...]]:
@@ -41,8 +49,19 @@ def _member_keys(member: BenchmarkMember) -> set[tuple[str, ...]]:
         *(("observation", value) for value in member.observation_hashes),
     }
     if member.seed is not None:
-        keys.add(("seed", str(member.seed)))
+        key = ("seed", str(member.seed))
+        keys.add((*key, member.seed_namespace) if member.seed_namespace is not None else key)
     return keys
+
+
+def exposure_keys_overlap(left: set[tuple[str, ...]], right: set[tuple[str, ...]]) -> bool:
+    # Historical attestations can omit the generator namespace. Treat those seeds
+    # conservatively when checking a newly scoped exposure against past data.
+    return not left.isdisjoint(right) or any(
+        len(key) == 3 and key[0] == "seed" and key[:2] in other
+        for keys, other in ((left, right), (right, left))
+        for key in keys
+    )
 
 
 class PartitionMembership(Record):
@@ -59,16 +78,18 @@ class DatasetHistory(Record):
     @model_validator(mode="after")
     def isolated_partitions(self) -> Self:
         seen: set[tuple[str, str]] = set()
-        partitions: dict[tuple[str, ...], Partition] = {}
+        partitions: dict[Partition, set[tuple[str, ...]]] = {}
         for item in self.memberships:
             key = (item.member.source_namespace, item.member.experiment_id)
             if key in seen:
                 raise ValueError("dataset contains duplicate experiment membership")
             seen.add(key)
-            for identity in _member_keys(item.member):
-                if identity in partitions and partitions[identity] != item.partition:
-                    raise ValueError("dataset history has overlapping partitions")
-                partitions[identity] = item.partition
+            partitions.setdefault(item.partition, set()).update(_member_keys(item.member))
+        previous: set[tuple[str, ...]] = set()
+        for keys in partitions.values():
+            if exposure_keys_overlap(keys, previous):
+                raise ValueError("dataset history has overlapping partitions")
+            previous.update(keys)
         return self
 
 
@@ -224,11 +245,12 @@ class BenchmarkRegistry(Record):
         for reservation in self.benchmarks:
             self._check_history_binding(reservation.history_count, reservation.history_sha256)
             self._check_attestation(reservation.inventory_attestation, reservation.history_count)
-            if any(_member_keys(member) & prior_keys for member in reservation.members):
+            reservation_keys = {
+                key for member in reservation.members for key in _member_keys(member)
+            }
+            if exposure_keys_overlap(reservation_keys, prior_keys):
                 raise ValueError("benchmark overlaps a prior partition, seed group, or observation")
-            prior_keys.update(
-                identity for member in reservation.members for identity in _member_keys(member)
-            )
+            prior_keys.update(reservation_keys)
             if reservation.freeze is not None:
                 freeze = reservation.freeze
                 self._check_history_binding(freeze.history_count, freeze.history_sha256)

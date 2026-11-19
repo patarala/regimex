@@ -150,6 +150,35 @@ def test_observation_fingerprints_ignore_names_but_preserve_missing_values() -> 
     assert observation_hashes(original) != observation_hashes(observed_zero)
 
 
+def test_scoped_seeds_allow_independent_generators_and_preserve_unscoped_history() -> None:
+    from test_data_catalog import dataset
+
+    from regimex.benchmark_contracts import benchmark_member
+
+    manifest, _ = dataset()
+    train, validation, _ = manifest.members
+    split_group = validation.split_group.model_copy(
+        update={"namespace": "other-generator", "seed": train.split_group.seed}
+    )
+    first = benchmark_member(train)
+    second = benchmark_member(validation.model_copy(update={"split_group": split_group}))
+    independent = history("independent", "7", (("train", first), ("validation", second)))
+    assert len(independent.memberships) == 2
+    with pytest.raises(ValueError, match="overlapping partitions"):
+        history(
+            "same-generator",
+            "8",
+            (
+                ("train", first),
+                ("validation", second.model_copy(update={"seed_namespace": first.seed_namespace})),
+            ),
+        )
+    unscoped = first.model_copy(update={"seed_namespace": None})
+    assert "seed_namespace" not in unscoped.model_dump(mode="json")
+    with pytest.raises(ValueError, match="overlapping partitions"):
+        history("older-exposure", "9", (("train", unscoped), ("validation", second)))
+
+
 def test_each_instrument_is_hashed_to_detect_partially_copied_experiments() -> None:
     source = snapshot("source", 100.0)
     data = source.model_dump(mode="json", exclude={"content_sha256"})

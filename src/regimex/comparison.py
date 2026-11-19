@@ -217,10 +217,10 @@ class _Confidence(_Metric):
     repetitions: Annotated[int, Field(gt=0)]
     confidence_level: Score
     experiment_count: Annotated[int, Field(gt=0)]
-    segment_macro_f1_percentile_interval: list[Score]
-    point_macro_f1_percentile_interval: list[Score]
-    boundary_f1_percentile_interval: list[Score]
-    typed_boundary_f1_percentile_interval: list[Score]
+    segment_macro_f1_percentile_interval: list[Score] | None
+    point_macro_f1_percentile_interval: list[Score] | None
+    boundary_f1_percentile_interval: list[Score] | None
+    typed_boundary_f1_percentile_interval: list[Score] | None
 
     @model_validator(mode="after")
     def ordered_limits(self) -> Self:
@@ -232,7 +232,9 @@ class _Confidence(_Metric):
             self.boundary_f1_percentile_interval,
             self.typed_boundary_f1_percentile_interval,
         ):
-            if len(interval) != 2 or interval[0] > interval[1]:
+            if interval is None and self.experiment_count == 1:
+                continue
+            if interval is None or len(interval) != 2 or interval[0] > interval[1]:
                 raise ValueError("confidence intervals require two ordered endpoints")
         return self
 

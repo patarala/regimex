@@ -29,12 +29,17 @@
   const experimentNames = new Map(
     experimentOrder.map((id, index) => [id, "Experiment " + (index + 1)]),
   );
+  const sources = new Map((predicted ? report.summary.sources : []).map(item => [item.experiment_id, item]));
   experimentOrder.forEach((id) => {
     const indices = experiments.get(id);
     if (!indices) return;
     const option = document.createElement("option");
     option.value = id;
-    option.textContent = experimentNames.get(id) + " · " + countLabel(indices.length, "instrument");
+    const source = sources.get(id);
+    const label = source && id !== source.snapshot_id
+      ? source.source_namespace + " · " + source.snapshot_id + " · " + id.slice(0, 8)
+      : experimentNames.get(id);
+    option.textContent = label + " · " + countLabel(indices.length, "instrument");
     $("experiment").append(option);
   });
   function download(name, path) {
@@ -182,9 +187,7 @@
       "Step width: " + fmt(grid.bin_width, 6) + " " + grid.unit +
       " · history [" + fmt(grid.origin, 6) + ", " + fmt(grid.completed_horizon, 6) + ")";
     const source = current.source;
-    const sourceHash = blind ? report.experiment_hash : report.summary.sources.find(
-      (item) => item.snapshot_id === current.experiment_id,
-    ).export_sha256;
+    const sourceHash = blind ? report.experiment_hash : sources.get(current.experiment_id).export_sha256;
     const provenance = [
       ["Source", source.source_id + " · " + source.source_version],
       ["Snapshot", source.snapshot_id],

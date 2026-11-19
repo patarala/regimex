@@ -135,6 +135,39 @@ def test_cli_report_switches_lanes_within_the_zoomed_experiment(
         page.close()
 
 
+def test_report_switches_between_sources_with_the_same_snapshot_id(
+    browser: Any, tmp_path: Path
+) -> None:
+    from test_inspection import predictions, source
+
+    from regimex.visualization import render_snapshot_report
+
+    first, second = source(0), source(1)
+    payload = second.export.model_dump(mode="json", exclude={"content_sha256"})
+    payload["source"]["snapshot_id"] = first.export.source.snapshot_id
+    second = second.model_copy(
+        update={
+            "source_namespace": "second-installation",
+            "export": seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload))),
+        }
+    )
+    output = tmp_path / "report"
+    sources = (first, second)
+    render_snapshot_report(sources, output, results=predictions(sources))
+    page = browser.new_page(viewport={"width": 390, "height": 860}, offline=True)
+    try:
+        page.goto((output / "index.html").as_uri())
+        selector = page.get_by_label("Experiment", exact=True)
+        for item in (second, first):
+            selector.select_option(item.export.content_sha256)
+            page.locator("#provenance").get_by_text(
+                item.export.content_sha256, exact=True
+            ).wait_for()
+            assert item.source_namespace in selector.locator("option:checked").inner_text()
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 def test_difference_zoom_and_partial_terminal_bin(browser: Any, tmp_path: Path, width: int) -> None:
     raw = _export(steps=8).model_dump(mode="json", exclude={"content_sha256"})
