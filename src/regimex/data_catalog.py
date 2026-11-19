@@ -177,6 +177,16 @@ class DatasetPayload(CatalogRecord):
 class DatasetManifest(DatasetPayload):
     content_sha256: SHA256
 
+    def require_native_seed_groups(self) -> None:
+        if any(
+            member.source_id == "regimex-exchange" and member.split_group.seed is None
+            for member in self.members
+        ):
+            raise ValueError(
+                "A native market snapshot in this dataset has no registered seed. "
+                "Regenerate it with its original seed and create a new dataset for model selection."
+            )
+
     @model_validator(mode="after")
     def immutable_identity(self) -> Self:
         if self.content_sha256 != content_hash(
@@ -506,6 +516,7 @@ def load_training_data(
     or claim to sandbox a callback with broader external permissions.
     """
     dataset = DatasetManifest.model_validate_json(dataset.model_dump_json())
+    dataset.require_native_seed_groups()
     labels = ReferenceSet.model_validate_json(labels.model_dump_json())
     validation_references = ReferenceSet.model_validate_json(
         validation_references.model_dump_json()

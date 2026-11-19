@@ -5,13 +5,15 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 import pytest
 from support.report_fixtures import prediction_for
 from typer.testing import CliRunner
 
 from regimex.cli import app
-from regimex.exports import ExportV2
+from regimex.exports import ExportPayloadV2, ExportV2, seal_export
+from regimex.market_identity import imported_seed_group, market_seed_group
 
 runner = CliRunner()
 
@@ -96,6 +98,26 @@ def test_generated_run_id_tracks_all_simulation_inputs(tmp_path: Path) -> None:
         assert result.exit_code == 0, result.output
         ids.add(ExportV2.model_validate_json(path.read_bytes()).source.run_id)
     assert len(ids) == 4
+
+
+def test_native_snapshot_with_an_opaque_run_id_needs_its_matching_seed() -> None:
+    pytest.importorskip("numpy")
+    from regimex.market_export import sample_snapshot
+
+    snapshot = sample_snapshot(seed=17, steps=64, instruments=1)
+    value = snapshot.model_dump(mode="json", exclude={"content_sha256"})
+    old_id = str(uuid5(NAMESPACE_URL, f"regimex:single-market:{snapshot.source.configuration_id}"))
+    value["source"].update(run_id=old_id, snapshot_id=old_id)
+    old = seal_export(ExportPayloadV2.model_validate_json(json.dumps(value)))
+    group = market_seed_group(17)
+    assert old.source.run_id != snapshot.source.run_id
+    assert imported_seed_group(snapshot, None) == imported_seed_group(old, group) == group
+    with pytest.raises(ValueError, match="requires its original seed"):
+        imported_seed_group(old, None)
+    with pytest.raises(ValueError, match="sampled market configuration"):
+        imported_seed_group(old, market_seed_group(18))
+    with pytest.raises(ValueError, match="declared split group"):
+        imported_seed_group(snapshot, market_seed_group(18))
 
 
 def test_generate_leaves_existing_file_in_place(tmp_path: Path) -> None:

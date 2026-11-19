@@ -20,6 +20,7 @@ from regimex.benchmark_contracts import (
     RegistryState,
     benchmark_member,
     dataset_identity_keys,
+    require_selection_dataset,
 )
 from regimex.benchmarks import (
     BenchmarkRegistry,
@@ -206,6 +207,7 @@ class BenchmarkService:
     ) -> BenchmarkView:
         def transition(connection: Connection, state: RegistryState) -> BenchmarkRegistry:
             dataset = self.admin_repository._dataset(connection, principal.owner_id, dataset_id)
+            require_selection_dataset(dataset.manifest)
             references = self.admin_repository._reference(
                 connection, principal.owner_id, reference_set_id, allow_test=True
             )
@@ -275,6 +277,7 @@ class BenchmarkService:
         def transition(connection: Connection, state: RegistryState) -> BenchmarkRegistry:
             view = self.repository.view(connection, state, principal.owner_id, benchmark_id)
             self.repository.require_inventory_scope(state, view)
+            self.repository.require_reserved_seed_groups(connection, view)
             return record_selection_started(
                 state.registry, benchmark_id, at=_event_time(state.registry)
             )

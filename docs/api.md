@@ -186,8 +186,24 @@ For example:
 }
 ```
 
-The split keeps whole experiments and seed groups together. Download the
-ordered membership with `GET /datasets/{id}/manifest`.
+The split keeps whole experiments and seed groups together. In `snapshots`
+mode, exports from `regimex generate` with the same seed share a group even
+when their lengths or instrument counts differ. If an older native export has
+a UUID-only run ID, supply its original seed group on the member, for example
+`"split_group":{"namespace":"regimex-exchange-seed/3.0","group_id":"seed:17","seed":17}`.
+For other simulators, set `split_group` when different runs share a seed or
+another source of dependence. Without that declaration, each source run is its
+own group. A snapshot keeps its registered group across datasets. Download
+the ordered membership with `GET /datasets/{id}/manifest`.
+
+If a UUID-only native snapshot was already registered without a seed, its
+existing manifest stays readable. To use the observations for new training or
+benchmark selection, regenerate the snapshot with its original seed, steps and
+instrument count, upload it and create a new dataset. The new run ID carries
+the seed. If that seed was used for past development, register the recovered
+seed as supplemental history with `POST /benchmarks/history/import` and renew
+the inventory attestation before reserving a benchmark. Earlier manifests
+cannot identify same-seed runs of a different length from their hashes alone.
 
 Create separate training and validation references with `POST /reference-sets`:
 

@@ -19,6 +19,7 @@ pytest.importorskip("alembic")
 pytest.importorskip("procrastinate")
 
 from fastapi.testclient import TestClient
+from httpx2 import Response
 from pydantic import SecretStr
 
 from regimex.admin_api import (
@@ -444,6 +445,108 @@ def test_snapshot_dataset_import_binds_the_owner_idempotency_key(
     distinct = context.client.post("/api/v1/datasets", json=changed, headers=context.headers)
     assert distinct.status_code == 201, distinct.text
     assert distinct.json()["dataset_id"] != created.json()["dataset_id"]
+
+
+def test_cli_seed_groups_survive_snapshot_upload_and_dataset_import(
+    administrative_api: AdministrativeAPI, tmp_path: Path
+) -> None:
+    pytest.importorskip("numpy")
+    from typer.testing import CliRunner
+
+    from regimex.cli import app
+    from regimex.market_identity import market_seed_group
+
+    context = administrative_api
+    snapshots = []
+    for seed, steps in ((17, 64), (17, 96), (22, 64), (31, 64)):
+        path = tmp_path / f"{seed}-{steps}.json"
+        args = ["generate", "--seed", str(seed), "--steps", str(steps), "--instruments", "1"]
+        result = CliRunner().invoke(app, [*args, "--output", str(path)])
+        assert result.exit_code == 0, result.output
+        uploaded = context.client.post(
+            "/api/v1/snapshots",
+            content=path.read_bytes(),
+            headers={**context.headers, "Content-Type": "application/json"},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        snapshots.append(uploaded.json()["snapshot_id"])
+    assert len(set(snapshots)) == 4
+
+    def create(indices: tuple[int, int, int], *, override: bool = False) -> Response:
+        members = [
+            {"snapshot_id": snapshots[i], "partition": partition}
+            for i, partition in zip(indices, ("train", "validation", "test"), strict=True)
+        ]
+        if override:
+            members[1]["split_group"] = market_seed_group(123).model_dump(mode="json")
+        return context.client.post(
+            "/api/v1/datasets",
+            json={"mode": "snapshots", "members": members},
+            headers=context.headers,
+        )
+
+    assert create((0, 1, 2)).status_code == 422
+    assert create((0, 1, 2), override=True).status_code == 422
+    distinct = create((0, 2, 3))
+    assert distinct.status_code == 201, distinct.text
+    manifest = context.client.get(
+        f"/api/v1/datasets/{distinct.json()['dataset_id']}/manifest", headers=context.headers
+    )
+    assert manifest.status_code == 200, manifest.text
+    assert [member["split_group"] for member in manifest.json()["members"]] == [
+        market_seed_group(seed).model_dump(mode="json") for seed in (17, 22, 31)
+    ]
+
+
+def test_previously_bound_sample_keeps_its_historical_group(
+    administrative_api: AdministrativeAPI,
+) -> None:
+    pytest.importorskip("numpy")
+    from uuid import NAMESPACE_URL, uuid5
+
+    from regimex.admin_contracts import CatalogBinding, DatasetSelection, DatasetSpec
+    from regimex.data_catalog import SplitGroup
+    from regimex.exports import ExportPayloadV2, seal_export
+    from regimex.market_export import sample_snapshot
+    from regimex.market_identity import market_seed_group
+    from regimex.service_contracts import Conflict
+
+    context = administrative_api
+    owner = context.analysis.authenticate(context.token)
+    export = sample_snapshot(seed=17, steps=64, instruments=1)
+    value = export.model_dump(mode="json", exclude={"content_sha256"})
+    run_id = str(uuid5(NAMESPACE_URL, f"regimex:single-market:{export.source.configuration_id}"))
+    value["source"].update(run_id=run_id, snapshot_id=run_id)
+    old = seal_export(ExportPayloadV2.model_validate_json(json_bytes(value)))
+    uploaded = context.client.post(
+        "/api/v1/snapshots",
+        content=old.model_dump_json(),
+        headers={**context.headers, "Content-Type": "application/json"},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    snapshot_id = UUID(uploaded.json()["snapshot_id"])
+    binding = CatalogBinding(
+        snapshot_id=snapshot_id,
+        source_namespace=content_hash([owner.owner_id, old.source.source_id, run_id]),
+        split_group=SplitGroup(
+            namespace=content_hash([owner.owner_id, old.source.source_id]), group_id=run_id
+        ),
+    )
+    context.service.repository.add_binding(owner, binding)
+    spec = DatasetSpec(
+        dataset_id="new-dataset",
+        members=(
+            DatasetSelection(
+                snapshot_id=snapshot_id, partition="train", split_group=market_seed_group(17)
+            ),
+            DatasetSelection(snapshot_id=uuid4(), partition="validation"),
+            DatasetSelection(snapshot_id=uuid4(), partition="test"),
+        ),
+    )
+    with pytest.raises(Conflict, match="registered group"):
+        context.service.create_dataset(owner, spec)
+    assert context.service.repository.get_binding(owner, snapshot_id) == binding
+    assert context.analysis.read_snapshot(owner, snapshot_id) == old
 
 
 @pytest.mark.parametrize("architecture", ["baseline", "tcn"])

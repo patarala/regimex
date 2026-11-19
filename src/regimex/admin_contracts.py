@@ -83,6 +83,7 @@ class CatalogBinding(StrictModel):
 class DatasetSelection(StrictModel):
     snapshot_id: UUID
     partition: Partition
+    split_group: SplitGroup | None = Field(default=None, exclude_if=lambda group: group is None)
 
 
 class DatasetSpec(StrictModel):

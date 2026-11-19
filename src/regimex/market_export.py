@@ -1,9 +1,6 @@
 """Produce sealed observation exports from the native market simulator."""
 
-from uuid import NAMESPACE_URL, uuid5
-
 from regimex.contracts import Producer
-from regimex.data_catalog import content_hash
 from regimex.exports import (
     ExportInstrument,
     ExportObservation,
@@ -19,6 +16,7 @@ from regimex.exports import (
 )
 from regimex.market import MarketAudit, simulate
 from regimex.market_config import MarketConfig
+from regimex.market_identity import sampled_configuration, sampled_run_id
 from regimex.market_sampling import GENERATOR_VERSION, sample_market
 
 
@@ -94,15 +92,8 @@ def simulate_export(
 def sample_snapshot(*, seed: int, steps: int, instruments: int) -> ExportV2:
     """Simulate one sampled market with an identity reproducible across invocations."""
     market = sample_market(seed, instruments)
-    identity = content_hash(
-        {
-            "generator_version": GENERATOR_VERSION,
-            "seed": seed,
-            "steps": steps,
-            "instruments": instruments,
-        }
-    )
-    run_id = str(uuid5(NAMESPACE_URL, f"regimex:single-market:{identity}"))
+    identity = sampled_configuration(GENERATOR_VERSION, seed, steps, instruments)
+    run_id = sampled_run_id(seed, identity)
     export, _ = simulate_export(
         market, seed=seed, steps=steps, configuration_id=identity, run_id=run_id
     )

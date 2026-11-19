@@ -11,8 +11,16 @@ from regimex.benchmarks import (
     _member_keys,
 )
 from regimex.contracts import Identifier, StrictModel
-from regimex.data_catalog import SnapshotMember, content_hash
+from regimex.data_catalog import DatasetManifest, SnapshotMember, content_hash
 from regimex.operations import Sha256
+from regimex.service_contracts import Conflict
+
+
+def require_selection_dataset(manifest: DatasetManifest) -> None:
+    try:
+        manifest.require_native_seed_groups()
+    except ValueError as exc:
+        raise Conflict(str(exc)) from exc
 
 
 def benchmark_member(member: SnapshotMember) -> BenchmarkMember:
