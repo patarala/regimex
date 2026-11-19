@@ -134,6 +134,21 @@ the validation scores and the bundle identifies the selected seed and update.
 
 ## Saved models
 
+When importing a bundle with `regimex service register-model`, use
+`--runtime-file PATH` to pin its inference settings. For example, this JSON
+runs the model on the CPU with one numerical thread and processes at most two
+sequences per batch:
+
+```json
+{"device": "cpu", "threads": 1, "max_batch_size": 2}
+```
+
+Omitted fields use the runtime defaults, including a 512 MiB model cache
+budget. For a thread-count change alone, the CLI also accepts `--threads N`.
+Each saved analysis records the resolved policy. Registering the same model
+version with a different policy returns a conflict. Use a separate test
+installation to compare runtime settings for the same bundle.
+
 Regimex discovers trusted backends through the `regimex.models` entry point.
 The API reads their descriptors. Workers load the scientific libraries and
 check device support. Both built-in backends run on CPU.
