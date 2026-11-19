@@ -24,6 +24,7 @@ from regimex.model_registry import (
     TrainingRuntime,
     WorkerCapability,
     baseline_descriptor,
+    read_inference_runtime,
     tcn_descriptor,
 )
 
@@ -79,6 +80,38 @@ def installed_plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     # Each test receives a newly imported module and therefore a fresh probe log.
     monkeypatch.delitem(sys.modules, "regimex_test_plugin", raising=False)
     return tmp_path
+
+
+def test_read_inference_runtime_accepts_a_link_and_checks_the_byte_limit(tmp_path: Path) -> None:
+    config = tmp_path / "runtime.json"
+    link = tmp_path / "current"
+    link.symlink_to(config)
+    config.write_bytes(b'{"threads":3}'.ljust(8192))
+    assert read_inference_runtime(link) == InferenceRuntime(threads=3)
+    with config.open("ab") as stream:
+        stream.write(b" ")
+    with pytest.raises(ValueError, match="exceeds 8 KiB"):
+        read_inference_runtime(link)
+
+
+def test_read_inference_runtime_rejects_a_fifo_without_a_writer(tmp_path: Path) -> None:
+    fifo = tmp_path / "runtime"
+    os.mkfifo(fifo)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from pathlib import Path; "
+            "from regimex.model_registry import read_inference_runtime; "
+            "read_inference_runtime(Path(sys.argv[1]))",
+            str(fifo),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode != 0
+    assert "Inference runtime JSON must be a regular file" in result.stderr
 
 
 def changed_descriptor(**changes: Any) -> ArchitectureDescriptor:

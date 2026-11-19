@@ -7,14 +7,17 @@ describes an installed architecture; it does not establish worker availability.
 
 import importlib
 import json
+import os
+import stat
 from collections.abc import Callable, Collection, Iterable
 from datetime import UTC, datetime
 from enum import StrEnum
 from importlib import metadata
+from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated, Literal, Self, cast
 
-from pydantic import ConfigDict, Field, JsonValue, model_validator
+from pydantic import ConfigDict, Field, JsonValue, ValidationError, model_validator
 
 from regimex.contracts import MAX_STEPS, Seed, StrictModel
 
@@ -174,6 +177,27 @@ class InferenceRuntime(StrictModel):
     threads: Annotated[int, Field(ge=1, le=256)] = 2
     max_batch_size: Annotated[int, Field(ge=1, le=4096)] = 16
     model_cache_budget_bytes: Annotated[int, Field(ge=1)] = 512 * 1024**2
+
+
+_MAX_INFERENCE_RUNTIME_BYTES = 8 * 1024
+
+
+def read_inference_runtime(path: Path) -> InferenceRuntime:
+    """Read a bounded inference policy, following links to regular files."""
+    # Opening a FIFO without O_NONBLOCK would wait for a writer before we can inspect it.
+    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+            raise ValueError("Inference runtime JSON must be a regular file.")
+        raw = stream.read(_MAX_INFERENCE_RUNTIME_BYTES + 1)
+    if len(raw) > _MAX_INFERENCE_RUNTIME_BYTES:
+        raise ValueError("Inference runtime JSON exceeds 8 KiB.")
+    try:
+        return InferenceRuntime.model_validate_json(raw)
+    except ValidationError as exc:
+        error = exc.errors(include_input=False, include_context=False)[0]
+        field = ".".join(map(str, error["loc"])) or "JSON"
+        raise ValueError(f"Invalid inference runtime ({field}): {error['msg']}") from None
 
 
 class ArchitectureInfo(StrictModel):
