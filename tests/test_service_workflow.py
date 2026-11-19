@@ -119,6 +119,8 @@ def published_model(service: AnalysisService, tmp_path: Path) -> None:
 def test_schema_probe_remains_ready_when_active_model_metadata_is_invalid(
     service: AnalysisService, tmp_path: Path
 ) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("httpx2")
     from fastapi.testclient import TestClient
 
     from regimex.api import create_app

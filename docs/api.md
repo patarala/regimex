@@ -324,9 +324,11 @@ settings are rejected. See [metrics](quality.md).
 
 ## Health and error handling
 
-`/health/live` checks the API process. `/health/ready` checks database schema and
-restore readiness. `/health/models` reports active deployment configuration; it
-does not execute a backend. Workers have a separate heartbeat health command.
+`/health/live` checks the API process. `/health/ready` checks the database schema
+and restore state. `/health/models` also validates the active model's stored
+metadata. If the database is ready but the model probe returns HTTP 503, run
+`regimex service doctor` to inspect the deployment. Workers have a separate
+heartbeat health command.
 
 Authenticated `GET /service-status` reports analysis queue availability. The `state`
 field is `available` for a free worker slot, `busy` when all slots are occupied,
