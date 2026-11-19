@@ -154,8 +154,7 @@
     const intervals = current.intervals;
     const group = experiments.get(current.experiment_id);
     const paired = predicted && group.length > 1;
-    $("explorer").parentElement?.classList.toggle("paired", paired);
-    const compact = paired && $("explorer").clientWidth < 600;
+    const compact = $("explorer").clientWidth < 600;
     const classified = intervals.reduce(
       (sum, interval) => sum + (interval.direction == null ? 0 : interval.stop - interval.start),
       0,
@@ -263,9 +262,13 @@
     const traces = [];
     function line(name, values, panel, color, extras = {}) {
       const suffix = panel ? String(panel + 1) : "";
+      // A single value between gaps has no line segment to draw.
+      const markerSizes = values.map((value, i) =>
+        value != null && values[i - 1] == null && values[i + 1] == null ? 5 : 0);
       traces.push({
         type: "scatter",
-        mode: "lines",
+        mode: markerSizes.some((size) => size > 0) ? "lines+markers" : "lines",
+        marker: {color, size: markerSizes},
         name,
         x: steps,
         y: values,
@@ -488,6 +491,6 @@
     update();
   };
   $("reset").onclick = () => update();
-  $("quotes").onchange = () => Plotly.restyle("explorer", { visible: $("quotes").checked }, [1, 2]);
+  $("quotes").onchange = () => update(true);
   update();
 })();

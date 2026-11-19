@@ -135,6 +135,76 @@ def test_cli_report_switches_lanes_within_the_zoomed_experiment(
         page.close()
 
 
+@pytest.mark.parametrize("width", [1280, 390])
+def test_cli_report_draws_isolated_observations_without_connecting_gaps(
+    browser: Any, tmp_path: Path, width: int
+) -> None:
+    from test_inspection import predictions, source
+
+    from regimex.visualization import render_snapshot_report
+
+    item = source(2, active=True)
+    payload = item.export.model_dump(mode="json", exclude={"content_sha256"})
+    payload["capabilities"]["price_policy"] = "execution_in_bin_only"
+    payload["capabilities"]["historical_quotes"].update(
+        mode="retained_snapshots", coverage="partial", provenance="Recorded quote at step 3."
+    )
+    for row in payload["observations"]:
+        if row["step"] in (0, 2, 3, 5, 7):
+            row.update(last_price=102.0 + row["step"])
+        else:
+            row.update(last_price=None, price_state="no_execution", trade_count=0, trade_volume=0.0)
+        if row["step"] == 3:
+            row.update(best_bid=104.0, bid_state="observed")
+    item = item.model_copy(
+        update={"export": seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload)))}
+    )
+    quote_only = source(3, missing=True)
+    quotes = quote_only.export.model_dump(mode="json", exclude={"content_sha256"})
+    quotes["capabilities"]["historical_quotes"] = payload["capabilities"]["historical_quotes"]
+    quotes["observations"][3].update(best_bid=104.0, bid_state="observed")
+    quote_only = quote_only.model_copy(
+        update={"export": seal_export(ExportPayloadV2.model_validate_json(json.dumps(quotes)))}
+    )
+    sources = (item, quote_only)
+    output = tmp_path / "report"
+    render_snapshot_report(sources, output, results=predictions(sources))
+    page = browser.new_page(viewport={"width": width, "height": 860}, offline=True)
+    try:
+        page.goto((output / "index.html").as_uri())
+        price = page.locator("#explorer .scatterlayer").first.locator(".trace").first
+        price.wait_for(state="attached")
+        assert page.locator(".chart-scroll").evaluate(
+            "(node) => node.scrollWidth <= node.clientWidth + 1"
+        )
+        markers = price.locator(".point").evaluate_all(
+            "(nodes) => nodes.filter(node => node.getBBox().width > 0).map(node => node.__data__.x)"
+        )
+        assert markers == [0, 5, 7]
+        assert (
+            price.locator(".js-line").evaluate_all(
+                "(paths) => paths.filter(path => path.getTotalLength() > 0).length"
+            )
+            == 1
+        )
+
+        page.get_by_label("Experiment", exact=True).select_option("snapshot-3")
+        bid_point = page.locator("#explorer .scatterlayer").first.locator(".point")
+        bid_point.wait_for()
+        assert bid_point.evaluate("(node) => node.getBBox().width > 0")
+        empty_panels = page.locator("#explorer").get_by_text("No observed values", exact=True)
+        initially_empty = empty_panels.count()
+        toggle = page.get_by_label("Best quotes")
+        toggle.uncheck()
+        bid_point.wait_for(state="hidden")
+        assert empty_panels.count() == initially_empty + 1
+        toggle.check()
+        bid_point.wait_for()
+        assert empty_panels.count() == initially_empty
+    finally:
+        page.close()
+
+
 def test_report_switches_between_sources_with_the_same_snapshot_id(
     browser: Any, tmp_path: Path
 ) -> None:

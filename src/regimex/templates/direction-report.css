@@ -86,9 +86,6 @@ p {
 .chart-scroll {
   overflow-x: auto;
 }
-.chart-canvas {
-  min-width: 820px;
-}
 .chart-scroll:focus-visible,
 .table-wrap:focus-visible,
 summary:focus-visible,
@@ -174,12 +171,8 @@ a:focus-visible {
 }
 #explorer {
   width: 100%;
-  min-width: 820px;
-  height: auto;
-}
-.chart-canvas.paired,
-.chart-canvas.paired #explorer {
   min-width: 0;
+  height: auto;
 }
 .table-wrap {
   overflow-x: auto;
