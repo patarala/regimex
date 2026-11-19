@@ -82,3 +82,69 @@ See the [integration contract](integration.md).
 A downloaded HTML report carries the observations, predictions and plotting
 code it needs. The CLI can also build a report directory from matching exports
 and saved results. See [using reports](usage.md#read-a-report).
+
+## Scaling Regimex
+
+The API accepts and serves work. Analysis workers claim jobs from the same
+PostgreSQL queue, and each runs one bounded computation at a time. Training and
+maintenance have their own workers. These process boundaries let an operator
+add analysis capacity independently and keep model imports out of the web
+process. PostgreSQL also commits the intake record and queue delivery together.
+A separate message broker would require another mechanism for that guarantee.
+
+### Add capacity on one host
+
+For a Compose installation, set the following in the project's `.env` file
+and apply with `docker compose --profile service up -d analysis-worker`.
+Each replica has a separate work directory, model cache and health identity.
+The object volume and job queue are shared.
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `REGIMEX_ANALYSIS_REPLICAS` | 1 | Number of analysis worker containers |
+| `REGIMEX_ANALYSIS_WORKER_CPUS` | 2 | CPU quota per replica, fractional values allowed |
+| `REGIMEX_ANALYSIS_CPUSET` | All CPUs available to the container | Optional CPU IDs, for example `2-3`, for the workers and their computation children |
+| `REGIMEX_ANALYSIS_WORKER_MEMORY` | 8g | Container memory limit per replica, including its cache, scratch and child |
+
+For a native deployment, additional worker processes need distinct
+`REGIMEX_WORK_ROOT` values. Use the same database, object store and storage
+limits. Stop all replicas before offline maintenance. The native installer's
+backup and update commands manage only its own units.
+
+Compare completed analyses per minute, queue delay, worker occupancy and peak
+memory while varying replica count. For a comparison at constant resources,
+keep the combined worker CPU and memory budgets fixed. For an expansion, leave
+headroom for PostgreSQL, the API and administrative work. The model's thread
+count is set on registration. More threads and more workers can compete for the
+same CPUs.
+
+If upload or polling latency rises while workers have spare capacity, measure
+the API and database separately. Uvicorn's `REGIMEX_HTTP_CONCURRENCY_LIMIT`
+controls admission per API process. Raising it permits more simultaneous
+request bodies and database connections. The supplied Compose API publishes
+one host port. Multiple API replicas would need a shared HTTPS entry point
+that preserves the configured origin and authentication checks.
+
+### Accelerators and multiple hosts
+
+The baseline uses CPU numerical libraries, and the released TCN uses a CPU
+PyTorch build. Device selection forms part of the immutable inference policy.
+The packaged workers validate CPU execution and reject a CUDA request.
+Before adding a GPU worker, measure the part of worker time spent in model
+prediction. Model restoration, report generation and storage also contribute
+to latency.
+
+A GPU deployment would need a separately tested worker image, a device-specific
+queue chosen with the model at intake, and capability checks on the workers
+that consume it. Keep the API machine independent of accelerator availability.
+Bind the selected runtime to the accepted job, enforce device memory limits
+and verify probabilities and decoded intervals against the CPU reference on
+real hardware. A dedicated inference service becomes worth evaluating when
+keeping models resident or batching requests across users saves enough time
+to cover the extra transfer and scheduling cost.
+
+The current storage contract limits writers to a single host. The local
+backend uses filesystem locks, and S3 writers also share a local coordination
+directory for capacity checks and deletion. To put writers on multiple hosts,
+first replace this coordination with shared, fenced reservations and test
+worker loss during writes, cleanup and restore. See [storage guarantees](storage.md).

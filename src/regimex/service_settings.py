@@ -24,6 +24,8 @@ class ServiceSettings(StrictModel):
     work_root: Path = _DEFAULT_WORK_ROOT
     public_origin: Annotated[str, Field(min_length=1, max_length=2048)] = "https://localhost"
     allow_loopback_http: bool = False
+    # Uvicorn counts the current connection when testing its admission limit.
+    http_concurrency_limit: Annotated[int, Field(ge=2)] = 8
     http_header_timeout_seconds: Annotated[int, Field(ge=1, le=60)] = 10
     http_body_timeout_seconds: Annotated[int, Field(ge=1, le=300)] = 30
     session_ttl_seconds: Annotated[int, Field(ge=60, le=8 * 3600)] = 1800
@@ -144,6 +146,7 @@ class ServiceSettings(StrictModel):
             raise ValueError("REGIMEX_S3 settings require REGIMEX_OBJECT_BACKEND=s3")
         for name in (
             "max_object_bytes",
+            "http_concurrency_limit",
             "http_header_timeout_seconds",
             "http_body_timeout_seconds",
             "max_store_bytes",

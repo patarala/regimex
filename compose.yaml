@@ -101,6 +101,9 @@ services:
     <<: *service-common
     image: regimex-api:${REGIMEX_IMAGE_TAG:-local}
     build: {context: ., target: api}
+    environment:
+      <<: *service-environment
+      REGIMEX_HTTP_CONCURRENCY_LIMIT: ${REGIMEX_HTTP_CONCURRENCY_LIMIT:-8}
     command: [service, serve, --host, 0.0.0.0, --port, "8000", --tls-cert-file, /run/secrets/api_certificate, --tls-key-file, /run/secrets/api_key]
     secrets: [database_dsn, api_certificate, api_key, api_ca]
     networks: [backend, frontend]
@@ -128,8 +131,10 @@ services:
       timeout: 8s
       retries: 3
       start_period: 30s
-    cpus: 2.0
-    mem_limit: 8g
+    scale: ${REGIMEX_ANALYSIS_REPLICAS:-1}
+    cpus: ${REGIMEX_ANALYSIS_WORKER_CPUS:-2.0}
+    cpuset: "${REGIMEX_ANALYSIS_CPUSET:-}"
+    mem_limit: ${REGIMEX_ANALYSIS_WORKER_MEMORY:-8g}
 
   admin-worker:
     <<: *service-common
