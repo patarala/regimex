@@ -113,8 +113,8 @@ reservations](storage.md#owner-and-connection-quotas).
 ## History and diagnostics
 
 Call `GET /api/v1/connection` with the simulator's integration bearer key and
-no delegated headers. Compare the returned `source_namespace` and `scopes`
-with the backend configuration. Any valid integration key can do this, even
+no delegated headers. Compare the returned `analysis_protocol`, `source_namespace`
+and `scopes` with the backend configuration. Any valid integration key can do this, even
 without `read`. It consumes one connection request. A `401` can mean a wrong,
 expired or revoked key, or a paused connection. Check the key and connection
 in **Connections**. For worker and model readiness use the [deployment health

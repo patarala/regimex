@@ -66,8 +66,9 @@ class IntegrationView(StrictModel):
 
 
 class IntegrationConnectionView(StrictModel):
-    """The caller's connection scope, without account or credential identifiers."""
+    """Integration protocol and permissions available to the backend."""
 
+    analysis_protocol: Literal["regimex-analysis/1"] = "regimex-analysis/1"
     source_namespace: Identifier
     scopes: tuple[IntegrationScope, ...]
 
