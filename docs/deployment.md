@@ -244,6 +244,17 @@ pass also closes abandoned maintenance jobs. Each pass clears up to 1,000
 successful recovery jobs and their queue events. Run `regimex service recover`
 to process another batch immediately. Failed jobs remain available for
 diagnosis. Permanent data or configuration errors end the operation.
+Recovery leaves operations with an unsupported contract version for a compatible
+release to process. Their job endpoints return `unsupported_contract`. This query
+lists affected operations in the service schema for operation contract 1.2.
+
+```sql
+SELECT operation_id, state, document->'version' AS version
+FROM regimex_operations
+WHERE state IN ('queued', 'running', 'cancel_requested')
+  AND document->'version' IS DISTINCT FROM '"1.2"'::jsonb;
+```
+
 Backups, restoration and orphan cleanup require every writer stopped, including
 processes outside Compose. Follow the [storage procedure](storage.md).
 

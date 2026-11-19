@@ -32,6 +32,7 @@ from regimex.service_contracts import (
     SnapshotRecord,
     StaleAttempt,
     Unauthorized,
+    UnsupportedContract,
 )
 from regimex.service_settings import ServiceSettings
 from regimex.storage import json_bytes
@@ -881,6 +882,47 @@ def test_failed_delivery_before_claim_is_repaired_with_a_bounded_budget(
         assert repository.recover_queued_deliveries() == ()
     assert _counts(repository) == (1, 3)
     assert repository.claim_operation(operation_id) is None
+
+
+@pytest.mark.parametrize("running", [False, True])
+@pytest.mark.parametrize("version", ["future", 1.2])
+def test_unknown_operation_version_does_not_block_recovery(
+    repository: DatabaseRepository, running: bool, version: str | float
+) -> None:
+    owner, snapshot = _ready(repository)
+    unknown, current = sorted(
+        repository.submit_analysis(
+            owner, snapshot.snapshot_id, idempotency_key=key, request_sha256="d" * 64
+        ).operation.operation_id
+        for key in ("first", "second")
+    )
+    if running:
+        assert repository.claim_operation(unknown) is not None
+        assert repository.claim_operation(current) is not None
+    with repository.connection() as connection:
+        original = connection.execute(
+            "UPDATE regimex_operations SET document=jsonb_set(document,'{version}',%s::jsonb) "
+            "WHERE operation_id=%s RETURNING document",
+            (json.dumps(version), unknown),
+        ).fetchone()
+        if not running:
+            connection.execute("UPDATE procrastinate_jobs SET status='failed'")
+
+    if running:
+        recovered = repository.recover_operations(datetime.now(UTC), limit=1)
+    else:
+        recovered = repository.recover_queued_deliveries(limit=1)
+    assert [(operation.operation_id, operation.state) for operation in recovered] == [
+        (current, "queued")
+    ]
+    assert _counts(repository) == (2, 3)
+    with pytest.raises(UnsupportedContract):
+        repository.get_operation(owner, unknown)
+    with repository.connection() as connection:
+        retained = connection.execute(
+            "SELECT document FROM regimex_operations WHERE operation_id=%s", (unknown,)
+        ).fetchone()
+        assert original is not None and retained == original
 
 
 @pytest.mark.parametrize("lost_worker", ["unregistered", "stale"])
