@@ -120,6 +120,7 @@ or ineffective backend settings fail explicitly.
 | `REGIMEX_SESSION_TTL_SECONDS` | 1,800 seconds, absolute expiry |
 | `REGIMEX_HTTP_HEADER_TIMEOUT_SECONDS` | 10 seconds; range 1–60 |
 | `REGIMEX_HTTP_BODY_TIMEOUT_SECONDS` | 30 seconds; range 1–300 |
+| `REGIMEX_HTTP_CONCURRENCY_LIMIT` | 8 connections or tasks per API process, minimum 2 |
 | `REGIMEX_MAX_SESSIONS_PER_TOKEN` | 8 |
 | `REGIMEX_MAX_PENDING_PER_OWNER` / `REGIMEX_MAX_ADMIN_PENDING_PER_OWNER` | 8 / 4 |
 | `REGIMEX_MAX_GENERATION_EXPERIMENTS` | 128 |
@@ -144,6 +145,9 @@ bounded tmpfs. Each CPU worker handles one task at a time, with default 8 GiB RA
 2 CPUs and 5 GiB scratch. Size the host for both workers running together,
 PostgreSQL, the API and the maintenance worker. Operator jobs need additional headroom. Reserve disk space for the
 database, retained objects, container images and backups.
+
+For replica counts, worker CPU placement and multi-host constraints, see
+[scaling Regimex](architecture.md#scaling-regimex).
 
 ## Measure analysis under load
 
