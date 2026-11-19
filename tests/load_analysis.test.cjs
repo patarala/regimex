@@ -73,7 +73,7 @@ test("a verified result needs the resolved model and a complete classification o
   });
   const snapshot = { id: "snapshot", digest: "ab".repeat(32), grid: { step_count: 2 },
     instruments: ["ETH/USD"], lastCreatedAt: null };
-  const interval = { instrument_id: "ETH/USD", start: 0, stop: 2 };
+  const interval = { instrument_id: "ETH/USD", start: 0, stop: 2, status: "observed", direction: "sideways" };
   const valid = {
     result_version: "2.0", analysis_id: "analysis", snapshot_id: snapshot.id, snapshot_sha256: snapshot.digest,
     model: { model_version_id: "tcn-0.2.0", bundle_sha256: "12".repeat(32), inference_policy_sha256: "34".repeat(32) },
@@ -87,7 +87,15 @@ test("a verified result needs the resolved model and a complete classification o
         job: { model: result.model, created_at: "2026-01-01T00:00:00Z", state: "succeeded" } }) };
     client.default([snapshot]);
   }
-  verify(valid);
+  const classifications = [
+    ["observed", "sideways"], ["observed", "growth"], ["observed", "decline"],
+    ["no_trades", null], ["insufficient_data", null],
+  ];
+  for (const [status, direction] of classifications) {
+    const result = structuredClone(valid);
+    Object.assign(result.sequences[0].intervals[0], { status, direction });
+    verify(result);
+  }
   const invalid = [
     result => { delete result.model.bundle_sha256; },
     result => { result.model.inference_policy_sha256 = "invalid"; },
@@ -110,6 +118,16 @@ test("a verified result needs the resolved model and a complete classification o
     corrupt(result);
     assert.throws(() => verify(result));
   }
-  assert.deepEqual(metrics.get("analyses_verified"), [1]);
-  assert.equal(metrics.get("analyses_failed").length, invalid.length);
+  const invalidClassifications = [
+    {}, { direction: "growth" }, { status: "missing", direction: null },
+    { status: "observed", direction: null }, { status: "observed", direction: "unknown" },
+    { status: "no_trades", direction: "growth" }, { status: "insufficient_data" },
+  ];
+  for (const classification of invalidClassifications) {
+    const result = structuredClone(valid);
+    result.sequences[0].intervals = [{ instrument_id: "ETH/USD", start: 0, stop: 2, ...classification }];
+    assert.throws(() => verify(result), /interval/);
+  }
+  assert.deepEqual(metrics.get("analyses_verified"), classifications.map(() => 1));
+  assert.equal(metrics.get("analyses_failed").length, invalid.length + invalidClassifications.length);
 });

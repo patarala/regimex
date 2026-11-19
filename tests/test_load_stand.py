@@ -197,3 +197,34 @@ def test_failed_cell_reports_partial_k6_outcomes_and_keeps_failure_status(tmp_pa
     assert "# Failed load comparison (1 of 1 cells reported)" in markdown
     assert "2 / 3" in markdown and "HTTP 503 (count 1)" in markdown
     assert "3.00 | 3.90 | unavailable | 1 |" in markdown
+
+
+def test_interrupted_cell_preserves_evidence_from_intact_files(tmp_path: Path) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    cell = tmp_path / "sustained-512-2w"
+    cell.mkdir()
+    (cell / "warmup.json").write_text('{"metrics":{"analyses_verified":{"count":1}}}')
+    for name in ("sustained.json", "result.json", "timings.json"):
+        (cell / name).write_bytes(b'{"')
+    (cell / "envelope.json").write_text('{"peak_bytes":1234}')
+    (cell / "sustained-points.jsonl").write_bytes(
+        b'{"type":"Point","metric":"http_req_failed",'
+        b'"data":{"value":1,"tags":{"name":"poll analysis","status":"503"}}}\n{"\xc3'
+    )
+    with (
+        pytest.raises(KeyboardInterrupt),
+        stand["record_cell"](tmp_path, [], 1, "sustained", 512, 2),
+    ):
+        raise KeyboardInterrupt
+    (row,) = json.loads((tmp_path / "comparison.json").read_bytes())
+    assert (row["phase"], row["status"], row["completed"]) == ("sustained", "failed", None)
+    assert row["cgroup_peak_bytes"] == 1234
+    assert row["http_failure_samples"] == [
+        {"request": "poll analysis", "status": "503", "count": 1}
+    ]
+    assert set(row["unreadable_artifacts"]) == {"result.json", "sustained.json", "timings.json"}
+    markdown = (tmp_path / "comparison.md").read_text()
+    assert "# Failed load comparison (1 of 1 cells reported)" in markdown
+    assert "poll analysis: HTTP 503 (count 1)" in markdown
+    assert "timings.json" in markdown
