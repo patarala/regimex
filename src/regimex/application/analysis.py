@@ -193,18 +193,19 @@ def run_analysis(
                 operation.model.inference_policy_sha256,
             ) != (model.bundle_sha256, model.inference_policy_sha256):
                 raise ObjectIntegrityError("operation immutable model differs from its registry")
-            export = service._read_snapshot_record(snapshot, checkpoint=heartbeat.poll)
-            _validate_registered_model(model)
-            descriptor = service.registry.get(model.architecture_id)
-            if descriptor.backend_factory is None or descriptor.worker_probe is None:
-                raise RegistryError("the configured backend is unavailable on this worker")
-            bundle = _cache_bundle(service, model, heartbeat=heartbeat.poll)
-            heartbeat.check("predicting")
             with tempfile.TemporaryDirectory(
                 prefix=f"analysis-{operation_id}-", dir=service.work_root
             ) as temporary:
                 root = Path(temporary)
-                (root / "export.json").write_bytes(json_bytes(export.model_dump(mode="json")))
+                export = service._materialize_snapshot(
+                    snapshot, root / "export.json", checkpoint=heartbeat.poll
+                )
+                _validate_registered_model(model)
+                descriptor = service.registry.get(model.architecture_id)
+                if descriptor.backend_factory is None or descriptor.worker_probe is None:
+                    raise RegistryError("the configured backend is unavailable on this worker")
+                bundle = _cache_bundle(service, model, heartbeat=heartbeat.poll)
+                heartbeat.check("predicting")
                 payload: dict[str, JsonValue] = {
                     "snapshot": snapshot.model_dump(mode="json"),
                     "analysis": analysis.model_dump(mode="json"),
