@@ -15,16 +15,25 @@ x-s3-environment: &s3-environment
 x-s3-common: &s3-common
   environment: *s3-environment
   secrets: [s3_credentials, s3_ca]
-  volumes: [s3-coordination:/coordination]
   networks: [storage]
 
 services:
-  migrate: *s3-common
-  api: *s3-common
-  analysis-worker: *s3-common
-  admin-worker: *s3-common
-  maintenance-worker: *s3-common
-  ops: *s3-common
+  # Compose 2.24.4 applies !override only when declared on the service itself.
+  api:
+    <<: *s3-common
+    volumes: !override [s3-coordination:/coordination]
+  analysis-worker:
+    <<: *s3-common
+    volumes: !override [s3-coordination:/coordination]
+  admin-worker:
+    <<: *s3-common
+    volumes: !override [s3-coordination:/coordination]
+  maintenance-worker:
+    <<: *s3-common
+    volumes: !override [s3-coordination:/coordination]
+  ops:
+    <<: *s3-common
+    volumes: !override [s3-coordination:/coordination, operator-output:/operator-output]
 
 secrets:
   s3_credentials:

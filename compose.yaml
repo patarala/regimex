@@ -1,7 +1,10 @@
-x-service-environment: &service-environment
+x-database-environment: &database-environment
   REGIMEX_DATABASE_DSN_FILE: /run/secrets/database_dsn
   REGIMEX_DATABASE_SCHEMA: ${REGIMEX_DATABASE_SCHEMA:-public}
-  REGIMEX_PUBLIC_ORIGIN: ${REGIMEX_PUBLIC_ORIGIN:-https://localhost:8443}
+
+x-service-environment: &service-environment
+  <<: *database-environment
+  REGIMEX_PUBLIC_ORIGIN: ${REGIMEX_PUBLIC_ORIGIN:-https://localhost:${REGIMEX_HTTPS_PORT:-8443}}
   REGIMEX_HTTP_HEADER_TIMEOUT_SECONDS: ${REGIMEX_HTTP_HEADER_TIMEOUT_SECONDS:-10}
   REGIMEX_HTTP_BODY_TIMEOUT_SECONDS: ${REGIMEX_HTTP_BODY_TIMEOUT_SECONDS:-30}
   REGIMEX_OBJECT_BACKEND: local
@@ -23,8 +26,15 @@ x-service-environment: &service-environment
   REGIMEX_INTEGRATION_SUBJECT_REQUESTS_PER_MINUTE: ${REGIMEX_INTEGRATION_SUBJECT_REQUESTS_PER_MINUTE:-120}
   REGIMEX_INTEGRATION_MAX_PENDING: ${REGIMEX_INTEGRATION_MAX_PENDING:-32}
 
+x-service-healthcheck: &service-healthcheck
+  interval: 10s
+  timeout: 8s
+  retries: 3
+  start_period: 30s
+
 x-service-common: &service-common
   profiles: [service]
+  pull_policy: never
   user: "10001:10001"
   init: true
   read_only: true
@@ -43,7 +53,7 @@ x-service-common: &service-common
   depends_on:
     migrate:
       condition: service_completed_successfully
-  logging:
+  logging: &local-logging
     driver: local
     options: {max-size: 10m, max-file: "5"}
 
@@ -64,12 +74,21 @@ services:
     secrets: [database_password, application_password]
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./deploy/init-db.sh:/docker-entrypoint-initdb.d/10-regimex.sh:ro
+      - type: bind
+        source: ./deploy/init-db.sh
+        target: /docker-entrypoint-initdb.d/10-regimex.sh
+        read_only: true
+        bind: {create_host_path: false}
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
       - /var/run/postgresql:rw,nosuid,nodev,size=16777216,uid=999,gid=999,mode=0775
     healthcheck:
-      test: [CMD, pg_isready, -U, postgres, -d, regimex]
+      # The bootstrap server accepts Unix sockets before the application role exists.
+      test:
+        - CMD-SHELL
+        - >-
+          PGPASSWORD="$$(cat /run/secrets/application_password)"
+          exec psql -X --no-password -h postgres -U regimex -d regimex -Atqc 'SELECT 1'
       interval: 5s
       timeout: 5s
       retries: 20
@@ -79,9 +98,7 @@ services:
     pids_limit: 128
     stop_grace_period: 45s
     restart: unless-stopped
-    logging:
-      driver: local
-      options: {max-size: 10m, max-file: "5"}
+    logging: *local-logging
 
   migrate:
     <<: *service-common
@@ -89,6 +106,8 @@ services:
     build: {context: ., target: api}
     command: [service, migrate]
     restart: "no"
+    environment: *database-environment
+    volumes: []
     depends_on:
       postgres: {condition: service_healthy}
     tmpfs:
@@ -112,11 +131,8 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
       - /work:rw,nosuid,nodev,size=268435456,uid=10001,gid=10001,mode=0700
     healthcheck:
+      <<: *service-healthcheck
       test: [CMD, regimex, service, health, --component, ready, --port, "8000", --ca-file, /run/secrets/api_ca]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 30s
     cpus: 1.0
     mem_limit: 2g
 
@@ -126,11 +142,8 @@ services:
     build: {context: ., target: worker}
     command: [service, worker, --queue, analysis]
     healthcheck:
+      <<: *service-healthcheck
       test: [CMD, regimex, service, health, --component, worker, --queue, analysis]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 30s
     scale: ${REGIMEX_ANALYSIS_REPLICAS:-1}
     cpus: ${REGIMEX_ANALYSIS_WORKER_CPUS:-2.0}
     cpuset: "${REGIMEX_ANALYSIS_CPUSET:-}"
@@ -142,11 +155,8 @@ services:
     build: {context: ., target: worker}
     command: [service, worker, --queue, admin]
     healthcheck:
+      <<: *service-healthcheck
       test: [CMD, regimex, service, health, --component, worker, --queue, admin]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 30s
     cpus: 2.0
     mem_limit: 8g
 
@@ -159,11 +169,8 @@ services:
       - /tmp:rw,noexec,nosuid,nodev,size=67108864,mode=1777
       - /work:rw,nosuid,nodev,size=67108864,uid=10001,gid=10001,mode=0700
     healthcheck:
+      <<: *service-healthcheck
       test: [CMD, regimex, service, health, --component, worker, --queue, maintenance]
-      interval: 10s
-      timeout: 8s
-      retries: 3
-      start_period: 30s
     cpus: 0.5
     mem_limit: 256m
 

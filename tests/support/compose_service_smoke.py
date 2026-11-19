@@ -17,9 +17,10 @@ import ssl
 import subprocess
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
-from urllib.error import HTTPError, URLError
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -36,11 +37,18 @@ def text(value: dict[str, JSONValue], key: str) -> str:
 def command(
     arguments: list[str], environment: dict[str, str], *, required: bool = True
 ) -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(
-        arguments, env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=1800
-    )
+    try:
+        result = subprocess.run(
+            arguments, env=environment, stdin=subprocess.DEVNULL, capture_output=True, timeout=1800
+        )
+    except subprocess.TimeoutExpired:
+        # TimeoutExpired includes the complete command in its message.
+        result = subprocess.CompletedProcess[bytes](arguments, 124, b"", b"")
+        failure = "timed_out"
+    else:
+        failure = f"exit_code={result.returncode}"
     if required and result.returncode:
-        categories = {"build", "pull", "up", "exec", "run", "restart", "config", "down"}
+        categories = {"build", "pull", "up", "exec", "run", "stop", "config", "down", "image"}
         category = next((value for value in arguments if value in categories), "other")
         names = {
             "postgres",
@@ -56,7 +64,7 @@ def command(
         # reader and provisioning paths deliberately stay out of CI diagnostics.
         raise RuntimeError(
             f"Compose command category={category} service={','.join(services) or 'project'} "
-            f"exit_code={result.returncode}"
+            f"{failure}"
         )
     return result
 
@@ -72,15 +80,65 @@ def owner(path: Path, uid: int) -> None:
         )
 
 
+def smoke_environment(project: str, *, build: bool, s3: bool) -> dict[str, str]:
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("REGIMEX_", "COMPOSE_"))
+    }
+    environment["REGIMEX_IMAGE_TAG"] = (
+        project if build else os.environ.get("REGIMEX_IMAGE_TAG", "local")
+    )
+    if s3:
+        for key in ("REGIMEX_S3_ENDPOINT_URL", "REGIMEX_S3_REGION", "REGIMEX_S3_BUCKET"):
+            if key in os.environ:
+                environment[key] = os.environ[key]
+        prefix = os.environ.get("REGIMEX_S3_PREFIX", "").rstrip("/")
+        if not prefix:
+            raise ValueError("Set REGIMEX_S3_PREFIX to a disposable smoke namespace.")
+        environment["REGIMEX_S3_PREFIX"] = f"{prefix}/{project}"
+    return environment
+
+
+def remove_smoke_images(docker: str, project: str, environment: dict[str, str]) -> None:
+    listing = command(
+        [
+            docker,
+            "image",
+            "ls",
+            "--format",
+            "{{.Repository}}:{{.Tag}}",
+            "--filter",
+            f"reference=regimex-*:{project}",
+        ],
+        environment,
+    )
+    owned = {f"regimex-{name}:{project}" for name in ("api", "cpu", "ops")}
+    tags = sorted(owned.intersection(listing.stdout.decode().splitlines()))
+    if tags:
+        command([docker, "image", "rm", *tags], environment)
+
+
 def start_services(compose: list[str], environment: dict[str, str], *, build: bool) -> None:
-    """Prepare both application images and the pinned runtime database image."""
+    """Prepare the application images and the pinned runtime database image."""
     command([*compose, "config", "--quiet"], environment)
     if build:
         command([*compose, "build", "api", "analysis-worker", "ops"], environment)
     # BuildKit's FROM postgres layer cache is not the daemon's runtime image store.
     # A clean engine still needs this image before the no-pull service startup.
     command([*compose, "pull", "postgres"], environment)
-    command([*compose, "up", "--detach", "--wait", "--pull", "never", "postgres"], environment)
+    up = [
+        *compose,
+        "up",
+        "--detach",
+        "--no-build",
+        "--pull",
+        "never",
+        "--wait",
+        "--wait-timeout",
+        "180",
+    ]
+    command([*up, "postgres"], environment)
     # Offline restore inspects this inventory before writing to a fresh deployment.
     inventory = command(
         [
@@ -100,11 +158,7 @@ def start_services(compose: list[str], environment: dict[str, str], *, build: bo
         raise RuntimeError("The newly provisioned database contains objects before migration.")
     command(
         [
-            *compose,
-            "up",
-            "--detach",
-            "--pull",
-            "never",
+            *up,
             "postgres",
             "migrate",
             "api",
@@ -188,8 +242,71 @@ class API:
         raise AssertionError("The actual analysis worker timed out.")
 
 
+def prepare_secrets(secret_root: Path, *, s3_credentials: Path | None, s3_ca: Path | None) -> Path:
+    """Prepare bind-mounted secrets for both container UIDs and return the host's test CA."""
+    secret_root.mkdir(mode=0o700)
+    if s3_credentials is not None and s3_ca is not None:
+        shutil.copyfile(s3_credentials, secret_root / "s3-credentials")
+        (secret_root / "s3-credentials").chmod(0o600)
+        owner(secret_root / "s3-credentials", 10001)
+        provider_ca = secret_root / "s3-ca.crt"
+        shutil.copyfile(s3_ca, provider_ca)
+        provider_ca.chmod(0o444)
+    password, application_password = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+    for name, value, uid in (
+        ("database-password", password, 999),
+        ("application-password", application_password, 999),
+        (
+            "database-dsn",
+            f"postgresql://regimex:{application_password}@postgres:5432/regimex",
+            10001,
+        ),
+    ):
+        path = secret_root / name
+        path.write_text(value + "\n")
+        path.chmod(0o600)
+        owner(path, uid)
+    cert, tls_key = secret_root / "api.crt", secret_root / "api.key"
+    subprocess.run(
+        [
+            "openssl",
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            str(tls_key),
+            "-out",
+            str(cert),
+            "-days",
+            "1",
+            "-subj",
+            "/CN=localhost",
+            "-addext",
+            "subjectAltName=DNS:localhost",
+            "-addext",
+            "basicConstraints=critical,CA:TRUE",
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    tls_key.chmod(0o600)
+    owner(tls_key, 10001)
+    cert.chmod(0o444)
+    ca = secret_root / "api-ca.crt"
+    shutil.copyfile(cert, ca)
+    ca.chmod(0o444)
+    return ca
+
+
 def run(
-    files: list[Path], *, build: bool, s3_credentials: Path | None = None, s3_ca: Path | None = None
+    files: list[Path] | None,
+    *,
+    build: bool,
+    s3_credentials: Path | None = None,
+    s3_ca: Path | None = None,
 ) -> None:
     docker = shutil.which("docker")
     if docker is None:
@@ -200,61 +317,15 @@ def run(
     project = "regimex-smoke-" + uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="regimex-compose-smoke-") as temporary:
         root = Path(temporary)
-        environment = dict(os.environ)
         if (s3_credentials is None) != (s3_ca is None):
             raise ValueError("S3 smoke requires both a credentials file and trusted CA")
+        environment = smoke_environment(project, build=build, s3=s3_credentials is not None)
+        if files is None:
+            files = [workspace / "compose.yaml"]
+            if s3_credentials is not None:
+                files.append(workspace / "compose.s3.yaml")
         secret_root = root / "secrets"
-        secret_root.mkdir(mode=0o700)
-        if s3_credentials is not None and s3_ca is not None:
-            shutil.copyfile(s3_credentials, secret_root / "s3-credentials")
-            (secret_root / "s3-credentials").chmod(0o600)
-            owner(secret_root / "s3-credentials", 10001)
-            shutil.copyfile(s3_ca, secret_root / "s3-ca.crt")
-        password, application_password = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        for name, value, uid in (
-            ("database-password", password, 999),
-            ("application-password", application_password, 999),
-            (
-                "database-dsn",
-                f"postgresql://regimex:{application_password}@postgres:5432/regimex",
-                10001,
-            ),
-        ):
-            path = secret_root / name
-            path.write_text(value + "\n")
-            path.chmod(0o600)
-            owner(path, uid)
-        cert, tls_key = secret_root / "api.crt", secret_root / "api.key"
-        subprocess.run(
-            [
-                "openssl",
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-nodes",
-                "-keyout",
-                str(tls_key),
-                "-out",
-                str(cert),
-                "-days",
-                "1",
-                "-subj",
-                "/CN=localhost",
-                "-addext",
-                "subjectAltName=DNS:localhost",
-                "-addext",
-                "basicConstraints=critical,CA:TRUE",
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        tls_key.chmod(0o600)
-        owner(tls_key, 10001)
-        ca = root / "client-ca.crt"
-        shutil.copyfile(cert, ca)
-        shutil.copyfile(cert, secret_root / "api-ca.crt")
+        ca = prepare_secrets(secret_root, s3_credentials=s3_credentials, s3_ca=s3_ca)
         with socket.socket() as selected:
             selected.bind(("127.0.0.1", 0))
             port = selected.getsockname()[1]
@@ -265,7 +336,7 @@ def run(
             REGIMEX_HTTPS_PORT=str(port),
             REGIMEX_BIND_ADDRESS="127.0.0.1",
         )
-        compose = [docker, "compose", "--project-name", project]
+        compose = [docker, "compose", "--env-file", os.devnull, "--project-name", project]
         for file in files:
             compose.extend(["--file", str(file.resolve())])
         compose.extend(["--profile", "service", "--profile", "ops"])
@@ -277,40 +348,17 @@ def run(
             def ops(
                 *args: str, entrypoint: str | None = None, volumes: tuple[str, ...] = ()
             ) -> bytes:
-                arguments = [*compose, "run", "--rm", "--no-deps", "--pull", "never"]
+                arguments = [*compose, "run", "--rm", "--no-deps", "-T"]
                 if entrypoint is not None:
                     arguments.extend(["--entrypoint", entrypoint])
                 for volume in volumes:
                     arguments.extend(["--volume", volume])
                 return command([*arguments, "ops", *args], environment).stdout
 
-            deadline = time.monotonic() + 180
-            for service in ("api", "analysis-worker", "admin-worker", "maintenance-worker"):
-                component = (
-                    ["--component", "ready", "--ca-file", "/run/secrets/api_ca"]
-                    if service == "api"
-                    else ["--component", "worker", "--queue", service.removesuffix("-worker")]
-                )
-                while time.monotonic() < deadline:
-                    result = command(
-                        [
-                            *compose,
-                            "exec",
-                            "-T",
-                            service,
-                            "regimex",
-                            "service",
-                            "health",
-                            *component,
-                        ],
-                        environment,
-                        required=False,
-                    )
-                    if result.returncode == 0:
-                        break
-                    time.sleep(0.5)
-                else:
-                    raise AssertionError("A Compose service did not become healthy.")
+            backend = "s3" if s3_credentials is not None else "local"
+            storage = json.loads(ops("service", "storage-check"))
+            if storage["backend"] != backend or storage["retained_versions"] != 0:
+                raise AssertionError(f"The smoke deployment requires an empty {backend} store.")
             for name, role in (("admin", "admin"), ("alice", "user"), ("bob", "user")):
                 ops(
                     "service",
@@ -377,12 +425,6 @@ def run(
                 ],
                 environment,
             )
-            for client in ("pg_dump", "pg_restore"):
-                version = ops("--version", entrypoint="/opt/pg16/" + client).decode()
-                if "16.15" not in version:
-                    raise AssertionError(
-                        "The operator image has an unexpected native client version."
-                    )
             snapshot = api.json("/api/v1/snapshots", body=payload["export"], expected=201)
             key = "persistent-container-analysis"
             body: dict[str, JSONValue] = {
@@ -400,54 +442,102 @@ def run(
                 raise AssertionError("The actual worker did not produce a complete offline report.")
             for field in ("result_url", "report_url", "polling_url"):
                 api.raw(text(completed, field), owner="bob", expected=404)
-            command([*compose, "restart", "api", "analysis-worker"], environment)
-            deadline = time.monotonic() + 90
-            while time.monotonic() < deadline:
-                try:
-                    if api.json("/health/ready", owner=None).get("database") is True:
-                        break
-                except OSError, URLError:
-                    pass
-                time.sleep(0.25)
-            else:
-                raise AssertionError("The restarted API did not become ready.")
+            command(
+                [
+                    *compose,
+                    "up",
+                    "--detach",
+                    "--no-deps",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                    "--force-recreate",
+                    "--wait",
+                    "--wait-timeout",
+                    "90",
+                    "api",
+                    "analysis-worker",
+                ],
+                environment,
+            )
             if (
                 api.json(text(completed, "result_url")) != saved
                 or api.raw(text(completed, "report_url")) != report
             ):
                 raise AssertionError(
-                    "Committed observations/results/report changed across container restart."
+                    "Committed observations/results/report changed across container recreation."
                 )
             replay = api.json("/api/v1/analyses", body=body, key=key, expected=202)
             if replay["analysis_id"] != analysis["analysis_id"]:
-                raise AssertionError("Container restart did not preserve idempotency.")
+                raise AssertionError("Container recreation did not preserve idempotency.")
             second = api.completed(
                 api.json("/api/v1/analyses", body=body, key="cold-model-reload", expected=202)
             )
             restored = api.json(text(second, "result_url"))
             if restored["sequences"] != saved["sequences"]:
+                raise AssertionError("The recreated worker did not reload the saved model exactly.")
+            command(
+                [*compose, "stop", "api", "analysis-worker", "admin-worker", "maintenance-worker"],
+                environment,
+            )
+            attestation = root / "stopped.json"
+            attestation.write_text(
+                json.dumps(
+                    {
+                        "stopped_at": datetime.now(UTC).isoformat(),
+                        "statement": "All writers in the disposable Compose project have stopped.",
+                        "api_stopped": True,
+                        "analysis_workers_stopped": True,
+                        "administrative_workers_stopped": True,
+                        "maintenance_stopped": True,
+                        "garbage_collection_stopped": True,
+                        "exclusive_object_access": True,
+                    }
+                )
+            )
+            attestation.chmod(0o444)
+            backup = "/operator-output/backup"
+            confirmation = ops(
+                "service",
+                "backup",
+                "--output",
+                backup,
+                "--attestation-file",
+                "/stopped.json",
+                volumes=(f"{attestation}:/stopped.json:ro",),
+            )
+            manifest = ops(f"{backup}/manifest.json", entrypoint="cat")
+            if not confirmation.strip().endswith(hashlib.sha256(manifest).hexdigest().encode()):
                 raise AssertionError(
-                    "The restarted actual worker did not reload the saved model exactly."
+                    "Backup manifest differs from the digest reported by the operator CLI."
+                )
+            report_digest = hashlib.sha256(report).hexdigest()
+            if report_digest not in {obj["sha256"] for obj in json.loads(manifest)["objects"]}:
+                raise AssertionError("The backup does not contain the saved report.")
+            contents = ops("--list", f"{backup}/database.dump", entrypoint="/opt/pg16/pg_restore")
+            if b" TABLE DATA public regimex_operations " not in contents:
+                raise AssertionError(
+                    "The operator image could not read the archived operations table."
                 )
             success = {
                 "status": "passed",
                 "project": project,
-                "storage": "configured-compose-backend",
+                "storage": backend,
                 "fixture": "artificial-automatic",
                 "checks": [
                     "migration-before-services",
                     "direct-TLS-CA-SNI",
                     "exact-worker-heartbeats",
                     "lightweight-API-image",
-                    "native-PG16-clients",
+                    "coordinated-postgres-and-object-backup",
                     "actual-saved-baseline-analysis",
                     "offline-report",
                     "other-owner-denied",
-                    "persistent-restart-idempotency",
+                    "persistent-recreation-idempotency",
                     "fresh-worker-saved-model-reload",
                     "project-teardown",
                 ],
-                "report_sha256": hashlib.sha256(report).hexdigest(),
+                "report_sha256": report_digest,
             }
         except BaseException as error:
             failed = True
@@ -509,7 +599,9 @@ def run(
                         "project": project,
                         "exit_code": cleanup.returncode,
                     }
-            except (OSError, subprocess.SubprocessError) as cleanup_error:
+                elif build:
+                    remove_smoke_images(docker, project, environment)
+            except (OSError, subprocess.SubprocessError, RuntimeError) as cleanup_error:
                 cleanup_failure = {
                     "status": "cleanup_failed",
                     "project": project,
@@ -531,7 +623,7 @@ if __name__ == "__main__":
     parser.add_argument("--s3-ca-file", type=Path)
     args = parser.parse_args()
     run(
-        args.files or [Path(__file__).resolve().parents[2] / "compose.yaml"],
+        args.files,
         build=not args.no_build,
         s3_credentials=args.s3_credentials_file,
         s3_ca=args.s3_ca_file,

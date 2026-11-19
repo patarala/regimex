@@ -1,14 +1,16 @@
 # Deployment
 
-Use a Linux host with Docker Compose. The service profile runs PostgreSQL, an
-HTTPS API, analysis/admin workers and a maintenance worker. API and maintenance
-images contain service/S3 dependencies; CPU workers add ML/report dependencies.
-The operator image adds PostgreSQL recovery clients. Images build the same wheel
-from the same locked dependencies.
+Run these commands from the checkout root on Linux with Docker Engine,
+BuildKit and Docker Compose. The S3 configuration requires Compose 2.24.4 or
+later. The service profile starts PostgreSQL 16, the HTTPS API and three
+workers. The ops profile provides administrative commands.
 
-The images pin Python, uv and PostgreSQL by digest. This configuration uses
-PostgreSQL 16. To verify a host installation, run the
-[container smoke test](#verify-a-container-installation).
+The Dockerfile builds one wheel for all three application images. The API
+image serves requests and runs maintenance, the worker image adds the CPU model
+and report dependencies, and the ops image adds PostgreSQL backup and restore
+tools. Python, uv and PostgreSQL are pinned by digest. BuildKit caches locked
+dependencies across builds, so source or README edits only rebuild the wheel
+and its installation.
 
 ## Secrets and TLS
 
@@ -26,11 +28,36 @@ privileges. Its password differs from the PostgreSQL bootstrap password.
 | `api.key` | Unencrypted server private key | `10001:10001`, `0600` |
 | `api-ca.crt` | Trusted CA chain for the TLS health probe | Readable by `10001` |
 
-The certificate SAN must match `REGIMEX_PUBLIC_ORIGIN`. Keep the parent directory
-private. Local Compose file secrets preserve host ownership/mode; their Compose
-`uid`/`gid`/`mode` fields cannot remap bind-mounted files. Account for user-namespace
-mapping on rootless installations. Do not place secrets in images, source, task
-payloads, URLs or command history.
+The server certificate must cover the hostname in `REGIMEX_PUBLIC_ORIGIN`.
+Local Compose file secrets retain their host ownership and mode. The following
+example is for a fresh installation on a rootful Linux engine. Set `TLS_DIR`
+to the absolute directory containing your issued `api.crt`, `api.key` and
+`api-ca.crt`. On a rootless engine, translate the container IDs in the table
+to their mapped host IDs before assigning ownership.
+
+```sh
+export REGIMEX_SECRETS_DIR="$PWD/var/secrets"
+(
+  set -eu
+  umask 077
+  : "${TLS_DIR:?Set TLS_DIR to the directory containing the issued certificate and key}"
+  for file in api.crt api.key api-ca.crt; do test -r "$TLS_DIR/$file"; done
+  mkdir -p "$PWD/var"
+  mkdir "$REGIMEX_SECRETS_DIR"
+  cd "$REGIMEX_SECRETS_DIR"
+  openssl rand -hex 32 > database-password
+  openssl rand -hex 32 > application-password
+  sed 's|.*|postgresql://regimex:&@postgres:5432/regimex|' application-password > database-dsn
+  install -m 0644 "$TLS_DIR/api.crt" "$TLS_DIR/api-ca.crt" .
+  install -m 0600 "$TLS_DIR/api.key" .
+  sudo chown 999:999 database-password application-password
+  sudo chown 10001:10001 database-dsn api.key
+)
+```
+
+The command stops if the secrets directory already exists. For an existing
+database, keep its role credentials. The PostgreSQL image runs
+[`init-db.sh`](../deploy/init-db.sh) only on first initialization.
 
 The API terminates TLS directly and supports a TCP pass-through proxy. It
 ignores forwarded headers. Keep TLS intact up to the API. For a remote
@@ -46,27 +73,26 @@ its own header deadline because the application only sees completed headers.
 
 ## Start the service
 
-For a new installation, provision the files above and run the commands below.
+For a new installation, provision the files above. For object storage on S3,
+configure the [S3 profile](#s3-profile) before starting PostgreSQL and the service.
 To keep an existing registry, models and analyses, start with
 [moving the installation](#move-an-existing-installation-to-compose).
 
 ```sh
 export REGIMEX_SECRETS_DIR="$PWD/var/secrets"
-export REGIMEX_PUBLIC_ORIGIN=https://localhost:8443
-docker compose --profile service config
-docker compose --profile service build api analysis-worker
-docker compose --profile ops build ops
+docker compose --profile service --profile ops config --quiet
+docker compose --profile service --profile ops build api analysis-worker ops
 docker compose --profile service pull postgres
-docker compose --profile service up --detach
+docker compose --profile service up --detach --wait
 docker compose --profile service ps
 ```
 
-Use the real public origin and a matching certificate. The default host bind is
-`127.0.0.1:8443`; configure `REGIMEX_BIND_ADDRESS` and `REGIMEX_HTTPS_PORT` with an
-appropriate firewall when exposing it. PostgreSQL is not published to the host.
-
-The migration service waits for PostgreSQL to become healthy. The API and
-workers start once migration exits successfully.
+The default URL is `https://localhost:8443`, bound to loopback.
+`REGIMEX_HTTPS_PORT` selects a different local port. For a public deployment
+set `REGIMEX_PUBLIC_ORIGIN` to the external HTTPS URL and configure
+`REGIMEX_BIND_ADDRESS` and the host firewall. PostgreSQL stays on the
+internal network. The database health check logs in with the application role
+over TCP. Migrations run once that query succeeds, followed by the API and workers.
 
 Check storage, then create an administrator token and a user token.
 
@@ -132,8 +158,7 @@ candidate in this installation.
 
 ```sh
 export COMPOSE_PROJECT_NAME=regimex-target
-docker compose --profile service build api analysis-worker
-docker compose --profile ops build ops
+docker compose --profile service --profile ops build api analysis-worker ops
 docker compose --profile ops up --detach --wait postgres
 docker compose --profile ops run --rm --no-deps \
   --volume "$RECOVERY_DIR:/recovery:ro" ops service restore \
@@ -238,16 +263,18 @@ export REGIMEX_S3_ENDPOINT_URL=https://objects.example.org
 export REGIMEX_S3_REGION=us-east-1
 export REGIMEX_S3_BUCKET=private-regimex
 export REGIMEX_S3_PREFIX=installation-one
-docker compose -f compose.yaml -f compose.s3.yaml --profile service config
-docker compose -f compose.yaml -f compose.s3.yaml --profile service up --build -d
-docker compose -f compose.yaml -f compose.s3.yaml --profile ops run --rm ops service storage-check
+export COMPOSE_FILE=compose.yaml:compose.s3.yaml
 ```
 
-Use both Compose files for every service/operator command in this installation.
+With these variables set, follow [Start the service](#start-the-service).
+Keep `COMPOSE_FILE` set for every service and operator command in this installation.
 The endpoint has no credential, path or query component; the prefix has no leading
-or trailing slash. All writers must share `/coordination` on one host and use
-the same namespace, byte limits and inventory limit. The extra storage network permits outbound HTTPS without publishing provider ports.
-Rotate the credential file and restart services to replace cached SDK clients.
+or trailing slash. All writers share the `s3-coordination` volume at
+`/coordination` on one host and use the same namespace, byte limits and
+inventory limit. The extra storage network permits outbound HTTPS. The
+database migration needs only its DSN and schema. After rotating the credential
+file, recreate the storage clients' containers to remount the file and renew
+their SDK clients.
 See [storage](storage.md) for S3 settings, quotas and recovery.
 
 ## Health, shutdown and maintenance
@@ -273,7 +300,34 @@ isolated local child. Add `--json` for machine-readable output. A required faile
 or skipped check exits with status 1. The command does not change jobs or
 publication and does not test remote worker environments or prediction quality.
 
-Run `service migrate` when upgrading, then restart the API and workers together.
+### Upgrade an existing deployment
+
+Block intake, drain pending jobs, stop all writers and take a
+[coordinated backup](storage.md#backup-and-restore) with the current release
+before replacing its images. Keep PostgreSQL running. Open the new checkout
+with the same Compose project name, secrets directory and storage configuration.
+If multiple installations share an engine, assign each its own `REGIMEX_IMAGE_TAG`
+to keep their locally built images separate.
+
+For an application upgrade on the existing PostgreSQL deployment, build the
+new images, run their migrations, then recreate the API and workers. If a step
+fails, the shell stops before starting the next one.
+
+```sh
+(
+  set -e
+  docker compose --profile service --profile ops build api analysis-worker ops
+  docker compose --profile service run --rm --no-deps migrate
+  docker compose --profile service up --detach --wait --force-recreate --no-deps \
+    api analysis-worker admin-worker maintenance-worker
+  docker compose --profile ops run --rm --no-deps ops service doctor
+)
+```
+
+Verify a saved-model analysis before reopening intake.
+
+### Worker shutdown and recovery
+
 A worker's heartbeat can remain fresh for up to `REGIMEX_STALE_SECONDS` after
 an abrupt shutdown. A busy worker can pass diagnostics while every slot is in use.
 
@@ -317,7 +371,14 @@ processes outside Compose. Follow the [storage procedure](storage.md).
 python tests/support/compose_service_smoke.py
 ```
 
-The test creates a disposable project and private credentials, builds images,
-runs saved-model analysis, checks reports/access/restart/idempotency and removes
-only its own resources. Docker must be available, with permission to assign
-secret-file ownership.
+The test creates a disposable Compose project with its own image tags and
+credentials. It runs an analysis, checks access and persistence after container
+recreation, stops writers and verifies the backup contains the saved report.
+It removes its containers, networks, volumes and image tags. Use `--no-build`
+to reuse existing Regimex images. Docker and permission to assign secret-file
+ownership are required.
+
+For the optional S3 test, set the endpoint, bucket and test prefix in the
+shell, then pass `--s3-credentials-file` and `--s3-ca-file`. The test selects
+the S3 Compose configuration and writes to a unique child prefix. Configure
+the test bucket's lifecycle to expire its object versions.

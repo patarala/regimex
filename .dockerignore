@@ -6,10 +6,7 @@
 !README.md
 !LICENSE
 !.python-version
-!src/
-!src/regimex/
 !src/regimex/**
-!deploy/
 !deploy/pg_dump
 !deploy/pg_restore
 src/**/__pycache__/
