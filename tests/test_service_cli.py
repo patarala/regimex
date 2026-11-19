@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 from typer.testing import CliRunner
@@ -35,6 +36,50 @@ def test_service_needs_explicit_database_configuration() -> None:
     result = CliRunner().invoke(app, ["service", "migrate"], env={"REGIMEX_DATABASE_DSN": ""})
     assert result.exit_code == 1
     assert "REGIMEX_DATABASE_DSN" in result.output
+
+
+@pytest.mark.parametrize("mode", ["defaults", "threads", "file", "conflict", "device"])
+def test_register_model_inference_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    pytest.importorskip("psycopg")
+    from regimex import service_bootstrap
+    from regimex.model_registry import InferenceRuntime
+
+    token = tmp_path / "admin.token"
+    token.write_text("fixture")
+    service = Mock()
+    monkeypatch.setattr(service_bootstrap, "create_service", lambda settings: service)
+    options = [
+        "service",
+        "register-model",
+        "--bundle",
+        str(tmp_path),
+        "--manifest-sha256",
+        "1" * 64,
+        "--token-file",
+        str(token),
+    ]
+    expected = InferenceRuntime()
+    if mode in {"threads", "conflict"}:
+        options.extend(["--threads", "3"])
+        expected = InferenceRuntime(threads=3)
+    if mode in {"file", "conflict", "device"}:
+        config = tmp_path / "runtime.json"
+        expected = InferenceRuntime(threads=1, max_batch_size=2, model_cache_budget_bytes=67108864)
+        data = expected.model_dump()
+        if mode == "device":
+            data["device"] = "cuda"
+        config.write_text(json.dumps(data))
+        options.extend(["--runtime-file", str(config)])
+    result = CliRunner().invoke(app, options, env={"REGIMEX_DATABASE_DSN": "dbname=not_connected"})
+    if mode in {"conflict", "device"}:
+        assert result.exit_code == 1
+        assert ("threads" if mode == "conflict" else "device") in result.output
+        service.register_bundle.assert_not_called()
+    else:
+        assert result.exit_code == 0, result.output
+        assert service.register_bundle.call_args.kwargs["inference_runtime"] == expected
 
 
 def test_database_failure_does_not_print_connection_credentials() -> None:
