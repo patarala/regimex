@@ -225,7 +225,7 @@ def create_reference_member(
     member: SnapshotMember, annotations: DirectionAnnotations
 ) -> ReferenceMember:
     annotations = DirectionAnnotations.model_validate_json(annotations.model_dump_json())
-    if annotations.experiment_id != member.snapshot_id:
+    if not annotations.matches_snapshot(member.snapshot_id, member.export_sha256):
         raise ValueError("annotations reference a different snapshot")
     return ReferenceMember(
         source_namespace=member.source_namespace,
@@ -364,11 +364,8 @@ class RawTrainingData(CatalogRecord):
                 annotation_data = sample.annotations.model_dump(mode="json")
                 annotation_data["policy_config"] = annotation_data.pop("analysis_profile")
                 annotation = DirectionAnnotations.model_validate_json(json_bytes(annotation_data))
-                if (
-                    sample.snapshot_id != export.source.snapshot_id
-                    or annotation.experiment_id != sample.snapshot_id
-                ):
-                    raise ValueError("training snapshot/export/annotation identities differ")
+                if sample.snapshot_id != export.source.snapshot_id:
+                    raise ValueError("training snapshot and export identities differ")
                 if (
                     annotation.reference_kind != identity.kind
                     or annotation.policy != identity.policy
@@ -383,7 +380,8 @@ class RawTrainingData(CatalogRecord):
                         step_count=export.time_grid.step_count,
                         instruments=export.instruments,
                         observations=export.observations,
-                    )
+                    ),
+                    export_sha256=export.content_sha256,
                 )
                 snapshot_identity = (sample.source_namespace, sample.snapshot_id)
                 if snapshot_identity in identities:
@@ -481,7 +479,8 @@ def _load_partition(
                 step_count=export.time_grid.step_count,
                 instruments=export.instruments,
                 observations=export.observations,
-            )
+            ),
+            export_sha256=export.content_sha256,
         )
         result.append(
             LabeledSnapshot(

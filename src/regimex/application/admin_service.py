@@ -664,7 +664,7 @@ class AdminService:
             instruments = export.instruments
             observations = export.observations
 
-        annotations.validate_for(Grid())
+        annotations.validate_for(Grid(), export_sha256=export.content_sha256)
 
     def get_reference_annotations(
         self, principal: Principal, reference_set_id: str

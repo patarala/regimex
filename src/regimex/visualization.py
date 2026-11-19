@@ -121,13 +121,12 @@ def _reference_samples(export: ExportV2) -> list[dict[str, object]]:
         )
         samples.append(
             {
-                "experiment_id": export.source.snapshot_id,
+                "experiment_id": export.content_sha256,
                 "instrument_id": instrument.instrument_id,
                 "base_asset": instrument.base_asset,
                 "quote_asset": instrument.quote_asset,
                 "initial_price": instrument.initial_price,
                 "time_grid": export.time_grid.model_dump(mode="json"),
-                "source": export.source.model_dump(mode="json"),
                 "steps": [row.step for row in rows],
                 "observations": {
                     field: [getattr(row, field) for row in rows] for field in OBSERVABLE_FIELDS
@@ -156,13 +155,21 @@ def review_reference(export: ExportV2, output: Path, config: AnalysisConfig | No
     }
     with output_directory(output) as target:
         _write_direction_assets(target, payload)
-        write_json(target / "export.json", export.model_dump(mode="json"))
+        write_json(
+            target / "observations.json",
+            {
+                "experiment_id": export.content_sha256,
+                **export.model_dump(
+                    mode="json", include={"instruments", "time_grid", "observations"}
+                ),
+            },
+        )
         # Deliberately incomplete: a reviewer must supply decisions and interval statistics.
         write_json(
             target / "annotation-draft.json",
             {
                 "schema_version": "3.0",
-                "experiment_id": export.source.snapshot_id,
+                "experiment_id": export.content_sha256,
                 "policy": "human-directions/1.0",
                 "policy_config": config.model_dump(mode="json"),
                 "reference_kind": "human",

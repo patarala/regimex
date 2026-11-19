@@ -386,7 +386,7 @@ def test_offline_report_preserves_source_identity_and_canonical_symbols(tmp_path
     )
     data = report_data(output)
     assert data["kind"] == "prediction"
-    assert inspection.summary["report_version"] == "6.1"
+    assert inspection.summary["report_version"] == "6.2"
     assert all("events" not in sample.payload() for sample in inspection.samples)
     assert data["samples"] == json.loads(
         json.dumps([sample.payload() for sample in inspection.samples])
@@ -436,6 +436,11 @@ def test_blind_review_exports_no_automatic_labels_or_seed_metadata(tmp_path: Pat
         assert "simulation" not in sample and "seed" not in sample
         assert sample["observations"]["last_price"] == [None] * 8
         assert sample["observations"]["trade_count"] == [0] * 8
-    assert json.loads((output / "export.json").read_text()) == export.model_dump(mode="json")
+    assert json.loads((output / "observations.json").read_text()) == {
+        "experiment_id": export.content_sha256,
+        **export.model_dump(mode="json", include={"instruments", "time_grid", "observations"}),
+    }
+    assert all(sample["experiment_id"] == export.content_sha256 for sample in samples)
+    assert not (output / "export.json").exists()
     with pytest.raises(ValueError):
         DirectionAnnotations.model_validate_json((output / "annotation-draft.json").read_bytes())

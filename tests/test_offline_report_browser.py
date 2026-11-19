@@ -139,6 +139,35 @@ def test_high_resolution_report_preserves_each_bin(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
+def test_blind_review_shares_observations_under_an_opaque_id(
+    browser: Any, tmp_path: Path, width: int
+) -> None:
+    from regimex.market_export import sample_snapshot
+    from regimex.visualization import review_reference
+
+    export = sample_snapshot(seed=1729, steps=64, instruments=2)
+    sensitive_id = export.source.run_id
+    output = tmp_path / "blind"
+    review_reference(export, output)
+    for artifact in output.iterdir():
+        assert sensitive_id.encode() not in artifact.read_bytes()
+    draft = json.loads((output / "annotation-draft.json").read_bytes())
+    assert draft["experiment_id"] == export.content_sha256
+    page = browser.new_page(viewport={"width": width, "height": 860}, offline=True)
+    try:
+        page.goto((output / "index.html").as_uri())
+        page.locator("#explorer .main-svg").first.wait_for()
+        page.get_by_label("Instrument", exact=True).select_option(index=1)
+        assert export.content_sha256 in page.locator("#provenance").inner_text()
+        page.get_by_role("link", name="Observations", exact=True).click()
+        observations = json.loads(page.locator("body").inner_text())
+        assert observations["experiment_id"] == draft["experiment_id"]
+        assert observations["observations"] == export.model_dump(mode="json")["observations"]
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
 def test_cli_report_switches_lanes_within_the_zoomed_experiment(
     browser: Any, tmp_path: Path, width: int
 ) -> None:

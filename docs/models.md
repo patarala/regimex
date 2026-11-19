@@ -98,7 +98,9 @@ available price in the block. It accepts movements within floating-point
 roundoff of the threshold so that changing quote units preserves a borderline
 label. Other runs receive sideways. Human reference sets are recorded
 separately. A reviewer can see observations with the predictions hidden by
-running `regimex report --input export.json --output var/blind --blind`.
+running `regimex report --input export.json --output var/blind --blind`. The review
+folder contains the observations and a draft keyed by the original export’s SHA-256.
+The reference import uses that digest to match the completed draft to its snapshot.
 
 ## Learned backends
 

@@ -299,9 +299,14 @@ class DirectionAnnotations(StrictModel):
             )
         return self
 
-    def validate_for(self, experiment: AnnotationGrid) -> None:
+    def matches_snapshot(self, snapshot_id: str, export_sha256: str | None) -> bool:
+        return self.experiment_id == snapshot_id or (
+            self.reference_kind == "human" and self.experiment_id == export_sha256
+        )
+
+    def validate_for(self, experiment: AnnotationGrid, *, export_sha256: str | None = None) -> None:
         """Check instrument coverage, interval scale, and observed evidence."""
-        if self.experiment_id != experiment.experiment_id:
+        if not self.matches_snapshot(experiment.experiment_id, export_sha256):
             raise ValueError("annotations reference a different experiment")
         config = AnalysisConfig.model_validate(self.policy_config)
         expected_ids = [instrument.instrument_id for instrument in experiment.instruments]

@@ -343,12 +343,15 @@ def test_two_instruments_cannot_be_assigned_separately() -> None:
 def test_training_loader_reads_only_train_and_validation_with_independent_references() -> None:
     manifest, sources = dataset()
     labels = reference_set(manifest, sources, "train")
+    reviewed = annotations(sources[1], human=True, direction=Direction.SIDEWAYS).model_copy(
+        update={"experiment_id": sources[1].export.content_sha256}
+    )
     validation = reference_set(
         manifest,
         sources,
         "validation",
         human=True,
-        documents=(annotations(sources[1], human=True, direction=Direction.SIDEWAYS),),
+        documents=(reviewed,),
     )
     reads: list[tuple[str, str]] = []
 
@@ -363,11 +366,7 @@ def test_training_loader_reads_only_train_and_validation_with_independent_refere
         reads.append(("reference", reference.partition))
         assert reference.partition != "test"
         source = next(s for s in sources if s.export.source.snapshot_id == member.snapshot_id)
-        document = annotations(
-            source,
-            human=reference.kind == "human",
-            direction=Direction.SIDEWAYS if reference.kind == "human" else Direction.GROWTH,
-        )
+        document = reviewed if reference.kind == "human" else annotations(source)
         documents.append(document)
         return document
 
@@ -403,6 +402,19 @@ def test_training_loader_reads_only_train_and_validation_with_independent_refere
     assert result.train[0].annotations.analysis_profile.minimum_observations == 2
     with pytest.raises(ValidationError, match="frozen"):
         result.train[0].annotations.analysis_profile.min_duration = 3
+
+
+def test_review_digest_binds_only_human_annotations_to_their_source_export() -> None:
+    manifest, sources = dataset()
+    member = manifest.members[0]
+    for document in (
+        annotations(sources[0], human=True).model_copy(
+            update={"experiment_id": sources[1].export.content_sha256}
+        ),
+        annotations(sources[0]).model_copy(update={"experiment_id": member.export_sha256}),
+    ):
+        with pytest.raises(ValueError, match="different snapshot"):
+            create_reference_member(member, document)
 
 
 @pytest.mark.parametrize("position", ["labels", "validation"])

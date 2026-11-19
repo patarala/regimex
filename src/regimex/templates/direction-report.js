@@ -73,7 +73,7 @@
   } else {
     $("dataset-counts").textContent =
       countLabel(experiments.size, "experiment") + " · " + countLabel(samples.length, "instrument");
-    download("Input export", "export.json");
+    download("Observations", "observations.json");
     $("eyebrow").textContent = "Regimex / Independent review";
     $("title").textContent = "Review the price history";
     $("purpose").textContent = "Observations for human annotation";
@@ -190,17 +190,13 @@
     $("time-guide").textContent =
       "Step width: " + fmt(grid.bin_width, 6) + " " + grid.unit +
       " · history [" + fmt(grid.origin, 6) + ", " + fmt(grid.completed_horizon, 6) + ")";
-    const source = current.source;
-    const sourceHash = blind ? report.experiment_hash : sources.get(current.experiment_id).export_sha256;
-    const provenance = [
-      ["Source", source.source_id + " · " + source.source_version],
-      ["Snapshot", source.snapshot_id],
-      ["Run", source.run_id === source.snapshot_id ? null : source.run_id],
-      ["Intervals", blind ? "Independent human review" : "Model predictions"],
-      ["Input SHA-256", sourceHash],
-    ];
+    const provenance = [["Input SHA-256", blind ? report.experiment_hash : sources.get(current.experiment_id).export_sha256]];
     if (!blind) {
+      const source = current.source;
       provenance.push(
+        ["Source", source.source_id + " · " + source.source_version],
+        ["Snapshot", source.snapshot_id],
+        ["Run", source.run_id === source.snapshot_id ? null : source.run_id],
         ["Model", report.summary.model.model_version_id],
         ["Model bundle SHA-256", report.summary.model.bundle_sha256],
         ["Analysis", current.prediction.analysis_id],
