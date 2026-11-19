@@ -82,6 +82,7 @@ class RedactingJSONFormatter(logging.Formatter):
             "child_process_ms",
             "model_load_ms",
             "prediction_ms",
+            "backend_predict_ms",
             "report_ms",
             "request_id",
             "integration_id",

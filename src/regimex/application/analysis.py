@@ -153,6 +153,7 @@ class _ComputedFiles(StrictModel):
     plotly_version: Annotated[str, Field(min_length=1, max_length=128)]
     model_load_ms: Annotated[float, Field(ge=0)]
     prediction_ms: Annotated[float, Field(ge=0)]
+    backend_predict_ms: Annotated[float, Field(ge=0)]
     report_ms: Annotated[float, Field(ge=0)]
 
 
@@ -240,6 +241,7 @@ def run_analysis(
                         "child_process_ms": (time.perf_counter_ns() - child_started) / 1_000_000,
                         "model_load_ms": files.model_load_ms,
                         "prediction_ms": files.prediction_ms,
+                        "backend_predict_ms": files.backend_predict_ms,
                         "report_ms": files.report_ms,
                     },
                 )

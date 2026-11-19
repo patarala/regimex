@@ -15,7 +15,7 @@ from regimex.infrastructure.database import DatabaseRepository
 from regimex.storage import write_json
 
 CHILD_METRICS = ("child_process", "model_load", "prediction", "report")
-METRICS = ("queue_wait", "worker_occupancy", *CHILD_METRICS)
+METRICS = ("queue_wait", "worker_occupancy", *CHILD_METRICS, "backend_predict")
 
 
 @dataclass
@@ -32,6 +32,7 @@ class AnalysisTiming:
     child_process_ms: float | None = None
     model_load_ms: float | None = None
     prediction_ms: float | None = None
+    backend_predict_ms: float | None = None
     report_ms: float | None = None
 
 
@@ -132,6 +133,11 @@ def measure(
             record.model_load_ms = model
             record.prediction_ms = prediction
             record.report_ms = report
+            backend = duration_ms(children[0].get("backend_predict_ms"))
+            if backend is None or backend > prediction:
+                record.issues.append("invalid_backend_predict_timing")
+            else:
+                record.backend_predict_ms = backend
             if record.worker_occupancy_ms is not None and child > record.worker_occupancy_ms:
                 record.issues.append("child_exceeds_worker_occupancy")
     return record

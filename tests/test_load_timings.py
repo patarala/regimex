@@ -42,6 +42,7 @@ def test_retried_and_missing_events_are_reported_separately(tmp_path: Path) -> N
         "child_process_ms": 2000,
         "model_load_ms": 1000,
         "prediction_ms": 200,
+        "backend_predict_ms": 100,
         "report_ms": 300,
     }
     log = tmp_path / "worker.log"
@@ -50,6 +51,10 @@ def test_retried_and_missing_events_are_reported_separately(tmp_path: Path) -> N
     events = child_records([log], {job: "serial"})[str(job)]
     good = measure("serial", job, done, events)
     assert good.queue_wait_ms == 1000 and good.worker_occupancy_ms == 3000
+    assert good.backend_predict_ms == 100
+    invalid = measure("serial", job, done, [{**child, "backend_predict_ms": 201}])
+    assert invalid.backend_predict_ms is None and invalid.prediction_ms == 200
+    assert invalid.issues == ["invalid_backend_predict_timing"]
     missing = measure("serial", job, done, [])
     assert missing.issues == ["child_event_missing"] and missing.model_load_ms is None
     retried = replace(done, attempts=2, deliveries=2, events=done.events + done.events)
@@ -76,6 +81,7 @@ def test_retried_and_missing_events_are_reported_separately(tmp_path: Path) -> N
     summary = phase_summaries([good, missing, repeat, incomplete])
     assert summary["serial"]["submitted"] == 2 and summary["serial"]["complete"] == 1
     assert summary["serial"]["median_ms"]["worker_occupancy"] == 3000
+    assert summary["serial"]["median_ms"]["backend_predict"] == 100
     assert summary["parallel"]["median_ms"]["worker_occupancy"] is None
 
     jobs = tmp_path / "jobs.jsonl"

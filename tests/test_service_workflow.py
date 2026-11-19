@@ -676,6 +676,7 @@ def test_actual_queue_executes_registered_baseline(
     report = json.loads(output.read_bytes())
     (timing,) = report["analyses"]
     assert timing["events"] == ["deferred", "started", "succeeded"]
+    assert 0 < timing["backend_predict_ms"] <= timing["prediction_ms"]
     assert timing["queue_wait_ms"] >= 0
     assert timing["worker_occupancy_ms"] >= timing["child_process_ms"]
     assert all(timing[stage] > 0 for stage in ("model_load_ms", "prediction_ms", "report_ms"))

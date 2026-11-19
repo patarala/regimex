@@ -27,10 +27,12 @@ collector only sees IDs listed in the jobs file.
 | `child_process_ms` | Parent monotonic clock around child supervision, including launch, imports, scratch I/O, checks, reap and manifest validation. |
 | `model_load_ms` | Child monotonic clock around bundle verification, backend resolution and restoration of the predictor from the local cache. |
 | `prediction_ms` | Child monotonic clock from observation input preparation through prediction, interval decoding, result serialization and digest calculation. |
+| `backend_predict_ms` | Child monotonic clock around the loaded backend’s `predict` call. This includes feature preparation performed by the backend and returning the probability array to the caller. |
 | `report_ms` | Child monotonic clock around validation and rendering of the self-contained HTML report in memory. |
 
-The three child stages are components of `child_process_ms`, which is itself
-part of worker occupancy. Child timings travel in the private subprocess
+Model loading, prediction and rendering are components of `child_process_ms`,
+which is itself part of worker occupancy. `backend_predict_ms` is a component
+of `prediction_ms`. Child timings travel in the private subprocess
 manifest and operator logs. PostgreSQL uses its own clock for both queue
 boundaries. Its transaction timestamps can include time spent in the intake
 transaction before the queued job becomes visible.

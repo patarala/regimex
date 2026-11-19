@@ -120,16 +120,18 @@ class _AnnotationGrid:
         return self.export.observations
 
 
-def build_analysis_result(
+def _predict_analysis(
     export: ExportV2,
     snapshot: SnapshotRecord,
     analysis: AnalysisRecord,
     model: ModelRecord,
     predictor: LoadedPredictor,
     manifest: ModelBundle,
-) -> AnalysisResult:
+) -> tuple[AnalysisResult, float]:
     inputs = snapshot_inputs(export)
+    backend_started = time.perf_counter_ns()
     values = predictor.predict(inputs, runtime=model.inference_runtime)
+    backend_predict_ms = (time.perf_counter_ns() - backend_started) / 1_000_000
     if not isinstance(values, np.ndarray) or values.dtype != np.float64:
         raise ValueError("backend probabilities must be a float64 array")
     probabilities_valid(values, inputs.row_count)
@@ -155,7 +157,7 @@ def build_analysis_result(
         intervals=tuple(item for sequence in sequences for item in sequence.intervals),
     ).validate_for(_AnnotationGrid(export.content_sha256, export))
     assert analysis.operation.model is not None
-    return AnalysisResult(
+    result = AnalysisResult(
         analysis_id=analysis.analysis_id,
         snapshot_id=snapshot.snapshot_id,
         snapshot_sha256=export.content_sha256,
@@ -172,6 +174,7 @@ def build_analysis_result(
         instruments=export.instruments,
         sequences=tuple(sequences),
     )
+    return result, backend_predict_ms
 
 
 def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
@@ -208,7 +211,9 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
         Path(bundle_path), model, registry, worker_id="analysis-child"
     )
     prediction_started = time.perf_counter_ns()
-    result = build_analysis_result(export, snapshot, analysis, model, predictor, manifest)
+    result, backend_predict_ms = _predict_analysis(
+        export, snapshot, analysis, model, predictor, manifest
+    )
     result_bytes = json_bytes(result.model_dump(mode="json"))
     result_sha256 = hashlib.sha256(result_bytes).hexdigest()
     report_started = time.perf_counter_ns()
@@ -222,5 +227,6 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
         "plotly_version": rendered.plotly_version,
         "model_load_ms": (prediction_started - load_started) / 1_000_000,
         "prediction_ms": (report_started - prediction_started) / 1_000_000,
+        "backend_predict_ms": backend_predict_ms,
         "report_ms": (report_finished - report_started) / 1_000_000,
     }
