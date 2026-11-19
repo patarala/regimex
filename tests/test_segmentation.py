@@ -564,6 +564,17 @@ def test_short_availability_blocks_allow_one_direction_but_not_shorter_fragments
         fragmented.validate_for(data)
 
 
+def test_observed_interval_cannot_bridge_a_trading_pause_between_known_prices() -> None:
+    data = experiment([100.0] * 96, [1] * 32 + [0] * 32 + [1] * 32)
+    annotations = segmentation.annotate(data)
+    annotations.validate_for(data)
+    combined = annotations.intervals[0].model_copy(
+        update={"stop": 96, "statistics": summarize_interval(data.observations, 0, 96)}
+    )
+    with pytest.raises(ValueError, match="status contradicts observed availability"):
+        annotations.model_copy(update={"intervals": (combined,)}).validate_for(data)
+
+
 def test_unavailable_references_cannot_invent_extra_boundaries() -> None:
     data = experiment([100.0] * 64, [0] * 64)
     annotations = segmentation.annotate(data)

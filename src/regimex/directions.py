@@ -205,19 +205,15 @@ def observation_blocks(
 def _validate_interval_availability(
     interval: DirectionInterval,
     observations: tuple[Observation, ...],
-    availability: Sequence[tuple[int, int, str]],
+    block: tuple[int, int, str],
     config: AnalysisConfig,
 ) -> None:
-    for start, stop, status in availability:
-        if start < interval.stop and stop > interval.start and status != interval.status:
-            raise ValueError("interval status contradicts observed availability")
-        if (
-            status == "observed"
-            and start <= interval.start < stop
-            and interval.stop - interval.start < min(config.min_duration, stop - start)
-        ):
-            raise ValueError("observed interval is shorter than the minimum duration")
+    start, stop, status = block
+    if interval.status != status or interval.stop > stop:
+        raise ValueError("interval status contradicts observed availability")
     if interval.status == "observed":
+        if interval.stop - interval.start < min(config.min_duration, stop - start):
+            raise ValueError("observed interval is shorter than the minimum duration")
         known = sum(
             row.last_price is not None for row in observations[interval.start : interval.stop]
         )
@@ -247,7 +243,10 @@ def _validate_instrument_intervals(
     step_count: int,
     config: AnalysisConfig,
 ) -> None:
+    if len(observations) != step_count:
+        raise ValueError("observations must cover the complete grid")
     availability = observation_blocks(observations, config)
+    block_index = 0
     expected_start = 0
     previous_interval: DirectionInterval | None = None
     for interval in intervals:
@@ -259,8 +258,10 @@ def _validate_instrument_intervals(
             and previous_interval.direction == interval.direction
         ):
             raise ValueError("adjacent intervals with the same interpretation must be merged")
-        _validate_interval_availability(interval, observations, availability, config)
+        _validate_interval_availability(interval, observations, availability[block_index], config)
         _validate_interval_statistics(interval, observations)
+        if interval.stop == availability[block_index][1]:
+            block_index += 1
         expected_start = interval.stop
         previous_interval = interval
     if expected_start != step_count:
