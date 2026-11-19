@@ -214,56 +214,65 @@ def _decode_block(
 ) -> list[tuple[int, int, Direction]]:
     size = len(probabilities)
     losses = -np.log(np.maximum(probabilities, 1e-12))
-    cumulative = np.vstack((np.zeros((1, len(DIRECTION_NAMES))), np.cumsum(losses, axis=0)))
+    label_count = len(DIRECTION_NAMES)
+    labels = np.arange(label_count)
+    cumulative = np.vstack((np.zeros((1, label_count)), np.cumsum(losses, axis=0))).T.copy()
     minimum = min(size, config.min_duration)
-    cost = np.full((size + 1, len(DIRECTION_NAMES)), np.inf)
-    starts = np.full((size + 1, len(DIRECTION_NAMES)), -1, dtype=np.int64)
-    classes = np.full_like(starts, -1)
+    starts = np.zeros((size + 1, label_count), dtype=np.int64)
+    # At each possible split, cache the cheapest predecessor distinct from the
+    # next label. Its cost and class are independent of the end of the new interval.
+    previous_cost = np.full((label_count, size + 1), np.inf)
+    previous_label = np.zeros((label_count, size + 1), dtype=np.int64)
     known = np.concatenate(
         (
             np.zeros(1, dtype=np.int64),
             np.cumsum([row.last_price is not None for row in observations]),
         )
     )
+    steps = np.arange(size + 1)
+    cost = np.full(label_count, np.inf)
     for stop in range(minimum, size + 1):
-        for label in range(len(DIRECTION_NAMES)):
-            if (
-                known[stop] >= config.minimum_observations
-                and known[stop] / stop >= config.minimum_price_coverage
-            ):
-                cost[stop, label] = cumulative[stop, label]
-            starts[stop, label] = 0
-            if stop < 2 * minimum:
-                continue
-            candidates = np.arange(minimum, stop - minimum + 1)
-            prior = cost[candidates].copy()
-            prior[:, label] = np.inf
-            prior_label = np.argmin(prior, axis=1)
+        if (
+            known[stop] >= config.minimum_observations
+            and known[stop] / stop >= config.minimum_price_coverage
+        ):
+            cost[:] = cumulative[:, stop]
+        else:
+            cost.fill(np.inf)
+        if stop >= 2 * minimum:
+            candidates = slice(minimum, stop - minimum + 1)
             options = (
-                prior[np.arange(len(candidates)), prior_label]
-                + cumulative[stop, label]
-                - cumulative[candidates, label]
+                previous_cost[:, candidates]
+                + cumulative[:, stop, None]
+                - cumulative[:, candidates]
                 + config.decoder_switch_penalty
             )
             counts = known[stop] - known[candidates]
             sufficient = (counts >= config.minimum_observations) & (
-                counts / (stop - candidates) >= config.minimum_price_coverage
+                counts / (stop - steps[candidates]) >= config.minimum_price_coverage
             )
-            options = np.where(sufficient, options, np.inf)
-            best = int(np.argmin(options))
-            if options[best] < cost[stop, label]:
-                cost[stop, label] = options[best]
-                starts[stop, label] = candidates[best]
-                classes[stop, label] = prior_label[best]
+            options[:, ~sufficient] = np.inf
+            offsets = options.argmin(axis=1)
+            split_cost = options[labels, offsets]
+            improved = split_cost < cost
+            cost[improved] = split_cost[improved]
+            starts[stop, improved] = minimum + offsets[improved]
+
+        # Stable class order also decides ties when reconstructing the path.
+        first, second = np.argsort(cost, kind="stable")[:2]
+        previous_cost[:, stop] = cost[first]
+        previous_label[:, stop] = first
+        previous_cost[first, stop] = cost[second]
+        previous_label[first, stop] = second
     result = []
-    if not np.isfinite(cost[-1]).any():
+    if not np.isfinite(cost).any():
         raise ValueError("scores cannot be decoded with the observation constraints")
     stop = size
-    label = int(np.argmin(cost[-1]))
+    label = int(np.argmin(cost))
     while stop:
         start = int(starts[stop, label])
         result.append((start, stop, Direction(DIRECTION_NAMES[label])))
-        label = int(classes[stop, label])
+        label = int(previous_label[label, start])
         stop = start
     result.reverse()
     return result

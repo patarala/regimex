@@ -431,6 +431,29 @@ def test_decoder_removes_isolated_score_flips_and_keeps_sustained_reversal() -> 
     ]
 
 
+@pytest.mark.parametrize("last_label", [0, 1, 2])
+def test_decoder_prefers_the_first_eligible_class_on_a_tie(last_label: int) -> None:
+    config = AnalysisConfig(min_duration=4)
+    scores = np.full((8, 3), 0.49)
+    scores[:4, last_label] = 0.02
+    scores[4:] = 0.01
+    scores[4:, last_label] = 0.98
+    directions = tuple(Direction)
+    first_label = next(index for index in range(3) if index != last_label)
+    decoded = segmentation.decode(scores, experiment([100.0] * 8).observations, config)
+    assert [(item.start, item.stop, item.direction) for item in decoded] == [
+        (0, 4, directions[first_label]),
+        (4, 8, directions[last_label]),
+    ]
+
+    # The preferred split has only three known prices on its left side.
+    missing = experiment([100.0, None, 100.0, 100.0] + [100.0] * 4)
+    decoded = segmentation.decode(scores, missing.observations, config)
+    assert [(item.start, item.stop, item.direction) for item in decoded] == [
+        (0, 8, directions[last_label])
+    ]
+
+
 def test_decoder_and_annotation_share_availability_and_validate_scores() -> None:
     data = experiment([100.0] * 32 + [None] * 32 + [100.0] * 32, [1] * 64 + [0] * 32)
     scores = np.tile([0.1, 0.8, 0.1], (96, 1))
