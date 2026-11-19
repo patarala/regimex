@@ -145,6 +145,39 @@ bounded tmpfs. Each CPU worker handles one task at a time, with default 8 GiB RA
 PostgreSQL, the API and the maintenance worker. Operator jobs need additional headroom. Reserve disk space for the
 database, retained objects, container images and backups.
 
+## Measure analysis under load
+
+Use a dedicated local instance with an analysis worker and a published model.
+For a [second native installation](installation.md#install), pass
+`--root var/load-instance --name regimex-load --port 8001` to the installer.
+Each run saves nine real analyses under the test user. The load client uses
+`127.0.0.1:8001`, `var/load-instance/credentials/user.token` and the release
+model `tcn-0.2.0`. Override these with `REGIMEX_LOAD_PORT`,
+`REGIMEX_LOAD_TOKEN_FILE` and `REGIMEX_LOAD_MODEL` for a different local setup.
+
+Install [Grafana k6](https://grafana.com/docs/k6/latest/set-up/install-k6/) on
+your PATH. From the source checkout, run:
+
+```sh
+sh scripts/load_test.sh
+```
+
+The command generates four reproducible two-instrument markets of 512 steps,
+runs one warm-up analysis, then processes the same four exports sequentially
+and with four clients. Each phase uploads the snapshots before timing and
+saves its k6 summary alongside the inputs in a new `var/load-test/run-*/`
+directory. Use `serial.json` and `parallel.json` for the comparison.
+
+`analysis_intake` measures the time to receive HTTP 202. `analysis_to_result`
+measures the time from submission through downloading the classification,
+including queueing and a status poll every half second. A result counts toward
+`analyses_verified` after its analysis, snapshot, model and instrument grids
+match the request. An HTTP failure or a missing verified analysis makes the
+command exit with an error. Set `REGIMEX_LOAD_MAX_RESULT_MS` to also fail if
+any result, including the warm-up, exceeds your latency budget in milliseconds.
+Use the median for this short run. Four jobs per phase provide too few
+observations for a reliable p95.
+
 ## S3 profile
 
 The supported provider is SeaweedFS 4.48 over verified HTTPS. Provision a private

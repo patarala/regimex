@@ -51,6 +51,7 @@ evaluation of the reference TCN distributed with the release assets.
 | Automate analysis, train a model or publish a version | [API workflows](docs/api.md) |
 | Connect a simulator and manage its keys | [Platform access](docs/access.md) |
 | Configure storage, back up data or recover an installation | [Storage and recovery](docs/storage.md) |
+| Measure analysis latency with one and four concurrent clients | [Running the k6 load test](docs/deployment.md#measure-analysis-under-load) |
 | Package the service and its optional assets | [Building a release](docs/releasing.md) |
 
 ## Development
