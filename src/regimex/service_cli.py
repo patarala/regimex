@@ -205,9 +205,7 @@ def register_model(
     """Verify and import a saved model bundle. Use --activate to serve it."""
 
     def action() -> None:
-        from pydantic import ValidationError
-
-        from regimex.model_registry import InferenceRuntime
+        from regimex.model_registry import InferenceRuntime, read_inference_runtime
         from regimex.service_bootstrap import create_service
 
         if runtime_file is None:
@@ -215,16 +213,7 @@ def register_model(
         else:
             if threads is not None:
                 raise ValueError("Set threads in the runtime file when using --runtime-file.")
-            with runtime_file.open("rb") as stream:
-                raw = stream.read(8193)
-            if len(raw) > 8192:
-                raise ValueError("Inference runtime JSON exceeds 8 KiB.")
-            try:
-                runtime = InferenceRuntime.model_validate_json(raw)
-            except ValidationError as exc:
-                error = exc.errors(include_input=False, include_context=False)[0]
-                field = ".".join(map(str, error["loc"])) or "JSON"
-                raise ValueError(f"Invalid inference runtime ({field}): {error['msg']}") from None
+            runtime = read_inference_runtime(runtime_file)
         service = create_service(ServiceSettings.from_env())
         principal = service.authenticate(token_file.read_text(encoding="utf-8").strip())
         model = service.register_bundle(

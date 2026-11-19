@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import tomllib
+from collections import Counter
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from datetime import datetime
@@ -24,7 +25,7 @@ from uuid import UUID, uuid4
 import psycopg
 
 from regimex.data_catalog import content_hash
-from regimex.model_registry import InferenceRuntime
+from regimex.model_registry import InferenceRuntime, read_inference_runtime
 from regimex.storage import write_json
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,14 +102,7 @@ def bin_path(name, directory=None):
 
 
 def inference_policy(path):
-    if path is None:
-        runtime = InferenceRuntime()
-    else:
-        with path.open("rb") as stream:
-            raw = stream.read(8193)
-        if len(raw) > 8192:
-            raise ValueError("Inference runtime JSON exceeds 8 KiB")
-        runtime = InferenceRuntime.model_validate_json(raw)
+    runtime = InferenceRuntime() if path is None else read_inference_runtime(path)
     resolved = runtime.model_dump(mode="json")
     return {
         "inference_runtime": resolved,
@@ -282,8 +276,19 @@ def summarize(cell, name, peak_bytes, arrival_seconds):
         throughput_window = max(
             arrival_seconds, (max(accounted) - min(starts)).total_seconds(), seconds
         )
+    return {
+        **outcomes(metrics, name),
+        "status": "passed",
+        "observed_seconds": seconds,
+        "throughput_window_seconds": throughput_window,
+        "completed_per_minute": completed * 60 / throughput_window,
+        "cgroup_peak_bytes": peak_bytes,
+    }
+
+
+def outcomes(metrics, name):
     counters = {
-        key: metrics.get(metric, {}).get("count", 0)
+        key: metrics.get(metric, {}).get("count")
         for key, metric in {
             "requested": "analyses_scheduled",
             "started": "analyses_started",
@@ -291,30 +296,32 @@ def summarize(cell, name, peak_bytes, arrival_seconds):
             "completed": "analyses_verified",
             "quota_refused": "analyses_quota_refused",
             "failed": "analyses_failed",
+            "submit_failed": "analyses_submit_failed",
+            "accounted": "analyses_accounted",
             "dropped": "dropped_iterations",
         }.items()
     }
     queue = {}
     if name == "sustained":
         for half in ("first", "second"):
-            trend = metrics[f"analysis_queued_{half}_half"]
+            trend = metrics.get(f"analysis_queued_{half}_half", {})
             queue[f"queued_{half}_half"] = {
-                "med": trend["med"],
-                "max": trend["max"],
+                "med": trend.get("med"),
+                "max": trend.get("max"),
                 "samples": metrics.get(f"analysis_queue_{half}_half_samples", {}).get("count"),
             }
-        queue["active_after_drain"] = metrics["analysis_active_after_drain"]["max"]
+        queue["active_after_drain"] = metrics.get("analysis_active_after_drain", {}).get("max")
         queue["after_drain_samples"] = metrics.get("analysis_after_drain_samples", {}).get("count")
+    result = metrics.get("analysis_to_result", {}) if counters["completed"] else {}
+    intake = metrics.get("analysis_intake", {}) if counters["accepted"] else {}
+    # k6's legacy Rate export counts true samples (unexpected HTTP responses) as passes.
     return {
         **counters,
         **queue,
-        "observed_seconds": seconds,
-        "throughput_window_seconds": throughput_window,
-        "completed_per_minute": completed * 60 / throughput_window,
-        "result_median_ms": metrics["analysis_to_result"]["med"],
-        "result_p95_ms": metrics["analysis_to_result"]["p(95)"],
-        "intake_median_ms": metrics["analysis_intake"]["med"],
-        "cgroup_peak_bytes": peak_bytes,
+        "http_failures": metrics.get("http_req_failed", {}).get("passes"),
+        "result_median_ms": result.get("med"),
+        "result_p95_ms": result.get("p(95)"),
+        "intake_median_ms": intake.get("med"),
     }
 
 
@@ -335,16 +342,14 @@ def run_cell(config_file, scratch, steps, workers, name):
         or (group / "memory.swap.max").read_text().strip() != "0"
     ):
         raise RuntimeError("The requested cgroup CPU, memory or swap limit is not active")
-    save(
-        cell / "envelope.json",
-        {
-            "cgroup": cgroup_id,
-            "cpu_ids": sorted(os.sched_getaffinity(0)),
-            "cpu_max": [int(quota), int(period)],
-            "memory_max": config["memory_bytes"],
-            "swap_max": 0,
-        },
-    )
+    envelope = {
+        "cgroup": cgroup_id,
+        "cpu_ids": sorted(os.sched_getaffinity(0)),
+        "cpu_max": [int(quota), int(period)],
+        "memory_max": config["memory_bytes"],
+        "swap_max": 0,
+    }
+    save(cell / "envelope.json", envelope)
 
     env = clean_env()
     pg_port = port()
@@ -468,6 +473,8 @@ def run_cell(config_file, scratch, steps, workers, name):
         )
 
         def collect():
+            envelope["peak_bytes"] = int((group / "memory.peak").read_text())
+            save(cell / "envelope.json", envelope)
             jobs = cell / "jobs.jsonl"
             if not jobs.is_file() or not jobs.stat().st_size:
                 return
@@ -501,22 +508,110 @@ def run_cell(config_file, scratch, steps, workers, name):
         save(cell / "result.json", row)
 
 
+def failed_cell(cell, planned_phase, steps, workers):
+    # A warm-up summary cannot describe a measured phase that started but never exported.
+    phase = "setup"
+    for candidate in (planned_phase, "warmup"):
+        if (cell / f"{candidate}-k6.log").exists() or (cell / f"{candidate}.json").exists():
+            phase = candidate
+            break
+    summary = cell / f"{phase}.json"
+    metrics = json.loads(summary.read_bytes())["metrics"] if summary.exists() else {}
+    row = {
+        "phase": phase,
+        "planned_phase": planned_phase,
+        "steps": steps,
+        "workers": workers,
+        "status": "failed",
+        **outcomes(metrics, phase),
+    }
+    envelope = cell / "envelope.json"
+    row["cgroup_peak_bytes"] = (
+        json.loads(envelope.read_bytes()).get("peak_bytes") if envelope.exists() else None
+    )
+    timings = cell / "timings.json"
+    row["median_stage_ms"] = {}
+    if timings.exists():
+        row["median_stage_ms"] = (
+            json.loads(timings.read_bytes())["phases"].get(phase, {}).get("median_ms", {})
+        )
+    points = cell / f"{phase}-points.jsonl"
+    if points.exists():
+        failures = Counter()
+        with points.open() as stream:
+            for line in stream:
+                try:
+                    point = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (
+                    point.get("type") == "Point"
+                    and point.get("metric") == "http_req_failed"
+                    and point["data"]["value"] == 1
+                ):
+                    tags = point["data"]["tags"]
+                    failures[
+                        (tags.get("name", "unknown request"), tags.get("status", "unknown status"))
+                    ] += 1
+        row["http_failure_samples"] = [
+            {"request": request, "status": status, "count": count}
+            for (request, status), count in sorted(failures.items())
+        ]
+    return row
+
+
+@contextmanager
+def record_cell(out, rows, total, name, steps, workers):
+    cell = out / f"{name}-{steps}-{workers}w"
+    try:
+        yield
+    except Exception as failure:
+        try:
+            result = cell / "result.json"
+            if result.is_file():
+                row = json.loads(result.read_bytes())
+                row.update(status="failed", failure_stage="after measurement")
+            else:
+                row = failed_cell(cell, name, steps, workers)
+            if cell.is_dir():
+                save(cell / "result.json", row)
+            report(out, [*rows, row], total)
+        except Exception as diagnostic:
+            failure.add_note(f"Could not summarize the failed cell: {diagnostic}")
+        raise
+    row = json.loads((cell / "result.json").read_bytes())
+    rows.append(row)
+    report(out, rows, total)
+
+
+def display(value, divisor=1, digits=None):
+    if value is None:
+        return "unavailable"
+    return str(value) if digits is None else f"{value / divisor:.{digits}f}"
+
+
 def report(out, rows, total):
     save(out / "comparison.json", rows)
     status = "Complete" if len(rows) == total else "Partial"
+    if any(row.get("status") == "failed" for row in rows):
+        status = "Failed"
     lines = [
-        f"# {status} load comparison ({len(rows)} of {total} cells)",
+        f"# {status} load comparison ({len(rows)} of {total} cells reported)",
         "",
-        "| Phase | Steps | Workers | Completed / requested | Jobs/min | Median result s | "
-        "p95 result s | Peak MiB |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|",
+        "| Phase | Status | Steps | Workers | Completed / requested | Jobs/min | Median result s | "
+        "p95 result s | Peak MiB | HTTP failures |",
+        "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         lines.append(
-            f"| {row['phase']} | {row['steps']} | {row['workers']} | "
-            f"{row['completed']} / {row['requested']} | {row['completed_per_minute']:.2f} | "
-            f"{row['result_median_ms'] / 1000:.2f} | {row['result_p95_ms'] / 1000:.2f} | "
-            f"{row['cgroup_peak_bytes'] / 2**20:.1f} |"
+            f"| {row['phase']} | {row.get('status', 'passed')} | "
+            f"{row['steps']} | {row['workers']} | "
+            f"{display(row.get('completed'))} / {display(row.get('requested'))} | "
+            f"{display(row.get('completed_per_minute'), 1, 2)} | "
+            f"{display(row.get('result_median_ms'), 1000, 2)} | "
+            f"{display(row.get('result_p95_ms'), 1000, 2)} | "
+            f"{display(row.get('cgroup_peak_bytes'), 2**20, 1)} | "
+            f"{display(row.get('http_failures'))} |"
         )
     lines.extend(
         [
@@ -554,7 +649,34 @@ def report(out, rows, total):
             f"| {row['phase']} | {row['steps']} | {row['workers']} | " + " | ".join(values) + " |"
         )
     for row in rows:
-        if row["phase"] == "sustained":
+        if row.get("status") == "failed":
+            fields = (
+                "requested",
+                "started",
+                "accepted",
+                "completed",
+                "quota_refused",
+                "submit_failed",
+                "failed",
+                "dropped",
+                "http_failures",
+            )
+            lines.extend(
+                [
+                    "",
+                    f"## Failed {row['phase']} cell, {row['steps']} steps "
+                    f"and {row['workers']} workers",
+                    "",
+                    "| Requested | Started | Accepted | Verified | Quota refused | "
+                    "Failed submissions | Failed iterations | Dropped | HTTP failures |",
+                    "|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+                    "| " + " | ".join(display(row.get(field)) for field in fields) + " |",
+                    "",
+                ]
+            )
+            for item in row.get("http_failure_samples", []):
+                lines.append(f"- {item['request']}: HTTP {item['status']} (count {item['count']})")
+        if row["phase"] == "sustained" and row.get("status") != "failed":
             counts = [row[f"queued_{half}_half"].get("samples") for half in ("first", "second")]
             coverage = " and ".join("unavailable" if n is None else str(n) for n in counts)
             lines.extend(
@@ -688,7 +810,10 @@ def main():
         print(f"Running {name}, {steps} steps, {workers} worker(s)", flush=True)
         unit = f"regimex-load-{uuid4().hex}.service"
         runtime = (options.duration_seconds if name == "sustained" else 300) + 600
-        with private_scratch(out, unit) as tmp:
+        with (
+            record_cell(out, rows, len(cells), name, steps, workers),
+            private_scratch(out, unit) as tmp,
+        ):
             command = [
                 runner,
                 "--user",
@@ -721,9 +846,6 @@ def main():
                 name,
             ]
             subprocess.run(command, check=True, timeout=runtime + 30)
-        row = json.loads((out / f"{name}-{steps}-{workers}w" / "result.json").read_bytes())
-        rows.append(row)
-        report(out, rows, len(cells))
 
 
 if __name__ == "__main__":
