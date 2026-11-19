@@ -298,13 +298,13 @@ def test_real_baseline_result_survives_restart_and_redelivery(
             restarted.read_report(denied, queued.analysis_id)
 
 
-def test_cached_bundle_is_not_downloaded_for_every_prediction(
+def test_repeated_analysis_materializes_only_the_snapshot_in_each_attempt(
     service: AnalysisService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     published_model(service, tmp_path)
     owner = principal(service.repository)
     snapshot = service.create_snapshot(owner, source(2001).export)
-    seen: list[str] = []
+    seen: list[tuple[str, Path]] = []
     original = service.store.materialize
 
     def observe(
@@ -315,7 +315,7 @@ def test_cached_bundle_is_not_downloaded_for_every_prediction(
         expected_size_bytes: int,
         checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
-        seen.append(key)
+        seen.append((key, destination))
         return original(
             key,
             destination,
@@ -329,7 +329,12 @@ def test_cached_bundle_is_not_downloaded_for_every_prediction(
         queued = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key=key)
         result = service.run_analysis(queued.operation.operation_id)
         assert result is not None and result.state == "succeeded"
-    assert seen == [snapshot.object.key, snapshot.object.key]
+        ((object_key, destination),) = seen
+        assert object_key == snapshot.object.key
+        assert destination.name == "export.json"
+        assert destination.parent.name.startswith(f"analysis-{queued.analysis_id}-")
+        assert not destination.parent.exists()
+        seen.clear()
 
 
 @dataclass

@@ -364,17 +364,16 @@ class AnalysisService:
 
     def read_snapshot(self, principal: Principal, snapshot_id: UUID) -> ExportV2:
         record = self.get_snapshot(principal, snapshot_id)
-        return self._read_snapshot_record(record)
+        with tempfile.TemporaryDirectory(prefix="snapshot-read-", dir=self.work_root) as temporary:
+            return self._materialize_snapshot(record, Path(temporary) / "export.json")
 
-    def _read_snapshot_record(
-        self, record: SnapshotRecord, *, checkpoint: Callable[[], None] | None = None
+    def _materialize_snapshot(
+        self, record: SnapshotRecord, path: Path, *, checkpoint: Callable[[], None] | None = None
     ) -> ExportV2:
         if record.object.size_bytes > MAX_INPUT_BYTES:
             raise ObjectIntegrityError("stored snapshot exceeds the input size limit")
-        with tempfile.TemporaryDirectory(prefix="snapshot-read-", dir=self.work_root) as temporary:
-            path = Path(temporary) / "export.json"
-            materialize_object(self.store, record.object, path, checkpoint=checkpoint)
-            export = parse_export_v2(path.read_bytes())
+        materialize_object(self.store, record.object, path, checkpoint=checkpoint)
+        export = parse_export_v2(path.read_bytes())
         if (
             export.content_sha256,
             export.source.source_id,
