@@ -59,7 +59,7 @@ The code lives in `src/regimex/`. See [AGENTS.md](AGENTS.md) for development
 conventions and local test commands.
 
 Every push runs formatting, lint, core tests, JavaScript checks and packaging.
-Pull requests into `main` also run the scientific, PostgreSQL, HTTPS S3 and
+Pull requests into `main` also run the scientific, PostgreSQL, HTTPS S3, Chromium and
 container tests. For a direct push to `main`, run **Actions → CI → Run workflow**
 with **full_checks** enabled before releasing.
 

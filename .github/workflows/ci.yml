@@ -142,8 +142,12 @@ jobs:
             sudo apt-get install --no-install-recommends --yes postgresql-client-16
           fi
           printf '%s\n' "REGIMEX_TEST_SEAWEEDFS_BIN=$provider_dir/weed" 'PGDUMP_BIN=/usr/lib/postgresql/16/bin/pg_dump' 'PGRESTORE_BIN=/usr/lib/postgresql/16/bin/pg_restore' >> "$GITHUB_ENV"
-      - name: Test with real PostgreSQL and HTTPS S3
-        run: uv run --locked --extra ml --extra viz --extra service --extra s3 --group queue-test --group service-test python tests/support/run_storage_tests.py --binary "$REGIMEX_TEST_SEAWEEDFS_BIN" --tls -- python -m pytest
+      - name: Install Chromium for offline report tests
+        run: uv run --locked --all-extras --group queue-test --group service-test --group browser-test playwright install --with-deps --only-shell chromium
+      - name: Test with PostgreSQL, HTTPS S3 and Chromium
+        env:
+          REGIMEX_REQUIRE_BROWSER_TESTS: "1"
+        run: uv run --locked --all-extras --group queue-test --group service-test --group browser-test python tests/support/run_storage_tests.py --binary "$REGIMEX_TEST_SEAWEEDFS_BIN" --tls -- python -m pytest
       - name: Check types with scientific dependencies
         run: uv run --locked --extra ml --extra viz --extra service --extra s3 --group service-test mypy src tests
 

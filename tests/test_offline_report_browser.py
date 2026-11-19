@@ -1,6 +1,8 @@
 """Exercise the saved HTML controls when Playwright and Chromium are installed."""
 
+import importlib
 import json
+import os
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
@@ -16,10 +18,17 @@ from regimex.exports import ExportPayloadV2, ExportV2, seal_export
 
 @pytest.fixture(scope="module")
 def browser() -> Iterator[Any]:
-    playwright = pytest.importorskip("playwright.sync_api")
+    required = os.environ.get("REGIMEX_REQUIRE_BROWSER_TESTS") == "1"
+    playwright = (
+        importlib.import_module("playwright.sync_api")
+        if required
+        else pytest.importorskip("playwright.sync_api")
+    )
     with playwright.sync_playwright() as driver:
-        executable = shutil.which("chromium") or driver.chromium.executable_path
-        if not Path(executable).is_file():
+        executable = os.environ.get("REGIMEX_TEST_CHROMIUM")
+        if not required and executable is None:
+            executable = shutil.which("chromium") or driver.chromium.executable_path
+        if not required and executable is not None and not Path(executable).is_file():
             pytest.skip("Install Chromium to exercise offline reports")
         instance = driver.chromium.launch(executable_path=executable)
         try:
