@@ -80,6 +80,24 @@ def start_services(compose: list[str], environment: dict[str, str], *, build: bo
     # BuildKit's FROM postgres layer cache is not the daemon's runtime image store.
     # A clean engine still needs this image before the no-pull service startup.
     command([*compose, "pull", "postgres"], environment)
+    command([*compose, "up", "--detach", "--wait", "--pull", "never", "postgres"], environment)
+    # Offline restore inspects this inventory before writing to a fresh deployment.
+    inventory = command(
+        [
+            *compose,
+            "exec",
+            "-T",
+            "postgres",
+            "bash",
+            "-o",
+            "pipefail",
+            "-c",
+            "pg_dump -U postgres -d regimex --schema-only --format=custom | pg_restore --list",
+        ],
+        environment,
+    )
+    if any(line.strip() and not line.startswith(b";") for line in inventory.stdout.splitlines()):
+        raise RuntimeError("The newly provisioned database contains objects before migration.")
     command(
         [
             *compose,

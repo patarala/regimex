@@ -13,8 +13,8 @@ the archive, `BUILD.json` records the source commit and build checks.
 
 ## Include saved models, examples and editable documents
 
-To build a release for the [local installer](installation.md), use an asset
-pack containing both the baseline and TCN bundles:
+To include ready-to-register models, supply an asset pack containing the
+baseline and TCN bundles.
 
 ```sh
 uv run --locked python scripts/build_release.py --assets release
@@ -38,7 +38,7 @@ uv run --locked python scripts/build_release.py --allow-dirty --output-dir relea
 ```
 
 A preview includes edits to tracked files. Stage new files that belong in the
-preview. The local installer accepts archives built from a committed checkout.
+preview.
 
 For version 0.1.0, verify the archive and its contents with:
 
@@ -51,4 +51,4 @@ sha256sum -c SHA256SUMS
 ```
 
 When distributing an archive, give recipients its SHA-256 through a trusted
-channel so they can verify it before running the installer.
+channel so they can verify their copy before use.

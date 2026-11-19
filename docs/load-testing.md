@@ -1,12 +1,26 @@
 # Measuring the analysis service under load
 
-Run the disposable stand from a source checkout. It creates its own loopback PostgreSQL cluster and API, local object store, user and admin tokens, registered model version and analysis workers. It waits for model readiness and the requested worker registrations and verifies a warm-up prediction before each measurement.
+To measure a running Compose or source deployment, [point k6 at a dedicated test instance](#running-against-an-existing-test-installation). To compare worker counts at a fixed resource budget, run the disposable stand from a source checkout. It starts its own PostgreSQL cluster, API and workers, registers the model and verifies a warm-up prediction before measuring the workload.
+
+## Prepare a resource-limited stand
+
+Use a Linux account with a delegated cgroup v2 subtree. Set
+`REGIMEX_LOAD_CGROUP_PARENT` to its absolute path under `/sys/fs/cgroup`,
+or pass `--cgroup-parent`. The account must be able to create children and
+move a child process from the launching shell's cgroup into them. The parent
+must already have `cpu` and `memory` enabled in `cgroup.subtree_control`.
+Each child needs `memory.swap.max`, `memory.peak` and `cgroup.kill`. The
+driver configures only groups it creates. [Linux cgroup delegation](https://docs.kernel.org/admin-guide/cgroup-v2.html#delegation)
+
+Install the project's pinned Python and uv versions, Grafana k6 and PostgreSQL
+16. The stand finds `initdb` and `postgres` on `PATH` or through
+`pg_config --bindir`. Set `REGIMEX_PG_BINDIR` to select a different binary
+directory. Supply a saved model bundle, or use `release/models/tcn` from an
+unpacked asset pack.
 
 ```sh
-sh scripts/load_test.sh --stand --bundle release/models/tcn
+sh scripts/load_test.sh --stand --cgroup-parent "$REGIMEX_LOAD_CGROUP_PARENT" --bundle release/models/tcn
 ```
-
-Use Linux with unified cgroup v2, a running systemd user manager with the CPU and memory controllers delegated, and a kernel exposing `memory.peak`. Run as an ordinary user. Install the Python and uv versions in `.python-version` and `pyproject.toml`, Grafana k6 on PATH, and the PostgreSQL 16 server tools. The stand discovers `initdb` and `postgres` on PATH or via `pg_config --bindir`. Set `REGIMEX_PG_BINDIR` to override this discovery. Unpack a released model bundle or supply the directory of a saved model with `--bundle`. The default path is `release/models/tcn` relative to the checkout. The stand records the manifest SHA-256 once and passes it to every registration. uv installs the locked service, ML and visualization dependencies.
 
 ## Workloads
 
@@ -21,7 +35,7 @@ The generator writes four two-instrument markets per size, using seeds 42 throug
 
 The runner checks each downloaded result's analysis, snapshot and model identities. For each instrument, it verifies normalized probabilities on every step and full interval coverage. Observed intervals must carry a direction class. Intervals marked `no_trades` or `insufficient_data` must carry a null direction.
 
-Each cell gets a fresh systemd user service with two logical CPUs shared by all descendants, a CPU quota of 200%, a total memory limit of 3 GiB and zero swap. This includes the API, database, workers, computation subprocesses and k6. Each worker executes one analysis at a time. All cells use the same CPU IDs. The driver verifies the effective affinity and the unit's kernel quota, memory and swap settings. Use `--cpus` and `--memory-mib` to select another common envelope. Host contention and page-cache state can vary between runs.
+Each comparison cell runs in its own cgroup. By default it has two logical CPUs, a CPU quota of 200%, a total memory limit of 3 GiB and zero swap. The API, database, workers, computation subprocesses and k6 share those limits. All cells use the same CPU IDs. The driver verifies the effective affinity and kernel settings before starting the workload. Use `--cpus` and `--memory-mib` to select other limits. Host contention and page-cache state can vary between runs.
 
 Use `--http-concurrency-limit` to vary the private API’s Uvicorn connection/task limit independently of worker count. The default is 8 and the minimum is 2. The selected value is recorded in `run.json`.
 
@@ -36,7 +50,9 @@ Choose a whole number of arrivals (`rate × seconds / 60`), up to 100. A documen
 
 ## Results and cleanup
 
-The runner prints the artifact directory under `var/load-test/run-*`. Select a new directory with `--output`. The driver returns nonzero on failure. It stops the transient service and its computation descendants on completion or interruption. Each unit has a hard runtime deadline and a ten-second stop timeout. Temporary passwords, tokens, PostgreSQL data and stored objects live in a private temporary directory that the driver removes after confirming the unit stopped. If the user manager cannot confirm shutdown, the driver preserves the directory and reports its path alongside the unit name. Verify that the named unit has stopped before cleaning up its data. The runner also attempts to collect stage timings for accepted jobs after a failed phase. A partial comparison states how many planned cells have reported. On a failed k6 phase, the comparison retains the counters and latency samples that k6 exported, the failed HTTP request count and available status samples by request. Missing measurements appear as unavailable. The stand still exits nonzero. Logs and available evidence remain in the artifact directory.
+The runner prints the artifact directory under `var/load-test/run-*`. Select a new directory with `--output`. A supervisor outside each cell enforces its deadline and watches for driver exit. During cleanup it stops the cell's descendants and waits for the kernel to confirm that the cgroup is empty before removing private credentials, database files and objects. If shutdown cannot be confirmed, it reports the cgroup and preserves the private directory for inspection.
+
+The driver exits nonzero on failure. A partial comparison shows how many cells reported, including k6 counters, latency samples, HTTP failures and available stage timings for accepted jobs. Missing measurements appear as unavailable.
 
 - `run.json` records the input file hashes, model manifest digest, tool versions, source revision when available, common resource budget and arrival configuration. Each cell's `envelope.json` records its applied kernel settings.
 - `comparison.md` and `comparison.json` compare completed jobs per minute, median and p95 submit-to-result latency, and peak memory. Matrix throughput counts verified downloads over the time from first measured submission to last verification. Sustained throughput divides the verified count by the full configured arrival window or the elapsed time up to the last verification or quota refusal, whichever is longer. The JSON records this denominator and the observed span to last verification separately. Both exclude upload and warm-up. The Markdown report also compares median stage durations.
@@ -47,7 +63,16 @@ The runner prints the artifact directory under `var/load-test/run-*`. Select a n
 
 ## Running against an existing test installation
 
-Use a dedicated loopback instance with an active model, analysis worker and idle test owner. The default script submits one warm-up, four serial and four parallel 512-step analyses. The sustained option runs the warm-up and fixed-arrival workload. These analyses and their outputs persist in that installation.
+Use a dedicated loopback instance with an active model, an analysis worker and an idle test owner. This mode needs k6 and uv and uses the deployment's own resource limits. It submits one warm-up, four serial and four parallel 512-step analyses. The sustained option runs the warm-up and fixed-arrival workload. These analyses and their outputs persist in that installation.
+
+For a test deployment following the [Compose guide](deployment.md#start-the-service), use its exported user token and the public CA certificate that signed the server certificate. This command connects to `https://localhost:8443` over loopback and verifies the certificate for `localhost`.
+
+```sh
+REGIMEX_LOAD_SCHEME=https REGIMEX_LOAD_TOKEN_FILE=var/credentials/user.token \
+  SSL_CERT_FILE="$PWD/var/secrets/api-ca.crt" sh scripts/load_test.sh
+```
+
+For a source deployment on HTTP port 8001, run either workload as follows.
 
 ```sh
 sh scripts/load_test.sh
@@ -55,4 +80,4 @@ REGIMEX_LOAD_RATE_PER_MINUTE=12 REGIMEX_LOAD_DURATION_SECONDS=60 \
     sh scripts/load_test.sh --sustained
 ```
 
-The defaults are port 8001, `var/load-instance/credentials/user.token` and model `tcn-0.2.0`. Set `REGIMEX_LOAD_PORT`, `REGIMEX_LOAD_TOKEN_FILE` or `REGIMEX_LOAD_MODEL` to override them. With `--sustained`, `REGIMEX_LOAD_MAX_VUS` sets the preallocated client pool. Use `REGIMEX_LOAD_MAX_RESULT_MS` to impose a submit-to-download latency threshold on the external run. The disposable stand manages its own configuration, credentials and resource envelope.
+Set `REGIMEX_LOAD_PORT` to override the port (HTTP defaults to 8001, HTTPS to 8443), `REGIMEX_LOAD_TOKEN_FILE` to override `var/load-instance/credentials/user.token`, or `REGIMEX_LOAD_MODEL` to select a model other than `tcn-0.2.0`. With `--sustained`, `REGIMEX_LOAD_MAX_VUS` sets the preallocated client pool. Use `REGIMEX_LOAD_MAX_RESULT_MS` to impose a submit-to-download latency threshold.

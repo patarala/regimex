@@ -39,6 +39,27 @@ async function loadClient(env = {}) {
   return { client: client.namespace, http, clock, metrics };
 }
 
+test("load requests stay on loopback for the HTTP stand and HTTPS Compose service", async () => {
+  for (const [env, origin] of [
+    [{}, "http://127.0.0.1:8001"],
+    [{ REGIMEX_LOAD_SCHEME: "https" }, "https://localhost:8443"],
+    [{ REGIMEX_LOAD_SCHEME: "https", REGIMEX_LOAD_PORT: "8444" }, "https://localhost:8444"],
+  ]) {
+    const { client, http } = await loadClient(env);
+    const urls = [];
+    http.request = (_method, url) => {
+      urls.push(url);
+      return { status: 200, json: () => [] };
+    };
+    client.sampleQueue();
+    assert.ok(urls.length > 0);
+    for (const url of urls) assert.equal(new URL(url).origin, origin);
+    assert.equal(client.options.hosts.localhost, "127.0.0.1");
+    assert.equal(client.options.maxRedirects, 0);
+  }
+  await assert.rejects(loadClient({ REGIMEX_LOAD_SCHEME: "ftp" }), /must be http or https/);
+});
+
 test("sustained queue thresholds require completed polls in both intake halves and after drain", async () => {
   const { client, http, clock, metrics } = await loadClient();
   let time = 0;

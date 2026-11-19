@@ -75,7 +75,7 @@ Regimex tests against SeaweedFS 4.48 with versioning enabled, conditional
 creation and HTTPS. Use a dedicated bucket prefix. Verify the same semantics
 before using another provider.
 
-For native processes:
+When starting Regimex from a checkout, configure the provider in the process environment.
 
 ```sh
 export REGIMEX_OBJECT_BACKEND=s3
@@ -150,14 +150,6 @@ operator must also stop anything that writes to the filesystem or S3 directly.
 
 ## Backup and restore
 
-Installer-managed native services provide `service.sh backup --output PATH` and
-`service.sh verify-backup --input PATH --manifest-sha256 DIGEST`. The first
-coordinates managed writer shutdown and resumption; the second verifies a full
-restore in a disposable private cluster without stopping the live service. See
-[installation maintenance](installation.md#back-up-and-check-restoration). The
-manual commands below also support other deployments and require explicit
-stopped-writer attestations.
-
 Use PostgreSQL 16 `pg_dump` and `pg_restore`, or the Compose `ops` image.
 Set `PGDUMP_BIN` and `PGRESTORE_BIN` or pass `--pg-dump` and `--pg-restore`
 to select the binaries. Backups require the schema revision supported by the
@@ -168,6 +160,17 @@ With all writers stopped:
 ```sh
 uv run --locked --all-extras regimex service backup \
   --attestation-file var/stopped.json --output /private/backup-001
+```
+
+For Compose, put the attestation in a private host directory at
+`$RECOVERY_DIR/stopped.json`. Give the operator container's UID 10001 read
+access to that file and write access to the directory. The command creates a
+new `backup` subdirectory. Use a fresh directory for each backup.
+
+```sh
+docker compose --profile ops run --rm --no-deps \
+  --volume "$RECOVERY_DIR:/recovery" ops service backup \
+  --attestation-file /recovery/stopped.json --output /recovery/backup
 ```
 
 Keep the printed manifest SHA-256 separately from the archive, along with the
@@ -211,6 +214,8 @@ If restore fails, discard the partial target and start again with an empty one.
 Its readiness guard blocks intake with `503`. After success, apply any required
 upgrade and migrations, restart the services, and check a saved report and a
 model prediction before admitting users. Take a new backup after a schema upgrade.
+For the container restore commands, see
+[moving an installation to Compose](deployment.md#move-an-existing-installation-to-compose).
 
 ## Orphan cleanup
 

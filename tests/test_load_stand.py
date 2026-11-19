@@ -1,7 +1,11 @@
 """Check the measured interval excludes setup markers and includes the final verification."""
 
 import json
+import os
 import runpy
+import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -109,14 +113,16 @@ def test_stop_failure_preserves_private_data_and_original_error(
     pytest.importorskip("psycopg")
     stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
 
-    def unverifiable(unit: str) -> None:
-        raise OSError(f"Cannot reach manager for {unit}")
+    (tmp_path / "cell-group").mkdir()
+
+    def unverifiable(group: Path) -> None:
+        raise OSError(f"Cannot verify cgroup {group}")
 
     globals_ = stand["private_scratch"].__wrapped__.__globals__
-    monkeypatch.setitem(globals_, "stop_unit", unverifiable)
+    monkeypatch.setitem(globals_, "stop_group", unverifiable)
     with (
         pytest.raises(ValueError, match="k6 failed") as failure,
-        stand["private_scratch"](tmp_path, "regimex-load-test.service") as scratch,
+        stand["private_scratch"](tmp_path, tmp_path / "cell-group") as scratch,
     ):
         marker = scratch / "query-in-progress"
         marker.write_text("data")
@@ -131,10 +137,12 @@ def test_stop_confirmation_only_removes_the_original_scratch_directory(
     pytest.importorskip("psycopg")
     stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
     globals_ = stand["private_scratch"].__wrapped__.__globals__
-    monkeypatch.setitem(globals_, "stop_unit", lambda _unit: None)
+    monkeypatch.setitem(globals_, "stop_group", lambda _group: None)
+    (tmp_path / "cell-group").mkdir()
+    (tmp_path / "second-group").mkdir()
     with (
-        pytest.raises(RuntimeError, match="scratch path changed"),
-        stand["private_scratch"](tmp_path, "regimex-load-test.service") as scratch,
+        pytest.raises(RuntimeError, match=r"directory at .* changed"),
+        stand["private_scratch"](tmp_path, tmp_path / "cell-group") as scratch,
     ):
         scratch.rename(tmp_path / "moved")
         scratch.mkdir()
@@ -143,7 +151,7 @@ def test_stop_confirmation_only_removes_the_original_scratch_directory(
     assert marker.is_file()
     external = tmp_path / "external"
     external.mkdir()
-    with stand["private_scratch"](tmp_path, "regimex-load-second.service") as clean:
+    with stand["private_scratch"](tmp_path, tmp_path / "second-group") as clean:
         digest_dir = clean / "worker-1" / "cache" / ("a" * 64)
         digest_dir.mkdir(parents=True)
         (digest_dir / "weights.pt").touch(mode=0o400)
@@ -228,3 +236,119 @@ def test_interrupted_cell_preserves_evidence_from_intact_files(tmp_path: Path) -
     assert "# Failed load comparison (1 of 1 cells reported)" in markdown
     assert "poll analysis: HTTP 503 (count 1)" in markdown
     assert "timings.json" in markdown
+
+
+def test_cgroup_parent_requires_delegated_controllers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    check = stand["delegated_parent"]
+    monkeypatch.setitem(check.__globals__, "CGROUP_ROOT", tmp_path)
+    parent = tmp_path / "load-delegation"
+    parent.mkdir()
+    (parent / "cgroup.controllers").write_text("cpu memory")
+    enabled = parent / "cgroup.subtree_control"
+    enabled.write_text("cpu")
+    with pytest.raises(ValueError, match="REGIMEX_LOAD_CGROUP_PARENT"):
+        check(None)
+    with pytest.raises(ValueError, match=r"cgroup\.subtree_control"):
+        check(parent)
+    assert enabled.read_text() == "cpu"
+    enabled.write_text("cpu memory")
+    assert check(parent) == parent
+
+
+def test_stopping_a_cell_waits_until_descendants_are_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    events = tmp_path / "cgroup.events"
+    events.write_text("populated 1\nfrozen 0\n")
+
+    def finish_exit(_delay: float) -> None:
+        assert (tmp_path / "cgroup.kill").read_text() == "1"
+        events.write_text("populated 0\nfrozen 0\n")
+
+    monkeypatch.setattr("time.sleep", finish_exit)
+    stand["stop_group"](tmp_path)
+    assert "populated 0" in events.read_text()
+
+
+def test_moved_group_keeps_its_identity_during_cleanup(tmp_path: Path) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    with (
+        pytest.raises(RuntimeError, match=r"directory at .* changed"),
+        stand["new_group"](tmp_path) as (handle, _),
+    ):
+        path = handle.resolve()
+        path.rename(tmp_path / "moved")
+        path.mkdir()
+        (path / "cgroup.kill").write_text("unrelated")
+        (handle / "cgroup.events").write_text("populated 0")
+        stand["stop_group"](handle)
+    assert (path / "cgroup.kill").read_text() == "unrelated"
+    assert (tmp_path / "moved" / "cgroup.kill").read_text() == "1"
+
+
+def test_cell_supervisor_observes_timeout_and_driver_loss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    reader, writer = os.pipe()
+    with (
+        os.fdopen(reader, "rb") as lifetime,
+        os.fdopen(writer, "wb") as driver,
+        subprocess.Popen(["sleep", "30"]) as cell,
+    ):
+        try:
+            monkeypatch.setattr("sys.stdin", lifetime)
+            with pytest.raises(subprocess.TimeoutExpired):
+                stand["wait_for_cell"](cell, 0)
+            driver.close()
+            with pytest.raises(RuntimeError, match="driver disappeared"):
+                stand["wait_for_cell"](cell, 1)
+        finally:
+            cell.kill()
+
+
+def test_driver_cleans_owned_resources_after_supervisor_is_killed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    script = tmp_path / "killed-supervisor.py"
+    script.write_text(
+        "import os, signal, sys\nfrom pathlib import Path\n"
+        "scratch = Path(sys.argv[3])\n"
+        "(scratch / 'token').touch()\n"
+        "(scratch.parent / 'started').write_text(str(scratch))\n"
+        "os.kill(os.getpid(), signal.SIGKILL)\n"
+    )
+    parent = tmp_path / "cgroups"
+    parent.mkdir()
+
+    @contextmanager
+    def group_fixture(parent: Path) -> Iterator[tuple[Path, int]]:
+        with stand["new_group"](parent) as (group, fd):
+            (group / "memory.peak").write_text("0")
+            (group / "cgroup.events").write_text("populated 0\n")
+            try:
+                yield group, fd
+            finally:
+                assert (group / "cgroup.kill").read_text() == "1"
+                for control in group.iterdir():
+                    control.unlink()
+
+    start = stand["start_supervisor"]
+    monkeypatch.setitem(start.__globals__, "__file__", str(script))
+    monkeypatch.setitem(start.__globals__, "new_group", group_fixture)
+    config = {"cgroup_parent": str(parent), "cpu_ids": [1], "memory_bytes": 4096}
+    with pytest.raises(subprocess.CalledProcessError) as failure:
+        start(tmp_path / "run.json", config, 512, 2, "sustained")
+    assert failure.value.returncode == -9
+    assert not Path((tmp_path / "started").read_text()).exists()
+    assert not list(parent.iterdir())

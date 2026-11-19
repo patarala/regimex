@@ -1,4 +1,4 @@
-"""Run a fresh loopback service in a resource-limited systemd unit per comparison."""
+"""Run a fresh loopback service in a delegated cgroup v2 for each comparison."""
 
 import argparse
 import hashlib
@@ -6,6 +6,7 @@ import json
 import os
 import re
 import secrets
+import selectors
 import shutil
 import signal
 import socket
@@ -154,45 +155,88 @@ def finish_with(action):
         action()
 
 
-def stop_unit(unit):
-    stop = subprocess.run(
-        ["systemctl", "--user", "stop", unit], capture_output=True, text=True, timeout=20
-    )
-    if stop.returncode == 0:
-        return
-    # Transient units are normally collected before the runner's wait returns.
-    status = subprocess.run(
-        ["systemctl", "--user", "show", unit, "-p", "LoadState", "-p", "ActiveState"],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    if status.returncode == 0 and {"LoadState=not-found", "ActiveState=inactive"} <= set(
-        status.stdout.splitlines()
-    ):
-        return
-    raise RuntimeError(f"Cannot verify {unit} has stopped: {stop.stderr.strip()}")
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def delegated_parent(value):
+    if not value:
+        raise ValueError(
+            "Pass --cgroup-parent or set REGIMEX_LOAD_CGROUP_PARENT to a delegated cgroup v2 "
+            "directory with cpu and memory enabled for child groups."
+        )
+    parent = Path(value).resolve(strict=True)
+    if not parent.is_relative_to(CGROUP_ROOT) or not (parent / "cgroup.controllers").is_file():
+        raise ValueError(f"{parent} must be a cgroup v2 directory under {CGROUP_ROOT}")
+    enabled = (parent / "cgroup.subtree_control").read_text().split()
+    if not {"cpu", "memory"}.issubset(enabled) or not os.access(parent, os.W_OK):
+        raise ValueError(
+            f"{parent} needs write access and cpu and memory in cgroup.subtree_control"
+        )
+    return parent
+
+
+def owned_directory(path, identity):
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return False
+    if (current.st_dev, current.st_ino) != identity:
+        raise RuntimeError(f"The directory at {path} changed. Inspect it before cleanup.")
+    return True
+
+
+def identity(stat):
+    return stat.st_dev, stat.st_ino
+
+
+def remove_group(path, fd):
+    if owned_directory(path, identity(os.fstat(fd))):
+        path.rmdir()
 
 
 @contextmanager
-def private_scratch(out, unit):
-    # Keep ambiguous shutdowns for inspection; explicit cleanup handles read-only model caches.
-    temporary = tempfile.TemporaryDirectory(prefix="runtime-", dir=out, delete=False)
-    scratch = Path(temporary.name)
-    created = scratch.lstat()
+def new_group(parent):
+    path = parent / f"regimex-load-{uuid4().hex}"
+    path.mkdir()
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        # Keep attach and kill bound to this group if an operator renames the directory.
+        with finish_with(lambda: remove_group(path, fd)):
+            yield Path(f"/proc/self/fd/{fd}"), fd
+    finally:
+        os.close(fd)
 
-    def cleanup():
+
+def stop_group(group):
+    (group / "cgroup.kill").write_text("1")
+    deadline = time.monotonic() + 10
+    while "populated 0" not in (group / "cgroup.events").read_text().splitlines():
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Processes remain in {group} after cgroup.kill")
+        time.sleep(0.05)
+
+
+def cleanup_cell(group, scratch, scratch_id):
+    # Both resources may already have been released by the other supervisor.
+    if scratch.exists() or (group / "cgroup.kill").exists():
         try:
-            stop_unit(unit)
-        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            stop_group(group)
+        except (OSError, RuntimeError) as exc:
             raise RuntimeError(
-                f"Preserved private data at {scratch}. Verify {unit} has stopped before removal."
+                f"Preserved private data at {scratch}. Verify {group.resolve()} is empty first."
             ) from exc
-        if not os.path.samestat(created, scratch.lstat()):
-            raise RuntimeError(f"The private scratch path changed. Inspect {scratch}")
-        temporary.cleanup()
+    if owned_directory(scratch, scratch_id):
+        # Cached model directories become read-only after validation.
+        for _, _, _, fd in os.fwalk(scratch, follow_symlinks=False):
+            os.fchmod(fd, 0o700)
+        shutil.rmtree(scratch)
 
-    with finish_with(cleanup):
+
+@contextmanager
+def private_scratch(out, group):
+    scratch = Path(tempfile.mkdtemp(prefix="runtime-", dir=out))
+    scratch_id = identity(scratch.lstat())
+    with finish_with(lambda: cleanup_cell(group, scratch, scratch_id)):
         yield scratch
 
 
@@ -325,17 +369,16 @@ def outcomes(metrics, name):
     }
 
 
-def run_cell(config_file, scratch, steps, workers, name):
+def run_cell(config_file, scratch, group, steps, workers, name):
     config = json.loads(config_file.read_bytes())
     out = config_file.parent
     cell = out / f"{name}-{steps}-{workers}w"
     cell.mkdir()
     os.sched_setaffinity(0, config["cpu_ids"])
-    cgroup_id = Path("/proc/self/cgroup").read_text().split("0::")[1].strip()
-    group = Path("/sys/fs/cgroup") / cgroup_id.lstrip("/")
     quota, period = (group / "cpu.max").read_text().split()
     if (
-        quota == "max"
+        str(os.getpid()) not in (group / "cgroup.procs").read_text().splitlines()
+        or quota == "max"
         or int(quota) != len(config["cpu_ids"]) * int(period)
         or set(config["cpu_ids"]) != os.sched_getaffinity(0)
         or int((group / "memory.max").read_text()) != config["memory_bytes"]
@@ -343,7 +386,7 @@ def run_cell(config_file, scratch, steps, workers, name):
     ):
         raise RuntimeError("The requested cgroup CPU, memory or swap limit is not active")
     envelope = {
-        "cgroup": cgroup_id,
+        "cgroup": "/" + str(group.resolve().relative_to(CGROUP_ROOT)),
         "cpu_ids": sorted(os.sched_getaffinity(0)),
         "cpu_max": [int(quota), int(period)],
         "memory_max": config["memory_bytes"],
@@ -626,7 +669,7 @@ def report(out, rows, total):
             "Matrix jobs/min uses the first measured submission through the last verified "
             "download. Sustained jobs/min includes the full arrival window and any further time "
             "through the final verification or quota refusal. "
-            "Peak memory is the fresh unit's kernel high-water mark from bootstrap through that "
+            "Peak memory is the fresh cgroup's kernel high-water mark from bootstrap through that "
             "phase, including PostgreSQL, API, worker trees, k6 and charged file cache.",
         ]
     )
@@ -704,6 +747,99 @@ def report(out, rows, total):
     print("\n".join(lines), flush=True)
 
 
+def supervise_cell(config_file, scratch, scratch_id, group_name, fd, steps, workers, name):
+    """Stay outside the measured process tree so either supervisor can release its resources."""
+    config = json.loads(config_file.read_bytes())
+    runtime = (config["duration_seconds"] if name == "sustained" else 300) + 600
+    group = Path(f"/proc/self/fd/{fd}")
+    with (
+        finish_with(lambda: remove_group(group_name, fd)),
+        finish_with(lambda: cleanup_cell(group, scratch, scratch_id)),
+    ):
+        # The shell joins first so the interpreter and all its children inherit the limit.
+        command = [
+            "/bin/sh",
+            "-ec",
+            'if ! echo 0 > "$1/cgroup.procs"; then '
+            'echo "Run the driver inside the delegation with migration permission" >&2; '
+            'exit 1; fi; shift; exec "$@"',
+            "regimex-load",
+            str(group),
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--cell",
+            str(config_file),
+            str(scratch),
+            str(group),
+            steps,
+            workers,
+            name,
+        ]
+        with subprocess.Popen(
+            command, cwd=ROOT, env=clean_env(), umask=0o077, pass_fds=(fd,)
+        ) as cell:
+            try:
+                wait_for_cell(cell, runtime)
+            finally:
+                cell.kill()
+
+
+def wait_for_cell(cell, timeout):
+    # The driver owns the write end of stdin. Its death also wakes the supervisor.
+    with selectors.DefaultSelector() as selector:
+        selector.register(sys.stdin, selectors.EVENT_READ, "driver")
+        with os.fdopen(os.pidfd_open(cell.pid), "rb") as pidfd:
+            selector.register(pidfd, selectors.EVENT_READ, "cell")
+            ready = selector.select(timeout)
+            if not ready:
+                raise subprocess.TimeoutExpired(cell.args, timeout)
+            if any(key.data == "driver" for key, _ in ready):
+                raise RuntimeError("Load driver disappeared during the cell")
+            code = cell.wait()
+            if code:
+                raise subprocess.CalledProcessError(code, cell.args)
+
+
+def start_supervisor(config_file, config, steps, workers, name):
+    # The driver retains independent handles in case the supervisor itself dies.
+    with new_group(Path(config["cgroup_parent"])) as (group, fd):
+        (group / "cpu.max").write_text(f"{len(config['cpu_ids']) * 100000} 100000")
+        (group / "memory.max").write_text(str(config["memory_bytes"]))
+        (group / "memory.swap.max").write_text("0")
+        (group / "memory.peak").read_text()
+        with (group / "cgroup.kill").open("w"):
+            pass
+        with private_scratch(config_file.parent, group) as scratch:
+            dev, ino = identity(scratch.lstat())
+            command = [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--supervise",
+                str(config_file),
+                str(scratch),
+                str(dev),
+                str(ino),
+                str(group.resolve()),
+                str(fd),
+                str(steps),
+                str(workers),
+                name,
+            ]
+            with subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                pass_fds=(fd,),
+                start_new_session=True,
+            ) as supervisor:
+                try:
+                    code = supervisor.wait()
+                finally:
+                    supervisor.stdin.close()
+                    supervisor.wait()
+                if code:
+                    raise subprocess.CalledProcessError(code, command)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--profile", choices=("matrix", "sustained", "all"), default="all")
@@ -712,6 +848,11 @@ def main():
     parser.add_argument("--output", type=Path, help="new directory (default var/load-test/run-*)")
     parser.add_argument(
         "--http-concurrency-limit", type=int, default=8, help="API connection/task limit"
+    )
+    parser.add_argument(
+        "--cgroup-parent",
+        default=os.environ.get("REGIMEX_LOAD_CGROUP_PARENT"),
+        help="delegated cgroup v2 directory with cpu and memory enabled for children",
     )
     parser.add_argument("--cpus", type=int, default=2)
     parser.add_argument("--memory-mib", type=int, default=3072)
@@ -742,6 +883,10 @@ def main():
         parser.error("sustained limit: 120 arrivals/min, 2-600 seconds, 32 VUs and 100 arrivals")
     if options.rate_per_minute * options.duration_seconds % 60:
         parser.error("rate * duration / 60 must be a whole number of arrivals")
+    try:
+        parent_group = delegated_parent(options.cgroup_parent)
+    except (ValueError, OSError) as exc:
+        parser.error(str(exc))
     cpus = sorted(os.sched_getaffinity(0))
     if options.cpus > len(cpus):
         parser.error(f"only {len(cpus)} CPUs are available")
@@ -758,6 +903,7 @@ def main():
         **inference_policy(options.runtime_file),
         "http_concurrency_limit": options.http_concurrency_limit,
         "cpu_ids": cpus[: options.cpus],
+        "cgroup_parent": str(parent_group),
         "memory_bytes": options.memory_mib * 2**20,
         "bundle": str(bundle),
         "model": json.loads(manifest.read_bytes())["model_version_id"],
@@ -771,7 +917,6 @@ def main():
         "postgres": bin_path("postgres", pgdir),
     }
     config["versions"] = versions(config)
-    runner = bin_path("systemd-run")
     if options.output:
         out = options.output.resolve()
         out.mkdir(mode=0o700, parents=True)
@@ -817,50 +962,28 @@ def main():
     save(config_file, config)
     for name, steps, workers in cells:
         print(f"Running {name}, {steps} steps, {workers} worker(s)", flush=True)
-        unit = f"regimex-load-{uuid4().hex}.service"
-        runtime = (options.duration_seconds if name == "sustained" else 300) + 600
-        with (
-            record_cell(out, rows, len(cells), name, steps, workers),
-            private_scratch(out, unit) as tmp,
-        ):
-            command = [
-                runner,
-                "--user",
-                "--unit",
-                unit,
-                "--collect",
-                "--quiet",
-                "--wait",
-                "--pipe",
-                f"--working-directory={ROOT}",
-                "-p",
-                f"MemoryMax={config['memory_bytes']}",
-                "-p",
-                "MemorySwapMax=0",
-                "-p",
-                f"CPUQuota={options.cpus * 100}%",
-                "-p",
-                f"RuntimeMaxSec={runtime}",
-                "-p",
-                "TimeoutStopSec=10",
-                "-p",
-                "UMask=0077",
-                sys.executable,
-                str(Path(__file__).resolve()),
-                "--cell",
-                str(config_file),
-                str(tmp),
-                str(steps),
-                str(workers),
-                name,
-            ]
-            subprocess.run(command, check=True, timeout=runtime + 30)
+        with record_cell(out, rows, len(cells), name, steps, workers):
+            start_supervisor(config_file, config, steps, workers, name)
 
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--cell"]:
         run_cell(
-            Path(sys.argv[2]), Path(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]), sys.argv[6]
+            Path(sys.argv[2]),
+            Path(sys.argv[3]),
+            Path(sys.argv[4]),
+            int(sys.argv[5]),
+            int(sys.argv[6]),
+            sys.argv[7],
+        )
+    elif sys.argv[1:2] == ["--supervise"]:
+        supervise_cell(
+            Path(sys.argv[2]),
+            Path(sys.argv[3]),
+            (int(sys.argv[4]), int(sys.argv[5])),
+            Path(sys.argv[6]),
+            int(sys.argv[7]),
+            *sys.argv[8:],
         )
     else:
         signal.signal(signal.SIGTERM, lambda number, _frame: sys.exit(128 + number))

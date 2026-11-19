@@ -1,14 +1,14 @@
 # Using Regimex
 
-With a running service, all you need is your access token and the JSON export
-of a completed experiment. The default local address is `http://127.0.0.1:8000/`.
-To start a service, use the [Linux installer](installation.md), [Docker
-Compose](deployment.md) or the [manual setup](#start-locally) below.
+With a running service, all you need is its address, your access token and
+the JSON export of a completed experiment. The [Docker Compose guide](deployment.md)
+uses `https://localhost:8443`. The [source setup](#start-locally) below
+serves `http://127.0.0.1:8000`.
 
 ## Analyze an experiment
 
-1. Paste your token into **Access token** and select **Sign in**. With the
-   default local installation, use the contents of `var/credentials/user.token`.
+1. Paste your token into **Access token** and select **Sign in**. The
+   setup guides save the user token in `var/credentials/user.token`.
 2. Under **New analysis**, select **Choose JSON file** or drop an export there.
    For a first run from a checkout, [generate a 512-step example](#terminal-tools)
    and choose `var/run.json`.
@@ -219,7 +219,7 @@ retain saved work.
 | Sign-in fails | Use the full user token and the configured origin. If the session expired, sign in again. |
 | Export rejected | Check the field named in the error. A completed version 2.1 export may have up to two instruments, 4,096 steps and a file size of 16 MiB. |
 | No active model | Register and activate a bundle, or publish an evaluated candidate. |
-| Analysis stays queued | Check the worker status beside the job. For a manual installation, run `uv run --locked --all-extras regimex service doctor` with the worker environment loaded. For the local installer, use `var/service.sh doctor`. |
+| Analysis stays queued | Check the worker status beside the job. In Compose, run `docker compose --profile ops run --rm ops service doctor`. From source, run `uv run --locked --all-extras regimex service doctor` with the worker environment loaded. |
 | Request interrupted | **Retry request** resumes the original submission or status check. |
 | Analysis failed | Read the reason beside the status. **Details** includes the failure code and analysis ID. After resolving the cause, use **Run again** to create a new analysis. |
 | Storage full | Check the reserved space and **Pending deletions**. Remove unused experiments or ask the administrator to raise the quota. |

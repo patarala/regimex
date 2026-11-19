@@ -52,3 +52,18 @@ def test_failed_database_pull_prevents_service_start(monkeypatch: pytest.MonkeyP
     with pytest.raises(RuntimeError, match="registry unavailable"):
         compose_service_smoke.start_services(["docker", "compose"], {}, build=False)
     assert not started
+
+
+def test_bootstrap_with_existing_schema_is_rejected_before_migrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def engine(
+        arguments: list[str], environment: dict[str, str], *, required: bool = True
+    ) -> subprocess.CompletedProcess[bytes]:
+        assert "migrate" not in arguments
+        inventory = b"5; 2615 2200 SCHEMA - public regimex\n" if "exec" in arguments else b""
+        return subprocess.CompletedProcess(arguments, 0, inventory, b"")
+
+    monkeypatch.setattr(compose_service_smoke, "command", engine)
+    with pytest.raises(RuntimeError, match="before migration"):
+        compose_service_smoke.start_services(["docker", "compose"], {}, build=False)

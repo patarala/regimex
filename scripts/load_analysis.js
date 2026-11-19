@@ -11,8 +11,11 @@ function integer(name, fallback, max, min = 1) {
   return value;
 }
 
-const port = integer("REGIMEX_LOAD_PORT", 8001, 65535);
-const api = `http://127.0.0.1:${port}/api/v1`;
+const scheme = __ENV.REGIMEX_LOAD_SCHEME || "http";
+if (scheme !== "http" && scheme !== "https") throw new Error("REGIMEX_LOAD_SCHEME must be http or https");
+const port = integer("REGIMEX_LOAD_PORT", scheme === "https" ? 8443 : 8001, 65535);
+const host = scheme === "https" ? "localhost" : "127.0.0.1";
+const api = `${scheme}://${host}:${port}/api/v1`;
 const model = __ENV.REGIMEX_LOAD_MODEL || "tcn-0.2.0";
 const expectedBundle = __ENV.REGIMEX_LOAD_EXPECTED_BUNDLE_SHA256;
 const expectedPolicy = __ENV.REGIMEX_LOAD_EXPECTED_POLICY_SHA256;
@@ -91,6 +94,7 @@ const scenarios = sustained ? {
 
 export const options = {
   scenarios, thresholds,
+  hosts: { localhost: "127.0.0.1" },
   maxRedirects: 0,
   systemTags: ["name", "method", "status", "scenario", "error_code", "expected_response"],
 };

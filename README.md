@@ -18,8 +18,8 @@ the included export locally and prints `Valid snapshot: snapshot-1`.
 uv run --locked regimex validate --input tests/fixtures/experiment-v2.json
 ```
 
-To start your own service, follow the [Linux installation guide](docs/installation.md),
-[Docker Compose guide](docs/deployment.md) or [setup from source](docs/usage.md#start-locally).
+To host the service, use [Docker Compose](docs/deployment.md).
+For development, [run the API and workers from source](docs/usage.md#start-locally).
 To create an experiment to analyze, use [`regimex generate`](docs/usage.md#terminal-tools).
 If you have the reference TCN asset pack, you can preview a classification
 directly in a browser by opening `examples/1-instrument/tcn-report.html` inside the pack.

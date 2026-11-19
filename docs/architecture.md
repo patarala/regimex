@@ -57,7 +57,6 @@ Paths below are relative to `src/regimex/`.
 | Inputs and artifacts | `exports.py`, `data_catalog.py`, `model_bundles.py` | Validate exports, dataset membership and saved model bundles |
 | Generator | `market.py`, `market_sampling.py`, `market_export.py` | Simulate a sampled market and build the same export format for the CLI and generated datasets |
 | Reports | `templates/`, `visualization.py`, `comparison.py` | Render results and comparisons with scripts that work offline |
-| Local installation | `local_installation/` | Install the service, coordinate updates and verify backups |
 
 ## Why the components are separate
 
@@ -112,10 +111,9 @@ The object volume and job queue are shared.
 | `REGIMEX_ANALYSIS_CPUSET` | All CPUs available to the container | Optional CPU IDs, for example `2-3`, for the workers and their computation children |
 | `REGIMEX_ANALYSIS_WORKER_MEMORY` | 8g | Container memory limit per replica, including its cache, scratch and child |
 
-For a native deployment, additional worker processes need distinct
+When running from source, additional worker processes need distinct
 `REGIMEX_WORK_ROOT` values. Use the same database, object store and storage
-limits. Stop all replicas before offline maintenance. The native installer's
-backup and update commands manage only its own units.
+limits. Stop all replicas before [offline maintenance](storage.md#stop-writers-before-maintenance).
 
 Compare completed analyses per minute, queue delay, worker occupancy and peak
 memory while varying replica count. For a comparison at constant resources,

@@ -46,7 +46,9 @@ its own header deadline because the application only sees completed headers.
 
 ## Start the service
 
-After provisioning the files above:
+For a new installation, provision the files above and run the commands below.
+To keep an existing registry, models and analyses, start with
+[moving the installation](#move-an-existing-installation-to-compose).
 
 ```sh
 export REGIMEX_SECRETS_DIR="$PWD/var/secrets"
@@ -104,9 +106,58 @@ docker compose --profile ops run --rm -v "$PWD/release/models/tcn:/bundle:ro" op
 Use the [administrative API](api.md#administration) to train and publish a
 candidate in this installation.
 
+## Move an existing installation to Compose
+
+1. Block client and simulator traffic to the source. Drain or cancel pending jobs
+   and finish pending deletions. Make a [coordinated backup](storage.md#backup-and-restore)
+   of the database and its registered objects. If the installation has its own
+   `service.sh`, you can run `./service.sh backup --output PATH` in its directory.
+   The helper resumes managed services when it finishes. Keep traffic blocked
+   and stop the old instance and its automatic startup before cutover.
+2. Record the printed manifest SHA-256 separately. Keep the original data,
+   configuration and token files private. The backup preserves token hashes and
+   model registrations. The token files are still needed to sign in.
+3. Configure [Compose secrets and TLS](#secrets-and-tls) for the destination.
+   The database DSN uses the new database role credentials. Choose an unused
+   Compose project name so PostgreSQL and the local object store get fresh
+   volumes. For S3, use a fresh prefix in a versioned bucket and the [S3 override](#s3-profile)
+   on every command. Use the source schema name for all target processes.
+   If it differs from the default `public`, set `REGIMEX_DATABASE_SCHEMA` in
+   the destination's Compose `.env` before restoring.
+4. Set `RECOVERY_DIR` to an absolute path containing a private copy of the
+   backup directory named `backup` and a [target attestation](storage.md#stop-writers-before-maintenance)
+   named `target-stopped.json`. Make both readable by the container's UID 10001.
+   Set `BACKUP_SHA256` to the digest recorded at backup time. Start only
+   PostgreSQL, then restore before running any migrations.
+
+```sh
+export COMPOSE_PROJECT_NAME=regimex-target
+docker compose --profile service build api analysis-worker
+docker compose --profile ops build ops
+docker compose --profile ops up --detach --wait postgres
+docker compose --profile ops run --rm --no-deps \
+  --volume "$RECOVERY_DIR:/recovery:ro" ops service restore \
+  --input /recovery/backup --manifest-sha256 "$BACKUP_SHA256" \
+  --attestation-file /recovery/target-stopped.json
+```
+
+After restore succeeds, keep the same project name and run the following commands.
+The service profile applies migrations before starting the API and workers.
+
+```sh
+docker compose --profile service up --detach --wait
+docker compose --profile ops run --rm --no-deps ops service doctor
+```
+
+Sign in with an existing user token, open a saved report and run an analysis
+with the restored active model before directing clients to the new origin.
+Keep the old instance offline. If restore fails, keep the source data and use
+a fresh destination for the next attempt. A database that has already been
+migrated or used for another install is ineligible for restore.
+
 ## Configuration and capacity
 
-Native processes accept `REGIMEX_DATABASE_DSN` or a private, owned UTF-8 file at
+Processes started from source accept `REGIMEX_DATABASE_DSN` or a private, owned UTF-8 file at
 `REGIMEX_DATABASE_DSN_FILE`, never both. Object/work roots must be distinct;
 use absolute paths when processes have different working directories. Invalid
 or ineffective backend settings fail explicitly.
@@ -114,9 +165,9 @@ or ineffective backend settings fail explicitly.
 | Environment variable | Default |
 | --- | --- |
 | `REGIMEX_OBJECT_BACKEND` | `local` |
-| `REGIMEX_OBJECT_ROOT` / `REGIMEX_WORK_ROOT` | `var/objects` / `var/work` in native processes |
+| `REGIMEX_OBJECT_ROOT` / `REGIMEX_WORK_ROOT` | `var/objects` / `var/work` when started from source |
 | `REGIMEX_DATABASE_SCHEMA` | `public` |
-| `REGIMEX_PUBLIC_ORIGIN` | `https://localhost` in native processes |
+| `REGIMEX_PUBLIC_ORIGIN` | `https://localhost` when started from source |
 | `REGIMEX_SESSION_TTL_SECONDS` | 1,800 seconds, absolute expiry |
 | `REGIMEX_HTTP_HEADER_TIMEOUT_SECONDS` | 10 seconds; range 1–60 |
 | `REGIMEX_HTTP_BODY_TIMEOUT_SECONDS` | 30 seconds; range 1–300 |
@@ -151,11 +202,13 @@ For replica counts, worker CPU placement and multi-host constraints, see
 
 ## Measure analysis under load
 
-From the source checkout, run the worker comparison and fixed-arrival test
-against disposable PostgreSQL and Regimex processes:
+For a test Compose deployment, run k6 against its HTTPS API as described in
+the [load testing guide](load-testing.md#running-against-an-existing-test-installation).
+For repeatable capacity comparisons, use the disposable stand with a writable
+delegated cgroup v2 directory for the database, workers, API and load generator.
 
 ```sh
-sh scripts/load_test.sh --stand --bundle release/models/tcn
+sh scripts/load_test.sh --stand --cgroup-parent "$REGIMEX_LOAD_CGROUP_PARENT" --bundle release/models/tcn
 ```
 
 The [load testing guide](load-testing.md) covers prerequisites, individual
@@ -195,7 +248,7 @@ The endpoint has no credential, path or query component; the prefix has no leadi
 or trailing slash. All writers must share `/coordination` on one host and use
 the same namespace, byte limits and inventory limit. The extra storage network permits outbound HTTPS without publishing provider ports.
 Rotate the credential file and restart services to replace cached SDK clients.
-See [storage](storage.md) for native S3 settings, quotas and recovery.
+See [storage](storage.md) for S3 settings, quotas and recovery.
 
 ## Health, shutdown and maintenance
 
@@ -212,7 +265,7 @@ configuration and storage mounts:
 docker compose --profile ops run --rm ops service doctor
 ```
 
-Native installations use `uv run --locked --extra service --extra ml regimex
+From a source checkout, use `uv run --locked --extra service --extra ml regimex
 service doctor`; add `--extra s3` when configured. Checks cover connectivity,
 schema/restore readiness, readable storage, the active model, fresh workers for
 each queue and restoration of the model's verified weights/preprocessing in an
