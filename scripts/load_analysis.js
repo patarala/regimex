@@ -191,6 +191,11 @@ function checkSequence(sequence, instrument, steps) {
       !Number.isInteger(interval.stop) || interval.stop <= stop || interval.stop > steps) {
       fail("Invalid direction interval coverage");
     }
+    if (interval.status === "observed") {
+      if (!classNames.includes(interval.direction)) fail("Invalid observed interval direction");
+    } else if (!["no_trades", "insufficient_data"].includes(interval.status) || interval.direction !== null) {
+      fail("Invalid unavailable interval classification");
+    }
     stop = interval.stop;
   }
   if (stop !== steps) fail("Direction intervals do not cover the complete grid");
