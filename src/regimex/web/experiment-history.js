@@ -26,9 +26,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   let offset = 0;
   let hasMore = false;
   let items = [];
-  let loading = false;
   let pendingOffset = null;
-  let loaded = false;
   let editRevision = null;
   let editing = 0;
   const selected = new Map();
@@ -168,7 +166,6 @@ export function createExperimentHistory({session, experiment, filters, isActive,
     const request = ++requestNumber;
     const workspace = session.epoch;
     const active = () => isActive() && workspace === session.epoch && request === requestNumber;
-    loading = true;
     pendingOffset = page;
     previous.disabled = next.disabled = reload.disabled = true;
     runStatus.textContent = "Loading analyses…";
@@ -187,14 +184,12 @@ export function createExperimentHistory({session, experiment, filters, isActive,
           else selected.delete(item.analysis_id);
         }
       }
-      loaded = true;
       renderRuns();
       runStatus.textContent = items.length ? "" : "No analyses on this page.";
     } catch (error) {
       if (active()) runStatus.textContent = error.message;
     } finally {
       if (active()) {
-        loading = false;
         pendingOffset = null;
         previous.hidden = offset === 0;
         next.hidden = !hasMore;
@@ -214,12 +209,15 @@ export function createExperimentHistory({session, experiment, filters, isActive,
       renderRuns();
     }
   }
+  function refreshRuns() {
+    if (!runs.hidden) return load(pendingOffset ?? offset);
+  }
   expand.addEventListener("click", () => {
     if (!isActive()) return;
     runs.hidden = !runs.hidden;
     expand.setAttribute("aria-expanded", String(!runs.hidden));
     update(value);
-    if (!runs.hidden && !loaded) return load(0);
+    return refreshRuns();
   });
   previous.addEventListener("click", () => load(Math.max(0, offset - PAGE_SIZE)));
   next.addEventListener("click", () => load(offset + PAGE_SIZE));
@@ -286,6 +284,5 @@ export function createExperimentHistory({session, experiment, filters, isActive,
     }
   });
   update(value);
-  return {node, update, observe, markSelected, get loading() { return loading; },
-    refreshRuns: () => !runs.hidden && (loaded || loading) ? load(pendingOffset ?? offset) : Promise.resolve()};
+  return {node, update, observe, markSelected, refreshRuns};
 }
