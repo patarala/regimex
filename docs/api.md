@@ -288,10 +288,18 @@ render_model_comparison(evaluations, Path("var/comparison"))
 
 The output directory must be absent or empty. Open `var/comparison/index.html`.
 The first model is the reference. Paired differences use the same whole-experiment
-bootstrap samples for both models. With one independent experiment, scores and
-paired differences remain available. Sampling intervals require at least two
-independent experiments. Incompatible reference grids, populations, datasets,
-policies or bootstrap settings are rejected. See [metrics](quality.md).
+bootstrap samples for both models. One experiment can supply a score or paired
+difference. Sampling intervals require at least two independent experiments.
+
+Boundary F1 is undefined when the reference and the prediction both have zero
+transitions. Evaluation version 2.4 records how many bootstrap draws have
+undefined boundary F1. It reports a percentile interval only when every draw
+has a defined score. Paired intervals require a defined score for both models
+in every draw. The comparison lists experiments with an undefined difference
+separately from ties.
+
+Incompatible reference grids, populations, datasets, policies or bootstrap
+settings are rejected. See [metrics](quality.md).
 
 ## Health and error handling
 

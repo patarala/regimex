@@ -1,6 +1,7 @@
 """Direction interval matching, point diagnostics, and experiment-level uncertainty."""
 
 import hashlib
+import math
 from itertools import pairwise
 from typing import Literal, Protocol, cast
 
@@ -381,6 +382,8 @@ def _bootstrap(
             "point_macro_f1_percentile_interval": None,
             "boundary_f1_percentile_interval": None,
             "typed_boundary_f1_percentile_interval": None,
+            "boundary_f1_undefined_draws": 0,
+            "typed_boundary_f1_undefined_draws": 0,
             "limitation": "A sampling interval requires at least two independent experiments.",
         }
     segment_counts = np.stack([item[0] for item in groups])
@@ -396,8 +399,12 @@ def _bootstrap(
         chosen = rng.integers(0, len(groups), size=len(groups))
         segment_values.append(_metrics(segment_counts[chosen].sum(axis=0))["macro_f1"])
         point_values.append(_metrics(point_counts[chosen].sum(axis=0))["macro_f1"])
-        boundary_values.append(_boundary_score(boundary_counts[chosen].sum(axis=0)))
-        typed_values.append(_boundary_score(typed_counts[chosen].sum(axis=0)))
+        boundary_values.append(
+            _boundary_score(boundary_counts[chosen].sum(axis=0), undefined=math.nan)
+        )
+        typed_values.append(_boundary_score(typed_counts[chosen].sum(axis=0), undefined=math.nan))
+    undefined_boundary = sum(map(math.isnan, boundary_values))
+    undefined_typed = sum(map(math.isnan, typed_values))
     return {
         **metadata,
         "segment_macro_f1_percentile_interval": cast(
@@ -408,13 +415,14 @@ def _bootstrap(
             JsonValue,
             np.quantile(np.asarray(point_values, dtype=np.float64), [0.025, 0.975]).tolist(),
         ),
-        "boundary_f1_percentile_interval": cast(
-            JsonValue,
-            np.quantile(np.asarray(boundary_values, dtype=np.float64), [0.025, 0.975]).tolist(),
-        ),
-        "typed_boundary_f1_percentile_interval": cast(
-            JsonValue, np.quantile(np.asarray(typed_values), [0.025, 0.975]).tolist()
-        ),
+        "boundary_f1_percentile_interval": None
+        if undefined_boundary
+        else cast(JsonValue, np.quantile(boundary_values, [0.025, 0.975]).tolist()),
+        "typed_boundary_f1_percentile_interval": None
+        if undefined_typed
+        else cast(JsonValue, np.quantile(typed_values, [0.025, 0.975]).tolist()),
+        "boundary_f1_undefined_draws": undefined_boundary,
+        "typed_boundary_f1_undefined_draws": undefined_typed,
         "limitation": (
             "Intervals quantify experiment sampling variation, "
             "not label correctness or simulator transfer."
@@ -422,10 +430,10 @@ def _bootstrap(
     }
 
 
-def _boundary_score(counts: IntArray) -> float:
+def _boundary_score(counts: IntArray, *, undefined: float = 0.0) -> float:
     matched, false_positive, false_negative = (int(value) for value in counts)
     denominator = 2 * matched + false_positive + false_negative
-    return 2 * matched / denominator if denominator else 0.0
+    return 2 * matched / denominator if denominator else undefined
 
 
 def paired_bootstrap(
@@ -457,7 +465,11 @@ def paired_bootstrap(
     right_arrays = [np.stack([candidate[key][i] for key in identifiers]) for i in range(4)]
 
     def score(counts: IntArray, index: int) -> float:
-        return cast(float, _metrics(counts)["macro_f1"]) if index < 2 else _boundary_score(counts)
+        return (
+            cast(float, _metrics(counts)["macro_f1"])
+            if index < 2
+            else _boundary_score(counts, undefined=math.nan)
+        )
 
     rng = np.random.Generator(np.random.PCG64(seed))
     draws = repetitions if len(identifiers) > 1 else 0
@@ -482,11 +494,14 @@ def paired_bootstrap(
         # A reflected lower quantile makes swapping models exactly negate the interval.
         interval = (
             [float(np.quantile(values, 0.025)), -float(np.quantile(-values, 0.025))]
-            if draws
+            if draws and np.isfinite(values).all()
             else None
         )
+        delta = score(right.sum(axis=0), index) - score(left.sum(axis=0), index)
         metrics[name] = {
-            "delta": score(right.sum(axis=0), index) - score(left.sum(axis=0), index),
+            "delta": delta if math.isfinite(delta) else None,
+            "undefined_draws": int(np.isnan(values).sum()),
+            "undefined_experiments": sum(map(math.isnan, changes)),
             "percentile_interval": cast(JsonValue, interval),
             "improved_experiments": sum(value > 0 for value in changes),
             "tied_experiments": sum(value == 0 for value in changes),
@@ -621,7 +636,7 @@ def report(
     eligible_count = int(eligible.sum())
     boundary_denominator = boundary_reference + boundary_predicted
     return {
-        "evaluation_version": "2.3",
+        "evaluation_version": "2.4",
         "reference_kind": reference_kind,
         "reference_limitation": (
             "Agreement with automatic observation rules; "

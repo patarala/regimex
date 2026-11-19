@@ -15,7 +15,7 @@ from regimex.operations import Sha256
 from regimex.report_licenses import license_notices
 from regimex.storage import digest, output_directory, write_json
 
-COMPARISON_VERSION = "model-comparison/2.0"
+COMPARISON_VERSION = "model-comparison/2.1"
 Score = Annotated[float, Field(ge=0, le=1)]
 Count = Annotated[int, Field(ge=0)]
 DirectionName = Literal["sideways", "growth", "decline"]
@@ -221,20 +221,35 @@ class _Confidence(_Metric):
     point_macro_f1_percentile_interval: list[Score] | None
     boundary_f1_percentile_interval: list[Score] | None
     typed_boundary_f1_percentile_interval: list[Score] | None
+    boundary_f1_undefined_draws: Count | None = None
+    typed_boundary_f1_undefined_draws: Count | None = None
 
     @model_validator(mode="after")
     def ordered_limits(self) -> Self:
         if self.confidence_level != 0.95:
             raise ValueError("comparison requires 95% confidence intervals")
-        for interval in (
-            self.segment_macro_f1_percentile_interval,
-            self.point_macro_f1_percentile_interval,
-            self.boundary_f1_percentile_interval,
-            self.typed_boundary_f1_percentile_interval,
+        draws = self.repetitions if self.experiment_count > 1 else 0
+        legacy = (
+            self.boundary_f1_undefined_draws is None
+            and self.typed_boundary_f1_undefined_draws is None
+        )
+        for interval, undefined in (
+            (self.segment_macro_f1_percentile_interval, 0),
+            (self.point_macro_f1_percentile_interval, 0),
+            (self.boundary_f1_percentile_interval, self.boundary_f1_undefined_draws or 0),
+            (
+                self.typed_boundary_f1_percentile_interval,
+                self.typed_boundary_f1_undefined_draws or 0,
+            ),
         ):
-            if interval is None and self.experiment_count == 1:
-                continue
-            if interval is None or len(interval) != 2 or interval[0] > interval[1]:
+            if undefined > draws:
+                raise ValueError("undefined draw count exceeds the number of bootstrap samples")
+            if interval is None:
+                if draws and not undefined:
+                    raise ValueError("defined bootstrap draws require a confidence interval")
+            elif undefined or (not draws and not legacy):
+                raise ValueError("confidence interval requires defined scores in every draw")
+            elif len(interval) != 2 or interval[0] > interval[1]:
                 raise ValueError("confidence intervals require two ordered endpoints")
         return self
 
@@ -286,7 +301,7 @@ class _Experiment(_Metric):
 
 
 class _Evaluation(_Metric):
-    evaluation_version: Literal["2.3"]
+    evaluation_version: Literal["2.3", "2.4"]
     scope: Literal["fixed_model_validation", "controlled_final_benchmark"]
     model_version_id: Identifier
     bundle_sha256: Sha256
@@ -325,6 +340,11 @@ class _Evaluation(_Metric):
             or self.confidence_intervals.experiment_count != self.experiment_count
         ):
             raise ValueError("evaluation summary differs from class or experiment metrics")
+        if self.evaluation_version == "2.4" and (
+            self.confidence_intervals.boundary_f1_undefined_draws is None
+            or self.confidence_intervals.typed_boundary_f1_undefined_draws is None
+        ):
+            raise ValueError("evaluation requires undefined draw counts for boundary metrics")
         if self.segment_metrics.iou_threshold != 0.5:
             raise ValueError("unsupported interval matching IoU threshold")
         reference_steps = sum(item.support for item in self.point_metrics.per_class.values())
