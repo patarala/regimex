@@ -31,17 +31,28 @@ from regimex.storage_contracts import StorageBusy, StorageQuotaExceeded
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 
 
-def _memory_mapping_failure(error: Exception) -> bool:
-    """The dynamic loader wraps its mmap failure in ImportError without errno."""
-    current: BaseException | None = error
+def _memory_failure(error: Exception) -> bool:
+    pending: list[BaseException] = [error]
     seen: set[int] = set()
-    while current is not None and id(current) not in seen:
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
         seen.add(id(current))
+        if isinstance(current, MemoryError) or (
+            isinstance(current, OSError) and current.errno == errno.ENOMEM
+        ):
+            return True
+        # The dynamic loader reports its mmap failure as ImportError without errno.
         if isinstance(current, ImportError) and "failed to map segment from shared object" in str(
             current
         ):
             return True
-        current = current.__cause__ or current.__context__
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            pending.append(cause)
     return False
 
 
@@ -57,11 +68,7 @@ def resource_failure(error: Exception) -> OperationFailure | None:
         return OperationFailure(
             code="capacity_limit", message="The computation exceeded its time limit."
         )
-    if (
-        isinstance(error, MemoryError)
-        or _memory_mapping_failure(error)
-        or (isinstance(error, OSError) and error.errno == errno.ENOMEM)
-    ):
+    if _memory_failure(error):
         return OperationFailure(
             code="capacity_limit",
             message="The worker did not have enough memory to compute a result.",

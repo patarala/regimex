@@ -403,12 +403,14 @@ class ArchitectureRegistry:
         except KeyError as exc:
             raise RegistryError(f"unknown installed architecture {architecture_id!r}") from exc
 
-    def check_capability_on_worker(
+    def _check_backend_on_worker(
         self, architecture_id: str, runtime: TrainingRuntime | InferenceRuntime, *, worker_id: str
-    ) -> WorkerCapability:
+    ) -> tuple[WorkerCapability, Callable[[], object] | None, list[Exception]]:
         descriptor = self.get(architecture_id)
         checked: list[str] = []
         reasons: list[str] = []
+        causes: list[Exception] = []
+        factory = None
         if descriptor.backend_factory is None:
             assert descriptor.unavailable_reason is not None
             reasons.append(descriptor.unavailable_reason)
@@ -419,16 +421,18 @@ class ArchitectureRegistry:
                     importlib.import_module(module_name)
                 except Exception as exc:
                     reasons.append(f"dependency {module_name!r} cannot be imported: {exc}")
+                    causes.append(exc)
             if not reasons:
                 try:
-                    _load_callable(descriptor.backend_factory)
+                    factory = _load_callable(descriptor.backend_factory)
                     assert descriptor.worker_probe is not None
                     probe = _load_callable(descriptor.worker_probe)
                     if probe(runtime.device) is not None:
                         raise RegistryError("worker runtime probes must return None on success")
                 except Exception as exc:
                     reasons.append(f"backend runtime check failed: {exc}")
-        return WorkerCapability(
+                    causes.append(exc)
+        capability = WorkerCapability(
             architecture_id=descriptor.architecture_id,
             implementation_version=descriptor.implementation_version,
             worker_id=worker_id,
@@ -438,19 +442,34 @@ class ArchitectureRegistry:
             executable=not reasons,
             reasons=tuple(reasons),
         )
+        return capability, factory, causes
+
+    def check_capability_on_worker(
+        self, architecture_id: str, runtime: TrainingRuntime | InferenceRuntime, *, worker_id: str
+    ) -> WorkerCapability:
+        capability, _, _ = self._check_backend_on_worker(
+            architecture_id, runtime, worker_id=worker_id
+        )
+        return capability
 
     def load_backend_factory_on_worker(
         self, architecture_id: str, runtime: TrainingRuntime | InferenceRuntime, *, worker_id: str
     ) -> Callable[[], object]:
-        capability = self.check_capability_on_worker(architecture_id, runtime, worker_id=worker_id)
+        capability, factory, causes = self._check_backend_on_worker(
+            architecture_id, runtime, worker_id=worker_id
+        )
         if not capability.executable:
+            cause: Exception | None = None
+            if causes:
+                cause = (
+                    causes[0] if len(causes) == 1 else ExceptionGroup("Dependency failures", causes)
+                )
             raise RegistryError(
                 f"architecture {architecture_id!r} is unavailable on worker {worker_id!r}: "
                 + "; ".join(capability.reasons)
-            )
-        reference = self.get(architecture_id).backend_factory
-        assert reference is not None
-        return _load_callable(reference)
+            ) from cause
+        assert factory is not None
+        return factory
 
 
 def baseline_descriptor() -> ArchitectureDescriptor:

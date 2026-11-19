@@ -1,11 +1,13 @@
 """Architecture discovery, strict settings, and worker-only availability checks."""
 
+import errno
 import json
 import os
 import subprocess
 import sys
 from importlib import import_module
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -386,6 +388,61 @@ def test_missing_worker_dependency_is_explicit(installed_plugin: Path) -> None:
     assert "cannot be imported" in result.reasons[0]
     assert "regimex_missing_optional_dependency_for_test" in result.reasons[0]
     assert import_module("regimex_test_plugin").probe_calls == []
+
+
+@pytest.mark.parametrize(
+    ("stage", "error", "expected_code"),
+    [
+        (
+            "import",
+            ImportError("private path: failed to map segment from shared object"),
+            "capacity_limit",
+        ),
+        ("import", ModuleNotFoundError("private dependency"), "unsupported_configuration"),
+        ("probe", MemoryError("private allocation"), "capacity_limit"),
+        ("probe", OSError(errno.ENOMEM, "private allocation"), "capacity_limit"),
+    ],
+)
+def test_worker_classifies_backend_load_failures(
+    installed_plugin: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+    error: Exception,
+    expected_code: str,
+) -> None:
+    from regimex.computation_worker import _failure_from_exception
+
+    plugin = import_module("regimex_test_plugin")
+    descriptor = ArchitectureRegistry.discover().get("test-json")
+    if stage == "import":
+        descriptor = descriptor.model_copy(
+            update={"dependency_modules": ("missing_module", "json")}
+        )
+
+        def import_dependency(name: str, package: str | None = None) -> ModuleType:
+            if name == "missing_module":
+                raise ModuleNotFoundError("missing_module")
+            if name == "json":
+                raise error
+            return import_module(name, package)
+
+        monkeypatch.setattr("regimex.model_registry.importlib.import_module", import_dependency)
+    else:
+
+        def probe(device: str) -> None:
+            raise error
+
+        monkeypatch.setattr(plugin, "probe", probe)
+
+    registry = ArchitectureRegistry((descriptor,))
+    runtime = InferenceRuntime()
+    capability = registry.check_capability_on_worker("test-json", runtime, worker_id="analysis")
+    assert not capability.executable and str(error) in capability.reasons[-1]
+    with pytest.raises(RegistryError) as caught:
+        registry.load_backend_factory_on_worker("test-json", runtime, worker_id="analysis")
+    failure = _failure_from_exception(caught.value)
+    assert failure.code == expected_code and not failure.retryable
+    assert "private" not in failure.message
 
 
 @pytest.mark.parametrize(
