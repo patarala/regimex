@@ -22,6 +22,7 @@ from regimex.admin_contracts import (
     TrainingSpec,
 )
 from regimex.application.service import AnalysisService
+from regimex.application.training_metrics import build_training_metrics
 from regimex.contracts import StrictModel
 from regimex.data_catalog import (
     SourceSnapshot,
@@ -262,6 +263,11 @@ class AdminResultCommitter:
             or bundle_manifest.training.run_id != str(self.run.run_id)
         ):
             raise ValueError("candidate bundle provenance differs from the training operation")
+        metrics = build_training_metrics(
+            spec,
+            bundle_manifest,
+            read_history=lambda member: (bundle_root / member.path).read_bytes(),
+        )
         manifest_object = self.analysis_service.store.put(
             f"{self._prefix}/bundle/manifest.json",
             bundle_root / "manifest.json",
@@ -292,6 +298,7 @@ class AdminResultCommitter:
             self.run.run_id,
             self._token,
             model,
+            metrics=metrics,
             trainable_parameters=configured_parameter_count(spec.architecture_id, spec.parameters),
         )
 

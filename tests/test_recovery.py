@@ -317,6 +317,7 @@ def test_restore_object_larger_than_compose_tmpfs(
         "0008_analysis_metadata",
         "0009_training_run_names",
         "0010_evaluation_reuse",
+        "0011_training_progress",
     ],
 )
 def test_previous_schema_backup_can_be_restored_then_migrated(
@@ -328,8 +329,18 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
     revision: str,
 ) -> None:
     with minimal.source.connection() as connection:
-        connection.execute("DROP TABLE regimex_training_progress")
-        if revision != "0010_evaluation_reuse":
+        connection.execute("DROP TABLE regimex_training_metrics")
+        connection.execute("ALTER TABLE regimex_models DROP COLUMN weights_deletion_id")
+        connection.execute(
+            "ALTER TABLE regimex_deletion_plans ALTER COLUMN source_id SET NOT NULL, "
+            "DROP CONSTRAINT regimex_deletion_plans_source_check, "
+            "DROP CONSTRAINT regimex_deletion_plans_target_kind_check, "
+            "ADD CONSTRAINT regimex_deletion_plans_target_kind_check "
+            "CHECK (target_kind IN ('analysis','experiment'))"
+        )
+        if revision != "0011_training_progress":
+            connection.execute("DROP TABLE regimex_training_progress")
+        if revision not in {"0010_evaluation_reuse", "0011_training_progress"}:
             connection.execute("DROP TABLE regimex_evaluation_keys")
             connection.execute("DROP INDEX regimex_evaluation_inputs")
         if revision in {"0007_resource_deletion", "0008_analysis_metadata"}:
@@ -1002,6 +1013,14 @@ def process(root: Path, env: dict[str, str], *arguments: str) -> Iterator[subpro
 
 
 @dataclass
+class DiscardedCandidate:
+    run_id: UUID
+    deletion_id: UUID
+    weights_key: str
+    metrics: dict[str, JsonValue]
+
+
+@dataclass
 class ScientificBackup:
     database: DatabaseRepository
     store: LocalObjectStore
@@ -1014,6 +1033,7 @@ class ScientificBackup:
     predictions: dict[str, tuple[UUID, dict[str, JsonValue]]]
     reports: dict[str, str]
     registry: dict[str, JsonValue]
+    discarded: DiscardedCandidate
     old_plan_id: UUID
     old_plan_sha256: str
 
@@ -1036,7 +1056,9 @@ def scientific_backup(
         RawGenerationPlan,
         TrainingSpec,
     )
+    from regimex.application.deletion import DeletionService
     from regimex.application.retention import RetentionService
+    from regimex.infrastructure.deletion_repository import DeletionRepository
     from regimex.infrastructure.retention_repository import RetentionRepository
     from regimex.model_registry import InferenceRuntime, TrainingPolicy, TrainingRuntime
 
@@ -1050,6 +1072,7 @@ def scientific_backup(
     owner = database.authenticate(user_token)
     service = make_admin(database, root)
     original_jobs = {}
+    discarded = None
     with database.queue_app.open():
         dataset, validation = prepared_references(service, principal)
         value = source(0).export.model_dump(mode="json", exclude={"content_sha256"})
@@ -1058,7 +1081,11 @@ def scientific_backup(
         numeric_export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(value)))
         snapshot = service.analysis_service.create_snapshot(owner, numeric_export)
         previous = None
-        for architecture in ("baseline", "tcn"):
+        for architecture, model in (
+            ("baseline", "discarded-baseline"),
+            ("baseline", "recovery-baseline"),
+            ("tcn", "recovery-tcn"),
+        ):
             tcn = architecture == "tcn"
             parameters: dict[str, JsonValue] = (
                 {"channels": 4, "dilations": [1, 2], "dropout": 0.0, "smoothing": 0.0}
@@ -1083,7 +1110,7 @@ def scientific_backup(
                     dataset_id=dataset.dataset_id,
                     labels_reference_set_id="fixture-labels",
                     validation_reference_set_id=validation.references.reference_set_id,
-                    model_version_id="recovery-" + architecture,
+                    model_version_id=model,
                     architecture_id=architecture,
                     parameters=parameters,
                     policy=policy,
@@ -1093,10 +1120,25 @@ def scientific_backup(
                     build_id="recovery-fixture",
                     benchmark_selection_id="fixture-final-benchmark",
                 ),
-                idempotency_key="fit-" + architecture,
+                idempotency_key="fit-" + model,
             )
             completed(service, training.run_id)
-            model = "recovery-" + architecture
+            if model == "discarded-baseline":
+                weights_key = database.get_model(model).members["weights.npz"].key
+                metrics = service.training_metrics(principal, training.run_id)
+                preview = service.preview_weight_deletion(principal, training.run_id)
+                deletion = DeletionService(
+                    DeletionRepository(database), service.analysis_service.store
+                )
+                removal = deletion.apply(principal, preview.plan_id, expected_sha256=preview.sha256)
+                assert removal.state == "completed" and removal.reclaimed_bytes > 0
+                discarded = DiscardedCandidate(
+                    training.run_id,
+                    removal.deletion_id,
+                    weights_key,
+                    metrics.model_dump(mode="json"),
+                )
+                continue
             request = EvaluationSpec(
                 model_version_id=model,
                 dataset_id=dataset.dataset_id,
@@ -1184,6 +1226,8 @@ def scientific_backup(
         tools=tools,
         attestation=stopped(),
     )
+    assert discarded is not None
+    assert discarded.weights_key not in {info.key for info in result.manifest.objects}
     return ScientificBackup(
         database,
         store,
@@ -1196,6 +1240,7 @@ def scientific_backup(
         predictions,
         reports,
         registry,
+        discarded,
         plan.plan_id,
         plan.sha256,
     )
@@ -1237,6 +1282,9 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
         assert receipt.new_registered_claims == receipt.object_count
         assert receipt.table_evidence == original.backup.manifest.tables
         assert receipt.table_evidence["regimex_evaluation_keys"].rows == 2
+        assert receipt.table_evidence["regimex_training_metrics"].rows == 3
+        with pytest.raises(FileNotFoundError):
+            objects.stat(original.discarded.weights_key)
         assert target.readiness()
         admin = target.authenticate(original.admin_token)
         assert original.backup.manifest.source_maintenance_identity is not None
@@ -1301,6 +1349,13 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
                 raise AssertionError("The restored API did not become ready.")
             assert (
                 http("/api/v1/benchmarks/registry", token=original.admin_token) == original.registry
+            )
+            run_url = f"/api/v1/training-runs/{original.discarded.run_id}"
+            assert http(run_url, token=original.admin_token)["weights_deletion_id"] == str(
+                original.discarded.deletion_id
+            )
+            assert (
+                http(f"{run_url}/metrics", token=original.admin_token) == original.discarded.metrics
             )
             for architecture, (analysis_id, prediction) in original.predictions.items():
                 actual_prediction = http(f"/api/v1/analyses/{analysis_id}/result")

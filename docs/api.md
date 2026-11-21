@@ -129,6 +129,7 @@ Only the owner can delete a resource. An integration key also needs the
 | --- | --- |
 | `POST /analyses/{id}/deletion-preview` | Preview removing one terminal analysis and its saved report |
 | `POST /experiments/{snapshot_id}/deletion-preview` | Preview removing the snapshot and all its analyses |
+| `POST /training-runs/{id}/weights/deletion-preview` | Review the weight file size and dependencies for a successful training run (administrator who owns the run) |
 | `POST /deletions/{plan_id}` with `{"sha256":"PREVIEW_SHA256"}` | Confirm the reviewed selection, or resume its cleanup |
 | `GET /deletions/{plan_id}` | Read the receipt of an accepted deletion |
 | `GET /deletions?limit=20&offset=0` | List accepted deletions with pending cleanup |
@@ -138,6 +139,12 @@ They expire after 15 minutes. Confirmation checks current references and the
 reviewed resource set again; changed or blocked selections return `409`. Running,
 queued and cancelling analyses must finish first. Experiments registered in the
 model data catalog cannot be deleted through this workflow.
+
+For a `model_weights` preview, `target_id` is the training run ID. Published
+versions, frozen benchmark choices, models referenced by analyses, and candidates
+with active evaluations or publication jobs are protected. Once confirmed, the run
+links to its receipt through `weights_deletion_id`. Its metrics and completed
+evaluation reports stay available. The candidate leaves the list of usable models.
 
 A `200` receipt with `state: completed` confirms cleanup. A `202` receipt with
 `state: pending` means the resources have been removed from history but some

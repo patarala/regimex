@@ -45,13 +45,17 @@ const analysis = createAnalysis({session, models, history, comparison,
   onSelectionChange: () => deletion.close(),
   rememberAnalysis,
   deleteAnalysis: (id, title) => deletion.open("analysis", id, title)});
-const deletion = createDeletion({session, onApplied: (target) => {
-  analysis.forgetDeleted(target);
-  void history.refreshAfterDeletion();
+const deletion = createDeletion({session, onApplied: (target, receipt) => {
+  if (target.kind === "model_weights") {
+    training.weightsRemoved(target.id, receipt.deletion_id);
+  } else {
+    analysis.forgetDeleted(target);
+    void history.refreshAfterDeletion();
+  }
   void storage.load();
 }});
 const integrations = createIntegrations({session, navigate});
-const training = createTraining({session, navigate, onPublication: () => models.load()});
+const training = createTraining({session, navigate, deletion, onPublication: () => models.load()});
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 let screen = null, lastLocation = null;
@@ -103,6 +107,7 @@ async function restoreLocation() {
   const section = admin && match ? match[1] : "analyses";
   const id = match?.[2] || null;
   const previous = screen;
+  if (previous === "training") deletion.close();
   if (previous !== section) {
     if (previous === "analyses") deletion.close();
     if (previous === "training") training.close();

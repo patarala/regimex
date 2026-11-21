@@ -32,12 +32,14 @@ from regimex.admin_contracts import ReferenceGenerationSpec, RequestFingerprint
 from regimex.api import AnalysisAPIService, create_app
 from regimex.application.admin_service import AdminService
 from regimex.application.benchmark_service import BenchmarkService
+from regimex.application.deletion import DeletionService
 from regimex.application.service import AnalysisService
 from regimex.benchmark_api import BenchmarkAPIService
 from regimex.data_catalog import content_hash
 from regimex.directions import AnalysisConfig
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
+from regimex.infrastructure.deletion_repository import DeletionRepository
 from regimex.infrastructure.s3_object_store import S3ObjectStore
 from regimex.model_registry import ArchitectureRegistry
 from regimex.service_bootstrap import create_object_store
@@ -285,7 +287,12 @@ def administrative_api(
     user = database.create_token("fixture-user", "user")
     try:
         with TestClient(
-            create_app(analysis, admin_service=admin, benchmark_service=benchmark)
+            create_app(
+                analysis,
+                admin_service=admin,
+                benchmark_service=benchmark,
+                deletion_service=DeletionService(DeletionRepository(database), analysis.store),
+            )
         ) as client:
             yield AdministrativeAPI(client, admin, analysis, benchmark, token, user)
     finally:
@@ -572,10 +579,75 @@ def test_previously_bound_sample_keeps_its_historical_group(
     assert context.analysis.read_snapshot(owner, snapshot_id) == old
 
 
+def check_discarded_candidate(
+    context: AdministrativeAPI, training: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import Mock
+
+    response = context.client.post("/api/v1/training-runs", json=training, headers=context.headers)
+    assert response.status_code == 202, response.text
+    run = AdminRunView.model_validate_json(response.content)
+    assert run.training is not None
+    model_id = run.training.model_version_id
+    run_path = f"/api/v1/training-runs/{run.run_id}"
+    preview_path = run_path + "/weights/deletion-preview"
+    assert context.client.post(preview_path, headers=context.headers).status_code == 409
+    finished = context.service.run_admin(run.run_id)
+    assert finished is not None and finished.operation.state == "succeeded"
+    model = context.analysis.repository.get_model(model_id)
+    metrics = context.client.get(run_path + "/metrics", headers=context.headers)
+    assert metrics.status_code == 200 and metrics.json()["history"]["candidates"]
+
+    # Recreate a pre-migration run whose metrics only exist in its saved bundle.
+    with context.service.repository.database.connection() as connection:
+        connection.execute(
+            "DELETE FROM regimex_training_metrics WHERE operation_id=%s", (run.run_id,)
+        )
+    assert (
+        context.client.post(
+            preview_path, headers={"Authorization": f"Bearer {context.user_token}"}
+        ).status_code
+        == 403
+    )
+    response = context.client.post(preview_path, headers=context.headers)
+    assert response.status_code == 200, response.text
+    preview = response.json()
+    assert preview["target_kind"] == "model_weights" and not preview["blockers"]
+    assert preview["target_id"] == str(run.run_id)
+    weight = model.members["weights.npz"]
+    assert preview["size_bytes"] == weight.size_bytes
+    assert context.analysis.store.stat_version(weight.key, weight.version_id) == weight
+
+    confirm_path = "/api/v1/deletions/" + preview["plan_id"]
+    response = context.client.post(
+        confirm_path, json={"sha256": preview["sha256"]}, headers=context.headers
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["reclaimed_bytes"] == weight.size_bytes
+    with pytest.raises(FileNotFoundError):
+        context.analysis.store.stat_version(weight.key, weight.version_id)
+    assert (
+        context.client.get(run_path, headers=context.headers).json()["weights_deletion_id"]
+        == preview["plan_id"]
+    )
+    assert (
+        context.client.get(f"/api/v1/models/{model_id}", headers=context.headers).status_code == 404
+    )
+    with monkeypatch.context() as patch:
+        load = Mock(side_effect=AssertionError("Saved metrics must not open the model bundle."))
+        patch.setattr("regimex.application.admin_service.read_bundle_manifest", load)
+        assert (
+            context.client.get(run_path + "/metrics", headers=context.headers).json()
+            == metrics.json()
+        )
+        load.assert_not_called()
+
+
 @pytest.mark.parametrize("architecture", ["baseline", "tcn"])
 def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     administrative_api: AdministrativeAPI,
     architecture: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     if importlib.util.find_spec("numpy") is None or importlib.util.find_spec("sklearn") is None:
         pytest.skip("install scientific dependencies")
@@ -872,6 +944,11 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         "/api/v1/metrics", headers={"Authorization": f"Bearer {context.user_token}"}
     )
     assert metrics.status_code == 200 and metrics.json()["quality_status"] == "validation_only"
+    protected = context.client.post(run_path + "/weights/deletion-preview", headers=headers)
+    assert protected.status_code == 200, protected.text
+    assert "published_model" in {item["code"] for item in protected.json()["blockers"]}
+    if not tcn:
+        check_discarded_candidate(context, training, monkeypatch)
     frozen = context.client.post(
         "/api/v1/benchmarks/freeze",
         params=benchmark_query,
@@ -879,6 +956,9 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         json={"model_version_id": model_id},
     )
     assert frozen.status_code == 200, frozen.text
+    frozen_preview = context.client.post(run_path + "/weights/deletion-preview", headers=headers)
+    assert frozen_preview.status_code == 200, frozen_preview.text
+    assert "benchmark_choice" in {item["code"] for item in frozen_preview.json()["blockers"]}
     assert_benchmark_options([])
     assert (
         context.client.post(

@@ -332,7 +332,7 @@ class BenchmarkService:
                 raise Conflict(
                     "Choices cannot freeze while selection training is pending or running."
                 )
-            model = self.database._model(connection, model_version_id)
+            model = self.database._model(connection, model_version_id, lock=True)
             semantics = DirectionSemantics(
                 profile_sha256=manifest.analysis_profile_sha256,
                 decoder_version=manifest.decoder_version,

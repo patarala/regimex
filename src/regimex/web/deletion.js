@@ -3,8 +3,14 @@ import {bytes} from "./storage.js";
 
 const PAGE_SIZE = 20;
 const ROOT = "/api/v1/deletions";
+const targets = {
+  analysis: {label: "Analysis", title: "Delete analysis", path: id => `analyses/${id}`},
+  experiment: {label: "Experiment", title: "Delete experiment", path: id => `experiments/${id}`},
+  model_weights: {label: "Model weights", title: "Delete model weights", path: id => `training-runs/${id}/weights`},
+};
 
 function counts(value) {
+  if (value.target_kind === "model_weights") return "model weights";
   return [
     value.experiment_count ? `${value.experiment_count} ${value.experiment_count === 1 ? "experiment" : "experiments"}` : "",
     value.analysis_count ? `${value.analysis_count} ${value.analysis_count === 1 ? "analysis" : "analyses"}` : "",
@@ -53,7 +59,7 @@ export function createDeletion({session, onApplied}) {
     const value = {target, epoch: session.epoch, plan: null, receipt: null,
       pending: null, confirmed: false, uncertain: false};
     selection = value;
-    $("deletion-title").textContent = target.kind === "experiment" ? "Delete experiment" : "Delete analysis";
+    $("deletion-title").textContent = targets[target.kind].title;
     $("deletion-summary").textContent = target.title || target.id;
     $("deletion-storage").hidden = true;
     $("deletion-blockers").hidden = true;
@@ -61,6 +67,7 @@ export function createDeletion({session, onApplied}) {
     $("deletion-warning").hidden = true;
     $("deletion-status").textContent = "Loading deletion preview…";
     $("deletion-confirm").textContent = "Delete";
+    $("deletion-confirm").hidden = false;
     $("deletion-confirm").disabled = true;
     $("deletion-refresh").hidden = true;
     $("deletion-cancel").textContent = "Cancel";
@@ -71,7 +78,9 @@ export function createDeletion({session, onApplied}) {
 
   function renderPlan(value) {
     const plan = value.plan;
-    $("deletion-summary").textContent = `${value.target.title || value.target.id} · ${counts(plan)}`;
+    const weights = plan.target_kind === "model_weights";
+    $("deletion-summary").textContent = weights ? value.target.title || value.target.id
+      : `${value.target.title || value.target.id} · ${counts(plan)}`;
     $("deletion-storage").hidden = false;
     $("deletion-storage").textContent = plan.size_bytes
       ? `${bytes(plan.size_bytes)} will be released after the stored files are removed.`
@@ -83,8 +92,11 @@ export function createDeletion({session, onApplied}) {
       return item;
     }));
     list.hidden = plan.blockers.length === 0;
+    $("deletion-warning").textContent = weights
+      ? "Deleting the weights is permanent. You can still view training metrics and saved evaluations, but you cannot use this model again."
+      : "This cannot be undone. Download anything you want to keep first.";
     $("deletion-warning").hidden = plan.blockers.length > 0;
-    $("deletion-status").textContent = plan.blockers.length ? "Resolve these dependencies before deleting." : "";
+    $("deletion-status").textContent = plan.blockers.length && !weights ? "Resolve these dependencies before deleting." : "";
     $("deletion-confirm").textContent = "Delete";
     $("deletion-confirm").disabled = plan.blockers.length > 0;
     $("deletion-refresh").hidden = plan.blockers.length === 0;
@@ -97,8 +109,8 @@ export function createDeletion({session, onApplied}) {
     $("deletion-status").textContent = "Loading deletion preview…";
     $("deletion-warning").hidden = true;
     try {
-      const path = value.target.kind === "experiment" ? "experiments" : "analyses";
-      const plan = await session.json(`/api/v1/${path}/${value.target.id}/deletion-preview`, {method: "POST"});
+      const path = targets[value.target.kind].path(encodeURIComponent(value.target.id));
+      const plan = await session.json(`/api/v1/${path}/deletion-preview`, {method: "POST"});
       if (!current(value)) return;
       value.plan = plan;
       setPending(value);
@@ -113,20 +125,34 @@ export function createDeletion({session, onApplied}) {
   }
 
   function received(value, receipt) {
+    value.plan = {plan_id: receipt.deletion_id, sha256: receipt.sha256};
     value.receipt = receipt;
     value.uncertain = false;
     setPending(value);
     onApplied(value.target, receipt);
     void load();
     if (receipt.state === "completed") {
+      if (value.viewReceipt) {
+        $("deletion-title").textContent = "Deletion complete";
+        $("deletion-summary").textContent = value.target.title || value.target.id;
+        $("deletion-storage").hidden = false;
+        $("deletion-storage").textContent = `${bytes(receipt.reclaimed_bytes)} released.`;
+        $("deletion-status").textContent = "";
+        $("deletion-confirm").hidden = true;
+        $("deletion-cancel").textContent = "Close";
+        return;
+      }
       close();
       notice(`Deleted ${counts(receipt)}.${receipt.reclaimed_bytes ? ` Released ${bytes(receipt.reclaimed_bytes)}.` : ""}`);
       return;
     }
     $("deletion-title").textContent = "Deletion needs cleanup";
-    $("deletion-summary").textContent = `${counts(receipt)} removed from history.`;
+    const weights = receipt.target_kind === "model_weights";
+    $("deletion-summary").textContent = weights ? "Model weights are unavailable. The training run is still saved."
+      : `${counts(receipt)} removed from history.`;
     $("deletion-storage").hidden = false;
-    $("deletion-storage").textContent = `${bytes(receipt.pending_bytes)} still counts toward your storage limit.`;
+    $("deletion-storage").textContent = weights ? `${bytes(receipt.pending_bytes)} waiting for cleanup.`
+      : `${bytes(receipt.pending_bytes)} still counts toward your storage limit.`;
     $("deletion-blockers").hidden = true;
     $("deletion-warning").hidden = true;
     $("deletion-status").textContent = receipt.failure || "Some files could not be removed. Retry cleanup to finish.";
@@ -145,7 +171,7 @@ export function createDeletion({session, onApplied}) {
     } catch (error) {
       if (!current(value)) return;
       setPending(value);
-      if (error.status === 404) {
+      if (error.status === 404 && !value.viewReceipt) {
         value.confirmed = value.uncertain = false;
         $("deletion-confirm").disabled = true;
         $("deletion-refresh").hidden = false;
@@ -176,8 +202,15 @@ export function createDeletion({session, onApplied}) {
         method: "POST", body: {sha256: value.plan.sha256},
       });
       if (current(value)) received(value, receipt);
+      else if (session.value && session.epoch === value.epoch && value.target.kind === "model_weights") {
+        onApplied(value.target, receipt);
+        void load();
+      }
     } catch (error) {
-      if (!current(value)) return;
+      if (!current(value)) {
+        if (session.value && session.epoch === value.epoch) void load();
+        return;
+      }
       setPending(value);
       value.uncertain = true;
       $("deletion-confirm").textContent = "Check deletion";
@@ -193,11 +226,12 @@ export function createDeletion({session, onApplied}) {
     return preview(start({kind, id, title}));
   }
 
-  async function resume(receipt) {
+  async function showReceipt(kind, id, deletionId, title, viewCompleted = true) {
     if (!session.value) return;
-    const value = start({kind: receipt.target_kind, id: receipt.target_id});
-    value.plan = {plan_id: receipt.deletion_id, sha256: receipt.sha256};
+    const value = start({kind, id, title});
+    value.plan = {plan_id: deletionId};
     value.confirmed = value.uncertain = true;
+    value.viewReceipt = viewCompleted;
     return check(value);
   }
 
@@ -220,9 +254,9 @@ export function createDeletion({session, onApplied}) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "quiet";
-        button.textContent = `${receipt.target_kind === "experiment" ? "Experiment" : "Analysis"} ${receipt.target_id.slice(-8)} · ${bytes(receipt.pending_bytes)} pending`;
+        button.textContent = `${targets[receipt.target_kind].label} ${receipt.target_id.slice(-8)} · ${bytes(receipt.pending_bytes)} pending`;
         button.addEventListener("click", () => {
-          if (active()) return resume(receipt);
+          if (active()) return showReceipt(receipt.target_kind, receipt.target_id, receipt.deletion_id, "", false);
         });
         row.append(button);
         return row;
@@ -256,5 +290,5 @@ export function createDeletion({session, onApplied}) {
   $("storage-refresh").addEventListener("click", () => { void load(0); });
   $("pending-deletions-previous").addEventListener("click", () => { void load(Math.max(0, offset - PAGE_SIZE)); });
   $("pending-deletions-next").addEventListener("click", () => { void load(offset + PAGE_SIZE); });
-  return {open, close, reset, load};
+  return {open, showReceipt, close, reset, load};
 }

@@ -17,6 +17,7 @@ from regimex.deletion_contracts import (
     DeletionPreview,
     DeletionReceipt,
 )
+from regimex.infrastructure.candidate_deletion import detach_candidate_weights, review_candidate
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.operations import Sha256
@@ -36,10 +37,10 @@ MAX_DELETION_ITEMS = 1000
 class StoredDeletionPlan(StrictModel):
     preview: DeletionPreview
     owner_id: str
-    source_id: str
+    source_id: str | None
     run_id: str
     store_scope_id: str
-    snapshot_id: UUID
+    snapshot_id: UUID | None
     resources_sha256: Sha256
     analysis_ids: Annotated[tuple[UUID, ...], Field(max_length=MAX_DELETION_ITEMS)]
     objects: Annotated[tuple[ObjectInfo, ...], Field(max_length=MAX_DELETION_ITEMS)]
@@ -58,22 +59,38 @@ class StoredDeletionPlan(StrictModel):
             or preview.size_bytes != sum(item.size_bytes for item in self.objects)
             or (preview.target_kind == "experiment" and preview.target_id != self.snapshot_id)
             or (preview.target_kind == "analysis" and self.analysis_ids != (preview.target_id,))
+            or (
+                preview.target_kind == "model_weights"
+                and (
+                    self.snapshot_id is not None
+                    or self.source_id is not None
+                    or self.run_id != str(preview.target_id)
+                    or self.analysis_ids
+                    or len(self.objects) != 1
+                )
+            )
+            or (
+                preview.target_kind != "model_weights"
+                and (self.snapshot_id is None or self.source_id is None)
+            )
         ):
             raise Conflict("Stored deletion review failed its integrity check.")
 
 
 @dataclass(frozen=True)
 class _Selection:
-    snapshot: SnapshotRecord
+    snapshot: SnapshotRecord | None
     analyses: tuple[tuple[UUID, str], ...]
     objects: tuple[ObjectInfo, ...]
     blockers: tuple[DeletionBlocker, ...]
+    model_id: str | None = None
 
     @property
     def sha256(self) -> str:
         return content_hash(
             {
-                "snapshot": self.snapshot.model_dump(mode="json"),
+                "snapshot": self.snapshot.model_dump(mode="json") if self.snapshot else None,
+                **({"model_version_id": self.model_id} if self.model_id is not None else {}),
                 "analyses": [(str(identity), state) for identity, state in self.analyses],
                 "objects": [value.model_dump(mode="json") for value in self.objects],
                 "blockers": [value.model_dump(mode="json") for value in self.blockers],
@@ -94,8 +111,21 @@ class DeletionRepository:
             require_integration(connection, principal, scopes=("delete",))
 
     def _selection(
-        self, connection: Connection, principal: Principal, kind: DeletionKind, target_id: UUID
+        self,
+        connection: Connection,
+        principal: Principal,
+        kind: DeletionKind,
+        target_id: UUID,
+        weight: ObjectInfo | None = None,
     ) -> _Selection:
+        if kind == "model_weights":
+            self.database._admin(principal)
+            if weight is None:
+                raise Conflict("Review the weight member from the verified training manifest.")
+            model_id, model_blockers = review_candidate(
+                connection, principal.owner_id, target_id, weight
+            )
+            return _Selection(None, (), (weight,), model_blockers, model_id)
         snapshot_id = target_id
         if kind == "analysis":
             row = connection.execute(
@@ -207,6 +237,21 @@ class DeletionRepository:
         *,
         store_scope_id: str,
     ) -> DeletionPreview:
+        return self._preview(principal, target_kind, target_id, store_scope_id, None)
+
+    def preview_weights(
+        self, principal: Principal, run_id: UUID, weight: ObjectInfo, *, store_scope_id: str
+    ) -> DeletionPreview:
+        return self._preview(principal, "model_weights", run_id, store_scope_id, weight)
+
+    def _preview(
+        self,
+        principal: Principal,
+        target_kind: DeletionKind,
+        target_id: UUID,
+        store_scope_id: str,
+        weight: ObjectInfo | None,
+    ) -> DeletionPreview:
         with self.database.connection() as connection:
             self.authorize(connection, principal)
             self.database._lock(connection, f"owner:{principal.owner_id}")
@@ -222,7 +267,7 @@ class DeletionRepository:
             ).fetchone()
             if outstanding is not None and cast(int, outstanding[0]) >= 100:
                 raise CapacityExceeded("Too many open deletion previews; wait for them to expire.")
-            selected = self._selection(connection, principal, target_kind, target_id)
+            selected = self._selection(connection, principal, target_kind, target_id, weight)
             now = datetime.now(UTC)
             preview = DeletionPreview(
                 plan_id=uuid4(),
@@ -240,10 +285,10 @@ class DeletionRepository:
             plan = StoredDeletionPlan(
                 preview=preview,
                 owner_id=principal.owner_id,
-                source_id=selected.snapshot.source_id,
-                run_id=selected.snapshot.run_id,
+                source_id=selected.snapshot.source_id if selected.snapshot else None,
+                run_id=selected.snapshot.run_id if selected.snapshot else str(target_id),
                 store_scope_id=store_scope_id,
-                snapshot_id=selected.snapshot.snapshot_id,
+                snapshot_id=selected.snapshot.snapshot_id if selected.snapshot else None,
                 resources_sha256=selected.sha256,
                 analysis_ids=tuple(identity for identity, _ in selected.analyses),
                 objects=selected.objects,
@@ -275,6 +320,8 @@ class DeletionRepository:
     def _scope(principal: Principal) -> tuple[str, list[object]]:
         clause = "owner_id=%s"
         parameters: list[object] = [principal.owner_id]
+        if principal.role != "admin":
+            clause += " AND target_kind<>'model_weights'"
         if principal.role == "integration":
             clause += " AND source_id=%s"
             parameters.append(principal.source_namespace)
@@ -338,10 +385,14 @@ class DeletionRepository:
                 "Storage changed since this deletion was reviewed; create a new preview."
             )
         selected = self._selection(
-            connection, principal, plan.preview.target_kind, plan.preview.target_id
+            connection,
+            principal,
+            plan.preview.target_kind,
+            plan.preview.target_id,
+            plan.objects[0] if plan.preview.target_kind == "model_weights" else None,
         )
         if selected.sha256 != plan.resources_sha256:
-            raise Conflict("The experiment changed; review a new deletion preview.")
+            raise Conflict("The resource changed; review a new deletion preview.")
         if selected.blockers:
             raise Conflict(
                 "This deletion is blocked by active work or retained resource references."
@@ -354,6 +405,7 @@ class DeletionRepository:
             )
         if plan.preview.target_kind == "experiment":
             snapshot = selected.snapshot
+            assert snapshot is not None
             connection.execute(
                 "INSERT INTO regimex_deleted_snapshots (snapshot_id,owner_id,source_id,run_id,"
                 "source_snapshot_id,deletion_id) VALUES (%s,%s,%s,%s,%s,%s)",
@@ -376,8 +428,13 @@ class DeletionRepository:
                 "VALUES (%s,%s,%s)",
                 (plan_id, info.key, Jsonb(info.model_dump(mode="json"))),
             )
-        connection.execute("DELETE FROM regimex_analysis_reports WHERE analysis_id=ANY(%s)", (ids,))
-        connection.execute("DELETE FROM regimex_analyses WHERE analysis_id=ANY(%s)", (ids,))
+        if ids:
+            connection.execute(
+                "DELETE FROM regimex_analysis_reports WHERE analysis_id=ANY(%s)", (ids,)
+            )
+            connection.execute("DELETE FROM regimex_analyses WHERE analysis_id=ANY(%s)", (ids,))
+        if selected.model_id is not None:
+            detach_candidate_weights(connection, selected.model_id, plan.objects[0], plan_id)
         if plan.preview.target_kind == "experiment":
             connection.execute(
                 "DELETE FROM regimex_snapshots WHERE snapshot_id=%s", (plan.snapshot_id,)
@@ -414,6 +471,17 @@ class DeletionRepository:
         )
         if removed_analyses != set(plan.analysis_ids) or removed_snapshots != expected_snapshots:
             raise Conflict("Deletion progress differs from its reviewed resource identities.")
+        if (
+            plan.preview.target_kind == "model_weights"
+            and connection.execute(
+                "SELECT 1 FROM regimex_models m JOIN regimex_training_runs t "
+                "ON m.model_version_id=t.committed_model_version_id WHERE t.operation_id=%s "
+                "AND m.weights_deletion_id=%s",
+                (plan.preview.target_id, plan.preview.plan_id),
+            ).fetchone()
+            is None
+        ):
+            raise Conflict("The candidate no longer points to its reviewed deletion.")
         rows = connection.execute(
             "SELECT d.object_key,d.document,d.state,d.failure,k.deletion_id,"
             "q.owner_id,q.source_id,q.sha256,q.size_bytes,o.object_key "
@@ -451,9 +519,11 @@ class DeletionRepository:
                 or registered is not None
                 or (
                     state == "pending"
+                    and plan.preview.target_kind != "model_weights"
                     and (owner, source, digest, size)
                     != (plan.owner_id, plan.source_id, info.sha256, info.size_bytes)
                 )
+                or (plan.preview.target_kind == "model_weights" and owner is not None)
                 or (state == "deleted" and owner is not None)
             ):
                 raise Conflict("Deletion progress differs from its reviewed object inventory.")

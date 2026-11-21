@@ -153,7 +153,7 @@ selection on that reservation. The form lists the benchmarks available to your a
    For a TCN with several repeats, the charts follow the repeat being trained.
    Choose a **Training repeat** to keep its curves on screen. Each seed sets
    the starting weights and training order. After training, the repeat marked
-   **saved model** produced the checkpoint with the best validation interval
+   **selected repeat** produced the checkpoint with the best validation interval
    macro-F1. Its score appears above the charts.
 4. Under **Model evaluation**, choose **Evaluate model** to score the saved
    weights on the validation references. When the evaluation finishes, its
@@ -163,6 +163,11 @@ selection on that reservation. The form lists the benchmarks available to your a
    evaluation fails or is cancelled, choose **Retry evaluation**.
    To make this model the default for new analyses, choose **Use as default**
    and confirm the change.
+
+To free space after comparing candidates, open the run, expand **Run details
+and settings** and choose **Delete model weights**. Review the file size
+and confirm. You can return to the run to compare its charts, settings and
+completed evaluations. Deletion permanently retires that model version.
 
 You can train and compare several candidates under one reservation. The
 training screen keeps the final test references sealed. Once you have chosen the

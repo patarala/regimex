@@ -79,8 +79,10 @@ version even if the active model changes.
 During training, the child writes measured scores and losses to a file in its
 attempt directory. The worker sends new rows to PostgreSQL in batches, checking
 the attempt token before each write. The browser fetches rows after its last
-cursor. Retrying a fit starts a new curve. Once training succeeds, the browser
-reads the verified model bundle for the full history and the selected repeat.
+cursor. Retrying a fit starts a new curve. On success, the worker commits the
+metrics from the verified bundle in the same transaction as the model and the
+completed run. The browser reads this result from PostgreSQL, so charts remain
+available if the owner later deletes the candidate's weights.
 
 **Simulator integration.** The simulator backend checks access to the run,
 assembles its observations and holds the integration credential. Regimex checks

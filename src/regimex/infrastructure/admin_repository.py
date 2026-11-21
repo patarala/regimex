@@ -28,6 +28,7 @@ from regimex.admin_contracts import (
     ReferenceGenerationSpec,
     ReferenceSetRecord,
     RequestDigest,
+    TrainingMetrics,
     TrainingProgress,
     TrainingRunName,
     TrainingSpec,
@@ -39,6 +40,7 @@ from regimex.directions import DIRECTION_POLICY
 from regimex.history_contracts import DisplayNameUpdate, validate_display_name
 from regimex.infrastructure.database import DatabaseRepository, _read_operation
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
+from regimex.infrastructure.training_metrics import read_training_metrics, store_training_metrics
 from regimex.operations import Operation, ResolvedModel, succeed
 from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.service_contracts import (
@@ -69,14 +71,15 @@ _CHART_FIELDS = {
 Connection = psycopg.Connection[tuple[object, ...]]
 _RUN_SELECT = (
     "SELECT r.operation_id,r.request,r.output,o.document,t.display_name,"
-    "COALESCE(t.name_revision,0) FROM regimex_admin_runs r "
+    "COALESCE(t.name_revision,0),m.weights_deletion_id FROM regimex_admin_runs r "
     "JOIN regimex_operations o ON r.operation_id=o.operation_id "
-    "LEFT JOIN regimex_training_runs t ON t.operation_id=r.operation_id"
+    "LEFT JOIN regimex_training_runs t ON t.operation_id=r.operation_id "
+    "LEFT JOIN regimex_models m ON m.model_version_id=t.committed_model_version_id"
 )
 
 
 def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
-    run_id, request, output, document, display_name, name_revision = row
+    run_id, request, output, document, display_name, name_revision, weights_deletion_id = row
     operation = _read_operation(document)
     result = AdminRunRecord(
         run_id=cast(UUID, run_id),
@@ -85,6 +88,7 @@ def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
         output=None if output is None else _JSON.validate_python(output, strict=True),
         display_name=cast(str | None, display_name),
         name_revision=cast(int, name_revision),
+        weights_deletion_id=cast(UUID | None, weights_deletion_id),
     )
     if (
         result.output is not None
@@ -616,6 +620,26 @@ class AdminRepository:
         self._owner(principal, record.operation.owner_id)
         return record
 
+    def get_training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics | None:
+        self.database._admin(principal)
+        with self.database.connection() as connection:
+            return read_training_metrics(connection, principal.owner_id, run_id)
+
+    def save_training_metrics(
+        self, principal: Principal, run_id: UUID, *, bundle_sha256: str, metrics: TrainingMetrics
+    ) -> TrainingMetrics:
+        with self.database.connection() as connection:
+            run = self._run(connection, run_id, principal=principal)
+            if not isinstance(run.spec, TrainingSpec):
+                raise NotFound()
+            if (
+                run.output is None
+                or run.output.get("bundle_sha256") != bundle_sha256
+                or run.spec.model_version_id != metrics.model_version_id
+            ):
+                raise Conflict("Metrics differ from the committed training result.")
+            return store_training_metrics(connection, run, metrics)
+
     def rename_training_run(
         self, principal: Principal, run_id: UUID, update: DisplayNameUpdate
     ) -> TrainingRunName:
@@ -785,7 +809,7 @@ class AdminRepository:
             if exists is not None:
                 raise Conflict("Training requires a new immutable model version.")
             return None
-        model = self.database._model(connection, spec.model_version_id)
+        model = self.database._model(connection, spec.model_version_id, lock=True)
         if isinstance(spec, EvaluationSpec):
             dataset = self._dataset(connection, owner_id, spec.dataset_id)
             references = self._reference(
@@ -1057,10 +1081,13 @@ class AdminRepository:
         token: UUID,
         model: ModelRecord,
         *,
+        metrics: TrainingMetrics,
         trainable_parameters: int | None = None,
     ) -> AdminRunRecord:
         with self._active_run(run_id, token, "training") as (connection, run):
             assert isinstance(run.spec, TrainingSpec)
+            if metrics.model_version_id != run.spec.model_version_id:
+                raise Conflict("Metrics refer to a different model version.")
             if (model.model_version_id, model.architecture_id, model.inference_runtime) != (
                 run.spec.model_version_id,
                 run.spec.architecture_id,
@@ -1077,6 +1104,7 @@ class AdminRepository:
                 "WHERE operation_id=%s",
                 (model.model_version_id, run_id),
             )
+            store_training_metrics(connection, run, metrics)
             return self._finish(
                 connection,
                 run,

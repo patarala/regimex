@@ -274,6 +274,7 @@ class AdminRunRecord(StrictModel):
     output: dict[str, JsonValue] | None = None
     display_name: DisplayName | None = None
     name_revision: Annotated[int, Field(ge=0)] = 0
+    weights_deletion_id: UUID | None = None
 
     @model_validator(mode="after")
     def same_operation(self) -> Self:

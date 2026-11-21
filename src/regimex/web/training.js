@@ -18,13 +18,16 @@ function runContext(row) {
     datasetName(row.training.dataset_id)].filter(Boolean).join(" · ");
 }
 
-// A polling response can have been read before a rename in this or another tab.
-function withLatestName(row, known) {
-  if ((known?.name_revision ?? 0) <= (row.name_revision ?? 0)) return row;
-  return {...row, display_name: known.display_name, name_revision: known.name_revision};
+// Delayed list and detail responses can predate a rename or weight deletion.
+function withSavedChanges(row, known) {
+  if (known?.weights_deletion_id && !row.weights_deletion_id)
+    row = {...row, weights_deletion_id: known.weights_deletion_id};
+  if ((known?.name_revision ?? 0) > (row.name_revision ?? 0))
+    row = {...row, display_name: known.display_name, name_revision: known.name_revision};
+  return row;
 }
 
-export function createTraining({session, navigate, onPublication}) {
+export function createTraining({session, navigate, deletion, onPublication}) {
   let opened = false, epoch = 0, selection = 0, listRequest = 0;
   let offset = 0, timer = null, busy = false, pollRevision = 0;
   let run = null, evaluation = null, activeModel, metricsLoaded = false;
@@ -54,6 +57,7 @@ export function createTraining({session, navigate, onPublication}) {
     names.close();
     retryDelay = 2500;
     $("training-sync").hidden = true;
+    $("training-delete-weights").hidden = true;
     $("training-run-details").open = false;
     for (const li of $("training-runs").children) li.children[0].setAttribute("aria-current", "false");
     run = evaluation = null;
@@ -138,12 +142,13 @@ export function createTraining({session, navigate, onPublication}) {
     const page = await session.json(api + "training-runs?limit=" + (pageSize + 1) + "&offset=" + offset);
     if (!current(stamp) || request !== listRequest) return;
     const rows = page.items.slice(0, pageSize).map(row =>
-      withLatestName(row, run?.run_id === row.run_id ? run : listed.get(row.run_id)));
+      withSavedChanges(row, run?.run_id === row.run_id ? run : listed.get(row.run_id)));
     listed = new Map(rows.map(row => [row.run_id, row]));
     renderRows();
     if (run && listed.has(run.run_id)) {
-      run = withLatestName(run, listed.get(run.run_id));
+      run = withSavedChanges(run, listed.get(run.run_id));
       showTitle();
+      if (run.weights_deletion_id) showRemovedWeights();
     }
     $("training-empty").hidden = page.items.length !== 0;
     $("training-prev").hidden = offset === 0;
@@ -182,18 +187,35 @@ export function createTraining({session, navigate, onPublication}) {
   function applyName(id, name, revision) {
     const saved = {display_name: name, name_revision: revision};
     if (run?.run_id === id) {
-      run = withLatestName(run, saved);
+      run = withSavedChanges(run, saved);
       showTitle();
     }
     if (listed.has(id)) {
-      listed.set(id, withLatestName(listed.get(id), saved));
+      listed.set(id, withSavedChanges(listed.get(id), saved));
       renderRows();
     }
+  }
+
+  function showRemovedWeights() {
+    $("training-downstream").hidden = false;
+    $("training-evaluate").hidden = $("training-publish").hidden = $("training-delete-weights").hidden = true;
+    $("training-deletion-receipt").hidden = false;
+    $("training-publication").textContent = "Model weights removed. This version can no longer be evaluated or published.";
+    $("training-publication").hidden = false;
+  }
+
+  function weightsRemoved(runId, deletionId) {
+    const saved = {weights_deletion_id: deletionId};
+    if (listed.has(runId)) listed.set(runId, withSavedChanges(listed.get(runId), saved));
+    if (run?.run_id !== runId) return;
+    run = withSavedChanges(run, saved);
+    showRemovedWeights();
   }
 
   function facts() {
     const spec = run.training;
     showTitle();
+    if (run.weights_deletion_id) showRemovedWeights();
     $("training-state").textContent = analysisStateLabel(run.job.state);
     $("training-state").dataset.state = run.job.state;
     const entries = [["Run", run.run_id], ["Dataset", spec.dataset_id], ["Selection benchmark", spec.benchmark_selection_id],
@@ -224,7 +246,7 @@ export function createTraining({session, navigate, onPublication}) {
   async function downstream(valid) {
     const [rows, models] = await Promise.all([
       eachPage(route(run.run_id) + "/actions", valid),
-      session.json(api + "models?published_only=true&limit=1"),
+      run.weights_deletion_id ? null : session.json(api + "models?published_only=true&limit=1"),
     ]);
     if (!valid()) return false;
     const attempts = rows.filter(row => row.job.kind === "evaluation");
@@ -233,11 +255,16 @@ export function createTraining({session, navigate, onPublication}) {
     const attempt = evaluation || attempts.findLast(row => inProgress(row.job)) || attempts[0];
     const actions = rows.filter(row => row.job.kind === "publication");
     if (attempt) actions.unshift(attempt);
+    showTrainingActions($("training-actions"), actions, session);
+    $("training-downstream").hidden = false;
+    if (run.weights_deletion_id) {
+      showRemovedWeights();
+      return false;
+    }
     const newlyActive = activeModel !== undefined && activeModel !== models.active_model_version_id &&
       models.active_model_version_id === run.training.model_version_id;
     activeModel = models.active_model_version_id;
     if (newlyActive) void onPublication();
-    showTrainingActions($("training-actions"), actions, session);
     pendingDownstream = actions.some(row => inProgress(row.job));
     const evaluate = $("training-evaluate");
     evaluate.hidden = Boolean(evaluation || (attempt && inProgress(attempt.job)));
@@ -245,12 +272,15 @@ export function createTraining({session, navigate, onPublication}) {
     evaluate.disabled = busy || pendingDownstream;
     $("training-publish").hidden = !evaluation || activeModel === run.training.model_version_id;
     $("training-publish").disabled = busy || pendingDownstream;
+    $("training-delete-weights").hidden = activeModel === run.training.model_version_id ||
+      rows.some(row => inProgress(row.job) || (row.job.kind === "publication" && row.job.state === "succeeded"));
+    $("training-delete-weights").disabled = busy || pendingDownstream;
+    $("training-deletion-receipt").hidden = true;
     let nextStep = "";
     if (activeModel === run.training.model_version_id) nextStep = "New analyses use this model by default.";
     else if (!attempt) nextStep = "Evaluate the saved model on its validation data before making it the default for new analyses.";
     $("training-publication").textContent = nextStep;
     $("training-publication").hidden = !nextStep;
-    $("training-downstream").hidden = false;
     return pendingDownstream;
   }
 
@@ -265,7 +295,7 @@ export function createTraining({session, navigate, onPublication}) {
         const next = await session.json(route(run.run_id));
         if (!valid()) return;
         if (next.name_revision > run.name_revision) applyName(run.run_id, next.display_name, next.name_revision);
-        run = withLatestName(next, run);
+        run = withSavedChanges(next, run);
       }
       facts();
       if (run.job.state !== before) void list().catch(error => reportIfCurrent(workspace, error));
@@ -337,10 +367,13 @@ export function createTraining({session, navigate, onPublication}) {
       button.setAttribute("aria-current", String(button.dataset.runId === id));
     }
     try {
-      const row = listed.get(id) || await session.json(route(id));
+      const cached = listed.get(id);
+      const row = cached || await session.json(route(id));
       if (!selected(stamp)) return;
-      run = withLatestName(row, listed.get(id));
-      void refresh(stamp, false);
+      run = withSavedChanges(row, listed.get(id));
+      const recheckWeights = Boolean(cached && row.job.state === "succeeded" && !run.weights_deletion_id);
+      if (recheckWeights) facts();
+      void refresh(stamp, recheckWeights);
       $("training-detail-title").focus();
     } catch (error) {
       if (selected(stamp)) message(error.message, true);
@@ -355,7 +388,8 @@ export function createTraining({session, navigate, onPublication}) {
     }
     for (const id of ["training-new", "training-refresh", "training-cancel"])
       $(id).disabled = locked;
-    $("training-evaluate").disabled = $("training-publish").disabled = locked || pendingDownstream;
+    $("training-evaluate").disabled = $("training-publish").disabled =
+      $("training-delete-weights").disabled = locked || pendingDownstream;
     form.setBusy(locked);
   }
 
@@ -402,6 +436,7 @@ export function createTraining({session, navigate, onPublication}) {
     }
   }));
   $("training-evaluate").addEventListener("click", () => action(async stamp => {
+    if (run.weights_deletion_id) return;
     const spec = run.training;
     await post(api + "evaluations", {model_version_id: spec.model_version_id, dataset_id: spec.dataset_id,
       reference_set_id: spec.validation_reference_set_id, partition: "validation"});
@@ -409,7 +444,7 @@ export function createTraining({session, navigate, onPublication}) {
   }));
   $("training-publish").addEventListener("click", () => action(async (stamp) => {
     const id = run.training.model_version_id;
-    if (!evaluation || activeModel === undefined) return;
+    if (run.weights_deletion_id || !evaluation || activeModel === undefined) return;
     const confirmation = "Use " + id + " as the default for new analyses?" +
       (activeModel ? "\nThis replaces " + activeModel + "." : "");
     if (!window.confirm(confirmation)) return;
@@ -420,6 +455,14 @@ export function createTraining({session, navigate, onPublication}) {
       message("Publication queued.");
     }
   }));
+  $("training-delete-weights").addEventListener("click", () => {
+    if (run && !run.weights_deletion_id)
+      void deletion.open("model_weights", run.run_id, run.display_name || run.training.model_version_id);
+  });
+  $("training-deletion-receipt").addEventListener("click", () => {
+    if (run?.weights_deletion_id)
+      void deletion.showReceipt("model_weights", run.run_id, run.weights_deletion_id, run.display_name || run.training.model_version_id);
+  });
   for (const [id, delta] of [["training-prev", -pageSize], ["training-next", pageSize], ["training-refresh", 0]])
     $(id).addEventListener("click", () => {
       offset = Math.max(0, offset + delta);
@@ -434,5 +477,5 @@ export function createTraining({session, navigate, onPublication}) {
       }
     });
 
-  return {close, reset, show};
+  return {close, reset, show, weightsRemoved};
 }

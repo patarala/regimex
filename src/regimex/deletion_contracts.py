@@ -8,12 +8,20 @@ from pydantic import AwareDatetime, Field
 from regimex.contracts import StrictModel
 from regimex.operations import Sha256
 
-DeletionKind = Literal["analysis", "experiment"]
+DeletionKind = Literal["analysis", "experiment", "model_weights"]
 Count = Annotated[int, Field(ge=0)]
 
 
 class DeletionBlocker(StrictModel):
-    code: Literal["active_analyses", "catalog_reference", "shared_objects"]
+    code: Literal[
+        "active_analyses",
+        "catalog_reference",
+        "shared_objects",
+        "published_model",
+        "benchmark_choice",
+        "analysis_reference",
+        "active_model_jobs",
+    ]
     message: str
     count: Count
 

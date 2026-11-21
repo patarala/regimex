@@ -59,7 +59,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0011_training_progress"
+_REVISION = "0012_training_metrics"
 
 
 def _read_operation(document: object) -> Operation:
@@ -416,13 +416,31 @@ class DatabaseRepository:
     def register_model(self, principal: Principal, record: ModelRecord) -> ModelRecord:
         self._admin(principal)
         with self.connection() as connection:
-            reserved = connection.execute(
-                "SELECT 1 FROM regimex_training_runs WHERE model_version_id=%s",
-                (record.model_version_id,),
-            ).fetchone()
-            if reserved is not None:
-                raise Conflict("This model version is reserved by an administrative training run.")
+            self._require_unreserved_version(connection, record.model_version_id)
             return self._register_model(connection, record)
+
+    @staticmethod
+    def _require_unreserved_version(
+        connection: psycopg.Connection[tuple[object, ...]], model_version_id: str
+    ) -> None:
+        reserved = connection.execute(
+            "SELECT 1 FROM regimex_training_runs WHERE model_version_id=%s", (model_version_id,)
+        ).fetchone()
+        if reserved is not None:
+            raise Conflict("This model version is reserved by an administrative training run.")
+
+    def existing_registration(
+        self, principal: Principal, model_version_id: str
+    ) -> ModelRecord | None:
+        self._admin(principal)
+        with self.connection() as connection:
+            try:
+                return self._model(connection, model_version_id)
+            except NotFound:
+                # A pending or discarded candidate still owns its version ID.
+                # Reject it before an import uploads another copy of the bundle.
+                self._require_unreserved_version(connection, model_version_id)
+                return None
 
     def _register_model(
         self, connection: psycopg.Connection[tuple[object, ...]], record: ModelRecord
@@ -457,16 +475,21 @@ class DatabaseRepository:
 
     @staticmethod
     def _model(
-        connection: psycopg.Connection[tuple[object, ...]], model_version_id: str
+        connection: psycopg.Connection[tuple[object, ...]],
+        model_version_id: str,
+        *,
+        lock: bool = False,
     ) -> ModelRecord:
         if model_version_id == "active":
             row = connection.execute(
                 "SELECT m.document FROM regimex_models m JOIN regimex_deployment d "
-                "ON m.model_version_id=d.model_version_id WHERE d.singleton"
+                "ON m.model_version_id=d.model_version_id WHERE d.singleton "
+                "AND m.weights_deletion_id IS NULL"
             ).fetchone()
         else:
             row = connection.execute(
-                "SELECT document FROM regimex_models WHERE model_version_id=%s",
+                "SELECT document FROM regimex_models WHERE model_version_id=%s "
+                "AND weights_deletion_id IS NULL" + (" FOR SHARE" if lock else ""),
                 (model_version_id,),
             ).fetchone()
         if row is None:
@@ -495,10 +518,10 @@ class DatabaseRepository:
     ) -> tuple[ModelRecord, ...]:
         self._page(limit, offset)
         with self.connection() as connection:
-            query = "SELECT document FROM regimex_models m"
+            query = "SELECT document FROM regimex_models m WHERE weights_deletion_id IS NULL"
             if published_only or principal.role != "admin":
                 query += (
-                    " WHERE EXISTS (SELECT 1 FROM regimex_publication_audit p "
+                    " AND EXISTS (SELECT 1 FROM regimex_publication_audit p "
                     "WHERE p.model_version_id=m.model_version_id)"
                 )
             rows = connection.execute(

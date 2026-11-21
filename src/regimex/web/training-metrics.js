@@ -224,9 +224,9 @@ export function createTrainingMetrics() {
     section.hidden = false;
     score.hidden = !result;
     if (result) {
-      const saved = history?.rows === "candidates" ? "saved model" : "saved model (seed " + result.selected_seed + ")";
+      const selection = history?.rows === "candidates" ? "selected settings" : "selected repeat (seed " + result.selected_seed + ")";
       score.replaceChildren(element("strong", format(result.validation_segment_macro_f1)),
-        " validation interval macro-F1 · " + saved);
+        " validation interval macro-F1 · " + selection);
     }
     if (!records?.length) {
       figures.clear();
@@ -235,9 +235,9 @@ export function createTrainingMetrics() {
       return;
     }
     const seeds = [...new Set(records.map(row => row.seed).filter(Number.isInteger))];
-    const savedSeed = result?.selected_seed;
+    const selectedSeed = result?.selected_seed;
     for (const [index, value] of seeds.entries()) {
-      const label = "Seed " + value + (value === savedSeed ? " (saved model)" : "");
+      const label = "Seed " + value + (value === selectedSeed ? " (selected repeat)" : "");
       const item = seed.options[index];
       if (!item) seed.append(option(String(value), label));
       else if (item.value !== String(value) || item.text !== label) item.replaceWith(option(String(value), label));
@@ -245,7 +245,7 @@ export function createTrainingMetrics() {
     while (seed.options.length > seeds.length) seed.lastElementChild.remove();
     // Follow the repeat being trained until the reader explicitly chooses one.
     if (seeds.length) {
-      const automatic = seeds.includes(savedSeed) ? savedSeed : seeds.at(-1);
+      const automatic = seeds.includes(selectedSeed) ? selectedSeed : seeds.at(-1);
       seed.value = chosenSeed && seeds.includes(Number(chosenSeed)) ? chosenSeed : String(automatic);
     }
     seedLabel.hidden = seeds.length < 2;

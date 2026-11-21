@@ -289,7 +289,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         )
         seed = page.get_by_label("Training repeat")
         expect(seed).to_have_value("23")
-        expect(seed.locator("option:checked")).to_have_text("Seed 23 (saved model)")
+        expect(seed.locator("option:checked")).to_have_text("Seed 23 (selected repeat)")
         loss = page.get_by_role("img", name="Training loss by epoch")
         expect(loss.locator("circle title")).to_have_text("Epoch 1: 0.56")
         seed.select_option("11")
@@ -1248,7 +1248,7 @@ def test_live_updates_preserve_the_selected_repeat_and_open_table(browser: Any) 
         api.metrics["history"] = {"updates": api.progress_rows}
         api.run["job"]["state"] = "succeeded"
         refresh.click()
-        expect(page.locator("#training-score")).to_contain_text("saved model (seed 23)")
+        expect(page.locator("#training-score")).to_contain_text("selected repeat (seed 23)")
         expect(repeat).to_have_value("11")
         expect(table).to_be_visible()
         expect(page.get_by_role("link", name="Download metric data")).to_be_visible()

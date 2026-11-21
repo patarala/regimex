@@ -55,6 +55,13 @@ Previously downloaded copies stay with their recipients. Regimex retains files
 still referenced elsewhere and flags unexpected replacement files for operator
 inspection. Complete pending deletions before backing up the installation.
 
+For a training run, an administrator can review and delete the weights of an
+unused candidate. The review counts the weight file in object storage. Other
+bundle files and completed evaluations stay registered. PostgreSQL stores
+the selected seed, score and chart data with each successful run. For an older
+run, opening its metrics or previewing weight deletion saves that result from
+the verified bundle. [Training workspace](usage.md#train-a-model)
+
 ## Local storage
 
 Use a dedicated local directory on a filesystem with advisory locks, hard links,
@@ -153,7 +160,7 @@ operator must also stop anything that writes to the filesystem or S3 directly.
 Use PostgreSQL 16 `pg_dump` and `pg_restore`, or the Compose `ops` image.
 Set `PGDUMP_BIN` and `PGRESTORE_BIN` or pass `--pg-dump` and `--pg-restore`
 to select the binaries. Backups require the schema revision supported by the
-running release (currently `0011_training_progress`).
+running release (currently `0012_training_metrics`).
 
 With all writers stopped:
 
@@ -178,8 +185,8 @@ matching application release. Protect access to the archive. It includes
 authentication hashes, experiment metadata and all registered files.
 
 This release restores archives from schemas `0007_resource_deletion`,
-`0008_analysis_metadata`, `0009_training_run_names`, `0010_evaluation_reuse`
-and `0011_training_progress`.
+`0008_analysis_metadata`, `0009_training_run_names`, `0010_evaluation_reuse`,
+`0011_training_progress` and `0012_training_metrics`.
 Point its configuration at a **new, empty database** and a **fresh local object
 root or S3 prefix**. Use the original schema name. Restore checks the target's
 schema inventory and large objects before copying files. Database tools use the

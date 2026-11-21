@@ -42,6 +42,7 @@ from regimex.data_catalog import (
     ReferenceSet,
     content_hash,
 )
+from regimex.deletion_contracts import DeletionPreview
 from regimex.directions import (
     DEFAULT_ANALYSIS_PROFILE,
     AnalysisConfig,
@@ -63,6 +64,8 @@ class AdminAPIService(Protocol):
     def rename_training_run(
         self, principal: Principal, run_id: UUID, update: DisplayNameUpdate
     ) -> TrainingRunName: ...
+
+    def preview_weight_deletion(self, principal: Principal, run_id: UUID) -> DeletionPreview: ...
 
     def training_actions(
         self, principal: Principal, run_id: UUID, *, limit: int, offset: int
@@ -290,6 +293,7 @@ class AdminRunView(StrictModel):
     run_id: UUID
     job: OperationView
     output: dict[str, JsonValue] | None
+    weights_deletion_id: UUID | None = None
     polling_url: str
     training: TrainingSpec | None = None
     trainable_parameters: int | None = None
@@ -375,6 +379,7 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         output=None
         if record.output is None
         else {name: value for name, value in record.output.items() if name in allowed},
+        weights_deletion_id=record.weights_deletion_id,
         polling_url=f"/api/v1/admin-runs/{record.run_id}",
     )
 
@@ -644,6 +649,10 @@ def install_admin_routes(
     @app.get("/api/v1/training-runs/{run_id}/metrics")
     def training_metrics(run_id: UUID, identity: Identity) -> TrainingMetrics:
         return service.training_metrics(identity, run_id)
+
+    @app.post("/api/v1/training-runs/{run_id}/weights/deletion-preview")
+    def preview_weight_deletion(run_id: UUID, identity: Identity) -> DeletionPreview:
+        return service.preview_weight_deletion(identity, run_id)
 
     @app.get("/api/v1/training-runs/{run_id}/progress")
     def training_progress(

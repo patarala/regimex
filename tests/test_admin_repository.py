@@ -32,6 +32,7 @@ from regimex.admin_contracts import (
     RawGenerationPlan,
     ReferenceGenerationSpec,
     ReferenceSetRecord,
+    TrainingMetrics,
     TrainingSpec,
 )
 from regimex.benchmarks import DirectionSemantics
@@ -318,11 +319,22 @@ def claim(repository: AdminRepository, run_id: UUID) -> UUID:
     return operation.attempt_token
 
 
+def training_metrics(spec: TrainingSpec) -> TrainingMetrics:
+    return TrainingMetrics(
+        model_version_id=spec.model_version_id,
+        selected_seed=spec.policy.seeds[0],
+        validation_segment_macro_f1=0.75,
+        history={"candidates": [{"regularization": 1e20, "loss": -0.0}]},
+    )
+
+
 def trained(repository: AdminRepository) -> tuple[DatasetRecord, ModelRecord]:
     dataset, spec = ready_training(repository)
     run = repository.submit(principal(), spec, idempotency_key="training")
     model = candidate(spec)
-    completed = repository.complete_training(run.run_id, claim(repository, run.run_id), model)
+    completed = repository.complete_training(
+        run.run_id, claim(repository, run.run_id), model, metrics=training_metrics(spec)
+    )
     assert completed.operation.state == "succeeded"
     return dataset, model
 
@@ -602,7 +614,9 @@ def test_numeric_requests_documents_metrics_and_output_preserve_identity(
         spec.model_dump(mode="json")
     )
     model = candidate(spec)
-    repository.complete_training(run.run_id, claim(repository, run.run_id), model)
+    repository.complete_training(
+        run.run_id, claim(repository, run.run_id), model, metrics=training_metrics(spec)
+    )
     record = evaluated(repository, dataset, model, metrics={"zero": -0.0, "large": 1e20})
     assert json_bytes(repository.get_evaluation(principal(), record.run_id).metrics) == json_bytes(
         record.metrics
@@ -1057,7 +1071,7 @@ def test_training_progress_pages_are_attempt_scoped_and_released(
     restarted = repository.training_progress(principal(), run_id, attempt=1, after=last.cursor)
     assert restarted.attempt == 2 and restarted.cursor == 1 and not restarted.has_more
     assert restarted.model_dump()["history"]["candidates"] == points[:1]
-    repository.complete_training(run_id, second, candidate(spec))
+    repository.complete_training(run_id, second, candidate(spec), metrics=training_metrics(spec))
     assert not repository.training_progress(principal(), run_id, attempt=None, after=0).history
     with repository.database.connection() as connection:
         assert connection.execute("SELECT count(*) FROM regimex_training_progress").fetchone() == (
@@ -1139,11 +1153,13 @@ def test_candidate_and_success_rollback_together_and_require_publication(
     with monkeypatch.context() as context:
         context.setattr(repository, "_finish", crash)
         with pytest.raises(RuntimeError, match="Crash"):
-            repository.complete_training(run.run_id, token, model)
+            repository.complete_training(run.run_id, token, model, metrics=training_metrics(spec))
     with pytest.raises(NotFound):
         repository.database.get_model(model.model_version_id)
     assert repository.get_run(principal(), run.run_id).operation.state == "running"
-    repository.complete_training(run.run_id, token, model)
+    assert repository.get_training_metrics(principal(), run.run_id) is None
+    repository.complete_training(run.run_id, token, model, metrics=training_metrics(spec))
+    assert repository.get_training_metrics(principal(), run.run_id) == training_metrics(spec)
     with pytest.raises(Conflict, match="publication"):
         repository.database.activate_model(
             principal(), model.model_version_id, expected_previous=None
@@ -1161,10 +1177,66 @@ def test_cancelled_training_cannot_register_candidate(repository: AdminRepositor
     with pytest.raises(StaleAttempt):
         repository.append_training_progress(run.run_id, token, 2, [row])
     with pytest.raises(StaleAttempt):
-        repository.complete_training(run.run_id, token, candidate(spec))
+        repository.complete_training(
+            run.run_id, token, candidate(spec), metrics=training_metrics(spec)
+        )
     assert not repository.training_progress(principal(), run.run_id, attempt=None, after=0).history
     with pytest.raises(NotFound):
         repository.database.get_model(spec.model_version_id)
+
+
+def test_training_metric_backfill_requires_the_owned_committed_candidate(
+    repository: AdminRepository,
+) -> None:
+    _, spec = ready_training(repository)
+    run = repository.submit(principal(), spec, idempotency_key="training")
+    model, metrics = candidate(spec), training_metrics(spec)
+
+    def backfill() -> TrainingMetrics:
+        return repository.save_training_metrics(
+            principal(), run.run_id, bundle_sha256=model.bundle_sha256, metrics=metrics
+        )
+
+    with pytest.raises(Conflict, match="committed training"):
+        backfill()
+    token = claim(repository, run.run_id)
+    other_metrics = metrics.model_copy(update={"model_version_id": "another-candidate"})
+    with pytest.raises(Conflict, match="different model"):
+        repository.complete_training(run.run_id, token, model, metrics=other_metrics)
+    repository.complete_training(run.run_id, token, model, metrics=metrics)
+    for identity, error in [(principal("other"), NotFound), (principal(admin=False), Forbidden)]:
+        with pytest.raises(error):
+            repository.get_training_metrics(identity, run.run_id)
+        with pytest.raises(error):
+            repository.save_training_metrics(
+                identity, run.run_id, bundle_sha256=model.bundle_sha256, metrics=metrics
+            )
+
+    # A run completed before the migration has a candidate but no independent metrics yet.
+    with repository.database.connection() as connection:
+        connection.execute(
+            "DELETE FROM regimex_training_metrics WHERE operation_id=%s", (run.run_id,)
+        )
+    assert repository.get_training_metrics(principal(), run.run_id) is None
+    for sha256, wrong_metrics in [("0" * 64, metrics), (model.bundle_sha256, other_metrics)]:
+        with pytest.raises(Conflict, match="committed training"):
+            repository.save_training_metrics(
+                principal(), run.run_id, bundle_sha256=sha256, metrics=wrong_metrics
+            )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        readers = [pool.submit(backfill) for _ in range(2)]
+        assert all(reader.result() == metrics for reader in readers)
+    saved = repository.get_training_metrics(principal(), run.run_id)
+    assert saved is not None and json_bytes(saved.history) == json_bytes(metrics.history)
+    assert (
+        repository.save_training_metrics(
+            principal(),
+            run.run_id,
+            bundle_sha256=model.bundle_sha256,
+            metrics=metrics.model_copy(update={"history": None}),
+        )
+        == saved
+    )
 
 
 def test_fixed_evaluation_identity_and_publication_cas_are_atomic(

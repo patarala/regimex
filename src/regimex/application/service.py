@@ -704,10 +704,7 @@ class AnalysisService:
         policy_sha256 = hashlib.sha256(
             json_bytes(inference_runtime.model_dump(mode="json"))
         ).hexdigest()
-        try:
-            existing = self.repository.get_model(manifest.model_version_id)
-        except NotFound:
-            existing = None
+        existing = self.repository.existing_registration(principal, manifest.model_version_id)
         if existing is not None:
             if (existing.bundle_sha256, existing.inference_policy_sha256) != (
                 manifest_sha256,

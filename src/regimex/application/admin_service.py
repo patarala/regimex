@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import math
 import tempfile
 from collections.abc import Callable
 from contextlib import ExitStack, suppress
@@ -32,7 +31,6 @@ from regimex.admin_contracts import (
     ReferenceGenerationSpec,
     ReferenceImportSpec,
     ReferenceSetRecord,
-    RepeatOutcome,
     RequestDigest,
     TrainingMetrics,
     TrainingProgress,
@@ -48,6 +46,7 @@ from regimex.application.service import (
     materialize_object,
     read_bundle_manifest,
 )
+from regimex.application.training_metrics import build_training_metrics
 from regimex.application.training_progress import relay_training_progress
 from regimex.benchmark_contracts import FinalEvaluationGrant, require_selection_dataset
 from regimex.benchmarks import DirectionSemantics
@@ -70,6 +69,7 @@ from regimex.data_catalog import (
     seal_reference_set,
     validate_reference_membership,
 )
+from regimex.deletion_contracts import DeletionPreview
 from regimex.directions import (
     DECODER_VERSION,
     DEFAULT_ANALYSIS_PROFILE,
@@ -78,6 +78,7 @@ from regimex.directions import (
 )
 from regimex.exports import ExportV2
 from regimex.history_contracts import DisplayNameUpdate, validate_display_name
+from regimex.infrastructure.deletion_repository import DeletionRepository
 from regimex.infrastructure.intake_repository import IntakeRequest
 from regimex.infrastructure.object_store import (
     ObjectCapacityError,
@@ -85,6 +86,7 @@ from regimex.infrastructure.object_store import (
     ObjectIntegrityError,
 )
 from regimex.market_identity import imported_seed_group
+from regimex.model_bundles import BundleMember, ModelBundle
 from regimex.model_registry import FixedUpdatePolicy, RegistryError
 from regimex.operations import OperationFailure
 from regimex.service_contracts import (
@@ -128,49 +130,6 @@ def _validate_request[T, **P](function: Callable[P, T], *args: P.args, **kwargs:
         ) from exc
     except ValueError as exc:
         raise ServiceError("invalid_data", str(exc), 422) from exc
-
-
-def _history_number(value: str) -> float:
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError("non-finite metric")
-    return number
-
-
-def _repeat_outcomes(spec: TrainingSpec, history: JsonValue) -> tuple[RepeatOutcome, ...]:
-    if spec.architecture_id != "tcn" or not isinstance(history, dict):
-        return ()
-    policy = spec.policy
-    unit = "update" if isinstance(policy, FixedUpdatePolicy) else "epoch"
-    rows = history.get(unit + "s")
-    if not isinstance(rows, list):
-        return ()
-    # The native codec verifies every seed's complete history before publication.
-    # An epoch repeat that finishes below its budget can only have exhausted patience.
-    last_step: dict[int, int] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            return ()
-        seed, step = row.get("seed"), row.get(unit)
-        if type(seed) is not int or type(step) is not int:
-            return ()
-        last_step[seed] = step
-    if tuple(last_step) != policy.seeds:
-        return ()
-    if isinstance(policy, FixedUpdatePolicy):
-        return tuple(
-            RepeatOutcome(seed=seed, step=step, reason="update_limit")
-            for seed, step in last_step.items()
-            if step == policy.updates
-        )
-    return tuple(
-        RepeatOutcome(
-            seed=seed,
-            step=step,
-            reason="epoch_limit" if step == policy.epochs else "early_stopping",
-        )
-        for seed, step in last_step.items()
-    )
 
 
 class AdminService:
@@ -447,44 +406,73 @@ class AdminService:
     ) -> TrainingProgress:
         return self.repository.training_progress(principal, run_id, attempt=attempt, after=after)
 
-    def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics:
+    def _training_bundle(
+        self, principal: Principal, run_id: UUID, root: Path
+    ) -> tuple[TrainingSpec, ModelRecord, ModelBundle]:
         run = self.get_run(principal, run_id)
         if not isinstance(run.spec, TrainingSpec):
             raise NotFound()
         if run.output is None:
-            raise Conflict("Training has no completed metrics.")
+            raise Conflict("Training has no completed result.")
+        if run.weights_deletion_id is not None:
+            raise Conflict("These model weights have already been discarded.")
         model = self.analysis_service.get_model(principal, run.spec.model_version_id)
         if run.output.get("bundle_sha256") != model.bundle_sha256:
             raise ObjectIntegrityError("training output differs from its registered model")
+        manifest = read_bundle_manifest(self.analysis_service.store, model, root / "manifest.json")
+        if manifest.training.run_id != str(run_id):
+            raise ObjectIntegrityError("model training provenance differs from the run")
+        return run.spec, model, manifest
+
+    def _save_existing_metrics(
+        self,
+        principal: Principal,
+        run_id: UUID,
+        spec: TrainingSpec,
+        model: ModelRecord,
+        manifest: ModelBundle,
+        root: Path,
+    ) -> TrainingMetrics:
+        def read_history(member: BundleMember) -> bytes:
+            path = root / "history.json"
+            materialize_object(self.analysis_service.store, model.members[member.path], path)
+            return path.read_bytes()
+
+        metrics = build_training_metrics(spec, manifest, read_history=read_history)
+        return self.repository.save_training_metrics(
+            principal, run_id, bundle_sha256=model.bundle_sha256, metrics=metrics
+        )
+
+    def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics:
+        saved = self.repository.get_training_metrics(principal, run_id)
+        if saved is not None:
+            return saved
         with tempfile.TemporaryDirectory(dir=self.analysis_service.work_root) as tmp:
             root = Path(tmp)
-            store = self.analysis_service.store
-            manifest = read_bundle_manifest(store, model, root / "manifest.json")
-            if manifest.training.run_id != str(run_id):
-                raise ObjectIntegrityError("model training provenance differs from the run")
-            member = next(item for item in manifest.members if item.role == "history")
-            history, note = None, None
-            if not member.path.endswith(".json") or member.size_bytes > MAX_INPUT_BYTES:
-                note = "The model's history format or size is outside the browser preview limits."
-            else:
-                path = root / "history.json"
-                materialize_object(store, model.members[member.path], path)
-                try:
-                    history = json.loads(
-                        path.read_bytes(),
-                        parse_float=_history_number,
-                        parse_constant=_history_number,
-                    )
-                except (ValueError, RecursionError) as exc:
-                    raise ObjectIntegrityError("model training history is invalid JSON") from exc
-        return TrainingMetrics(
-            model_version_id=model.model_version_id,
-            selected_seed=manifest.training.selected_seed,
-            validation_segment_macro_f1=manifest.training.validation_segment_macro_f1,
-            history=history,
-            history_note=note,
-            repeat_outcomes=_repeat_outcomes(run.spec, history),
-        )
+            try:
+                spec, model, manifest = self._training_bundle(principal, run_id, root)
+            except NotFound, Conflict:
+                # A concurrent discard must save the history before retiring the model.
+                saved = self.repository.get_training_metrics(principal, run_id)
+                if saved is not None:
+                    return saved
+                raise
+            return self._save_existing_metrics(principal, run_id, spec, model, manifest, root)
+
+    def preview_weight_deletion(self, principal: Principal, run_id: UUID) -> DeletionPreview:
+        self._admin(principal)
+        with tempfile.TemporaryDirectory(dir=self.analysis_service.work_root) as tmp:
+            root = Path(tmp)
+            spec, model, manifest = self._training_bundle(principal, run_id, root)
+            if self.repository.get_training_metrics(principal, run_id) is None:
+                self._save_existing_metrics(principal, run_id, spec, model, manifest, root)
+            member = next(item for item in manifest.members if item.role == "weights")
+            return DeletionRepository(self.repository.database).preview_weights(
+                principal,
+                run_id,
+                model.members[member.path],
+                store_scope_id=self.analysis_service.store.scope_id,
+            )
 
     def list_runs(
         self,
