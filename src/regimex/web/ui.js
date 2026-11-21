@@ -66,7 +66,7 @@ function positionHelp(button, note) {
 
   const margin = 8;
   const below = bottom - anchor.bottom - margin, above = anchor.top - top - margin;
-  note.style.maxWidth = `min(22rem, ${width - 2 * margin}px)`;
+  note.style.maxWidth = `min(var(--tooltip-max-width, 22rem), ${width - 2 * margin}px)`;
   note.style.maxHeight = Math.max(above, below, 0) + "px";
   const panel = note.getBoundingClientRect();
   const centered = anchor.left + (anchor.width - panel.width) / 2;

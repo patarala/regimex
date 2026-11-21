@@ -35,11 +35,15 @@ function appendRunInfo(item, button, row, label) {
   const icon = element("span", "i");
   icon.setAttribute("aria-hidden", "true");
   info.append(icon);
-  const architecture = architectureName(row.training.architecture_id);
-  const size = row.trainable_parameters ? " · " + parameterCountLabel(row.trainable_parameters) : "";
-  const note = element("p", architecture + size, "field-help");
-  note.append(document.createElement("br"), "Dataset: " + row.training.dataset_id,
-    document.createElement("br"), "Created " + shortDate(row.job.created_at));
+  const note = element("div", "", "field-help run-info");
+  const model = element("div", "", "run-info-line");
+  model.append(element("strong", architectureName(row.training.architecture_id)));
+  if (row.trainable_parameters != null) {
+    model.append(" ", element("span", parameterCountLabel(row.trainable_parameters), "run-info-size"));
+  }
+  const dataset = element("div", "", "run-info-line");
+  dataset.append(element("span", "Dataset:"), " ", element("span", row.training.dataset_id, "run-info-dataset"));
+  note.append(model, dataset, element("div", "Created " + shortDate(row.job.created_at)));
   note.id = "run-info-" + row.run_id;
   item.append(info, note);
   bindTooltip(info, note, {trigger: button});

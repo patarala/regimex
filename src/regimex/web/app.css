@@ -1099,6 +1099,29 @@ iframe {
   inset-block-start: 3px;
   inset-inline-end: 3px;
 }
+.run-info {
+  --tooltip-max-width: 36rem;
+}
+.run-info-line {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 0.4em;
+  align-items: baseline;
+}
+.run-info-size {
+  white-space: nowrap;
+}
+.run-info-dataset {
+  max-width: 100%;
+  font: 12px/1.5 ui-monospace, monospace;
+  word-break: break-all;
+  text-wrap: balance;
+}
+@media (max-width: 360px) {
+  .field-help.run-info {
+    padding-inline: 6px;
+  }
+}
 @media (hover: hover) and (pointer: fine) {
   .training-runs li:not(:hover, :focus-within) .training-run-info[aria-expanded="false"] {
     opacity: 0;

@@ -63,3 +63,60 @@ def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, wid
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     finally:
         page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 375, 320])
+def test_history_tooltip_keeps_parameter_counts_and_dataset_ids_readable(
+    browser: Any, width: int
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    canonical = "dataset-12345678abcdef0012345678abcdef00"
+    long_id = "dataset-" + "WideIdentifier" * 8
+    api.runs = [api.run, completed_run("00000000-0000-0000-0000-000000000002", "training")]
+    for run, dataset in zip(api.runs, (canonical, long_id), strict=True):
+        run.update(display_name=dataset[:18], trainable_parameters=135555)
+        run["training"]["dataset_id"] = dataset
+    page = browser.new_page(viewport={"width": width, "height": 800}, locale="en-US")
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/#training/new")
+        if width < 821:
+            page.get_by_role("button", name="Run history", exact=True).click()
+        for run in api.runs:
+            dataset = run["training"]["dataset_id"]
+            page.locator(f'[data-run-info="{run["run_id"]}"]').click()
+            tooltip = page.get_by_role("tooltip")
+            expect(tooltip.locator(".run-info-size")).to_have_text("135,555 parameters")
+            expect(tooltip.locator(".run-info-dataset")).to_have_text(dataset)
+            layout = tooltip.evaluate(
+                """tip => {
+                  function fragments(selector, end) {
+                    const node = tip.querySelector(selector).firstChild;
+                    const range = document.createRange();
+                    range.setStart(node, 0);
+                    range.setEnd(node, end ?? node.length);
+                    return [...range.getClientRects()];
+                  }
+                  const id = fragments('.run-info-dataset');
+                  const size = fragments('.run-info-size');
+                  const bounds = tip.getBoundingClientRect();
+                  return {
+                    sizeLines: size.length,
+                    idLines: id.length,
+                    prefixTogether: fragments('.run-info-dataset', 'dataset-'.length + 1).length === 1,
+                    inBounds: bounds.left >= 0 && bounds.right <= innerWidth &&
+                      tip.scrollWidth <= tip.clientWidth &&
+                      [...id, ...size].every(r => r.left >= bounds.left && r.right <= bounds.right)
+                  };
+                }"""
+            )
+            assert layout["inBounds"] and layout["sizeLines"] == 1, layout
+            assert layout["prefixTogether"], layout
+            if dataset == long_id:
+                assert layout["idLines"] > 1, layout
+            else:
+                assert layout["idLines"] == 1, layout
+            page.keyboard.press("Escape")
+    finally:
+        page.close()
