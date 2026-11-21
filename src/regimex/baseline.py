@@ -10,6 +10,7 @@ from pydantic import JsonValue
 
 from regimex.directions import DIRECTION_NAMES
 from regimex.features import DoubleArray, FloatArray, IntArray
+from regimex.model_contracts import HistoryCallback
 from regimex.model_registry import SummaryMode
 from regimex.prediction_inputs import PreparedPredictionInputs, require_prepared_inputs
 
@@ -139,6 +140,7 @@ def fit_baseline(
     scorer: Scorer,
     summaries: SummaryMode = SummaryMode.LOCAL_AND_GLOBAL,
     check_budget: Callable[[], None] = lambda: None,
+    on_history: HistoryCallback | None = None,
 ) -> tuple[LinearModel, list[JsonValue], float]:
     # Restored models predict from numeric weights using NumPy alone.
     from sklearn.exceptions import ConvergenceWarning  # type: ignore[import-untyped]
@@ -200,7 +202,13 @@ def fit_baseline(
         score = scorer(probabilities)
         if not np.isfinite(score):
             raise ValueError("nonfinite baseline validation score")
-        history.append({"regularization": regularization, "validation_segment_macro_f1": score})
+        entry: dict[str, JsonValue] = {
+            "regularization": regularization,
+            "validation_segment_macro_f1": score,
+        }
+        history.append(entry)
+        if on_history is not None:
+            on_history(entry.copy())
         logger.info("baseline C=%s validation_segment_macro_f1=%.4f", regularization, score)
         if score > best_score:
             best, best_score, best_c = model, score, regularization

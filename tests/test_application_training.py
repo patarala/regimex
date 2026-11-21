@@ -16,6 +16,7 @@ from regimex.application.training import (
     observation_inputs,
     train_candidate,
 )
+from regimex.application.training_progress import PROGRESS_FILENAME, record_training_progress
 from regimex.backends.baseline import BaselineBackend
 from regimex.benchmarks import DirectionSemantics
 from regimex.data_catalog import (
@@ -191,9 +192,21 @@ def test_training_uses_generic_registry_shared_selection_and_independent_referen
 ) -> None:
     data, dataset = prepared_data()
     registry = ArchitectureRegistry((baseline_descriptor(),))
-    result = train_candidate(
-        data, request(), tmp_path / "candidate", registry=registry, worker_id="fixture-worker"
-    )
+    with record_training_progress(tmp_path) as record:
+        result = train_candidate(
+            data,
+            request(),
+            tmp_path / "candidate",
+            registry=registry,
+            worker_id="fixture-worker",
+            on_history=record,
+        )
+        history = [
+            json.loads(row) for row in (tmp_path / PROGRESS_FILENAME).read_bytes().splitlines()
+        ]
+        assert (
+            history == json.loads((tmp_path / "candidate/history.json").read_bytes())["candidates"]
+        )
     assert result.dataset_sha256 == dataset.content_sha256
     assert result.quality_status == "validation_only"
     bundle = verify_model_bundle(
@@ -220,6 +233,15 @@ def test_training_uses_generic_registry_shared_selection_and_independent_referen
     )
     assert evaluator(probabilities) == result.validation_segment_macro_f1
     assert not hasattr(inputs, "labels") and not hasattr(inputs.info[0], "seed")
+
+
+def test_unavailable_training_journal_does_not_interrupt_fitting(tmp_path: Path) -> None:
+    attempt = tmp_path / "missing"
+    with record_training_progress(attempt) as record:
+        record({"epoch": 1, "training_loss": 1.0})
+        attempt.mkdir()
+        record({"epoch": 2, "training_loss": 0.9})
+    assert not (attempt / PROGRESS_FILENAME).exists()
 
 
 @pytest.mark.parametrize("shape", [(191, 3), (192, 2)])

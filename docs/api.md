@@ -299,8 +299,17 @@ run status and the choices available to the signed-in administrator:
 | `GET /training-runs/{id}` | Run name and revision, submitted settings, model version ID, job stage, attempts and failure reason |
 | `PATCH /training-runs/{id}/name` | Change the run name using the current revision |
 | `POST /jobs/{id}/cancel` | Request cancellation of a queued or running training job |
+| `GET /training-runs/{id}/progress` | New chart samples from the current training attempt |
 | `GET /training-runs/{id}/metrics` | Selected seed, validation interval macro-F1 and the history saved by the backend. Returns `409` until the run succeeds. |
 | `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model |
+
+To follow a running fit, request `/progress`, then pass the returned `attempt`
+and `cursor` as `?attempt=ATTEMPT&after=CURSOR` on the next request. Each page
+contains up to 512 measured candidates, epochs or updates in `history`.
+An empty `history` means there are no new samples. Read the next page immediately
+when `has_more` is true. If the attempt changes, replace your local history
+with the new attempt's points. A successful run serves its saved history from
+`/metrics`.
 
 The optional `display_name` accepts up to 120 Unicode characters after trimming
 and NFC normalization. To rename a run later, send

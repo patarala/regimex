@@ -5,9 +5,10 @@ import json
 import math
 import tempfile
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
@@ -33,6 +34,7 @@ from regimex.admin_contracts import (
     ReferenceSetRecord,
     RequestDigest,
     TrainingMetrics,
+    TrainingProgress,
     TrainingRunName,
     TrainingSpec,
     admin_request_hash,
@@ -45,6 +47,7 @@ from regimex.application.service import (
     materialize_object,
     read_bundle_manifest,
 )
+from regimex.application.training_progress import relay_training_progress
 from regimex.benchmark_contracts import FinalEvaluationGrant, require_selection_dataset
 from regimex.benchmarks import DirectionSemantics
 from regimex.computation_worker import (
@@ -401,6 +404,11 @@ class AdminService:
         self, principal: Principal, run_id: UUID, update: DisplayNameUpdate
     ) -> TrainingRunName:
         return self.repository.rename_training_run(principal, run_id, update)
+
+    def training_progress(
+        self, principal: Principal, run_id: UUID, *, attempt: int | None, after: int
+    ) -> TrainingProgress:
+        return self.repository.training_progress(principal, run_id, attempt=attempt, after=after)
 
     def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics:
         run = self.get_run(principal, run_id)
@@ -934,6 +942,7 @@ class AdminService:
                 tempfile.TemporaryDirectory(
                     prefix=f"admin-{operation_id}-", dir=self.analysis_service.work_root
                 ) as temporary,
+                ExitStack() as observers,
             ):
                 run = self.repository.get_run_internal(operation_id)
                 principal = Principal(
@@ -963,6 +972,14 @@ class AdminService:
                 self._materialize_inputs(inputs, payload, root, beat)
                 beat()
                 heartbeat.check("administrative-computation")
+                if isinstance(run.spec, TrainingSpec):
+                    observers.enter_context(
+                        relay_training_progress(
+                            root,
+                            operation_id,
+                            partial(self.repository.append_training_progress, operation_id, token),
+                        )
+                    )
                 remaining = heartbeat.remaining_seconds
                 result = supervise_child(
                     payload,

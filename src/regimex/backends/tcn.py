@@ -500,6 +500,7 @@ class TCNBackend:
                 runtime=runtime,
                 scorer=evaluate,
                 check_budget=check_budget,
+                on_history=training.on_history,
             )
         else:
             model, history, selected_seed = fit_tcn(
@@ -511,6 +512,7 @@ class TCNBackend:
                 runtime=runtime,
                 scorer=evaluate,
                 check_budget=check_budget,
+                on_history=training.on_history,
             )
         check_budget()
         selected = max(

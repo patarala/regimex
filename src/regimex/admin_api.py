@@ -10,6 +10,7 @@ from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, RootModel
 
 from regimex import __version__
 from regimex.admin_contracts import (
+    MAX_PROGRESS_POINTS,
     AdminKind,
     AdminRunRecord,
     DatasetRecord,
@@ -29,6 +30,7 @@ from regimex.admin_contracts import (
     RequestFingerprint,
     SplitPolicy,
     TrainingMetrics,
+    TrainingProgress,
     TrainingRunName,
     TrainingSpec,
 )
@@ -66,6 +68,10 @@ class AdminAPIService(Protocol):
     ) -> tuple[AdminRunRecord, ...]: ...
 
     def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics: ...
+
+    def training_progress(
+        self, principal: Principal, run_id: UUID, *, attempt: int | None, after: int
+    ) -> TrainingProgress: ...
 
     def import_final_references(
         self,
@@ -626,6 +632,15 @@ def install_admin_routes(
     @app.get("/api/v1/training-runs/{run_id}/metrics")
     def training_metrics(run_id: UUID, identity: Identity) -> TrainingMetrics:
         return service.training_metrics(identity, run_id)
+
+    @app.get("/api/v1/training-runs/{run_id}/progress")
+    def training_progress(
+        run_id: UUID,
+        identity: Identity,
+        attempt: Annotated[int | None, Query(ge=0, le=10)] = None,
+        after: Annotated[int, Query(ge=0, le=MAX_PROGRESS_POINTS)] = 0,
+    ) -> TrainingProgress:
+        return service.training_progress(identity, run_id, attempt=attempt, after=after)
 
     @app.get("/api/v1/training-runs/{run_id}/actions")
     def training_actions(

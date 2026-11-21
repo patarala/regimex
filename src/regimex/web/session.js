@@ -29,7 +29,7 @@ export function createSession({onActivate, onReset}) {
     onReset();
   }
 
-  async function request(path, { method = "GET", body = undefined, headers = {} } = {}) {
+  async function request(path, { method = "GET", body = undefined, headers = {}, signal } = {}) {
     const requestEpoch = epoch;
     const options = {
       method,
@@ -37,6 +37,7 @@ export function createSession({onActivate, onReset}) {
       redirect: "error",
       cache: "no-store",
       headers: { ...headers },
+      signal,
     };
     if (body !== undefined) {
       options.body = typeof body === "string" ? body : JSON.stringify(body);

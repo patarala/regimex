@@ -59,7 +59,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0010_evaluation_reuse"
+_REVISION = "0011_training_progress"
 
 
 def _read_operation(document: object) -> Operation:
@@ -943,6 +943,13 @@ class DatabaseRepository:
                 operation.operation_id,
             ),
         )
+        if operation.kind == "training" and operation.state not in {"running", "cancel_requested"}:
+            # A retried fit starts a fresh curve. Successful runs keep their full
+            # history in the model bundle; terminal attempts release preview space.
+            connection.execute(
+                "DELETE FROM regimex_training_progress WHERE operation_id=%s",
+                (operation.operation_id,),
+            )
 
     @staticmethod
     def _now(operation: Operation) -> datetime:

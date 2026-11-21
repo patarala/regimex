@@ -281,13 +281,14 @@
             </form>
             <p id="training-sync" class="notice" role="status" hidden></p>
             <p id="training-stage" class="hint" role="status" hidden></p>
+            <p id="training-progress-notice" class="hint" role="status" hidden>Could not update the charts. Retrying…</p>
             <button id="training-cancel" type="button" class="quiet" hidden>Cancel training</button>
             <section id="training-metrics" class="training-section" aria-labelledby="training-metrics-title" hidden>
               <h3 id="training-metrics-title">Training metrics</h3>
               <p id="training-score"></p>
               <label id="training-seed-label" hidden>Training repeat <select id="training-seed"></select></label>
               <div id="training-charts"></div>
-              <a id="training-metric-data" download>Download metric data</a>
+              <a id="training-metric-data" download hidden>Download metric data</a>
             </section>
             <section id="training-downstream" class="training-section" aria-labelledby="training-actions-title" hidden>
               <h3 id="training-actions-title">Model evaluation</h3>

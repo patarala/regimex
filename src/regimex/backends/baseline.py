@@ -357,6 +357,7 @@ class BaselineBackend:
             summaries=parameters.summaries,
             scorer=evaluate,
             check_budget=check_budget,
+            on_history=training.on_history,
         )
         check_budget()
         scores = [

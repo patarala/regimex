@@ -26,6 +26,7 @@ from regimex.application.training import (
     observation_inputs,
     train_candidate,
 )
+from regimex.application.training_progress import record_training_progress
 from regimex.benchmark_contracts import FinalEvaluationGrant
 from regimex.benchmarks import DirectionSemantics
 from regimex.contracts import StrictModel
@@ -344,13 +345,15 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
                 analysis_profile_id=spec.analysis_profile_id,
                 build_id=spec.build_id,
             )
-            result = train_candidate(
-                data,
-                request,
-                root / "output/bundle",
-                registry=ArchitectureRegistry.discover(),
-                worker_id="administrative-child",
-            )
+            with record_training_progress(root) as record:
+                result = train_candidate(
+                    data,
+                    request,
+                    root / "output/bundle",
+                    registry=ArchitectureRegistry.discover(),
+                    worker_id="administrative-child",
+                    on_history=record,
+                )
             return {"candidate": result.model_dump(mode="json"), "bundle_path": "output/bundle"}
         reference_set = sets[0].references
         if reference_set.partition != spec.partition:

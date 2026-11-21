@@ -64,14 +64,12 @@ function lossCeiling(points) {
 
 function plot(metric, axis, gutter) {
   const {points, ceiling, ticks} = metric;
-  const figure = element("figure");
   const caption = element("figcaption", metric.label);
   if (metric.sampling) {
     const sampling = element("span", metric.sampling);
     sampling.className = "metric-sampling";
     caption.append(" ", sampling);
   }
-  figure.append(caption);
   const graph = svgNode("svg", {width: "100%", height: 168, role: "img",
     "aria-label": metric.label + " by " + axis.label.toLowerCase()});
   const start = points[0], end = points.at(-1);
@@ -107,16 +105,14 @@ function plot(metric, axis, gutter) {
   }
   area.append(svgNode("text", {x: "50%", y: height + 42, "text-anchor": "middle"}, axis.label));
   graph.append(area);
-  figure.append(graph);
-  return figure;
+  return [caption, graph];
 }
 
-function valuesTable(history, metric, open) {
-  const {points} = metric;
+function valuesTable(history, metric) {
+  let points = [], offset = 0;
   const details = element("details");
   details.className = "training-observations";
   details.dataset.metric = metric.field;
-  details.open = open;
   const summary = element("summary", "Values");
   summary.setAttribute("aria-label", metric.label + " values");
   details.append(summary);
@@ -137,7 +133,6 @@ function valuesTable(history, metric, open) {
   const previous = element("button", "Previous values"), next = element("button", "Next values");
   const range = element("span");
   range.setAttribute("role", "status");
-  let offset = 0;
   function render() {
     body.replaceChildren();
     for (const [x, value] of points.slice(offset, offset + perPage)) {
@@ -152,80 +147,136 @@ function valuesTable(history, metric, open) {
     next.disabled = limit === points.length;
     range.textContent = (offset + 1) + "–" + limit + " of " + points.length;
   }
-  if (points.length > perPage) {
-    const nav = element("nav");
-    nav.setAttribute("aria-label", metric.label + " values");
-    nav.className = "training-values-nav";
-    for (const [button, delta] of [[previous, -perPage], [next, perPage]]) {
-      button.type = "button";
-      button.className = "quiet";
-      button.addEventListener("click", () => {
-        offset += delta;
-        render();
-        if (button.disabled) (button === next ? previous : next).focus();
-      });
-    }
-    nav.append(previous, range, next);
-    details.append(nav);
+  const nav = element("nav");
+  nav.setAttribute("aria-label", metric.label + " values");
+  nav.className = "training-values-nav";
+  for (const [button, delta] of [[previous, -perPage], [next, perPage]]) {
+    button.type = "button";
+    button.className = "quiet";
+    button.addEventListener("click", () => {
+      offset += delta;
+      render();
+      if (button.disabled) (button === next ? previous : next).focus();
+    });
   }
-  render();
-  return details;
+  nav.append(previous, range, next);
+  details.append(nav);
+  function update(values, resetPage) {
+    points = values;
+    if (resetPage || offset >= points.length) offset = 0;
+    nav.hidden = points.length <= perPage;
+    render();
+  }
+  return {details, update};
 }
 
-export function showTrainingMetrics(metrics) {
-  $("training-metrics").hidden = false;
-  const history = histories.find(schema => Array.isArray(metrics.history?.[schema.rows]));
-  const saved = history?.rows === "candidates" ? "saved model" : "saved model (seed " + metrics.selected_seed + ")";
-  $("training-score").replaceChildren(element("strong", format(metrics.validation_segment_macro_f1)),
-    " validation interval macro-F1 · " + saved);
-  const charts = $("training-charts"), seed = $("training-seed");
-  charts.replaceChildren();
-  seed.replaceChildren();
-  $("training-seed-label").hidden = true;
-  seed.onchange = null;
-  const records = history && metrics.history[history.rows].filter(row => row && Number.isFinite(row[history.field]));
-  if (!records?.length) {
-    charts.append(element("p", metrics.history_note || "The run has no recorded metric values to plot."));
-    return;
-  }
-  const seeds = [...new Set(records.map(row => row.seed).filter(Number.isInteger))];
-  for (const value of seeds) {
-    const label = "Seed " + value + (value === metrics.selected_seed ? " (saved model)" : "");
-    seed.append(option(String(value), label));
-  }
-  if (seeds.length) seed.value = String(seeds.includes(metrics.selected_seed) ? metrics.selected_seed : seeds[0]);
-  $("training-seed-label").hidden = seeds.length < 2;
-  function draw() {
-    const openTables = new Set(Array.from(charts.querySelectorAll("details[open]"), table => table.dataset.metric));
-    const selected = records.filter(row => !seeds.length || row.seed === Number(seed.value))
-      .sort((a, b) => a[history.field] - b[history.field]);
-    const axis = horizontalAxis(history, selected);
-    const series = [];
-    for (const metric of metricsToPlot) {
-      const points = selected.filter(row => Number.isFinite(row[metric.field]))
-        .map(row => [row[history.field], row[metric.field]]);
-      if (!points.length) continue;
-      const ceiling = metric.field === "training_loss" ? lossCeiling(points) : 1;
-      const ticks = [0, ceiling / 2, ceiling].map(value => ({value, label: format(value)}));
-      let sampling = "";
-      if (metric.field === "validation_segment_macro_f1" && points.length < selected.length &&
-          (history.field === "epoch" || history.field === "update")) {
-        sampling = points.length + " of " + selected.length + " " + history.field + "s evaluated";
-      }
-      series.push({...metric, points, ceiling, ticks, sampling});
+function chartSeries(history, selected) {
+  const series = [];
+  for (const metric of metricsToPlot) {
+    const points = selected.filter(row => Number.isFinite(row[metric.field]))
+      .map(row => [row[history.field], row[metric.field]]);
+    if (!points.length) continue;
+    const ceiling = metric.field === "training_loss" ? lossCeiling(points) : 1;
+    const ticks = [0, ceiling / 2, ceiling].map(value => ({value, label: format(value)}));
+    let sampling = "";
+    if (metric.field === "validation_segment_macro_f1" && points.length < selected.length &&
+        (history.field === "epoch" || history.field === "update")) {
+      sampling = points.length + " of " + selected.length + " " + history.field + "s evaluated";
     }
-    if (!series.length) {
-      charts.replaceChildren(element("p", "No metric values were recorded for this seed."));
+    series.push({...metric, points, ceiling, ticks, sampling});
+  }
+  return series;
+}
+
+export function createTrainingMetrics() {
+  const section = $("training-metrics"), charts = $("training-charts"), seed = $("training-seed");
+  const score = $("training-score"), seedLabel = $("training-seed-label");
+  const figures = new Map();
+  let chosenSeed = "", drawn = null;
+
+  function clear() {
+    section.hidden = true;
+    seedLabel.hidden = score.hidden = true;
+    score.replaceChildren();
+    chosenSeed = "";
+    drawn = null;
+    figures.clear();
+    charts.replaceChildren();
+    seed.replaceChildren();
+    seed.onchange = null;
+  }
+
+  function show(historyData, result = null) {
+    const history = histories.find(schema => Array.isArray(historyData?.[schema.rows]));
+    const rows = history && historyData[history.rows];
+    const records = rows?.filter(row => row && Number.isFinite(row[history.field]));
+    section.hidden = false;
+    score.hidden = !result;
+    if (result) {
+      const saved = history?.rows === "candidates" ? "saved model" : "saved model (seed " + result.selected_seed + ")";
+      score.replaceChildren(element("strong", format(result.validation_segment_macro_f1)),
+        " validation interval macro-F1 · " + saved);
+    }
+    if (!records?.length) {
+      figures.clear();
+      charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
+      seedLabel.hidden = true;
       return;
     }
-    const tickWidths = series.flatMap(chart => chart.ticks.map(({label}) => label.length * 9));
-    const gutter = Math.max(36, Math.max(...tickWidths) + 14);
-    charts.replaceChildren(...series.map(metric => {
-      const figure = plot(metric, axis, gutter);
-      figure.append(valuesTable(history, metric, openTables.has(metric.field)));
-      return figure;
-    }));
+    const seeds = [...new Set(records.map(row => row.seed).filter(Number.isInteger))];
+    const savedSeed = result?.selected_seed;
+    for (const [index, value] of seeds.entries()) {
+      const label = "Seed " + value + (value === savedSeed ? " (saved model)" : "");
+      const item = seed.options[index];
+      if (!item) seed.append(option(String(value), label));
+      else if (item.value !== String(value) || item.text !== label) item.replaceWith(option(String(value), label));
+    }
+    while (seed.options.length > seeds.length) seed.lastElementChild.remove();
+    // Follow the repeat being trained until the reader explicitly chooses one.
+    if (seeds.length) {
+      const automatic = seeds.includes(savedSeed) ? savedSeed : seeds.at(-1);
+      seed.value = chosenSeed && seeds.includes(Number(chosenSeed)) ? chosenSeed : String(automatic);
+    }
+    seedLabel.hidden = seeds.length < 2;
+    function draw() {
+      const selected = records.filter(row => !seeds.length || row.seed === Number(seed.value));
+      if (drawn?.rows === rows && drawn.seed === seed.value && drawn.count === selected.length) return;
+      const resetPage = drawn?.seed !== seed.value;
+      drawn = {rows, seed: seed.value, count: selected.length};
+      selected.sort((a, b) => a[history.field] - b[history.field]);
+      const axis = horizontalAxis(history, selected);
+      const series = chartSeries(history, selected);
+      for (const [key, view] of figures) {
+        if (!series.some(metric => metric.field === key)) {
+          view.figure.remove();
+          figures.delete(key);
+        }
+      }
+      if (!series.length) {
+        charts.replaceChildren(element("p", "No metric values were recorded for this seed."));
+        return;
+      }
+      if (!figures.size) charts.replaceChildren();
+      const tickWidths = series.flatMap(chart => chart.ticks.map(({label}) => label.length * 9));
+      const gutter = Math.max(36, Math.max(...tickWidths) + 14);
+      for (const [index, metric] of series.entries()) {
+        let view = figures.get(metric.field);
+        const [caption, graph] = plot(metric, axis, gutter);
+        if (!view) {
+          const figure = element("figure"), values = valuesTable(history, metric);
+          figure.append(caption, graph, values.details);
+          charts.insertBefore(figure, charts.children[index] || null);
+          view = {figure, values};
+          figures.set(metric.field, view);
+        } else {
+          view.figure.querySelector("figcaption").replaceWith(caption);
+          view.figure.querySelector("svg").replaceWith(graph);
+        }
+        view.values.update(metric.points, resetPage);
+      }
+    }
+    seed.onchange = () => { chosenSeed = seed.value; draw(); };
+    draw();
   }
-  seed.onchange = draw;
-  draw();
+  return {show, clear};
 }

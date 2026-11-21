@@ -12,6 +12,8 @@ from psycopg.types.json import Json, Jsonb
 from pydantic import JsonValue, RootModel, TypeAdapter
 
 from regimex.admin_contracts import (
+    MAX_PROGRESS_BATCH,
+    MAX_PROGRESS_POINTS,
     AdminKind,
     AdminRunRecord,
     AdminSpec,
@@ -20,10 +22,13 @@ from regimex.admin_contracts import (
     EvaluationRecord,
     EvaluationSpec,
     GenerationSpec,
+    HistorySeries,
+    ProgressPoint,
     PublicationSpec,
     ReferenceGenerationSpec,
     ReferenceSetRecord,
     RequestDigest,
+    TrainingProgress,
     TrainingRunName,
     TrainingSpec,
     admin_request_hash,
@@ -44,12 +49,22 @@ from regimex.service_contracts import (
     NotFound,
     Principal,
     SnapshotRecord,
+    StaleAttempt,
     UnsupportedContract,
 )
 from regimex.storage import json_bytes
 
 _SPEC = RootModel[AdminSpec]
+_POINT = RootModel[ProgressPoint]
 _JSON = TypeAdapter(dict[str, JsonValue])
+_CHART_FIELDS = {
+    "epoch",
+    "update",
+    "regularization",
+    "seed",
+    "training_loss",
+    "validation_segment_macro_f1",
+}
 Connection = psycopg.Connection[tuple[object, ...]]
 _RUN_SELECT = (
     "SELECT r.operation_id,r.request,r.output,o.document,t.display_name,"
@@ -529,6 +544,69 @@ class AdminRepository:
     def get_run_internal(self, run_id: UUID) -> AdminRunRecord:
         with self.database.connection() as connection:
             return self._run(connection, run_id)
+
+    def append_training_progress(
+        self, run_id: UUID, token: UUID, first_cursor: int, rows: list[dict[str, JsonValue]]
+    ) -> None:
+        if not 0 < len(rows) <= MAX_PROGRESS_BATCH or not (
+            1 <= first_cursor <= MAX_PROGRESS_POINTS - len(rows) + 1
+        ):
+            raise ValueError("Training progress batch exceeds the preview limits.")
+        points = [
+            _POINT.model_validate({k: v for k, v in row.items() if k in _CHART_FIELDS}).model_dump(
+                mode="json"
+            )
+            for row in rows
+        ]
+        with self.database.connection(heartbeat=True) as connection:
+            operation = self.database._operation(connection, run_id, lock=True)
+            if (
+                operation.kind != "training"
+                or operation.attempt_token != token
+                or operation.state != "running"
+            ):
+                raise StaleAttempt()
+            connection.execute(
+                "INSERT INTO regimex_training_progress (operation_id,attempt,position,measurement) "
+                "SELECT %s,%s,%s+n-1,measurement FROM jsonb_array_elements(%s) "
+                "WITH ORDINALITY AS batch(measurement,n) ON CONFLICT DO NOTHING",
+                (run_id, operation.attempt, first_cursor, Jsonb(points)),
+            )
+
+    def training_progress(
+        self, principal: Principal, run_id: UUID, *, attempt: int | None, after: int
+    ) -> TrainingProgress:
+        self.database._admin(principal)
+        # Read attempt and samples in one snapshot. A concurrent retry can restart
+        # the cursor without combining points from two fits.
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                "SELECT (o.document->>'attempt')::int, p.position,p.measurement "
+                "FROM regimex_operations o LEFT JOIN LATERAL ("
+                "SELECT position,measurement FROM regimex_training_progress "
+                "WHERE operation_id=o.operation_id AND attempt=(o.document->>'attempt')::int "
+                "AND position > CASE WHEN (o.document->>'attempt')::int=%s THEN %s ELSE 0 END "
+                "ORDER BY position LIMIT %s) p ON TRUE "
+                "WHERE o.operation_id=%s AND o.owner_id=%s AND o.kind='training' "
+                "ORDER BY p.position",
+                (attempt, after, MAX_PROGRESS_BATCH + 1, run_id, principal.owner_id),
+            ).fetchall()
+        if not rows:
+            raise NotFound()
+        current_attempt = cast(int, rows[0][0])
+        cursor = after if attempt == current_attempt else 0
+        history: dict[HistorySeries, list[ProgressPoint]] = {}
+        for _, position, measurement in rows[:MAX_PROGRESS_BATCH]:
+            if position is not None:
+                point = _POINT.model_validate(measurement).root
+                history.setdefault(point.series, []).append(point)
+                cursor = cast(int, position)
+        return TrainingProgress(
+            attempt=current_attempt,
+            cursor=cursor,
+            history=history,
+            has_more=len(rows) > MAX_PROGRESS_BATCH,
+        )
 
     def get_run(self, principal: Principal, run_id: UUID) -> AdminRunRecord:
         self.database._admin(principal)

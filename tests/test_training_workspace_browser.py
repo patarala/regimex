@@ -71,6 +71,9 @@ class TrainingAPI:
         self.cancellations: list[str] = []
         self.active_model = PREVIOUS
         self.pages: list[str] = []
+        self.progress_rows: list[dict[str, Any]] = []
+        self.progress_kind = "epochs"
+        self.progress_page_size = 512
         self.role = role
         self.benchmarks = {"development": ["selection-v1"]}
         self.metrics: dict[str, Any] = {
@@ -110,6 +113,21 @@ class TrainingAPI:
             start = int(params["offset"][0])
             limit = int(params["limit"][0])
             route.fulfill(json={"items": self.runs[start : start + limit]})
+            return
+        if path == f"training-runs/{RUN_ID}/progress":
+            params = parse_qs(url.query)
+            attempt = self.run["job"]["attempt"]
+            start = int(params["after"][0]) if int(params["attempt"][0]) == attempt else 0
+            end = min(start + self.progress_page_size, len(self.progress_rows))
+            rows = self.progress_rows[start:end]
+            route.fulfill(
+                json={
+                    "attempt": attempt,
+                    "cursor": end,
+                    "has_more": end < len(self.progress_rows),
+                    "history": {self.progress_kind: rows} if rows else {},
+                }
+            )
             return
         if path == "training-options/benchmarks":
             dataset = parse_qs(url.query)["dataset_id"][0]
@@ -751,6 +769,123 @@ def test_metrics_appear_when_training_finishes_and_seed_changes_stay_local(brows
         expect(page.locator("#training-score")).to_contain_text("seed 23")
         assert api.pages.count(metrics_path) == 1
         assert len(navigations) == 1
+    finally:
+        page.close()
+
+
+def test_live_updates_preserve_the_selected_repeat_and_open_table(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["job"].update(state="running", stage="training", attempt=1)
+    api.progress_kind = "updates"
+    api.progress_page_size = 10
+
+    def point(seed: int, update: int) -> dict[str, Any]:
+        return {
+            "seed": seed,
+            "update": update,
+            "training_loss": 1 / update,
+            "validation_segment_macro_f1": 0.0 if update == 20 else None,
+        }
+
+    api.progress_rows = [point(11, update) for update in range(1, 22)]
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        expect(page.get_by_text("1 of 21 updates evaluated")).to_be_visible()
+        expect(page.locator("#training-score")).to_be_hidden()
+        expect(page.get_by_role("link", name="Download metric data")).to_be_hidden()
+        loss = page.get_by_role("img", name="Training loss by update")
+        page.locator('summary[aria-label="Training loss values"]').press("Enter")
+        page.get_by_role("button", name="Next values").press("Enter")
+        previous = page.get_by_role("button", name="Previous values")
+        expect(previous).to_be_focused()
+        table = page.get_by_role("table", name="Training loss by update")
+        expect(table.get_by_role("rowheader")).to_have_text(["21"])
+
+        api.progress_rows.append(point(11, 22))
+        expect(table.get_by_role("rowheader")).to_have_text(["21", "22"], timeout=7000)
+        expect(previous).to_be_focused()
+        expect(
+            page.get_by_role("img", name="Validation interval macro-F1 by update").locator(
+                "circle title"
+            )
+        ).to_have_text("Update 20: 0")
+
+        api.progress_rows.append(point(23, 1))
+        repeat = page.get_by_label("Training repeat")
+        expect(repeat).to_have_value("23", timeout=7000)
+        repeat.select_option("11")
+        expect(table.get_by_role("rowheader").first).to_have_text("1")
+        svg = loss.element_handle()
+        assert svg
+        api.progress_rows.append(point(23, 2))
+        refresh = page.get_by_role("button", name="Refresh", exact=True)
+        with page.expect_response(lambda r: "/progress?" in r.url):
+            refresh.click()
+        with page.expect_response(lambda r: "after=24" in r.url):
+            refresh.click()
+        expect(repeat).to_have_value("11")
+        assert svg.evaluate("node => node.isConnected")
+
+        api.metrics["history"] = {"updates": api.progress_rows}
+        api.run["job"]["state"] = "succeeded"
+        refresh.click()
+        expect(page.locator("#training-score")).to_contain_text("saved model (seed 23)")
+        expect(repeat).to_have_value("11")
+        expect(table).to_be_visible()
+        expect(page.get_by_role("link", name="Download metric data")).to_be_visible()
+    finally:
+        page.close()
+
+
+def test_live_candidate_chart_recovers_from_errors_and_ignores_a_stale_attempt(
+    browser: Any,
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["job"].update(state="running", stage="training", attempt=1, max_attempts=2)
+    api.run["training"]["architecture_id"] = "baseline"
+    api.progress_kind = "candidates"
+    api.progress_rows = [{"regularization": 1.0, "validation_segment_macro_f1": 0.5}]
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    progress_url = f"**/training-runs/{RUN_ID}/progress?*"
+    page.route(progress_url, lambda route: route.fulfill(status=503, json={}), times=1)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        expect(page.locator("#training-progress-notice")).to_be_visible()
+        chart = page.get_by_role("img", name="Validation interval macro-F1 by regularization")
+        expect(chart.locator("circle title")).to_have_text("Regularization 1: 0.5", timeout=7000)
+        expect(page.locator("#training-progress-notice")).to_be_hidden()
+        held: list[Any] = []
+        page.route(progress_url, lambda route: held.append(route), times=1)
+        refresh = page.get_by_role("button", name="Refresh", exact=True)
+        with page.expect_request(lambda req: "/progress?" in req.url):
+            refresh.click()
+        api.run["job"].update(state="queued", stage="retry_wait")
+        refresh.click()
+        expect(chart).to_be_hidden()
+        api.run["job"].update(state="running", stage="training", attempt=2)
+        api.progress_rows = [{"regularization": 0.1, "validation_segment_macro_f1": 0.8}]
+        refresh.click()
+        expect(chart.locator("circle title")).to_have_text("Regularization 0.1: 0.8")
+        assert len(held) == 1
+        held[0].fulfill(
+            json={
+                "attempt": 1,
+                "cursor": 2,
+                "has_more": False,
+                "history": {
+                    "candidates": [{"regularization": 10, "validation_segment_macro_f1": 0.9}]
+                },
+            }
+        )
+        expect(chart.locator("circle title")).to_have_text("Regularization 0.1: 0.8")
+        api.run["job"]["state"] = "cancelled"
+        refresh.click()
+        expect(page.locator("#training-metrics")).to_be_hidden()
     finally:
         page.close()
 

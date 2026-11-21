@@ -1,7 +1,7 @@
 """Worker contracts shared by installed scientific backends and application code."""
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -18,6 +18,7 @@ from regimex.operations import Sha256
 from regimex.prediction_inputs import PredictionSequenceInfo
 
 SelectionEvaluator = Callable[[DoubleArray], float]
+HistoryCallback = Callable[[dict[str, JsonValue]], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +117,7 @@ class TrainingInputs:
 
     observations: ObservationInputs
     targets: IntArray
+    on_history: HistoryCallback | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         require_observation_inputs(self.observations)

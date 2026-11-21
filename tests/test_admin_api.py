@@ -773,6 +773,9 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert run.training is not None and run.training.dataset_id == dataset_id
     assert (run.display_name, run.name_revision) == ("Short windows" if tcn else None, 0)
     run_path = f"/api/v1/training-runs/{run.run_id}"
+    progress = context.client.get(run_path + "/progress", headers=headers)
+    assert progress.status_code == 200, progress.text
+    assert progress.json() == {"attempt": 0, "cursor": 0, "has_more": False, "history": {}}
     assert context.client.get(run_path + "/metrics", headers=headers).status_code == 409
     completed = context.service.run_admin(run.run_id)
     assert completed is not None
@@ -800,7 +803,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert 0 <= metrics.json()["validation_segment_macro_f1"] <= 1
     assert metrics.json()["history"]["epochs" if tcn else "candidates"]
     user_headers = {"Authorization": f"Bearer {context.user_token}"}
-    for part in ("metrics", "actions"):
+    for part in ("metrics", "progress", "actions"):
         assert context.client.get(run_path + "/" + part, headers=user_headers).status_code == 403
     assert (
         context.client.get(

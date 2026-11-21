@@ -14,6 +14,7 @@ from torch.nn import functional as functional
 
 from regimex.directions import DIRECTION_NAMES
 from regimex.features import FEATURE_NAMES, DoubleArray, FloatArray, IntArray
+from regimex.model_contracts import HistoryCallback
 from regimex.model_registry import TCNParameters, TrainingPolicy, TrainingRuntime
 from regimex.prediction_inputs import (
     PredictionInputs,
@@ -360,6 +361,7 @@ def fit_tcn(
     runtime: TrainingRuntime,
     scorer: Scorer,
     check_budget: Callable[[], None] | None = None,
+    on_history: HistoryCallback | None = None,
 ) -> tuple[TCNClassifier, list[dict[str, JsonValue]], int]:
     """Fit saved numeric inputs with supervision kept outside prediction data."""
     require_prepared_inputs(training)
@@ -463,6 +465,8 @@ def fit_tcn(
                 else:
                     stale += 1
             history.append(entry)
+            if on_history is not None:
+                on_history(entry.copy())
             if stale >= policy.patience:
                 break
     assert best_state is not None

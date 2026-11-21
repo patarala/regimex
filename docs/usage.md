@@ -114,9 +114,10 @@ selection on that reservation. The form lists the benchmarks available to your a
    runs show the architecture and dataset. Choose **Rename** to change the
    name, or clear the field and save to restore the automatic title. You can
    cancel a run while it is queued or running.
-   The page checks active jobs about every 2.5 seconds. When training succeeds,
-   the charts appear automatically. Open **Values** under a chart for its
-   individual measurements.
+   The page checks active jobs about every 2.5 seconds. Charts appear as the
+   worker records measurements. You can reopen the run to catch up or expand
+   **Values** under a chart to read individual measurements. If the worker
+   retries training, the charts start again with the new attempt.
 
    The baseline scores each regularization setting on the validation data.
    The TCN records training loss at every epoch or optimizer update. With an
@@ -124,10 +125,11 @@ selection on that reservation. The form lists the benchmarks available to your a
    `validation_interval` epochs, and at the final scheduled epoch if reached.
    With an update budget, it checks the updates listed in `validation_updates`.
 
-   If the TCN trained several times on the same data, use **Training repeat**
-   to switch curves. Each seed sets the starting weights and training order.
-   The repeat marked **saved model** produced the checkpoint with the best
-   validation interval macro-F1. Its score stays above the charts.
+   For a TCN with several repeats, the charts follow the repeat being trained.
+   Choose a **Training repeat** to keep its curves on screen. Each seed sets
+   the starting weights and training order. After training, the repeat marked
+   **saved model** produced the checkpoint with the best validation interval
+   macro-F1. Its score appears above the charts.
 4. Under **Model evaluation**, choose **Evaluate model** to score the saved
    weights on the validation references. When the evaluation finishes, its
    interval and step scores and results by direction appear on the run page.

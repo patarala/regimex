@@ -311,7 +311,13 @@ def test_restore_object_larger_than_compose_tmpfs(
 
 
 @pytest.mark.parametrize(
-    "revision", ["0007_resource_deletion", "0008_analysis_metadata", "0009_training_run_names"]
+    "revision",
+    [
+        "0007_resource_deletion",
+        "0008_analysis_metadata",
+        "0009_training_run_names",
+        "0010_evaluation_reuse",
+    ],
 )
 def test_previous_schema_backup_can_be_restored_then_migrated(
     minimal: MinimalBackup,
@@ -322,9 +328,11 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
     revision: str,
 ) -> None:
     with minimal.source.connection() as connection:
-        connection.execute("DROP TABLE regimex_evaluation_keys")
-        connection.execute("DROP INDEX regimex_evaluation_inputs")
-        if revision != "0009_training_run_names":
+        connection.execute("DROP TABLE regimex_training_progress")
+        if revision != "0010_evaluation_reuse":
+            connection.execute("DROP TABLE regimex_evaluation_keys")
+            connection.execute("DROP INDEX regimex_evaluation_inputs")
+        if revision in {"0007_resource_deletion", "0008_analysis_metadata"}:
             connection.execute(
                 "ALTER TABLE regimex_training_runs "
                 "DROP COLUMN display_name, DROP COLUMN name_revision"

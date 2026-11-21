@@ -1,6 +1,6 @@
 """Lightweight administrative requests and persisted resource metadata."""
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
 
 from pydantic import AwareDatetime, Field, JsonValue, model_validator
@@ -290,6 +290,46 @@ class TrainingMetrics(StrictModel):
     validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
     history: JsonValue
     history_note: str | None = None
+
+
+MAX_PROGRESS_BATCH = 512
+# The largest epoch schedule has 64 seeds with 1,000 epochs each.
+MAX_PROGRESS_POINTS = 64_000
+type HistorySeries = Literal["candidates", "epochs", "updates"]
+
+
+class CandidateProgress(StrictModel):
+    series: ClassVar[HistorySeries] = "candidates"
+    regularization: Annotated[float, Field(gt=0)]
+    validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
+
+
+class TemporalProgress(StrictModel):
+    seed: Seed
+    training_loss: Annotated[float, Field(ge=0)]
+    validation_segment_macro_f1: float | None = Field(
+        default=None, ge=0, le=1, exclude_if=lambda value: value is None
+    )
+
+
+class EpochProgress(TemporalProgress):
+    series: ClassVar[HistorySeries] = "epochs"
+    epoch: Annotated[int, Field(ge=1, le=1000)]
+
+
+class UpdateProgress(TemporalProgress):
+    series: ClassVar[HistorySeries] = "updates"
+    update: Annotated[int, Field(ge=1, le=32_000)]
+
+
+type ProgressPoint = CandidateProgress | EpochProgress | UpdateProgress
+
+
+class TrainingProgress(StrictModel):
+    attempt: Annotated[int, Field(ge=0)]
+    cursor: Annotated[int, Field(ge=0, le=MAX_PROGRESS_POINTS)]
+    has_more: bool
+    history: dict[HistorySeries, list[ProgressPoint]]
 
 
 class EvaluationRecord(StrictModel):

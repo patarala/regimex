@@ -27,6 +27,7 @@ from regimex.features import DoubleArray, IntArray
 from regimex.model_bundles import TrainingEvidence, verify_model_bundle
 from regimex.model_contracts import (
     BundleProvenance,
+    HistoryCallback,
     LoadedPredictor,
     ModelBackend,
     ObservationInputs,
@@ -215,6 +216,7 @@ def train_candidate(
     *,
     registry: ArchitectureRegistry,
     worker_id: str,
+    on_history: HistoryCallback | None = None,
 ) -> CandidateTrainingResult:
     """Create a verified candidate using train/validation, without opening final data.
 
@@ -265,7 +267,7 @@ def train_candidate(
         data.validation_references.kind,
     )
     fitted = backend.fit(
-        TrainingInputs(training, targets),
+        TrainingInputs(training, targets, on_history=on_history),
         validation,
         parameters=parameters,
         policy=request.policy,

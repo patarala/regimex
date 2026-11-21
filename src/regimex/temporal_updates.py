@@ -8,6 +8,7 @@ from pydantic import JsonValue
 from torch import Tensor, nn
 
 from regimex.features import IntArray
+from regimex.model_contracts import HistoryCallback
 from regimex.model_registry import FixedUpdatePolicy, TCNParameters, TrainingRuntime
 from regimex.prediction_inputs import PreparedPredictionInputs, require_prepared_inputs
 from regimex.temporal import (
@@ -32,6 +33,7 @@ def fit_tcn_updates(
     runtime: TrainingRuntime,
     scorer: Scorer,
     check_budget: Callable[[], None] | None = None,
+    on_history: HistoryCallback | None = None,
 ) -> tuple[TCNClassifier, list[dict[str, JsonValue]], int]:
     """Fit each seed for the full budget; retain the first best scored checkpoint."""
     require_prepared_inputs(training)
@@ -127,6 +129,8 @@ def fit_tcn_updates(
                             for name, tensor in model.state_dict().items()
                         }
                 history.append(entry)
+                if on_history is not None:
+                    on_history(entry.copy())
                 if update == policy.updates:
                     break
             if update == before_pass:

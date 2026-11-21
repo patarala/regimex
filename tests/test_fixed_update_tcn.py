@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from pydantic import RootModel
+from pydantic import JsonValue, RootModel
 
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
@@ -99,9 +99,18 @@ def test_fixed_policy_candidate_uses_shared_training_and_exact_bundle_restore(
     original = request()
     policy = FixedUpdatePolicy(seeds=(11,), updates=4, validation_updates=(2, 4), batch_size=1)
     intake = original.model_copy(update={"policy": policy})
+    history: list[dict[str, JsonValue]] = []
     result = train_candidate(
-        data, intake, tmp_path / "bundle", registry=registry(), worker_id="fixture"
+        data,
+        intake,
+        tmp_path / "bundle",
+        registry=registry(),
+        worker_id="fixture",
+        on_history=history.append,
     )
+    saved = json.loads((tmp_path / "bundle/history.json").read_bytes())["updates"]
+    assert history == [{k: v for k, v in row.items() if v is not None} for row in saved]
+    assert [row["update"] for row in history if "validation_segment_macro_f1" in row] == [2, 4]
     restored = TCNBackend().load_bundle(
         tmp_path / "bundle",
         manifest_sha256=result.manifest_sha256,

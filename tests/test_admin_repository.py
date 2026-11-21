@@ -21,6 +21,7 @@ import pytest
 from pydantic import JsonValue, ValidationError
 
 from regimex.admin_contracts import (
+    MAX_PROGRESS_BATCH,
     AnnotationObject,
     CatalogBinding,
     DatasetRecord,
@@ -1020,6 +1021,50 @@ def test_training_rejects_partition_misuse_and_reserves_candidate_identity(
     assert repository.get_training_run_for_model(principal(), spec.model_version_id) == run
 
 
+def test_training_progress_pages_are_attempt_scoped_and_released(
+    repository: AdminRepository,
+) -> None:
+    _, spec = ready_training(repository)
+    run = repository.submit(principal(), spec, idempotency_key="train")
+    run_id = run.run_id
+    first = claim(repository, run_id)
+    points: list[dict[str, JsonValue]] = [
+        {"regularization": i + 1.0, "validation_segment_macro_f1": 0.0}
+        for i in range(MAX_PROGRESS_BATCH + 1)
+    ]
+    repository.append_training_progress(run_id, first, 1, points[:-1])
+    repository.append_training_progress(run_id, first, 1, points[:-1])
+    repository.append_training_progress(run_id, first, MAX_PROGRESS_BATCH + 1, points[-1:])
+    page = repository.training_progress(principal(), run_id, attempt=None, after=0)
+    assert page.attempt == 1 and page.cursor == MAX_PROGRESS_BATCH and page.has_more
+    assert page.model_dump()["history"]["candidates"] == points[:-1]
+    last = repository.training_progress(principal(), run_id, attempt=1, after=page.cursor)
+    assert last.cursor == len(points) and not last.has_more
+    assert last.model_dump()["history"]["candidates"] == points[-1:]
+    empty = repository.training_progress(principal(), run_id, attempt=1, after=last.cursor)
+    assert empty.cursor == last.cursor and not empty.history
+    with pytest.raises(NotFound):
+        repository.training_progress(principal("other"), run_id, attempt=None, after=0)
+    with pytest.raises(Forbidden):
+        repository.training_progress(principal(admin=False), run_id, attempt=None, after=0)
+
+    retry = OperationFailure(code="infrastructure_failure", message="Unavailable", retryable=True)
+    assert repository.database.fail_operation(run_id, first, retry).state == "queued"
+    second = claim(repository, run_id)
+    with pytest.raises(StaleAttempt):
+        repository.append_training_progress(run_id, first, 1, points[:1])
+    repository.append_training_progress(run_id, second, 1, points[:1])
+    restarted = repository.training_progress(principal(), run_id, attempt=1, after=last.cursor)
+    assert restarted.attempt == 2 and restarted.cursor == 1 and not restarted.has_more
+    assert restarted.model_dump()["history"]["candidates"] == points[:1]
+    repository.complete_training(run_id, second, candidate(spec))
+    assert not repository.training_progress(principal(), run_id, attempt=None, after=0).history
+    with repository.database.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM regimex_training_progress").fetchone() == (
+            0,
+        )
+
+
 def test_training_name_is_owner_scoped_and_uses_compare_and_swap(
     repository: AdminRepository,
 ) -> None:
@@ -1110,9 +1155,14 @@ def test_cancelled_training_cannot_register_candidate(repository: AdminRepositor
     _, spec = ready_training(repository)
     run = repository.submit(principal(), spec, idempotency_key="training")
     token = claim(repository, run.run_id)
+    row: dict[str, JsonValue] = {"regularization": 1.0, "validation_segment_macro_f1": 0.2}
+    repository.append_training_progress(run.run_id, token, 1, [row])
     repository.database.cancel_operation(principal(), run.run_id)
     with pytest.raises(StaleAttempt):
+        repository.append_training_progress(run.run_id, token, 2, [row])
+    with pytest.raises(StaleAttempt):
         repository.complete_training(run.run_id, token, candidate(spec))
+    assert not repository.training_progress(principal(), run.run_id, attempt=None, after=0).history
     with pytest.raises(NotFound):
         repository.database.get_model(spec.model_version_id)
 

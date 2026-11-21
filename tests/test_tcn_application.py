@@ -1,13 +1,14 @@
 """The real temporal backend uses shared candidate and saved-analysis workflows."""
 
 import asyncio
+import json
 import os
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
 import pytest
-from pydantic import SecretStr
+from pydantic import JsonValue, SecretStr
 
 np = pytest.importorskip("numpy")
 pytest.importorskip("torch")
@@ -58,7 +59,16 @@ def registry() -> ArchitectureRegistry:
 def test_tcn_uses_unchanged_shared_training_and_decoded_selection(tmp_path: Path) -> None:
     data, _ = prepared_data()
     root = tmp_path / "candidate"
-    result = train_candidate(data, request(), root, registry=registry(), worker_id="test-tcn")
+    history: list[dict[str, JsonValue]] = []
+    policy = TrainingPolicy(optimizer="adamw", seeds=(11, 23), epochs=3, validation_interval=3)
+    intake = request().model_copy(update={"policy": policy})
+    result = train_candidate(
+        data, intake, root, registry=registry(), worker_id="test-tcn", on_history=history.append
+    )
+    saved = json.loads((root / "history.json").read_bytes())["epochs"]
+    assert history == [{k: v for k, v in row.items() if v is not None} for row in saved]
+    assert [row["seed"] for row in history] == [11] * 3 + [23] * 3
+    assert all(("validation_segment_macro_f1" in row) == (row["epoch"] != 2) for row in history)
     assert result.architecture_id == "tcn" and result.quality_status == "validation_only"
     assert result.training_runtime.threads == 4 and result.verification_runtime.threads == 2
     predictor = TCNBackend().load_bundle(

@@ -1,6 +1,7 @@
 import {$, analysisStateLabel, element, shortDate} from "./ui.js";
 import {showTrainingActions} from "./training-evaluation.js";
-import {showTrainingMetrics} from "./training-metrics.js";
+import {createTrainingMetrics} from "./training-metrics.js";
+import {createTrainingProgress} from "./training-progress.js";
 import {architectureName, createTrainingForm, datasetName} from "./training-form.js";
 import {createRunNameEditor} from "./training-name.js";
 
@@ -27,6 +28,8 @@ export function createTraining({session, navigate, onPublication}) {
   let listed = new Map();
   const form = createTrainingForm({session, eachPage});
   const names = createRunNameEditor({session, getRun: () => run, applyName});
+  const metrics = createTrainingMetrics();
+  const progress = createTrainingProgress(session, metrics);
   const runsToggle = $("training-runs-toggle");
   const runHash = id => "#training/" + encodeURIComponent(id);
   const pending = new Map();
@@ -53,16 +56,16 @@ export function createTraining({session, navigate, onPublication}) {
     activeModel = undefined;
     pendingDownstream = false;
     metricsLoaded = false;
-    $("training-metrics").hidden = $("training-downstream").hidden = $("training-detail").hidden = true;
-    for (const id of ["training-state", "training-stage", "training-settings", "training-score",
+    progress.stop();
+    metrics.clear();
+    $("training-downstream").hidden = $("training-detail").hidden = true;
+    for (const id of ["training-state", "training-stage", "training-settings",
       "training-publication"]) $(id).textContent = "";
     $("training-detail-title").textContent = "Run";
     $("training-metric-data").removeAttribute("href");
     $("training-metric-data").removeAttribute("download");
+    $("training-metric-data").hidden = true;
     $("training-facts").replaceChildren();
-    $("training-charts").replaceChildren();
-    $("training-seed").replaceChildren();
-    $("training-seed").onchange = null;
     $("training-actions").replaceChildren();
   }
 
@@ -206,7 +209,6 @@ export function createTraining({session, navigate, onPublication}) {
     else if (inProgress(run.job)) {
       status = stages[run.job.stage] || (run.job.state === "queued" ? stages.queued : "Training the model.");
       if (run.job.attempt > 1) status += " Attempt " + run.job.attempt + " of " + run.job.max_attempts + ".";
-      status += " Charts appear when training finishes.";
     }
     if ($("training-stage").textContent !== status) $("training-stage").textContent = status;
     $("training-stage").hidden = !status;
@@ -264,13 +266,21 @@ export function createTraining({session, navigate, onPublication}) {
       facts();
       if (run.job.state !== before) void list().catch(error => reportIfCurrent(workspace, error));
       let waiting = inProgress(run.job);
+      if (["running", "cancel_requested"].includes(run.job.state)) {
+        // A slow history page must not delay cancellation or completion updates.
+        void progress.poll(route(run.run_id) + "/progress", run.job.attempt);
+      } else {
+        progress.stop();
+        if (run.job.state !== "succeeded") metrics.clear();
+      }
       if (run.job.state === "succeeded") {
         if (!metricsLoaded) {
-          const metrics = await session.json(route(run.run_id) + "/metrics");
+          const result = await session.json(route(run.run_id) + "/metrics");
           if (!valid()) return;
-          showTrainingMetrics(metrics);
+          metrics.show(result.history, result);
           $("training-metric-data").href = route(run.run_id) + "/metrics";
           $("training-metric-data").download = "training-" + run.run_id + "-metrics.json";
+          $("training-metric-data").hidden = false;
           metricsLoaded = true;
         }
         waiting = await downstream(valid);
