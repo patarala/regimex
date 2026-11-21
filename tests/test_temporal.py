@@ -25,6 +25,7 @@ from regimex.temporal import (
     TemporalPreprocessor,
     _boundary_weights,
     _supervised_loss,
+    feature_names,
     fit_tcn,
     predict_tcn,
     temporal_features,
@@ -74,6 +75,41 @@ def test_temporal_features_ignore_activity_and_other_experiments() -> None:
     second = sequence([float(50 * np.exp(-step * 0.02)) for step in range(80)], "other")
     np.testing.assert_array_equal(temporal_features(combine(first, second))[:64], expected)
     assert expected.shape == (64, len(TEMPORAL_NAMES))
+
+
+def test_side_slopes_keep_the_price_grid_gaps_and_instrument_edges() -> None:
+    # A linear rise up to step 21 turns flat. Two missing prices leave the original slope intact.
+    prices = [
+        None if step in (9, 18) else float(100 * np.exp(0.001 * min(step, 21)))
+        for step in range(56)
+    ]
+    raw = sequence(prices)
+    features = temporal_features(raw, side_slopes=True)
+    names = feature_names(True)
+    original = temporal_features(raw)
+    for column, name in enumerate(TEMPORAL_NAMES):
+        np.testing.assert_array_equal(features[:, names.index(name)], original[:, column])
+    for size in (16, 32):
+        left, right = (
+            names.index(f"{side}_{size}_slope_change_asinh") for side in ("past", "future")
+        )
+        expected_span = min(21, size - 1)
+        assert features[21, left] == pytest.approx(np.arcsinh(0.001 * expected_span / 0.01))
+        assert features[21, right] == pytest.approx(0.0, abs=1e-8)
+        assert (
+            np.isnan(features[0, left])
+            and features[0, names.index(f"past_{size}_slope_change_asinh_missing")] == 1
+        )
+        assert (
+            np.isnan(features[-1, right])
+            and features[-1, names.index(f"future_{size}_slope_change_asinh_missing")] == 1
+        )
+    absent = sequence([None] * 20, "no-prices")
+    joined = temporal_features(combine(raw, absent), side_slopes=True)
+    np.testing.assert_array_equal(joined[: len(prices)], features)
+    np.testing.assert_array_equal(
+        joined[len(prices) :], temporal_features(absent, side_slopes=True)
+    )
 
 
 def test_price_context_uses_actual_time_and_preserves_missing_observations() -> None:

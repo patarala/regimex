@@ -41,25 +41,38 @@ TEMPORAL_NUMERIC_NAMES = (
         for statistic in ("slope_change_asinh", "linear_fit", "endpoint_change_asinh", "coverage")
     ),
 )
+SIDE_WINDOW_SIZES = (16, 32)
+SIDE_SLOPE_NAMES = tuple(
+    f"{side}_{size}_slope_change_asinh" for size in SIDE_WINDOW_SIZES for side in ("past", "future")
+)
 TEMPORAL_NAMES = (
     *TEMPORAL_NUMERIC_NAMES,
     *(f"{name}_missing" for name in TEMPORAL_NUMERIC_NAMES),
 )
 
 
-def _price_context(price: DoubleArray, size: int) -> DoubleArray:
-    """Fit observed prices against their actual timestamps, without filling gaps."""
-    length = len(price)
-    time = np.arange(length, dtype=np.float64)
+def feature_names(side_slopes: bool) -> tuple[str, ...]:
+    if not side_slopes:
+        return TEMPORAL_NAMES
+    numeric = TEMPORAL_NUMERIC_NAMES + SIDE_SLOPE_NAMES
+    return (*numeric, *(f"{name}_missing" for name in numeric))
+
+
+def _context_prefix(price: DoubleArray) -> DoubleArray:
+    time = np.arange(len(price), dtype=np.float64)
     observed = np.isfinite(price)
     value = np.where(observed, price, 0.0)
     statistics = np.column_stack(
         (observed, time * observed, time * time * observed, value, value * value, time * value)
     )
-    prefix = np.vstack((np.zeros((1, 6)), statistics.cumsum(axis=0)))
-    positions = np.arange(length)
-    left = np.maximum(0, positions - size // 2)
-    right = np.minimum(length, positions + (size + 1) // 2)
+    return np.vstack((np.zeros((1, 6)), statistics.cumsum(axis=0)))
+
+
+def _price_context(
+    price: DoubleArray, prefix: DoubleArray, left: IntArray, right: IntArray
+) -> DoubleArray:
+    """Fit observed prices against their actual steps inside each half-open window."""
+    length = len(price)
     count, sx, sxx, sy, syy, sxy = (prefix[right] - prefix[left]).T
     denominator = np.maximum(count, 1)
     xx = np.maximum(0, sxx - sx * sx / denominator)
@@ -72,7 +85,7 @@ def _price_context(price: DoubleArray, size: int) -> DoubleArray:
         0,
         1,
     )
-    known = np.flatnonzero(observed)
+    known = np.flatnonzero(np.isfinite(price))
     change = np.full(length, np.nan)
     if len(known):
         first = np.searchsorted(known, left)
@@ -91,7 +104,30 @@ def _price_context(price: DoubleArray, size: int) -> DoubleArray:
     return result
 
 
-def temporal_features(sequences: PredictionInputs) -> FloatArray:
+def _contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
+    prefix = _context_prefix(price)
+    positions = np.arange(len(price), dtype=np.int64)
+    contexts = [
+        _price_context(
+            price,
+            prefix,
+            np.maximum(0, positions - size // 2),
+            np.minimum(len(price), positions + (size + 1) // 2),
+        )
+        for size in CONTEXT_SIZES
+    ]
+    if side_slopes:
+        for size in SIDE_WINDOW_SIZES:
+            # Both fits include the current step and stop at this instrument's endpoints.
+            for left, right in (
+                (np.maximum(0, positions - size + 1), positions + 1),
+                (positions, np.minimum(len(price), positions + size)),
+            ):
+                contexts.append(_price_context(price, prefix, left, right)[:, :1])
+    return contexts
+
+
+def temporal_features(sequences: PredictionInputs, *, side_slopes: bool = False) -> FloatArray:
     """Derive price-only inputs independently within each completed sequence.
 
     Centered contexts and complete-sequence normalization are retrospective.
@@ -100,7 +136,7 @@ def temporal_features(sequences: PredictionInputs) -> FloatArray:
     require_raw_inputs(sequences)
     if sequences.values.ndim != 2 or sequences.values.shape[1] != len(FEATURE_NAMES):
         raise ValueError("temporal representation requires raw observation features")
-    result = np.full((len(sequences.values), len(TEMPORAL_NUMERIC_NAMES)), np.nan)
+    result = np.full((len(sequences.values), len(feature_names(side_slopes)) // 2), np.nan)
     for start, stop in zip(sequences.offsets[:-1], sequences.offsets[1:], strict=True):
         price = sequences.values[start:stop, 0].astype(np.float64)
         returns = sequences.values[start:stop, 1].astype(np.float64)
@@ -120,7 +156,7 @@ def temporal_features(sequences: PredictionInputs) -> FloatArray:
                 np.arcsinh(np.abs(returns) / 0.001),
                 standardized,
                 scale,
-                *(_price_context(price, size) for size in CONTEXT_SIZES),
+                *_contexts(price, side_slopes),
             )
         )
     if np.isinf(result).any():
@@ -135,16 +171,17 @@ class TemporalPreprocessor:
     scale: DoubleArray
 
     @classmethod
-    def fit(cls, training: FloatArray) -> TemporalPreprocessor:
+    def fit(cls, training: FloatArray, *, side_slopes: bool = False) -> TemporalPreprocessor:
+        width = len(feature_names(side_slopes))
         if (
             training.ndim != 2
-            or training.shape[1] != len(TEMPORAL_NAMES)
+            or training.shape[1] != width
             or not len(training)
             or np.isinf(training).any()
         ):
             raise ValueError("invalid temporal training features")
-        fill = np.zeros(len(TEMPORAL_NAMES), dtype=np.float64)
-        for column in range(len(TEMPORAL_NUMERIC_NAMES)):
+        fill = np.zeros(width, dtype=np.float64)
+        for column in range(width // 2):
             known = training[np.isfinite(training[:, column]), column]
             if len(known):
                 fill[column] = np.median(known)
@@ -152,8 +189,8 @@ class TemporalPreprocessor:
         mean = complete.mean(axis=0)
         scale = complete.std(axis=0)
         scale[scale < 1e-12] = 1.0
-        mean[len(TEMPORAL_NUMERIC_NAMES) :] = 0.0
-        scale[len(TEMPORAL_NUMERIC_NAMES) :] = 1.0
+        mean[width // 2 :] = 0.0
+        scale[width // 2 :] = 1.0
         return cls(fill, mean, scale)
 
     def transform(self, values: FloatArray) -> FloatArray:

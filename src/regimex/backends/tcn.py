@@ -48,9 +48,9 @@ from regimex.temporal import (
     CONTEXT_SIZES,
     SELECTION_BATCH_SIZE,
     TEMPORAL_NAMES,
-    TEMPORAL_NUMERIC_NAMES,
     TCNClassifier,
     TemporalPreprocessor,
+    feature_names,
     fit_tcn,
     predict_tcn,
     temporal_features,
@@ -60,6 +60,7 @@ from regimex.temporal_updates import fit_tcn_updates
 ARCHITECTURE_ID = "tcn"
 IMPLEMENTATION_VERSION = "0.2.0"
 FEATURE_VERSION = "temporal-price-shape/1.0"
+SIDE_SLOPE_FEATURE_VERSION = "temporal-price-shape/2.0"
 PREPROCESSING_VERSION = "temporal-standardization/1.0"
 CODEC_VERSION: Literal["temporal-tcn/2.0"] = "temporal-tcn/2.0"
 _JSON_LIMIT = 16 * 1024**2
@@ -154,18 +155,27 @@ def _feature_inputs(observations: ObservationInputs) -> PredictionInputs:
 
 
 def _prepared(
-    observations: ObservationInputs, preprocessing: TemporalPreprocessor
+    observations: ObservationInputs,
+    preprocessing: TemporalPreprocessor,
+    *,
+    side_slopes: bool = False,
 ) -> PreparedPredictionInputs:
     raw = _feature_inputs(observations)
     return PreparedPredictionInputs(
-        preprocessing.transform(temporal_features(raw)), raw.offsets, raw.info
+        preprocessing.transform(temporal_features(raw, side_slopes=side_slopes)),
+        raw.offsets,
+        raw.info,
     )
+
+
+def _feature_version(parameters: TCNParameters) -> str:
+    return SIDE_SLOPE_FEATURE_VERSION if parameters.side_slopes else FEATURE_VERSION
 
 
 def _state_shapes(parameters: TCNParameters) -> dict[str, tuple[int, ...]]:
     hidden = parameters.channels
     shapes = {
-        "input.weight": (hidden, len(TEMPORAL_NAMES), 1),
+        "input.weight": (hidden, len(feature_names(parameters.side_slopes)), 1),
         "input.bias": (hidden,),
         "head.weight": (len(DIRECTION_NAMES), hidden, 1),
         "head.bias": (len(DIRECTION_NAMES),),
@@ -198,10 +208,10 @@ def _activation_bytes(parameters: TCNParameters, batch_size: int, step_count: in
     )
 
 
-def _freeze(array: DoubleArray, *, positive: bool = False) -> DoubleArray:
+def _freeze(array: DoubleArray, width: int, *, positive: bool = False) -> DoubleArray:
     if (
         array.dtype != np.float64
-        or array.shape != (len(TEMPORAL_NAMES),)
+        or array.shape != (width,)
         or not np.isfinite(array).all()
         or (positive and (array <= 0).any())
     ):
@@ -246,7 +256,8 @@ class TCNPredictor:
     def __post_init__(self) -> None:
         RootModel[NativeTCNConfiguration].model_validate_json(self.configuration.model_dump_json())
         if (
-            self.configuration.feature_names != TEMPORAL_NAMES
+            self.configuration.feature_names
+            != feature_names(self.configuration.parameters.side_slopes)
             or self.configuration.context_sizes != CONTEXT_SIZES
             or tuple(cast(nn.Conv1d, block.conv).dilation[0] for block in self.model.blocks)
             != self.configuration.parameters.dilations
@@ -256,12 +267,13 @@ class TCNPredictor:
             )
         ):
             raise ValueError("TCN model and feature configuration disagree")
+        width = len(self.configuration.feature_names)
         preprocessing = TemporalPreprocessor(
-            _freeze(self.preprocessor.fill),
-            _freeze(self.preprocessor.mean),
-            _freeze(self.preprocessor.scale, positive=True),
+            _freeze(self.preprocessor.fill, width),
+            _freeze(self.preprocessor.mean, width),
+            _freeze(self.preprocessor.scale, width, positive=True),
         )
-        mask = len(TEMPORAL_NUMERIC_NAMES)
+        mask = width // 2
         if (
             preprocessing.fill[mask:].any()
             or preprocessing.mean[mask:].any()
@@ -279,7 +291,10 @@ class TCNPredictor:
 
     @property
     def numeric_bytes(self) -> int:
-        return _state_bytes(self.configuration.parameters) + 3 * len(TEMPORAL_NAMES) * 8
+        return (
+            _state_bytes(self.configuration.parameters)
+            + 3 * len(self.configuration.feature_names) * 8
+        )
 
     def predict(self, inputs: ObservationInputs, *, runtime: InferenceRuntime) -> DoubleArray:
         require_observation_inputs(inputs)
@@ -291,7 +306,11 @@ class TCNPredictor:
         # Eager operators honor error mode without loading TorchInductor in each fresh worker.
         torch.set_deterministic_debug_mode("error")
         result = predict_tcn(
-            self.model, _prepared(inputs, self.preprocessor), runtime.max_batch_size
+            self.model,
+            _prepared(
+                inputs, self.preprocessor, side_slopes=self.configuration.parameters.side_slopes
+            ),
+            runtime.max_batch_size,
         )
         if (
             not np.isfinite(result).all()
@@ -318,7 +337,7 @@ def _load_configuration(path: Path) -> NativeTCNConfiguration:
     return RootModel[NativeTCNConfiguration].model_validate_json(data).root
 
 
-def _read_preprocessing(path: Path) -> TemporalPreprocessor:
+def _read_preprocessing(path: Path, width: int) -> TemporalPreprocessor:
     arrays: dict[str, DoubleArray] = {}
     try:
         with zipfile.ZipFile(path) as archive:
@@ -330,7 +349,7 @@ def _read_preprocessing(path: Path) -> TemporalPreprocessor:
             for member in members:
                 if (
                     member.compress_type != zipfile.ZIP_STORED
-                    or member.file_size > len(TEMPORAL_NAMES) * 8 + 4096
+                    or member.file_size > width * 8 + 4096
                     or member.flag_bits & 1
                 ):
                     raise ValueError("TCN preprocessing archive encoding or size is incompatible")
@@ -340,10 +359,10 @@ def _read_preprocessing(path: Path) -> TemporalPreprocessor:
                     shape, fortran, dtype = np.lib.format.read_array_header_1_0(
                         stream, max_header_size=4096
                     )
-                    if shape != (len(TEMPORAL_NAMES),) or fortran or dtype != np.dtype(np.float64):
+                    if shape != (width,) or fortran or dtype != np.dtype(np.float64):
                         raise ValueError("TCN preprocessing dtype or shape is incompatible")
-                    data = stream.read(len(TEMPORAL_NAMES) * 8 + 1)
-                    if len(data) != len(TEMPORAL_NAMES) * 8:
+                    data = stream.read(width * 8 + 1)
+                    if len(data) != width * 8:
                         raise ValueError("TCN preprocessing array size is incompatible")
                     arrays[member.filename[:-4]] = np.frombuffer(data, dtype=np.float64).copy()
     except (OSError, zipfile.BadZipFile, EOFError) as exc:
@@ -440,7 +459,7 @@ class TCNBackend:
         # Training and validation run in turn. Budget for the larger activation set.
         # Changing the validation batch size could change a close checkpoint score.
         required = (
-            rows * len(TEMPORAL_NAMES) * 8 * 8
+            rows * len(feature_names(parameters.side_slopes)) * 8 * 8
             + _state_bytes(parameters) * 10
             + max(training_activations, validation_activations)
         )
@@ -462,12 +481,14 @@ class TCNBackend:
             return score
 
         raw = _feature_inputs(training.observations)
-        values = temporal_features(raw)
-        preprocessing = TemporalPreprocessor.fit(values)
+        values = temporal_features(raw, side_slopes=parameters.side_slopes)
+        preprocessing = TemporalPreprocessor.fit(values, side_slopes=parameters.side_slopes)
         prepared_training = PreparedPredictionInputs(
             preprocessing.transform(values), raw.offsets, raw.info
         )
-        prepared_validation = _prepared(validation, preprocessing)
+        prepared_validation = _prepared(
+            validation, preprocessing, side_slopes=parameters.side_slopes
+        )
         check_budget()
         if isinstance(policy, FixedUpdatePolicy):
             model, history, selected_seed = fit_tcn_updates(
@@ -500,6 +521,7 @@ class TCNBackend:
         common = _TCNConfigurationBase(
             loss_version="direction-cross-entropy/2.0",
             smoothing_scope="equal_adjacent_targets",
+            feature_names=feature_names(parameters.side_slopes),
             boundary_weight_radius=4,
             boundary_weight_multiplier=2,
             parameters=parameters,
@@ -667,7 +689,7 @@ class TCNBackend:
                 implementation_version=self.implementation_version,
                 interface_version="1.0",
                 observation_version="2.1",
-                feature_version=FEATURE_VERSION,
+                feature_version=_feature_version(configuration.parameters),
                 preprocessing_version=PREPROCESSING_VERSION,
                 decoder_version=DECODER_VERSION,
                 analysis_profile=provenance.analysis_profile,
@@ -694,7 +716,6 @@ class TCNBackend:
         )
         if (
             {member.role: member.path for member in bundle.members} != _MEMBERS
-            or bundle.feature_version != FEATURE_VERSION
             or bundle.preprocessing_version != PREPROCESSING_VERSION
             or bundle.decoder_version != DECODER_VERSION
         ):
@@ -716,7 +737,8 @@ class TCNBackend:
             history = _load_json(root / _MEMBERS["history"], HistoryRecord)
             self._validate_selection(configuration, validation, history)
         if (
-            configuration.feature_names != TEMPORAL_NAMES
+            bundle.feature_version != _feature_version(configuration.parameters)
+            or configuration.feature_names != feature_names(configuration.parameters.side_slopes)
             or configuration.context_sizes != CONTEXT_SIZES
             or hashlib.sha256(
                 json_bytes(configuration.analysis.model_dump(mode="json"))
@@ -730,17 +752,19 @@ class TCNBackend:
         ):
             raise ValueError("TCN bundle configuration and manifest provenance disagree")
         if (
-            _state_bytes(configuration.parameters) + 3 * len(TEMPORAL_NAMES) * 8
+            _state_bytes(configuration.parameters) + 3 * len(configuration.feature_names) * 8
             > runtime.model_cache_budget_bytes
         ):
             raise ResourceBudgetExceeded("TCN model exceeds the inference model cache budget")
-        preprocessing = _read_preprocessing(root / _MEMBERS["preprocessing"])
+        preprocessing = _read_preprocessing(
+            root / _MEMBERS["preprocessing"], len(configuration.feature_names)
+        )
         state = _read_state(root / _MEMBERS["weights"], configuration.parameters)
         torch.set_num_threads(runtime.threads)
         # Loading restores weights; it must not consume the training RNG stream.
         with torch.random.fork_rng(devices=[]):
             model = TCNClassifier(
-                len(TEMPORAL_NAMES),
+                len(configuration.feature_names),
                 configuration.parameters.channels,
                 configuration.parameters.dropout,
                 configuration.parameters.dilations,

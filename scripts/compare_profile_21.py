@@ -8,6 +8,7 @@ from importlib.metadata import version
 from pathlib import Path
 
 import numpy as np
+from pydantic import JsonValue
 
 from regimex.admin_contracts import GenerationSpec, RawGenerationPlan, SplitPolicy
 from regimex.application.admin_computation import _generation
@@ -21,7 +22,9 @@ from regimex.benchmark_contracts import dataset_identity_keys
 from regimex.benchmarks import DirectionSemantics
 from regimex.data_catalog import (
     DatasetManifest,
+    Partition,
     ReferencePayload,
+    ReferenceSet,
     SnapshotGrid,
     SnapshotMember,
     SourceSnapshot,
@@ -33,13 +36,14 @@ from regimex.data_catalog import (
     seal_dataset,
     seal_reference_set,
 )
-from regimex.directions import DIRECTION_POLICY, AnalysisConfig
+from regimex.directions import DIRECTION_POLICY, AnalysisConfig, DirectionAnnotations
 from regimex.exports import load_export_v2
 from regimex.model_registry import (
     ArchitectureRegistry,
     FixedUpdatePolicy,
     InferenceRuntime,
     TrainingPolicy,
+    TrainingPolicySpec,
     TrainingRuntime,
 )
 from regimex.segmentation import DECODER_VERSION, annotate
@@ -53,12 +57,12 @@ DATASET_SHA256 = "682b79aa7915a2d864ec35b3f781c254f643570b38ba8e6b1e9630de3a29ec
 SOURCE = Path(__file__).resolve().parents[1] / "src" / "regimex"
 
 
-def write(path, value):
+def write(path: Path, value: object) -> None:
     with path.open("xb") as stream:
         stream.write(json_bytes(value))
 
 
-def record(path, value):
+def record(path: Path, value: object) -> None:
     """Resume scoring only when the already written evidence agrees."""
     if path.exists():
         if path.read_bytes() != json_bytes(value):
@@ -67,7 +71,7 @@ def record(path, value):
         write(path, value)
 
 
-def sha256(path):
+def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
@@ -113,7 +117,9 @@ def prepare(output, history):
     write(output / "reservation.json", receipt)
 
 
-def request(architecture, build):
+def request(architecture: str, build: str) -> TrainingRequest:
+    parameters: dict[str, JsonValue]
+    policy: TrainingPolicySpec
     if architecture == "baseline":
         parameters = {"regularization": [0.1, 1.0, 10.0], "context_sizes": [32, 128]}
         policy = TrainingPolicy(optimizer="lbfgs", seeds=(11,))
@@ -153,7 +159,7 @@ def software():
 
 
 class Corpus:
-    def __init__(self, output):
+    def __init__(self, output: Path) -> None:
         self.output = output
         self.dataset = DatasetManifest.model_validate_json((output / "dataset.json").read_bytes())
         self.locations = json.loads((output / "locations.json").read_bytes())
@@ -164,16 +170,16 @@ class Corpus:
         ):
             raise ValueError("Dataset differs from the reservation")
 
-    def snapshot(self, member: SnapshotMember):
+    def snapshot(self, member: SnapshotMember) -> SourceSnapshot:
         return SourceSnapshot(
             source_namespace=member.source_namespace,
             split_group=member.split_group,
             export=load_export_v2(self.output / self.locations[member.source_namespace]),
         )
 
-    def references(self, partition):
-        from regimex.directions import DirectionAnnotations
-
+    def references(
+        self, partition: Partition
+    ) -> tuple[ReferenceSet, dict[str, DirectionAnnotations]]:
         annotations: dict[str, DirectionAnnotations] = {}
         members = []
         for member in self.dataset.members:

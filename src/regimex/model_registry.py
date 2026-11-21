@@ -90,6 +90,7 @@ class LogisticParameters(StrictModel):
 
 
 class TCNParameters(StrictModel):
+    side_slopes: bool = False
     channels: Annotated[int, Field(ge=4, le=256)] = 32
     dilations: Annotated[
         tuple[Annotated[int, Field(ge=1, le=MAX_STEPS)], ...], Field(min_length=1, max_length=32)

@@ -7,7 +7,7 @@ This makes it suitable for describing a finished run.
 
 ## What the network sees
 
-For every step the backend builds 25 numeric features and a missing-value
+By default the backend builds 25 numeric features per step and a missing-value
 indicator for each one.
 
 | Inputs | How they are calculated |
@@ -25,11 +25,19 @@ with training medians (zero for a feature absent throughout training) and
 standardizes them with saved training statistics. The 25 indicators remain
 binary. [Feature construction and preprocessing](../src/regimex/temporal.py)
 
+A TCN training request can set `parameters.side_slopes` to `true` to add four
+features. At each step the backend fits log-price slopes independently across
+the preceding 16 and 32 steps and the following 16 and 32 steps. Each window
+includes the current step. The four fits and their missing-value indicators
+bring the input width to 58. The package records the layout so inference
+rebuilds the features used in training. In a comparison on new simulations,
+this option recovered fewer short sideways intervals. [Measured results](interval-errors.md#past-and-future-price-slopes)
+
 ## From features to intervals
 
 ```mermaid
 flowchart TD
-    P[Prices on the original grid] --> F[50 input channels]
+    P[Prices on the original grid] --> F[Price features and missing indicators]
     F --> N[Temporal convolutions]
     N --> S[Three probabilities per step]
     S --> D[Interval decoder]
@@ -37,7 +45,7 @@ flowchart TD
     D --> I[Direction intervals and unclassified periods]
 ```
 
-A pointwise convolution mixes the 50 input channels at each step. A stack of
+A pointwise convolution mixes the input channels at each step. A stack of
 residual blocks then combines information across steps. In a block with
 dilation `d`, the width-three convolution reads positions `t − d`, `t`
 and `t + d`. The block applies ReLU, mixes the channels with a pointwise

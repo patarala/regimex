@@ -116,7 +116,7 @@ def policy() -> TrainingPolicy:
 
 
 def fit(
-    *, analysis: AnalysisConfig | None = None
+    *, analysis: AnalysisConfig | None = None, side_slopes: bool = False
 ) -> tuple[TCNBackend, FitResult, ObservationInputs]:
     backend = TCNBackend()
     training, validation = inputs("train"), inputs("validation")
@@ -125,7 +125,7 @@ def fit(
     fitted = backend.fit(
         TrainingInputs(training, targets),
         validation,
-        parameters=TCNParameters(channels=4),
+        parameters=TCNParameters(channels=4, side_slopes=side_slopes),
         policy=policy(),
         analysis=analysis or AnalysisConfig(min_duration=4),
         runtime=TrainingRuntime(threads=1),
@@ -234,6 +234,36 @@ def test_backend_matches_scientific_fit_and_training_only_preprocessing() -> Non
     old_mean = predictor.preprocessor.mean.copy()
     predictor.predict(inputs("other", (8, 12, 7)), runtime=InferenceRuntime(threads=1))
     np.testing.assert_array_equal(predictor.preprocessor.mean, old_mean)
+
+
+@pytest.mark.parametrize("side_slopes", [False, True])
+def test_feature_layout_is_bound_to_the_manifest(tmp_path: Path, side_slopes: bool) -> None:
+    backend, result, observations = fit(side_slopes=side_slopes)
+    path = tmp_path / "model"
+    sha = backend.write_bundle(
+        result, path, provenance=provenance(result), analysis=result.predictor.analysis
+    )
+    expected = result.predictor.predict(observations, runtime=InferenceRuntime(threads=1))
+    manifest = json.loads((path / "manifest.json").read_bytes())
+    assert manifest["feature_version"] == (
+        "temporal-price-shape/2.0" if side_slopes else "temporal-price-shape/1.0"
+    )
+    config_path = path / "configuration.json"
+    config = json.loads(config_path.read_bytes())
+    assert len(config["feature_names"]) == (58 if side_slopes else 50)
+    if not side_slopes:
+        # The existing published bundles predate the optional feature setting.
+        del config["parameters"]["side_slopes"]
+        write_json(config_path, config)
+        sha = rehash(path)
+    restored = backend.load_bundle(path, manifest_sha256=sha, runtime=InferenceRuntime(threads=1))
+    np.testing.assert_array_equal(
+        restored.predict(observations, runtime=InferenceRuntime(threads=1)), expected
+    )
+    config["parameters"]["side_slopes"] = not side_slopes
+    write_json(config_path, config)
+    with pytest.raises(ValueError, match="configuration and manifest"):
+        backend.load_bundle(path, manifest_sha256=rehash(path), runtime=InferenceRuntime())
 
 
 def test_predictions_preserve_grid_and_ignore_activity_and_other_instruments() -> None:

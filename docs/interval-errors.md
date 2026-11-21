@@ -81,3 +81,50 @@ counts, decoded sideways steps and steps where both agreed on sideways.
 It also records overlapping predictions and the digests of the model, dataset
 and validation references. The script loads only the validation partition and
 uses the profile stored in the candidate.
+
+## Past and future price slopes
+
+A centered price window can include both a plateau and the trend beside it.
+To test whether the TCN could distinguish them, we added separate slopes for
+the prices before and after each step. Both configurations used the same 96
+training experiments, seed, profile and budget of 240 updates. Decoded interval
+macro-F1 on 24 validation experiments selected update 160 for the centered
+model and update 240 for the model with extra slopes. Both missed all six
+short sideways references on validation. Macro-F1 fell from 0.6655 to 0.6269
+with the extra slopes, so the centered windows remained the default.
+
+We froze both checkpoints before evaluating them on 96 new simulations,
+32 each at 256, 512 and 1,024 steps. Predictions covered the same 66,190
+classifiable steps across 144 instrument sequences. The table gives pooled
+results for automatic `direction-32/2.1` references. The last column gives
+the 95% interval for the change from adding slopes, using 1,000 paired
+bootstrap samples of whole experiments.
+
+| Metric | Centered windows | With extra slopes | 95% interval for the change |
+| --- | ---: | ---: | ---: |
+| Recall of sideways intervals under 64 steps | 11.8% (6/51) | 3.9% (2/51) | −21.7 to 0.0 percentage points |
+| Interval macro-F1, all directions | 0.6229 | 0.6270 | −0.0342 to +0.0481 |
+| Sideways interval precision, all durations | 56.6% | 64.6% | −0.8 to +17.3 percentage points |
+
+The extra slopes produced fewer false sideways intervals (29 versus 43) and
+also recovered fewer short plateaus. There is little evidence of a change in
+overall F1. The comparison measures one training seed on generated prices.
+
+To reproduce it, prepare `var/profile21` and fit its models as described
+above. Using a new output directory, run these phases in order:
+
+```sh
+uv run --locked --extra ml python scripts/compare_tcn_slopes.py reserve --corpus var/profile21 --output var/tcn-slopes
+uv run --locked --extra ml python scripts/compare_tcn_slopes.py fit --corpus var/profile21 --output var/tcn-slopes
+uv run --locked --extra ml python scripts/compare_tcn_slopes.py score --corpus var/profile21 --output var/tcn-slopes
+```
+
+The reservation checks the cohort against the full profile-2.1 corpus. Supply
+`--exposure-index PATH` to the reserve command to check a prior exposure
+inventory as well. For the reported results, we checked nine distinct local
+exposure indexes and seventeen dataset manifests. The cohort shared none of
+the 7,073 seeds or 31,836 identity keys in that inventory. Its dataset SHA-256
+is `5bdc936d5116f7c72c7b641a7d888c95223b94796c4f89a4f397df847079ce6d`.
+`freeze.json` records both packages before scoring.
+`holdout/results.json` contains the per-experiment counts and paired intervals.
+Reserve a fresh cohort for subsequent model choices.
