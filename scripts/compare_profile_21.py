@@ -159,14 +159,14 @@ def software():
 
 
 class Corpus:
-    def __init__(self, output: Path) -> None:
+    def __init__(self, output: Path, *, expected_digest: str = DATASET_SHA256) -> None:
         self.output = output
         self.dataset = DatasetManifest.model_validate_json((output / "dataset.json").read_bytes())
         self.locations = json.loads((output / "locations.json").read_bytes())
         reservation = json.loads((output / "reservation.json").read_bytes())
         if (
             reservation["dataset_sha256"] != self.dataset.content_sha256
-            or self.dataset.content_sha256 != DATASET_SHA256
+            or self.dataset.content_sha256 != expected_digest
         ):
             raise ValueError("Dataset differs from the reservation")
 
@@ -178,27 +178,27 @@ class Corpus:
         )
 
     def references(
-        self, partition: Partition
+        self, partition: Partition, *, profile: AnalysisConfig = PROFILE
     ) -> tuple[ReferenceSet, dict[str, DirectionAnnotations]]:
         annotations: dict[str, DirectionAnnotations] = {}
         members = []
         for member in self.dataset.members:
             if member.partition == partition:
                 export = self.snapshot(member).export
-                annotation = annotate(SnapshotGrid.from_export(export), PROFILE)
+                annotation = annotate(SnapshotGrid.from_export(export), profile)
                 annotations[member.source_namespace] = annotation
                 members.append(create_reference_member(member, annotation))
         references = seal_reference_set(
             ReferencePayload(
-                reference_set_id=f"profile21-{partition}",
+                reference_set_id=f"profile{profile.version.replace('.', '')}-{partition}",
                 dataset_sha256=self.dataset.content_sha256,
                 partition=partition,
                 kind="automatic",
                 policy=DIRECTION_POLICY,
                 semantics=DirectionSemantics(
-                    profile_sha256=analysis_profile_hash(PROFILE), decoder_version=DECODER_VERSION
+                    profile_sha256=analysis_profile_hash(profile), decoder_version=DECODER_VERSION
                 ),
-                analysis_profile=PROFILE,
+                analysis_profile=profile,
                 members=tuple(members),
             )
         )

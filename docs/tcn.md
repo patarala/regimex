@@ -58,6 +58,13 @@ can read 255 **feature rows** on each side of a step. The underlying price
 history can reach further because each row already contains centered-window
 and whole-instrument statistics.
 
+With 50 inputs, eight blocks and three output classes, a network with
+`h` hidden channels learns `32h² + 70h + 3` weights and biases. Each block
+has a width-three convolution and a pointwise convolution, both connecting
+all hidden channels. Doubling the width therefore costs nearly four times
+as many parameters. Changing the dilation distances alone preserves the
+parameter count.
+
 A final pointwise convolution and softmax give three probabilities on every
 original step. The shared decoder chooses a sequence of intervals that balances
 those probabilities against the cost of switching direction, subject to
@@ -75,10 +82,11 @@ weight gives shorter reference intervals more influence. The smoothing
 term penalizes changes in log probabilities between adjacent steps with
 the same known direction.
 
-The default training configuration uses 32 hidden channels and epoch-based
-early stopping. A fixed-update run evaluates the requested checkpoints and
-counts only batches with known targets toward its update budget. Both
-modes select the checkpoint by decoded validation interval macro-F1.
+The default TCN has 32 hidden channels. Epoch-based runs can stop each repeat
+when validation stops improving. Fixed-update runs check the requested
+updates and count only batches with known targets. Both training modes retain
+the checkpoint with the highest decoded validation interval macro-F1.
+[Why these defaults?](usage.md#why-these-defaults) ·
 [Training request and checkpoint example](api.md#3-train-and-publish)
 
 The published `tcn-0.2.0` uses 48 hidden channels and the eight dilations
@@ -86,3 +94,67 @@ above. Validation selected update 900 with seed 29. Its saved preprocessing,
 weights and `direction-32/2.0` profile determine its predictions. For the
 measured interval accuracy and the effect of allowing a transition a few
 steps early or late, see the [reference model evaluation](quality.md#reference-model-on-direction-3220).
+
+## Comparing model widths
+
+Four TCN widths were fitted to 96 synthetic training experiments with 147
+instrument series. Validation used 30 separate experiments with 42 series.
+Both partitions contained equal numbers of 256-step and 512-step experiments.
+The generator assigned complete seed groups to partitions before simulation.
+Automatic references and decoding used the service profile `direction-32/2.2`.
+
+Every width used the same features, dilations, optimizer settings and batch
+size of eight sequences. Each training seed received 96 optimizer updates.
+The table shows the best decoded validation interval macro-F1 at updates
+32, 64 or 96 for each seed. The mean gives each of the three repeats equal
+weight.
+
+| Hidden channels | Trainable parameters | Seed 11 | Seed 23 | Seed 47 | Mean |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 16 | 9,315 | 0.6938 | 0.6748 | 0.7138 | 0.6941 |
+| 32 | 35,011 | 0.7044 | 0.7089 | 0.6862 | 0.6998 |
+| 48 | 77,091 | 0.7470 | 0.7274 | 0.7396 | **0.7380** |
+| 64 | 135,555 | 0.7253 | 0.7243 | 0.7297 | 0.7264 |
+
+The 48-channel network scored highest for every seed. Its mean exceeded the
+32-channel default by 0.0382, at about 2.2 times the parameter count.
+Checkpoint selection and scoring used the same 30 experiments, so these
+figures describe validation performance under this update budget.
+
+The logistic baseline scored **0.5032** on the same validation partition.
+It fitted 867 coefficients and intercepts using L-BFGS. Validation selected
+`C = 1` from 0.1, 1 and 10.
+
+### Independent validation
+
+The best checkpoint across the three repeats of each width was frozen before
+generating 64 further experiments, 32 at each length. Together they contained
+97 instrument series. Each score below belongs to one fitted model. The
+comparison above averaged three checkpoint scores per width.
+
+| Frozen model | Selected seed | Selected update | Independent interval macro-F1 |
+| --- | ---: | ---: | ---: |
+| Logistic baseline | 11 | — | 0.5097 |
+| TCN, 16 channels | 47 | 96 | 0.7037 |
+| TCN, 32 channels | 23 | 32 | 0.6509 |
+| TCN, 48 channels | 11 | 96 | **0.7200** |
+| TCN, 64 channels | 47 | 32 | 0.6893 |
+
+The 48-channel model scored highest again. Its advantage over the 32-channel
+model was 0.0691. The paired 95% bootstrap interval ranged from −0.0109 to
++0.1544, allowing either model to lead on another sample. The interval uses
+2,000 draws of whole experiments with seed 1729 and keeps every instrument
+with its experiment. It describes sampling uncertainty for these two frozen
+models on this simulator.
+
+To reproduce both comparisons, pass an unused directory to the first command.
+It saves the training and validation data, plans, bundles and per-seed
+scores. The second command verifies the frozen bundles and evaluates them on
+the independent cohort. It checks for overlap with the first corpus before
+reading annotations. Pass `--exposure-index PATH` to include additional known
+seeds and identity hashes in this check.
+
+```sh
+uv run --locked --extra ml python scripts/compare_tcn_widths.py var/tcn-widths
+uv run --locked --extra ml python scripts/confirm_tcn_widths.py var/tcn-widths
+```
