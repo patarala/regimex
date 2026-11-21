@@ -20,7 +20,12 @@ class DeletionAPIService(Protocol):
     ) -> DeletionPreview: ...
 
     def apply(
-        self, principal: Principal, plan_id: UUID, *, expected_sha256: str
+        self,
+        principal: Principal,
+        plan_id: UUID,
+        *,
+        expected_sha256: str,
+        archive_run: bool = False,
     ) -> DeletionReceipt: ...
 
     def receipt(self, principal: Principal, plan_id: UUID) -> DeletionReceipt: ...
@@ -32,6 +37,7 @@ class DeletionAPIService(Protocol):
 
 class DeletionConfirmation(StrictModel):
     sha256: Sha256
+    archive_run: bool = False
 
 
 class DeletionPage(StrictModel):
@@ -66,7 +72,12 @@ def install_deletion_routes(
     def confirm_deletion(
         plan_id: UUID, identity: Identity, confirmation: Confirmation, response: Response
     ) -> DeletionReceipt:
-        receipt = service.apply(identity, plan_id, expected_sha256=confirmation.sha256)
+        receipt = service.apply(
+            identity,
+            plan_id,
+            expected_sha256=confirmation.sha256,
+            archive_run=confirmation.archive_run,
+        )
         response.status_code = 200 if receipt.state == "completed" else 202
         return receipt
 

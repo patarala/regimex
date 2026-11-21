@@ -65,6 +65,8 @@ export function createDeletion({session, onApplied}) {
     $("deletion-blockers").hidden = true;
     $("deletion-blockers").replaceChildren();
     $("deletion-warning").hidden = true;
+    $("deletion-archive-option").hidden = true;
+    $("deletion-archive-run").checked = false;
     $("deletion-status").textContent = "Loading deletion preview…";
     $("deletion-confirm").textContent = "Delete";
     $("deletion-confirm").hidden = false;
@@ -96,6 +98,7 @@ export function createDeletion({session, onApplied}) {
       ? "Deleting the weights is permanent. You can still view training metrics and saved evaluations, but you cannot use this model again."
       : "This cannot be undone. Download anything you want to keep first.";
     $("deletion-warning").hidden = plan.blockers.length > 0;
+    $("deletion-archive-option").hidden = !weights || value.target.archived || plan.blockers.length > 0;
     $("deletion-status").textContent = plan.blockers.length && !weights ? "Resolve these dependencies before deleting." : "";
     $("deletion-confirm").textContent = "Delete";
     $("deletion-confirm").disabled = plan.blockers.length > 0;
@@ -106,6 +109,7 @@ export function createDeletion({session, onApplied}) {
     if (!current(value) || value.pending || value.confirmed) return;
     value.plan = null;
     setPending(value, "preview");
+    $("deletion-archive-option").hidden = true;
     $("deletion-status").textContent = "Loading deletion preview…";
     $("deletion-warning").hidden = true;
     try {
@@ -194,13 +198,15 @@ export function createDeletion({session, onApplied}) {
       $("deletion-status").textContent = "This preview has expired. Refresh it before deleting.";
       return;
     }
+    const body = {sha256: value.plan.sha256};
+    if (!value.confirmed && !$("deletion-archive-option").hidden && $("deletion-archive-run").checked)
+      body.archive_run = true;
+    $("deletion-archive-option").hidden = true;
     value.confirmed = true;
     setPending(value, "delete");
     $("deletion-status").textContent = "Deleting…";
     try {
-      const receipt = await session.json(`${ROOT}/${value.plan.plan_id}`, {
-        method: "POST", body: {sha256: value.plan.sha256},
-      });
+      const receipt = await session.json(`${ROOT}/${value.plan.plan_id}`, {method: "POST", body});
       if (current(value)) received(value, receipt);
       else if (session.value && session.epoch === value.epoch && value.target.kind === "model_weights") {
         onApplied(value.target, receipt);
@@ -221,9 +227,9 @@ export function createDeletion({session, onApplied}) {
     }
   }
 
-  async function open(kind, id, title = "") {
+  async function open(kind, id, title = "", {archived = false} = {}) {
     if (!session.value) return;
-    return preview(start({kind, id, title}));
+    return preview(start({kind, id, title, archived}));
   }
 
   async function showReceipt(kind, id, deletionId, title, viewCompleted = true) {

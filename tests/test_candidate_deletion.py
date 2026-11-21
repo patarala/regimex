@@ -66,8 +66,12 @@ def trained_candidate(repository: AdminRepository, tmp_path: Path) -> Candidate:
     )
 
 
+@pytest.mark.parametrize("archive_run", [False, True])
 def test_removal_retains_history_and_evaluation_and_can_resume_after_storage_failure(
-    repository: AdminRepository, trained_candidate: Candidate, monkeypatch: pytest.MonkeyPatch
+    repository: AdminRepository,
+    trained_candidate: Candidate,
+    monkeypatch: pytest.MonkeyPatch,
+    archive_run: bool,
 ) -> None:
     trained = trained_candidate
     owner = principal()
@@ -92,7 +96,9 @@ def test_removal_retains_history_and_evaluation_and_can_resume_after_storage_fai
 
     with monkeypatch.context() as context:
         context.setattr(store, "delete_version", fail)
-        pending = trained.deletion.apply(owner, preview.plan_id, expected_sha256=preview.sha256)
+        pending = trained.deletion.apply(
+            owner, preview.plan_id, expected_sha256=preview.sha256, archive_run=archive_run
+        )
     assert pending.state == "pending" and pending.pending_bytes == trained.weight.size_bytes
     assert trained.deletion.list_pending(principal(admin=False)) == ()
     assert trained.deletion.list_pending(owner) == (pending,)
@@ -103,7 +109,9 @@ def test_removal_retains_history_and_evaluation_and_can_resume_after_storage_fai
         repository.database.existing_registration(owner, trained.spec.model_version_id)
     assert repository.database.list_models(owner) == ()
     assert repository.get_run(owner, trained.run_id).output == original.output
-    assert repository.get_run(owner, trained.run_id).weights_deletion_id == preview.plan_id
+    run = repository.get_run(owner, trained.run_id)
+    assert run.weights_deletion_id == preview.plan_id
+    assert (run.archived_at is not None) == archive_run
     assert repository.get_training_metrics(owner, trained.run_id) == training_metrics(trained.spec)
     assert repository.get_evaluation(owner, result.run_id) == result
     with pytest.raises(NotFound):
@@ -114,7 +122,14 @@ def test_removal_retains_history_and_evaluation_and_can_resume_after_storage_fai
             ),
             idempotency_key="publish-discarded",
         )
-    receipt = trained.deletion.apply(owner, preview.plan_id, expected_sha256=preview.sha256)
+    if archive_run:
+        repository.set_training_archive(owner, (trained.run_id,), archived=False)
+    # Replaying an accepted removal only retries the physical cleanup, even
+    # when the original run has since been restored to the working list.
+    receipt = trained.deletion.apply(
+        owner, preview.plan_id, expected_sha256=preview.sha256, archive_run=True
+    )
+    assert repository.get_run(owner, trained.run_id).archived_at is None
     assert receipt.state == "completed" and receipt.reclaimed_bytes == trained.weight.size_bytes
     assert trained.deletion.apply(owner, preview.plan_id, expected_sha256=preview.sha256) == receipt
     with pytest.raises(FileNotFoundError):
@@ -189,7 +204,10 @@ def test_new_model_references_invalidate_a_preview(
     blocked = trained.preview(owner)
     assert [blocker.code for blocker in blocked.blockers] == ["published_model"]
     with pytest.raises(Conflict, match="blocked"):
-        trained.deletion.apply(owner, blocked.plan_id, expected_sha256=blocked.sha256)
+        trained.deletion.apply(
+            owner, blocked.plan_id, expected_sha256=blocked.sha256, archive_run=True
+        )
+    assert repository.get_run(owner, trained.run_id).archived_at is None
     assert repository.database.get_active_model() == trained.model
 
 

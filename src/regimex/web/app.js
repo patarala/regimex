@@ -96,7 +96,8 @@ async function restoreLocation() {
   if (!session.value || lastLocation === location.href) return;
   lastLocation = location.href;
   const url = new URL(location.href);
-  const match = /^#(training|connections)(?:\/([^/]+))?$/.exec(url.hash);
+  const [path, query] = url.hash.split("?");
+  const match = /^#(training|connections)(?:\/([^/]+))?$/.exec(path);
   const admin = session.value.principal.role === "admin";
   if (match && !admin) {
     url.hash = "";
@@ -129,7 +130,9 @@ async function restoreLocation() {
   if (section === "training" || section === "connections") {
     if (id && !uuid.test(id) && !(section === "training" && id === "new"))
       return navigate("#" + section, true);
-    return section === "training" ? training.show(id) : integrations.show(id);
+    if (section === "connections") return integrations.show(id);
+    const view = new URLSearchParams(query).get("view");
+    return training.show(id, ["archived", "all"].includes(view) ? view : "active");
   }
   if (previous && previous !== section) $("open-analyses").focus();
   const analysisId = url.searchParams.get("analysis");

@@ -35,6 +35,7 @@ _ASSETS = {
     "ui.js": "text/javascript",
     "integrations.js": "text/javascript",
     "training.js": "text/javascript",
+    "training-archive.js": "text/javascript",
     "training-evaluation.js": "text/javascript",
     "training-form.js": "text/javascript",
     "training-json.js": "text/javascript",

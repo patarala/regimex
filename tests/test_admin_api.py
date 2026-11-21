@@ -619,17 +619,24 @@ def check_discarded_candidate(
     assert context.analysis.store.stat_version(weight.key, weight.version_id) == weight
 
     confirm_path = "/api/v1/deletions/" + preview["plan_id"]
-    response = context.client.post(
-        confirm_path, json={"sha256": preview["sha256"]}, headers=context.headers
-    )
+    confirmation = {"sha256": preview["sha256"], "archive_run": True}
+    response = context.client.post(confirm_path, json=confirmation, headers=context.headers)
     assert response.status_code == 200, response.text
     assert response.json()["reclaimed_bytes"] == weight.size_bytes
     with pytest.raises(FileNotFoundError):
         context.analysis.store.stat_version(weight.key, weight.version_id)
-    assert (
-        context.client.get(run_path, headers=context.headers).json()["weights_deletion_id"]
-        == preview["plan_id"]
+    saved = context.client.get(run_path, headers=context.headers).json()
+    assert saved["weights_deletion_id"] == preview["plan_id"]
+    assert saved["archived_at"] is not None
+    restored = context.client.patch(
+        "/api/v1/training-runs/archive",
+        json={"run_ids": [str(run.run_id)], "archived": False},
+        headers=context.headers,
     )
+    assert restored.status_code == 204, restored.text
+    replay = context.client.post(confirm_path, json=confirmation, headers=context.headers)
+    assert replay.status_code == 200, replay.text
+    assert context.client.get(run_path, headers=context.headers).json()["archived_at"] is None
     assert (
         context.client.get(f"/api/v1/models/{model_id}", headers=context.headers).status_code == 404
     )
@@ -849,6 +856,9 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     progress = context.client.get(run_path + "/progress", headers=headers)
     assert progress.status_code == 200, progress.text
     assert progress.json() == {"attempt": 0, "cursor": 0, "has_more": False, "history": {}}
+    archive_path = "/api/v1/training-runs/archive"
+    archive = {"run_ids": [str(run.run_id)], "archived": True}
+    assert context.client.patch(archive_path, json=archive, headers=headers).status_code == 409
     assert context.client.get(run_path + "/metrics", headers=headers).status_code == 409
     completed = context.service.run_admin(run.run_id)
     assert completed is not None
@@ -925,6 +935,18 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     publication = AdminRunView.model_validate_json(response.content)
     published = context.service.run_admin(publication.run_id)
     assert published is not None and published.operation.state == "succeeded", published
+    assert context.client.patch(archive_path, json=archive, headers=user_headers).status_code == 403
+    archived = context.client.patch(archive_path, json=archive, headers=headers)
+    assert archived.status_code == 204 and not archived.content
+    saved_run = context.client.get(run_path, headers=headers).json()
+    assert saved_run["archived_at"] is not None and saved_run["output"] == detail["output"]
+    for query, expected in (
+        ("", [saved_run]),
+        ("?archive=archived", [saved_run]),
+        ("?archive=active", []),
+    ):
+        page = context.client.get("/api/v1/training-runs" + query, headers=headers)
+        assert page.status_code == 200 and page.json()["items"] == expected
     response = context.client.post(
         "/api/v1/analyses",
         json={"snapshot_id": snapshots[1], "model_version_id": "active"},

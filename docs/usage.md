@@ -133,7 +133,9 @@ selection on that reservation. The form lists the benchmarks available to your a
    You can bookmark the run or leave and return while the worker trains it.
    If you leave a form before submitting, browser Back restores the draft in the same tab.
 3. Select a run from the list, or open **Run history** on a phone. Unnamed
-   runs show the architecture and dataset. Choose **Rename** to change the
+   runs show the architecture and dataset. To preview the model size and full
+   dataset ID, hover over the run, focus it with Tab or tap its info button.
+   Choose **Rename** to change the
    name, or clear the field and save to restore the automatic title. You can
    cancel a run while it is queued or running.
    The page checks active jobs about every 2.5 seconds. Charts appear as the
@@ -148,13 +150,14 @@ selection on that reservation. The form lists the benchmarks available to your a
    without improvement** sets how many consecutive validation scores can tie
    or fall below the repeat's best score before it stops. With an update
    budget, validation scores appear at the chosen checkpoints. The charts show
-   why the selected repeat ended and at which epoch or update.
+   when each repeat ended and why.
 
    For a TCN with several repeats, the charts follow the repeat being trained.
    Choose a **Training repeat** to keep its curves on screen. Each seed sets
-   the starting weights and training order. After training, the repeat marked
-   **selected repeat** produced the checkpoint with the best validation interval
-   macro-F1. Its score appears above the charts.
+   the starting weights and training order. The TCN keeps the checkpoint with
+   the highest validation interval macro-F1. If scores tie, it keeps the first
+   checkpoint to reach that score. The repeat that produced it is marked
+   **used for this model**. Its score and seed appear above the charts.
 4. Under **Model evaluation**, choose **Evaluate model** to score the saved
    weights on the validation references. When the evaluation finishes, its
    interval and step scores and results by direction appear on the run page.
@@ -164,10 +167,17 @@ selection on that reservation. The form lists the benchmarks available to your a
    To make this model the default for new analyses, choose **Use as default**
    and confirm the change.
 
-To free space after comparing candidates, open the run, expand **Run details
-and settings** and choose **Delete model weights**. Review the file size
-and confirm. You can return to the run to compare its charts, settings and
-completed evaluations. Deletion permanently retires that model version.
+To put a finished run away, choose **Archive run**. To move several at once,
+choose **Select runs** in the history, check the runs and choose **Archive
+selected**. Switch from **Current runs** to **Archived runs** to find them.
+Open an archived run and choose **Restore run** to return it to the current
+list. The same link opens its charts in either view. Archiving preserves any
+saved weights and keeps published models available for analyses.
+
+To free space, expand **Run details and settings** and choose **Delete model
+weights**. Review the file size and optionally check **Also archive this run**
+before confirming. Deleting weights permanently retires the model version.
+The charts, settings and completed evaluations stay with the run.
 
 You can train and compare several candidates under one reservation. The
 training screen keeps the final test references sealed. Once you have chosen the

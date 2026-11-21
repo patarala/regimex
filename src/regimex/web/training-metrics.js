@@ -224,7 +224,7 @@ export function createTrainingMetrics() {
     section.hidden = false;
     score.hidden = !result;
     if (result) {
-      const selection = history?.rows === "candidates" ? "selected settings" : "selected repeat (seed " + result.selected_seed + ")";
+      const selection = history?.rows === "candidates" ? "selected settings" : "seed " + result.selected_seed;
       score.replaceChildren(element("strong", format(result.validation_segment_macro_f1)),
         " validation interval macro-F1 · " + selection);
     }
@@ -237,7 +237,7 @@ export function createTrainingMetrics() {
     const seeds = [...new Set(records.map(row => row.seed).filter(Number.isInteger))];
     const selectedSeed = result?.selected_seed;
     for (const [index, value] of seeds.entries()) {
-      const label = "Seed " + value + (value === selectedSeed ? " (selected repeat)" : "");
+      const label = "Seed " + value + (value === selectedSeed ? " (used for this model)" : "");
       const item = seed.options[index];
       if (!item) seed.append(option(String(value), label));
       else if (item.value !== String(value) || item.text !== label) item.replaceWith(option(String(value), label));

@@ -57,7 +57,12 @@ class DeletionService:
         raise ObjectConflictError("Another object generation occupies the removed key.")
 
     def apply(
-        self, principal: Principal, plan_id: UUID, *, expected_sha256: str
+        self,
+        principal: Principal,
+        plan_id: UUID,
+        *,
+        expected_sha256: str,
+        archive_run: bool = False,
     ) -> DeletionReceipt:
         from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
@@ -71,6 +76,7 @@ class DeletionService:
                         plan_id,
                         expected_sha256=expected_sha256,
                         store_scope_id=self.store.scope_id,
+                        archive_run=archive_run,
                     )
             except (ForeignKeyViolation, UniqueViolation) as exc:
                 raise Conflict(

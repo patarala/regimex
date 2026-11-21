@@ -1,7 +1,8 @@
-import {$, analysisStateLabel, element, shortDate} from "./ui.js";
+import {$, analysisStateLabel, bindTooltip, element, shortDate} from "./ui.js";
 import {showTrainingActions} from "./training-evaluation.js";
 import {createTrainingMetrics} from "./training-metrics.js";
 import {createTrainingProgress} from "./training-progress.js";
+import {createRunArchive, finished} from "./training-archive.js";
 import {architectureName, createTrainingForm, datasetName} from "./training-form.js";
 import {trainingRequestKey} from "./training-json.js";
 import {createRunNameEditor} from "./training-name.js";
@@ -18,6 +19,32 @@ function runContext(row) {
     datasetName(row.training.dataset_id)].filter(Boolean).join(" · ");
 }
 
+function historyDate(value) {
+  const date = new Date(value);
+  return date.toLocaleString(undefined, {
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+    year: date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  });
+}
+
+function appendRunInfo(item, button, row, label) {
+  const info = element("button", "", "field-help-toggle training-run-info");
+  info.type = "button";
+  info.dataset.runInfo = row.run_id;
+  info.setAttribute("aria-label", "Details for " + label);
+  const icon = element("span", "i");
+  icon.setAttribute("aria-hidden", "true");
+  info.append(icon);
+  const architecture = architectureName(row.training.architecture_id);
+  const size = row.trainable_parameters ? " · " + parameterCountLabel(row.trainable_parameters) : "";
+  const note = element("p", architecture + size, "field-help");
+  note.append(document.createElement("br"), "Dataset: " + row.training.dataset_id,
+    document.createElement("br"), "Created " + shortDate(row.job.created_at));
+  note.id = "run-info-" + row.run_id;
+  item.append(info, note);
+  bindTooltip(info, note, {trigger: button});
+}
+
 // Delayed list and detail responses can predate a rename or weight deletion.
 function withSavedChanges(row, known) {
   if (known?.weights_deletion_id && !row.weights_deletion_id)
@@ -32,13 +59,16 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   let offset = 0, timer = null, busy = false, pollRevision = 0;
   let run = null, evaluation = null, activeModel, metricsLoaded = false;
   let pendingDownstream = false, retryDelay = 2500, target = null;
+  let view = "active";
   let listed = new Map();
   const form = createTrainingForm({session, eachPage});
   const names = createRunNameEditor({session, getRun: () => run, applyName});
   const metrics = createTrainingMetrics();
   const progress = createTrainingProgress(session, metrics);
+  const archive = createRunArchive({apply: setArchived, renderRows});
   const runsToggle = $("training-runs-toggle");
-  const runHash = id => "#training/" + encodeURIComponent(id);
+  const runHash = (id, filter = view) => "#training" + (id ? "/" + encodeURIComponent(id) : "") +
+    (filter === "active" ? "" : "?view=" + filter);
   const pending = new Map();
   const isAdmin = () => session.value?.principal.role === "admin";
   const current = (stamp) => opened && stamp === epoch && isAdmin();
@@ -50,6 +80,13 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-notice").hidden = !value;
   }
 
+  function markCurrent(id) {
+    for (const item of $("training-runs").children) {
+      const button = item.querySelector("[data-run-id]");
+      button.setAttribute("aria-current", String(button.dataset.runId === id));
+    }
+  }
+
   function deselect() {
     selection++;
     clearTimeout(timer);
@@ -59,8 +96,9 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-sync").hidden = true;
     $("training-delete-weights").hidden = true;
     $("training-run-details").open = false;
-    for (const li of $("training-runs").children) li.children[0].setAttribute("aria-current", "false");
+    markCurrent(null);
     run = evaluation = null;
+    archive.showRun(null);
     activeModel = undefined;
     pendingDownstream = false;
     metricsLoaded = false;
@@ -82,6 +120,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     opened = false;
     target = null;
     listed.clear();
+    archive.reset();
     busy = false;
     deselect();
     $("training").hidden = true;
@@ -102,45 +141,59 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   function renderRows() {
-    const focused = document.activeElement?.dataset?.runId;
+    const focused = document.activeElement?.dataset;
     const rows = [...listed.values()].map(row => ({
-      row, context: runContext(row), date: shortDate(row.job.created_at),
+      row,
+      name: row.display_name || architectureName(row.training.architecture_id, true) + " · " + datasetName(row.training.dataset_id),
+      date: historyDate(row.job.created_at),
     }));
-    $("training-runs").replaceChildren(...rows.map(({row, context, date}) => {
+    archive.showPage([...listed.values()]);
+    $("training-runs").replaceChildren(...rows.map(({row, name, date}) => {
       const item = document.createElement("li");
       const button = element("button", "");
       button.type = "button";
-      button.className = "quiet";
+      button.className = "quiet training-run-link";
       button.dataset.runId = row.run_id;
       button.setAttribute("aria-current", String(row.run_id === target));
       const time = element("time", date);
       time.dateTime = row.job.created_at;
-      const sameLabel = rows.some(other => other.row !== row && other.row.display_name === row.display_name &&
-        other.context === context && other.date === date);
-      if (sameLabel)
-        time.append(" · …" + row.run_id.slice(-8));
-      const title = element("strong", row.display_name || context);
+      const sameLabel = rows.some(other => other.row !== row && other.name === name && other.date === date);
+      const [first, ...parts] = name.split("_");
+      const title = element("strong", first);
       title.dir = "auto";
-      button.title = title.textContent;
+      for (const part of parts) title.append("_", document.createElement("wbr"), part);
       button.append(title);
-      if (row.display_name) button.append(element("span", context, "training-run-context"));
       const state = element("span", analysisStateLabel(row.job.state));
       state.dataset.state = row.job.state;
-      button.append(time, state);
+      if (row.archived_at && view === "all") state.append(" · Archived");
+      const meta = element("span", "", "training-run-meta");
+      meta.append(time, state);
+      const suffix = sameLabel ? "#" + row.run_id.slice(-8) : "";
+      if (suffix) meta.append(element("span", suffix));
+      button.append(meta);
       button.addEventListener("click", () => chooseFromHistory(row.run_id));
+      const label = suffix ? name + " " + suffix : name;
+      const check = archive.checkbox(row, label);
+      if (check) item.append(check);
       item.append(button);
+      appendRunInfo(item, button, row, label);
       return item;
     }));
-    if (focused) {
-      for (const li of $("training-runs").children)
-        if (li.children[0].dataset.runId === focused) li.children[0].focus({preventScroll: true});
-    }
+    if (focused?.runId || focused?.selectRun || focused?.runInfo)
+      for (const control of $("training-runs").querySelectorAll("button, input"))
+        if ((focused.runId && control.dataset.runId === focused.runId) ||
+            (focused.selectRun && control.dataset.selectRun === focused.selectRun) ||
+            (focused.runInfo && control.dataset.runInfo === focused.runInfo)) control.focus({preventScroll: true});
   }
 
   async function list(preselect = false) {
     const stamp = epoch, request = ++listRequest;
-    const page = await session.json(api + "training-runs?limit=" + (pageSize + 1) + "&offset=" + offset);
+    const page = await session.json(api + "training-runs?archive=" + view + "&limit=" + (pageSize + 1) + "&offset=" + offset);
     if (!current(stamp) || request !== listRequest) return;
+    if (!page.items.length && offset > 0) {
+      offset = Math.max(0, offset - pageSize);
+      return list(preselect);
+    }
     const rows = page.items.slice(0, pageSize).map(row =>
       withSavedChanges(row, run?.run_id === row.run_id ? run : listed.get(row.run_id)));
     listed = new Map(rows.map(row => [row.run_id, row]));
@@ -151,6 +204,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       if (run.weights_deletion_id) showRemovedWeights();
     }
     $("training-empty").hidden = page.items.length !== 0;
+    $("training-empty").textContent = {active: "No current runs.", archived: "No archived runs.", all: "No training runs yet."}[view];
     $("training-prev").hidden = offset === 0;
     $("training-next").hidden = page.items.length <= pageSize;
     if (preselect && target === null && rows.length) navigate(runHash(rows[0].run_id), true);
@@ -181,7 +235,9 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function showTitle() {
     const context = runContext(run);
     $("training-detail-title").textContent = run.display_name || context;
-    $("training-created").textContent = (run.display_name ? context + " · " : "") + "Created " + shortDate(run.job.created_at);
+    $("training-created").textContent = (run.display_name ? context + " · " : "") + "Created " + shortDate(run.job.created_at) +
+      (run.archived_at ? " · Archived " + shortDate(run.archived_at) : "");
+    archive.showRun(run);
   }
 
   function applyName(id, name, revision) {
@@ -207,9 +263,44 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function weightsRemoved(runId, deletionId) {
     const saved = {weights_deletion_id: deletionId};
     if (listed.has(runId)) listed.set(runId, withSavedChanges(listed.get(runId), saved));
-    if (run?.run_id !== runId) return;
-    run = withSavedChanges(run, saved);
-    showRemovedWeights();
+    if (run?.run_id === runId) {
+      run = withSavedChanges(run, saved);
+      showRemovedWeights();
+    }
+    if (opened) void reloadArchivedRuns([runId]);
+  }
+
+  async function reloadArchivedRuns(ids) {
+    const workspace = epoch;
+    const detail = ids.includes(target) ? refreshDetail() : null;
+    await Promise.all([detail, list().catch(error => reportIfCurrent(workspace, error))]);
+  }
+
+  function refreshDetail() {
+    if (run) return refresh(selection);
+    if (target && target !== "new") {
+      // Supersede a detail request started before the mutation was acknowledged.
+      const id = target;
+      target = null;
+      return show(id, view);
+    }
+  }
+
+  async function setArchived(ids, archived) {
+    const account = session.epoch, workspace = epoch;
+    let saved = false;
+    try {
+      await session.request(api + "training-runs/archive", {method: "PATCH", body: {run_ids: ids, archived}});
+      saved = true;
+      if (current(workspace))
+        message(ids.length + (ids.length === 1 ? " run " : " runs ") + (archived ? "archived." : "restored."));
+    } catch (error) {
+      reportIfCurrent(workspace, error);
+    }
+    // A lost confirmation can follow a committed change. Read the current
+    // view rather than guessing which rows still belong in it.
+    if (opened && session.epoch === account) await reloadArchivedRuns(ids);
+    return saved;
   }
 
   function facts() {
@@ -337,24 +428,37 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     }
   }
 
-  async function show(id = null) {
+  async function show(id = null, filter = "active") {
     if (!isAdmin()) return;
     const entering = !opened;
+    const viewChanged = filter !== view;
+    const filterFocused = document.activeElement === $("training-history-view");
     if (entering) {
       opened = true;
       epoch++;
-      offset = 0;
       $("training").hidden = false;
-    } else if (id === target) return;
+    } else if (id === target && !viewChanged) return;
+    if (entering || viewChanged) {
+      view = filter;
+      $("training-history-view").value = view;
+      offset = 0;
+      listed.clear();
+      archive.reset();
+      renderRows();
+      $("training-empty").hidden = $("training-prev").hidden = $("training-next").hidden = true;
+    }
     target = id;
     runsToggle.setAttribute("aria-expanded", String(id === null));
     deselect();
     lock(false);
     message();
     const stamp = selection, workspace = epoch;
-    if (entering || id === null) void list(id === null).catch(error => reportIfCurrent(workspace, error));
+    if (entering || viewChanged || id === null) {
+      const preselect = id === null && (entering || !viewChanged || !window.matchMedia("(max-width: 820px)").matches);
+      void list(preselect).catch(error => reportIfCurrent(workspace, error));
+    }
     if (id === null) {
-      $("training-title").focus();
+      if (!filterFocused) $("training-title").focus();
       return;
     }
     if (id === "new") {
@@ -362,19 +466,16 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       $("training-config-title").focus();
       return;
     }
-    for (const li of $("training-runs").children) {
-      const button = li.children[0];
-      button.setAttribute("aria-current", String(button.dataset.runId === id));
-    }
+    markCurrent(id);
     try {
       const cached = listed.get(id);
       const row = cached || await session.json(route(id));
       if (!selected(stamp)) return;
       run = withSavedChanges(row, listed.get(id));
-      const recheckWeights = Boolean(cached && row.job.state === "succeeded" && !run.weights_deletion_id);
-      if (recheckWeights) facts();
-      void refresh(stamp, recheckWeights);
-      $("training-detail-title").focus();
+      const recheckRun = Boolean(cached && finished(row.job));
+      if (recheckRun) facts();
+      void refresh(stamp, recheckRun);
+      if (!filterFocused) $("training-detail-title").focus();
     } catch (error) {
       if (selected(stamp)) message(error.message, true);
     }
@@ -411,6 +512,9 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   runsToggle.addEventListener("click", () => {
     runsToggle.setAttribute("aria-expanded", String(runsToggle.getAttribute("aria-expanded") !== "true"));
   });
+  $("training-history-view").addEventListener("change", event => {
+    void navigate(runHash(null, event.target.value));
+  });
   $("training-new").addEventListener("click", () => chooseFromHistory("new"));
   $("training-form").addEventListener("submit", event => {
     event.preventDefault();
@@ -421,7 +525,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       offset = 0;
       form.discard();
       listed.set(record.run_id, record);
-      navigate(runHash(record.run_id), true);
+      navigate(runHash(record.run_id, "active"), true);
       const workspace = epoch;
       void list().catch(error => reportIfCurrent(workspace, error));
     });
@@ -457,7 +561,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }));
   $("training-delete-weights").addEventListener("click", () => {
     if (run && !run.weights_deletion_id)
-      void deletion.open("model_weights", run.run_id, run.display_name || run.training.model_version_id);
+      void deletion.open("model_weights", run.run_id, run.display_name || run.training.model_version_id,
+        {archived: Boolean(run.archived_at)});
   });
   $("training-deletion-receipt").addEventListener("click", () => {
     if (run?.weights_deletion_id)
@@ -468,13 +573,9 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       offset = Math.max(0, offset + delta);
       const stamp = epoch;
       message();
-      void list(target === null).catch(error => reportIfCurrent(stamp, error));
-      if (!delta && run) void refresh(selection);
-      else if (!delta && target && target !== "new") {
-        const id = target;
-        target = null;
-        void show(id);
-      }
+      void list(target === null && !window.matchMedia("(max-width: 820px)").matches)
+        .catch(error => reportIfCurrent(stamp, error));
+      if (!delta) void refreshDetail();
     });
 
   return {close, reset, show, weightsRemoved};

@@ -370,12 +370,15 @@ class DeletionRepository:
         *,
         expected_sha256: str,
         store_scope_id: str,
+        archive_run: bool = False,
     ) -> StoredDeletionPlan:
         self.authorize(connection, principal)
         self.database._lock(connection, f"owner:{principal.owner_id}")
         plan, applied = self.plan(connection, principal, plan_id, lock=True)
         if expected_sha256 != plan.preview.sha256:
             raise Conflict("The confirmation does not match the reviewed deletion preview.")
+        if archive_run and plan.preview.target_kind != "model_weights":
+            raise Conflict("Only model weight deletion can archive a training run.")
         if applied:
             return plan
         if plan.preview.expires_at <= datetime.now(UTC):
@@ -435,6 +438,12 @@ class DeletionRepository:
             connection.execute("DELETE FROM regimex_analyses WHERE analysis_id=ANY(%s)", (ids,))
         if selected.model_id is not None:
             detach_candidate_weights(connection, selected.model_id, plan.objects[0], plan_id)
+            if archive_run:
+                connection.execute(
+                    "UPDATE regimex_training_runs SET archived_at=statement_timestamp() "
+                    "WHERE operation_id=%s AND archived_at IS NULL",
+                    (plan.preview.target_id,),
+                )
         if plan.preview.target_kind == "experiment":
             connection.execute(
                 "DELETE FROM regimex_snapshots WHERE snapshot_id=%s", (plan.snapshot_id,)

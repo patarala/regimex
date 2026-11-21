@@ -6,10 +6,11 @@ from typing import Annotated, Literal, Protocol
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Response
-from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, RootModel
+from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, RootModel, field_validator
 
 from regimex import __version__
 from regimex.admin_contracts import (
+    MAX_ARCHIVE_SELECTION,
     MAX_PROGRESS_POINTS,
     AdminKind,
     AdminRunRecord,
@@ -29,6 +30,7 @@ from regimex.admin_contracts import (
     RequestDigest,
     RequestFingerprint,
     SplitPolicy,
+    TrainingArchiveFilter,
     TrainingMetrics,
     TrainingProgress,
     TrainingRunName,
@@ -61,6 +63,10 @@ from regimex.storage import json_bytes
 
 
 class AdminAPIService(Protocol):
+    def set_training_archive(
+        self, principal: Principal, run_ids: tuple[UUID, ...], *, archived: bool
+    ) -> None: ...
+
     def rename_training_run(
         self, principal: Principal, run_id: UUID, update: DisplayNameUpdate
     ) -> TrainingRunName: ...
@@ -166,6 +172,7 @@ class AdminAPIService(Protocol):
         principal: Principal,
         *,
         kind: AdminKind | None = None,
+        archive: TrainingArchiveFilter = "all",
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[AdminRunRecord, ...]: ...
@@ -294,6 +301,7 @@ class AdminRunView(StrictModel):
     job: OperationView
     output: dict[str, JsonValue] | None
     weights_deletion_id: UUID | None = None
+    archived_at: AwareDatetime | None = None
     polling_url: str
     training: TrainingSpec | None = None
     trainable_parameters: int | None = None
@@ -305,6 +313,18 @@ class AdminRunPage(StrictModel):
     items: tuple[AdminRunView, ...]
     limit: int
     offset: int
+
+
+class TrainingArchiveUpdate(StrictModel):
+    run_ids: Annotated[tuple[UUID, ...], Field(min_length=1, max_length=MAX_ARCHIVE_SELECTION)]
+    archived: bool
+
+    @field_validator("run_ids")
+    @classmethod
+    def unique_runs(cls, run_ids: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        if len(set(run_ids)) != len(run_ids):
+            raise ValueError("Each training run must be listed only once.")
+        return run_ids
 
 
 class DatasetView(StrictModel):
@@ -380,6 +400,7 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         if record.output is None
         else {name: value for name, value in record.output.items() if name in allowed},
         weights_deletion_id=record.weights_deletion_id,
+        archived_at=record.archived_at,
         polling_url=f"/api/v1/admin-runs/{record.run_id}",
     )
 
@@ -429,6 +450,7 @@ def install_admin_routes(
     ReferenceBody = Annotated[ReferenceRequest, Depends(_json_dependency(ReferenceRequest))]
     TrainingBody = Annotated[TrainingRunRequest, Depends(_json_dependency(TrainingRunRequest))]
     NameBody = Annotated[DisplayNameUpdate, Depends(_json_dependency(DisplayNameUpdate))]
+    ArchiveBody = Annotated[TrainingArchiveUpdate, Depends(_json_dependency(TrainingArchiveUpdate))]
     EvaluationBody = Annotated[EvaluationRequest, Depends(_json_dependency(EvaluationRequest))]
     PublicationBody = Annotated[PublicationRequest, Depends(_json_dependency(PublicationRequest))]
     app.state.request_models += (
@@ -436,6 +458,7 @@ def install_admin_routes(
         ReferenceRequest,
         TrainingRunRequest,
         DisplayNameUpdate,
+        TrainingArchiveUpdate,
         EvaluationRequest,
         PublicationRequest,
     )
@@ -636,6 +659,15 @@ def install_admin_routes(
             raise NotFound()
         return _run(record)
 
+    @app.patch(
+        "/api/v1/training-runs/archive",
+        status_code=204,
+        openapi_extra=_request_body(TrainingArchiveUpdate),
+    )
+    def set_training_archive(identity: Identity, edit: ArchiveBody) -> Response:
+        service.set_training_archive(identity, edit.run_ids, archived=edit.archived)
+        return Response(status_code=204)
+
     @app.get("/api/v1/training-runs/{run_id}")
     def get_training(run_id: UUID, identity: Identity) -> AdminRunView:
         return checked_run(identity, run_id, "training")
@@ -679,12 +711,17 @@ def install_admin_routes(
         return service.read_evaluation_report(identity, run_id)
 
     @app.get("/api/v1/training-runs")
-    def list_training(identity: Identity, limit: Limit = 100, offset: Offset = 0) -> AdminRunPage:
+    def list_training(
+        identity: Identity,
+        archive: TrainingArchiveFilter = "all",
+        limit: Limit = 100,
+        offset: Offset = 0,
+    ) -> AdminRunPage:
+        runs = service.list_runs(
+            identity, kind="training", archive=archive, limit=limit, offset=offset
+        )
         return AdminRunPage(
-            items=tuple(
-                _run(item)
-                for item in service.list_runs(identity, kind="training", limit=limit, offset=offset)
-            ),
+            items=tuple(_run(item) for item in runs),
             limit=limit,
             offset=offset,
         )

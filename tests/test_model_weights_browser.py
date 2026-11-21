@@ -38,7 +38,7 @@ def test_discard_weights_and_resume_cleanup_with_metrics_and_evaluation(browser:
         "size_bytes": 8192,
         "blockers": [{"message": "An evaluation is still running."}],
     }
-    submissions = []
+    submissions: list[str] = []
 
     def preview(request: Any) -> None:
         assert request.request.method == "POST"
@@ -48,10 +48,14 @@ def test_discard_weights_and_resume_cleanup_with_metrics_and_evaluation(browser:
     def deletion(request: Any) -> None:
         if request.request.method == "POST":
             assert request.request.headers["x-csrf-token"] == "test"
-            assert request.request.post_data_json == {"sha256": receipt["sha256"]}
+            expected_body = {"sha256": receipt["sha256"]}
+            if not submissions:
+                expected_body["archive_run"] = True
+            assert request.request.post_data_json == expected_body
             submissions.append(request.request.url)
             if len(submissions) == 1:
                 api.run["weights_deletion_id"] = deletion_id
+                api.run["archived_at"] = "2026-11-21T12:00:00Z"
             else:
                 receipt.update(state="completed", reclaimed_bytes=8192, pending_bytes=0)
         request.fulfill(json=receipt)
@@ -73,14 +77,19 @@ def test_discard_weights_and_resume_cleanup_with_metrics_and_evaluation(browser:
         page.get_by_role("button", name="Delete model weights").press("Enter")
         dialog = page.get_by_role("dialog")
         confirm = dialog.get_by_role("button", name="Delete", exact=True)
+        archive = dialog.get_by_role("checkbox", name="Also archive this run")
         expect(confirm).to_be_disabled()
+        expect(archive).to_be_hidden()
         expect(dialog).to_contain_text("An evaluation is still running.")
         plan["blockers"] = []
         dialog.get_by_role("button", name="Refresh preview").press("Enter")
         expect(dialog).to_contain_text("8 KiB")
         expect(dialog).to_contain_text("You can still view training metrics and saved evaluations")
+        expect(archive).not_to_be_checked()
+        archive.check()
         confirm.press("Enter")
         expect(dialog).to_contain_text("waiting for cleanup")
+        expect(archive).to_be_hidden()
         dialog.get_by_role("button", name="Close").press("Enter")
         expect(page.get_by_role("button", name="Use as default")).to_be_hidden()
         expect(page.get_by_role("button", name="Delete model weights")).to_be_hidden()
@@ -165,6 +174,7 @@ def test_leaving_run_during_confirmation_keeps_the_receipt_reachable(browser: An
             dialog.get_by_role("button", name="Delete", exact=True).click()
         page.go_back()
         expect(dialog).to_be_hidden()
+        assert confirmations[0].request.post_data_json == {"sha256": receipt["sha256"]}
         api.run["weights_deletion_id"] = deletion_id
         confirmations[0].fulfill(json=receipt)
         page.get_by_text("Pending deletions", exact=True).click()

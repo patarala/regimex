@@ -145,6 +145,9 @@ versions, frozen benchmark choices, models referenced by analyses, and candidate
 with active evaluations or publication jobs are protected. Once confirmed, the run
 links to its receipt through `weights_deletion_id`. Its metrics and completed
 evaluation reports stay available. The candidate leaves the list of usable models.
+Include `"archive_run": true` in the weight deletion confirmation to archive the
+run when the deletion is accepted. The default is `false`. A cleanup retry
+uses the original decision, so restoring the run during cleanup is safe.
 
 A `200` receipt with `state: completed` confirms cleanup. A `202` receipt with
 `state: pending` means the resources have been removed from history but some
@@ -302,13 +305,21 @@ run status and the choices available to the signed-in administrator:
 | --- | --- |
 | `GET /datasets?development_only=true&limit=100&offset=0` | Registered development datasets owned by this account |
 | `GET /training-options/benchmarks?dataset_id=ID` | Eligible open selection reservations for this dataset, returned as `benchmark_ids` |
-| `GET /training-runs?limit=20&offset=0` | Newest training runs first |
+| `GET /training-runs?archive=active&limit=20&offset=0` | Newest training runs first. Choose `active` for unarchived runs, `archived` for the archive, or `all` (the API default). |
+| `PATCH /training-runs/archive` | Archive or restore up to 100 completed runs in one request. |
 | `GET /training-runs/{id}` | Run name and revision, submitted settings, model version ID, job stage, attempts and failure reason |
 | `PATCH /training-runs/{id}/name` | Change the run name using the current revision |
 | `POST /jobs/{id}/cancel` | Request cancellation of a queued or running training job |
 | `GET /training-runs/{id}/progress` | New chart samples from the current training attempt |
 | `GET /training-runs/{id}/metrics` | Selected seed, validation interval macro-F1 and the history saved by the backend. Returns `409` until the run succeeds. |
 | `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model |
+
+Send `{"run_ids":["RUN_UUID"],"archived":true}` to archive a selection, or
+set `archived` to `false` to restore it. Success returns `204`. Every ID must
+identify a distinct run owned by the administrator. If any run is still
+queued, running or cancelling, the entire request returns `409`.
+The list and detail responses include `archived_at`, which is null for a
+current run. Archiving keeps the run URL, weights and publication status.
 
 To follow a running fit, request `/progress`, then pass the returned `attempt`
 and `cursor` as `?attempt=ATTEMPT&after=CURSOR` on the next request. Each page

@@ -318,6 +318,7 @@ def test_restore_object_larger_than_compose_tmpfs(
         "0009_training_run_names",
         "0010_evaluation_reuse",
         "0011_training_progress",
+        "0012_training_metrics",
     ],
 )
 def test_previous_schema_backup_can_be_restored_then_migrated(
@@ -329,18 +330,20 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
     revision: str,
 ) -> None:
     with minimal.source.connection() as connection:
-        connection.execute("DROP TABLE regimex_training_metrics")
-        connection.execute("ALTER TABLE regimex_models DROP COLUMN weights_deletion_id")
-        connection.execute(
-            "ALTER TABLE regimex_deletion_plans ALTER COLUMN source_id SET NOT NULL, "
-            "DROP CONSTRAINT regimex_deletion_plans_source_check, "
-            "DROP CONSTRAINT regimex_deletion_plans_target_kind_check, "
-            "ADD CONSTRAINT regimex_deletion_plans_target_kind_check "
-            "CHECK (target_kind IN ('analysis','experiment'))"
-        )
-        if revision != "0011_training_progress":
+        connection.execute("ALTER TABLE regimex_training_runs DROP COLUMN archived_at")
+        if revision < "0012_training_metrics":
+            connection.execute("DROP TABLE regimex_training_metrics")
+            connection.execute("ALTER TABLE regimex_models DROP COLUMN weights_deletion_id")
+            connection.execute(
+                "ALTER TABLE regimex_deletion_plans ALTER COLUMN source_id SET NOT NULL, "
+                "DROP CONSTRAINT regimex_deletion_plans_source_check, "
+                "DROP CONSTRAINT regimex_deletion_plans_target_kind_check, "
+                "ADD CONSTRAINT regimex_deletion_plans_target_kind_check "
+                "CHECK (target_kind IN ('analysis','experiment'))"
+            )
+        if revision < "0011_training_progress":
             connection.execute("DROP TABLE regimex_training_progress")
-        if revision not in {"0010_evaluation_reuse", "0011_training_progress"}:
+        if revision < "0010_evaluation_reuse":
             connection.execute("DROP TABLE regimex_evaluation_keys")
             connection.execute("DROP INDEX regimex_evaluation_inputs")
         if revision in {"0007_resource_deletion", "0008_analysis_metadata"}:
@@ -1132,6 +1135,9 @@ def scientific_backup(
                 )
                 removal = deletion.apply(principal, preview.plan_id, expected_sha256=preview.sha256)
                 assert removal.state == "completed" and removal.reclaimed_bytes > 0
+                service.repository.set_training_archive(
+                    principal, (training.run_id,), archived=True
+                )
                 discarded = DiscardedCandidate(
                     training.run_id,
                     removal.deletion_id,
@@ -1351,9 +1357,9 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
                 http("/api/v1/benchmarks/registry", token=original.admin_token) == original.registry
             )
             run_url = f"/api/v1/training-runs/{original.discarded.run_id}"
-            assert http(run_url, token=original.admin_token)["weights_deletion_id"] == str(
-                original.discarded.deletion_id
-            )
+            restored_run = http(run_url, token=original.admin_token)
+            assert restored_run["weights_deletion_id"] == str(original.discarded.deletion_id)
+            assert restored_run["archived_at"] is not None
             assert (
                 http(f"{run_url}/metrics", token=original.admin_token) == original.discarded.metrics
             )

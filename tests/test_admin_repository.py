@@ -1079,6 +1079,95 @@ def test_training_progress_pages_are_attempt_scoped_and_released(
         )
 
 
+def test_archive_keeps_terminal_runs_accessible_and_filters_before_pagination(
+    repository: AdminRepository,
+) -> None:
+    owner = principal()
+    _, spec = ready_training(repository)
+
+    def submit(model: str) -> UUID:
+        return repository.submit(
+            owner, spec.model_copy(update={"model_version_id": model}), idempotency_key=model
+        ).run_id
+
+    succeeded = submit(spec.model_version_id)
+    failed = submit("failed-model")
+    cancelled = submit("cancelled-model")
+    queued = submit("queued-model")
+    model = candidate(spec)
+    result = repository.complete_training(
+        succeeded, claim(repository, succeeded), model, metrics=training_metrics(spec)
+    )
+    repository.database.fail_operation(
+        failed, claim(repository, failed), OperationFailure(code="invalid_data", message="Bad data")
+    )
+    repository.database.cancel_operation(owner, cancelled)
+
+    finished = (succeeded, failed, cancelled)
+    repository.set_training_archive(owner, finished, archived=True)
+    archived = repository.get_run(owner, succeeded)
+    assert archived.archived_at is not None
+    assert archived == result.model_copy(update={"archived_at": archived.archived_at})
+    assert repository.database.get_model(spec.model_version_id) == model
+    assert repository.get_training_metrics(owner, succeeded) == training_metrics(spec)
+    assert [
+        run.run_id for run in repository.list_runs(owner, kind="training", archive="active")
+    ] == [queued]
+    assert [
+        run.run_id
+        for run in repository.list_runs(
+            owner, kind="training", archive="archived", limit=1, offset=1
+        )
+    ] == [failed]
+    assert len(repository.list_runs(owner, kind="training", archive="all")) == 4
+    assert repository.list_runs(principal("other"), kind="training", archive="archived") == ()
+
+    repository.set_training_archive(owner, finished, archived=True)
+    assert repository.get_run(owner, succeeded).archived_at == archived.archived_at
+    repository.set_training_archive(owner, finished, archived=False)
+    repository.set_training_archive(owner, finished, archived=False)
+    assert repository.get_run(owner, succeeded) == result
+    assert repository.list_runs(owner, kind="training", archive="archived") == ()
+
+
+def test_archive_batch_refuses_active_foreign_and_nontraining_runs_atomically(
+    repository: AdminRepository,
+) -> None:
+    owner = principal()
+    _, spec = ready_training(repository)
+    run = repository.submit(owner, spec, idempotency_key="training")
+    repository.database.cancel_operation(owner, run.run_id)
+    active = repository.submit(
+        owner, spec.model_copy(update={"model_version_id": "next"}), idempotency_key="next"
+    )
+    other = repository.submit(
+        owner,
+        GenerationSpec(
+            dataset_id="unrelated",
+            plan=RawGenerationPlan(seed=5, experiment_count=3, step_count=64),
+        ),
+        idempotency_key="generation",
+    )
+    with pytest.raises(NotFound):
+        repository.set_training_archive(principal("other"), (run.run_id,), archived=True)
+    with pytest.raises(Forbidden):
+        repository.set_training_archive(principal(admin=False), (run.run_id,), archived=True)
+    for invalid in (uuid4(), other.run_id):
+        with pytest.raises(NotFound):
+            repository.set_training_archive(owner, (run.run_id, invalid), archived=True)
+
+    def reject_active() -> None:
+        with pytest.raises(Conflict):
+            repository.set_training_archive(owner, (run.run_id, active.run_id), archived=True)
+        assert repository.get_run(owner, run.run_id).archived_at is None
+
+    reject_active()
+    claim(repository, active.run_id)
+    reject_active()
+    repository.database.cancel_operation(owner, active.run_id)
+    reject_active()
+
+
 def test_training_name_is_owner_scoped_and_uses_compare_and_swap(
     repository: AdminRepository,
 ) -> None:

@@ -72,6 +72,7 @@ class TrainingAPI:
         self.runs: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
         self.posts: list[tuple[str, dict[str, Any], str]] = []
+        self.archive_requests: list[dict[str, Any]] = []
         self.drop_first_training_response = False
         self.cancellations: list[str] = []
         self.active_model = PREVIOUS
@@ -113,11 +114,36 @@ class TrainingAPI:
         if route.request.method == "POST":
             self.post(route, path)
             return
+        if path == "training-runs/archive" and route.request.method == "PATCH":
+            assert route.request.headers["x-csrf-token"] == "test"
+            body = route.request.post_data_json
+            self.archive_requests.append(body)
+            for row in self.runs:
+                if row["run_id"] in body["run_ids"]:
+                    assert row["job"]["state"] in {"succeeded", "failed", "cancelled"}
+                    row["archived_at"] = "2026-02-01T12:00:00Z" if body["archived"] else None
+            route.fulfill(status=204)
+            return
         if path == "training-runs":
             params = parse_qs(url.query)
             start = int(params["offset"][0])
             limit = int(params["limit"][0])
-            route.fulfill(json={"items": self.runs[start : start + limit]})
+            view = params["archive"][0]
+            rows = [
+                row
+                for row in self.runs
+                if view == "all" or bool(row.get("archived_at")) == (view == "archived")
+            ]
+            route.fulfill(json={"items": rows[start : start + limit]})
+            return
+        if path.startswith("training-runs/") and path.count("/") == 1:
+            run_id = path.split("/")[1]
+            row = (
+                self.run
+                if run_id == RUN_ID
+                else next(r for r in self.runs if r["run_id"] == run_id)
+            )
+            route.fulfill(json=row)
             return
         if path == f"training-runs/{RUN_ID}/progress":
             params = parse_qs(url.query)
@@ -193,7 +219,6 @@ class TrainingAPI:
                     )
                 ]
             },
-            f"training-runs/{RUN_ID}": self.run,
             f"training-runs/{RUN_ID}/actions": {"items": self.actions},
             f"training-runs/{RUN_ID}/metrics": self.metrics,
             f"evaluations/{EVALUATION_ID}/result": evaluation_report(),
@@ -245,7 +270,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
     try:
         page.goto(ORIGIN)
         page.get_by_role("link", name="Training", exact=True).press("Enter")
-        expect(page.get_by_text("No training runs yet.")).to_be_visible()
+        expect(page.get_by_text("No current runs.")).to_be_visible()
         page.get_by_role("button", name="New run", exact=True).press("Enter")
         expect(page.get_by_label("Training labels")).to_have_value("training-labels")
         expect(page.get_by_label("Training labels").locator("option")).to_have_count(1)
@@ -289,10 +314,11 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         )
         seed = page.get_by_label("Training repeat")
         expect(seed).to_have_value("23")
-        expect(seed.locator("option:checked")).to_have_text("Seed 23 (selected repeat)")
+        expect(seed.locator("option:checked")).to_have_text("Seed 23 (used for this model)")
         loss = page.get_by_role("img", name="Training loss by epoch")
         expect(loss.locator("circle title")).to_have_text("Epoch 1: 0.56")
         seed.select_option("11")
+        expect(seed.locator("option:checked")).to_have_text("Seed 11")
         expect(loss.locator("circle title")).to_have_text("Epoch 1: 0.91")
         expect(
             page.get_by_role("img", name="Validation interval macro-F1 by epoch")
@@ -710,7 +736,7 @@ def test_invalid_json_draft_survives_back_forward_until_discarded(browser: Any) 
         page.get_by_role("button", name="Use form").click()
         expect(editor).to_be_focused()
         page.go_back()
-        expect(page.get_by_text("No training runs yet.")).to_be_visible()
+        expect(page.get_by_text("No current runs.")).to_be_visible()
         page.go_forward()
         expect(editor).to_be_visible()
         expect(editor).to_have_value(invalid)
@@ -738,7 +764,7 @@ def test_phone_run_history_collapses_on_selection_and_preserves_keyboard_access(
     page.route(ORIGIN + "/**", api.dispatch)
     toggle = page.get_by_role("button", name="Run history", exact=True)
     new = page.get_by_role("button", name="New run", exact=True)
-    rows = page.locator("#training-runs button")
+    rows = page.locator("#training-runs button[data-run-id]")
     try:
         page.goto(ORIGIN + "/#training/new")
         expect(page.get_by_role("heading", name="New training run")).to_be_in_viewport()
@@ -750,6 +776,10 @@ def test_phone_run_history_collapses_on_selection_and_preserves_keyboard_access(
         expect(toggle).to_have_attribute("aria-expanded", "true")
         page.keyboard.press("Tab")
         expect(new).to_be_focused()
+        page.keyboard.press("Tab")
+        expect(page.get_by_role("combobox", name="Run history view")).to_be_focused()
+        page.keyboard.press("Tab")
+        expect(page.get_by_role("button", name="Select runs")).to_be_focused()
         page.keyboard.press("Tab")
         expect(rows.first).to_be_focused()
         page.get_by_role("button", name="Older").press("Enter")
@@ -788,6 +818,101 @@ def test_analysis_user_has_no_training_controls(browser: Any) -> None:
         page.close()
 
 
+def test_history_preview_exposes_full_metadata_on_hover_and_keyboard_focus(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    dataset = "dataset-12345678abcdef0012345678abcdef00"
+    api.run.update(display_name="Morning session", trainable_parameters=135555)
+    api.run["training"]["dataset_id"] = dataset
+    unnamed = completed_run(str(UUID(int=99)), "training")
+    unnamed.update(trainable_parameters=9315)
+    api.runs = [api.run, unnamed]
+    page = browser.new_page(viewport={"width": 1280, "height": 900}, locale="en-US")
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        new_url = ORIGIN + "/#training/new"
+        page.goto(new_url)
+        named = page.locator(f'button[data-run-id="{RUN_ID}"]')
+        fallback = page.locator(f'button[data-run-id="{unnamed["run_id"]}"]')
+        expect(named.locator("strong")).to_have_text("Morning session")
+        expect(named.locator("time")).to_be_visible()
+        expect(named.locator("[data-state]")).to_have_text("Complete")
+        expect(named).not_to_contain_text("parameters")
+        expect(named).not_to_contain_text(dataset)
+        expect(fallback.locator("strong")).to_have_text("TCN · development")
+        expect(fallback).not_to_contain_text("9,315")
+
+        note = page.get_by_role("tooltip")
+        named.hover()
+        expect(note).to_be_visible()
+        expect(note).to_contain_text("Temporal convolutional network")
+        expect(note).to_contain_text(dataset)
+        expect(note).to_contain_text("135,555")
+        page.clock.install()
+        note.hover()
+        page.keyboard.press("Escape")
+        # Dismissing the overlay can uncover another row beneath a stationary pointer.
+        page.clock.run_for(600)
+        expect(note).to_be_hidden()
+        fallback.hover(position={"x": 8, "y": 8})
+        page.clock.run_for(600)
+        expect(note).to_contain_text("9,315")
+
+        select = page.get_by_role("button", name="Select runs", exact=True)
+        select.hover()
+        select.focus()
+        page.keyboard.press("Tab")
+        expect(named).to_be_focused()
+        expect(note).to_be_visible()
+        expect(named).to_have_attribute("aria-describedby", str(note.get_attribute("id")))
+        page.keyboard.press("Escape")
+        expect(note).to_be_hidden()
+        expect(named).to_be_focused()
+        expect(page).to_have_url(new_url)
+        assert f"training-runs/{RUN_ID}" not in api.pages
+    finally:
+        page.close()
+
+
+def test_touch_history_preview_and_bulk_selection_leave_first_tap_navigation_intact(
+    browser: Any,
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["display_name"] = "Evening session"
+    api.runs.append(api.run)
+    page = browser.new_page(viewport={"width": 390, "height": 800}, has_touch=True)
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        new_url = ORIGIN + "/#training/new"
+        page.goto(new_url)
+        page.get_by_role("button", name="Run history", exact=True).tap()
+        page.get_by_role("button", name="Select runs", exact=True).tap()
+        checkbox = page.get_by_role("checkbox", name="Select Evening session", exact=True)
+        checkbox.tap()
+        expect(checkbox).to_be_checked()
+
+        note = page.get_by_role("tooltip")
+        expect(note).to_be_hidden()
+        details = page.get_by_role("button", name="Details for Evening session", exact=True)
+        details.tap()
+        expect(note).to_be_visible()
+        expect(note).to_contain_text("development")
+        expect(note).not_to_contain_text("parameters")
+        expect(page).to_have_url(new_url)
+        page.get_by_text("1 selected", exact=True).tap()
+        expect(note).to_be_hidden()
+        expect(checkbox).to_be_checked()
+        assert not api.archive_requests
+
+        page.locator(f'button[data-run-id="{RUN_ID}"]').tap()
+        expect(page.get_by_role("heading", name="Evening session")).to_be_focused()
+        expect(page.locator("#training-history")).to_be_hidden()
+        expect(page).to_have_url(f"{ORIGIN}/#training/{RUN_ID}")
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("name", ["W" * 120, "سوق" * 40])
 def test_long_run_names_fit_phone_history_and_detail(browser: Any, name: str) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
@@ -802,8 +927,7 @@ def test_long_run_names_fit_phone_history_and_detail(browser: Any, name: str) ->
         expect(title).to_be_visible()
         assert title.evaluate("el => el.clientWidth >= el.scrollWidth")
         page.get_by_role("button", name="Run history").click()
-        row = page.locator("#training-runs button")
-        expect(row).to_have_attribute("title", name)
+        row = page.locator("#training-runs button[data-run-id]")
         expect(row.locator("strong")).to_have_text(name)
         assert row.evaluate("el => el.clientWidth >= el.scrollWidth")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -847,7 +971,7 @@ def test_run_names_survive_conflicts_and_older_list_responses(browser: Any) -> N
     try:
         page.goto(f"{ORIGIN}/#training/{RUN_ID}")
         heading = page.locator("#training-detail-title")
-        row = page.locator("#training-runs button[aria-current=true]")
+        row = page.locator("#training-runs button[data-run-id][aria-current=true]")
         expect(heading).to_have_text(default_title)
         expect(row.locator("strong")).to_have_text(default_title)
         page.get_by_text("Run details and settings").click()
@@ -869,7 +993,8 @@ def test_run_names_survive_conflicts_and_older_list_responses(browser: Any) -> N
         expect(page.locator("#training-name-status")).to_contain_text("name changed elsewhere")
         save.press("Enter")
         expect(heading).to_have_text("Opening Δ")
-        expect(row.locator(".training-run-context")).to_have_text(default_title)
+        expect(row.locator("strong")).to_have_text("Opening Δ")
+        expect(page.get_by_role("button", name="Details for Opening Δ")).to_be_visible()
         expect(page.get_by_role("button", name="Rename", exact=True)).to_be_focused()
 
         with page.expect_request_finished(
@@ -882,7 +1007,8 @@ def test_run_names_survive_conflicts_and_older_list_responses(browser: Any) -> N
         field.fill("")
         save.press("Enter")
         expect(heading).to_have_text(default_title)
-        expect(row.locator(".training-run-context")).to_have_count(0)
+        expect(row.locator("strong")).to_have_text(default_title)
+        expect(page.get_by_role("button", name=f"Details for {default_title}")).to_be_visible()
         assert received == [
             {"display_name": draft, "expected_revision": 0},
             {"display_name": draft, "expected_revision": 1},
@@ -915,7 +1041,9 @@ def test_training_history_only_offers_another_page_when_one_exists(
         if total == 13:
             older.click()
             expect(rows).to_have_count(1)
-            expect(rows.locator("button")).to_have_attribute("data-run-id", api.runs[-1]["run_id"])
+            expect(rows.locator("button[data-run-id]")).to_have_attribute(
+                "data-run-id", api.runs[-1]["run_id"]
+            )
             expect(older).to_be_hidden()
             newer.click()
             expect(rows).to_have_count(12)
@@ -1248,7 +1376,9 @@ def test_live_updates_preserve_the_selected_repeat_and_open_table(browser: Any) 
         api.metrics["history"] = {"updates": api.progress_rows}
         api.run["job"]["state"] = "succeeded"
         refresh.click()
-        expect(page.locator("#training-score")).to_contain_text("selected repeat (seed 23)")
+        expect(page.locator("#training-score")).to_have_text(
+            "0.72 validation interval macro-F1 · seed 23"
+        )
         expect(repeat).to_have_value("11")
         expect(table).to_be_visible()
         expect(page.get_by_role("link", name="Download metric data")).to_be_visible()
@@ -1509,7 +1639,7 @@ def test_policy_drafts_survive_architecture_changes_and_browser_navigation(brows
         name = page.get_by_label("Run name (optional)")
         name.fill("Weekend baseline")
         page.go_back()
-        expect(page.get_by_text("No training runs yet.")).to_be_visible()
+        expect(page.get_by_text("No current runs.")).to_be_visible()
         page.go_forward()
         expect(new_run).to_be_visible()
         expect(page.get_by_role("button", name="Start training")).to_be_enabled()

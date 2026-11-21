@@ -63,6 +63,12 @@ def test_deletion_is_opt_in_and_bound_to_owner_source_and_run(
     target = f"{PREFIX}/deletions/{plan['plan_id']}"
     assert client.post(target, json={}, headers=headers).status_code == 422
     assert client.post(target, json={"sha256": "0" * 64}, headers=headers).status_code == 409
+    assert (
+        client.post(
+            target, json={"sha256": plan["sha256"], "archive_run": True}, headers=headers
+        ).status_code
+        == 409
+    )
     accepted = client.post(target, json={"sha256": plan["sha256"]}, headers=headers)
     assert accepted.status_code == 200, accepted.text
     receipt = accepted.json()

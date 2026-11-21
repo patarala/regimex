@@ -252,6 +252,8 @@ AdminSpec = Annotated[
     Field(discriminator="kind"),
 ]
 AdminKind = Literal["generation", "reference", "training", "evaluation", "publication"]
+TrainingArchiveFilter = Literal["active", "archived", "all"]
+MAX_ARCHIVE_SELECTION = 100
 
 
 def admin_request_hash(spec: AdminSpec, display_name: str | None) -> str:
@@ -275,6 +277,7 @@ class AdminRunRecord(StrictModel):
     display_name: DisplayName | None = None
     name_revision: Annotated[int, Field(ge=0)] = 0
     weights_deletion_id: UUID | None = None
+    archived_at: AwareDatetime | None = None
 
     @model_validator(mode="after")
     def same_operation(self) -> Self:

@@ -993,7 +993,7 @@ iframe {
   margin: 0;
   overflow-wrap: anywhere;
 }
-#training-rename {
+#training-rename, #training-archive-run {
   min-height: 28px;
   padding: 2px 6px;
   border-color: transparent;
@@ -1033,42 +1033,89 @@ iframe {
 .training-runs li + li {
   margin-top: 3px;
 }
-.training-runs button {
+.training-runs li {
+  position: relative;
+}
+.training-history-tools, .training-selection .actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.training-history-tools {
+  margin-bottom: 8px;
+  justify-content: space-between;
+}
+.training-history-tools :is(select, button), .training-selection button {
+  width: auto;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 13px;
+}
+.training-selection {
+  margin-block: 8px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.training-selection :is(.hint, .actions) {
+  margin: 0;
+}
+.training-runs li:has(input) {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+}
+.training-run-select {
+  display: grid;
+  align-self: stretch;
+  place-items: center;
+  cursor: pointer;
+}
+.training-run-select input {
+  width: 16px;
+  height: 16px;
+  margin: 0 auto;
+  accent-color: var(--ink);
+}
+.training-run-link {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 24px;
   width: 100%;
-  text-align: left;
-  align-items: baseline;
+  text-align: start;
   justify-content: normal;
-  gap: 2px 6px;
+  gap: 2px;
   padding: 9px 10px;
   border-color: transparent;
   font-weight: 400;
   overflow-wrap: anywhere;
 }
-.training-runs :is(strong, .training-run-context) {
+.training-run-link strong {
+  grid-column: 1;
+}
+.training-run-info {
+  position: absolute;
+  inset-block-start: 3px;
+  inset-inline-end: 3px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .training-runs li:not(:hover, :focus-within) .training-run-info[aria-expanded="false"] {
+    opacity: 0;
+  }
+}
+.training-run-meta {
   grid-column: 1 / -1;
-  min-width: 0;
-}
-.training-runs strong {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-}
-.training-run-context {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.training-runs time {
-  font-variant-numeric: tabular-nums;
-}
-.training-runs button > :is(time, span) {
   color: var(--muted);
   font-size: 13px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 10px;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
-.training-runs button > [data-state="failed"] {
+.training-run-meta [data-state="failed"] {
   color: var(--danger);
 }
 /* Use the same selection treatment as the other resource lists. */

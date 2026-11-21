@@ -12,6 +12,7 @@ from psycopg.types.json import Json, Jsonb
 from pydantic import JsonValue, RootModel, TypeAdapter
 
 from regimex.admin_contracts import (
+    MAX_ARCHIVE_SELECTION,
     MAX_PROGRESS_BATCH,
     MAX_PROGRESS_POINTS,
     AdminKind,
@@ -28,6 +29,7 @@ from regimex.admin_contracts import (
     ReferenceGenerationSpec,
     ReferenceSetRecord,
     RequestDigest,
+    TrainingArchiveFilter,
     TrainingMetrics,
     TrainingProgress,
     TrainingRunName,
@@ -41,7 +43,7 @@ from regimex.history_contracts import DisplayNameUpdate, validate_display_name
 from regimex.infrastructure.database import DatabaseRepository, _read_operation
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
 from regimex.infrastructure.training_metrics import read_training_metrics, store_training_metrics
-from regimex.operations import Operation, ResolvedModel, succeed
+from regimex.operations import TERMINAL_STATES, Operation, ResolvedModel, succeed
 from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.service_contracts import (
     CapacityExceeded,
@@ -71,7 +73,7 @@ _CHART_FIELDS = {
 Connection = psycopg.Connection[tuple[object, ...]]
 _RUN_SELECT = (
     "SELECT r.operation_id,r.request,r.output,o.document,t.display_name,"
-    "COALESCE(t.name_revision,0),m.weights_deletion_id FROM regimex_admin_runs r "
+    "COALESCE(t.name_revision,0),m.weights_deletion_id,t.archived_at FROM regimex_admin_runs r "
     "JOIN regimex_operations o ON r.operation_id=o.operation_id "
     "LEFT JOIN regimex_training_runs t ON t.operation_id=r.operation_id "
     "LEFT JOIN regimex_models m ON m.model_version_id=t.committed_model_version_id"
@@ -79,7 +81,16 @@ _RUN_SELECT = (
 
 
 def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
-    run_id, request, output, document, display_name, name_revision, weights_deletion_id = row
+    (
+        run_id,
+        request,
+        output,
+        document,
+        display_name,
+        name_revision,
+        weights_deletion_id,
+        archived_at,
+    ) = row
     operation = _read_operation(document)
     result = AdminRunRecord(
         run_id=cast(UUID, run_id),
@@ -89,6 +100,7 @@ def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
         display_name=cast(str | None, display_name),
         name_revision=cast(int, name_revision),
         weights_deletion_id=cast(UUID | None, weights_deletion_id),
+        archived_at=cast(datetime | None, archived_at),
     )
     if (
         result.output is not None
@@ -666,6 +678,34 @@ class AdminRepository:
                 run_id=run_id, display_name=update.display_name, revision=cast(int, row[0])
             )
 
+    def set_training_archive(
+        self, principal: Principal, run_ids: tuple[UUID, ...], *, archived: bool
+    ) -> None:
+        self.database._admin(principal)
+        if not 1 <= len(run_ids) <= MAX_ARCHIVE_SELECTION or len(set(run_ids)) != len(run_ids):
+            raise ValueError(
+                f"Select between 1 and {MAX_ARCHIVE_SELECTION} distinct training runs."
+            )
+        ids = list(run_ids)
+        with self.database.connection() as connection:
+            # Lock overlapping selections in the same order before changing any member.
+            rows = connection.execute(
+                "SELECT o.state FROM regimex_training_runs t JOIN regimex_operations o "
+                "USING(operation_id) WHERE o.owner_id=%s AND t.operation_id=ANY(%s) "
+                "ORDER BY t.operation_id FOR UPDATE OF t",
+                (principal.owner_id, ids),
+            ).fetchall()
+            if len(rows) != len(ids):
+                raise NotFound()
+            if any(state not in TERMINAL_STATES for (state,) in rows):
+                raise Conflict("Only completed training runs can be archived or restored.")
+            connection.execute(
+                "UPDATE regimex_training_runs SET archived_at="
+                "CASE WHEN %s THEN statement_timestamp() ELSE NULL END "
+                "WHERE operation_id=ANY(%s) AND (archived_at IS NOT NULL)<>%s",
+                (archived, ids, archived),
+            )
+
     def find_replay(
         self,
         principal: Principal,
@@ -737,6 +777,7 @@ class AdminRepository:
         *,
         kind: AdminKind | None = None,
         training: TrainingSpec | None = None,
+        archive: TrainingArchiveFilter = "all",
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[AdminRunRecord, ...]:
@@ -748,6 +789,10 @@ class AdminRepository:
             if kind is not None:
                 query += " AND r.kind=%s"
                 values.append(kind)
+            if archive == "active":
+                query += " AND t.archived_at IS NULL"
+            elif archive == "archived":
+                query += " AND t.archived_at IS NOT NULL"
             if training is not None:
                 query += (
                     " AND r.request->>'model_version_id'=%s AND (r.kind='publication' OR "

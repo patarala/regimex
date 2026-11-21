@@ -32,6 +32,7 @@ from regimex.admin_contracts import (
     ReferenceImportSpec,
     ReferenceSetRecord,
     RequestDigest,
+    TrainingArchiveFilter,
     TrainingMetrics,
     TrainingProgress,
     TrainingRunName,
@@ -401,6 +402,11 @@ class AdminService:
     ) -> TrainingRunName:
         return self.repository.rename_training_run(principal, run_id, update)
 
+    def set_training_archive(
+        self, principal: Principal, run_ids: tuple[UUID, ...], *, archived: bool
+    ) -> None:
+        self.repository.set_training_archive(principal, run_ids, archived=archived)
+
     def training_progress(
         self, principal: Principal, run_id: UUID, *, attempt: int | None, after: int
     ) -> TrainingProgress:
@@ -479,10 +485,13 @@ class AdminService:
         principal: Principal,
         *,
         kind: AdminKind | None = None,
+        archive: TrainingArchiveFilter = "all",
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[AdminRunRecord, ...]:
-        return self.repository.list_runs(principal, kind=kind, limit=limit, offset=offset)
+        return self.repository.list_runs(
+            principal, kind=kind, archive=archive, limit=limit, offset=offset
+        )
 
     def training_actions(
         self, principal: Principal, run_id: UUID, *, limit: int, offset: int

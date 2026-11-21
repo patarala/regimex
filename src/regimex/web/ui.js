@@ -33,6 +33,27 @@ export function option(value, label) {
 }
 
 let closeActiveHelp;
+let dismissedHoverAt;
+
+function resumeHoverOnMovement(event) {
+  if (event.clientX === dismissedHoverAt.x && event.clientY === dismissedHoverAt.y) return false;
+  dismissedHoverAt = undefined;
+  document.removeEventListener("pointermove", resumeHoverOnMovement);
+  return true;
+}
+
+function bindHover(control, enter) {
+  function hover(event) {
+    if (event.pointerType === "touch") return;
+    if (dismissedHoverAt) {
+      // Escape can uncover a different control without the pointer moving.
+      if (!resumeHoverOnMovement(event)) return;
+    } else if (event.type === "pointermove") return;
+    enter();
+  }
+  control.addEventListener("pointerenter", hover);
+  control.addEventListener("pointermove", hover);
+}
 
 function positionHelp(button, note) {
   const anchor = button.getBoundingClientRect();
@@ -55,31 +76,23 @@ function positionHelp(button, note) {
   return true;
 }
 
-export function addFieldHelp(label, field, text) {
-  const heading = element("div", "", "field-heading");
-  const note = element("p", text, "field-help");
-  note.id = field.id + "-help";
+export function bindTooltip(button, note, {field, trigger} = {}) {
   note.setAttribute("role", "tooltip");
   note.setAttribute("popover", "manual");
   note.hidden = true;
-  const button = element("button", "", "field-help-toggle");
-  button.type = "button";
   button.setAttribute("aria-controls", note.id);
-  button.setAttribute("aria-describedby", note.id);
   button.setAttribute("aria-expanded", "false");
-  const icon = element("span", "?");
-  icon.setAttribute("aria-hidden", "true");
-  button.append(icon, element("span", "Help for " + label.textContent, "visually-hidden"));
-  label.replaceWith(heading);
-  heading.append(label, button);
-  field.after(note);
-  field.setAttribute("aria-describedby", note.id);
+  for (const control of [button, field, trigger].filter(Boolean)) {
+    const descriptions = control.getAttribute("aria-describedby");
+    control.setAttribute("aria-describedby", descriptions ? descriptions + " " + note.id : note.id);
+  }
 
-  let pinned = false, timer, observer, listeners;
+  let pinned = false, timer, observer, visibility, listeners, pointerOnNote;
   function close() {
-    if (closeActiveHelp !== close) return;
     clearTimeout(timer);
+    if (closeActiveHelp !== close) return;
     observer.disconnect();
+    visibility?.disconnect();
     listeners.abort();
     if (note.hidePopover && note.matches(":popover-open")) note.hidePopover();
     note.hidden = true;
@@ -88,11 +101,11 @@ export function addFieldHelp(label, field, text) {
     closeActiveHelp = undefined;
   }
   function position() {
-    if (!positionHelp(button, note)) close();
+    if (!note.isConnected || !positionHelp(button, note)) close();
   }
   function show() {
     clearTimeout(timer);
-    if (closeActiveHelp === close) return;
+    if (closeActiveHelp === close || !note.isConnected || !button.getClientRects().length) return;
     closeActiveHelp?.();
     closeActiveHelp = close;
     listeners = new AbortController();
@@ -105,12 +118,17 @@ export function addFieldHelp(label, field, text) {
     }, {capture: true, signal});
     document.addEventListener("keydown", event => {
       if (event.key !== "Escape") return;
+      if (pointerOnNote && note.matches(":hover")) {
+        dismissedHoverAt = pointerOnNote;
+        document.addEventListener("pointermove", resumeHoverOnMovement);
+      }
       if (document.activeElement === field) button.focus({preventScroll: true});
       close();
       event.stopPropagation();
     }, {capture: true, signal});
     document.addEventListener("focusin", event => {
-      if (pinned && event.target !== field && event.target !== button && !note.contains(event.target)) close();
+      if (pinned && event.target !== field && event.target !== trigger && event.target !== button &&
+          !note.contains(event.target)) close();
     }, {signal});
     document.addEventListener("scroll", position, {capture: true, passive: true, signal});
     window.addEventListener("resize", position, {signal});
@@ -120,27 +138,62 @@ export function addFieldHelp(label, field, text) {
     window.addEventListener("pagehide", close, {signal});
     observer = new MutationObserver(position);
     observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "open"]});
+    if (trigger) {
+      // A top-layer note can remain visible after its row scrolls out of a list.
+      visibility = new IntersectionObserver(([entry]) => {
+        if (entry.intersectionRatio < 0.99) close();
+      }, {threshold: 0.99});
+      visibility.observe(button);
+    }
     position();
   }
   function dismissTransient() {
     clearTimeout(timer);
     timer = setTimeout(() => {
       if (closeActiveHelp === close && !pinned && document.activeElement !== button &&
-          !button.matches(":hover") && !note.matches(":hover")) close();
+          !button.matches(":hover") && !note.matches(":hover") && !trigger?.matches(":hover, :focus-visible")) close();
     }, 100);
   }
   button.addEventListener("focus", show);
   button.addEventListener("blur", dismissTransient);
-  button.addEventListener("pointerenter", event => {
-    if (event.pointerType !== "touch") show();
-  });
+  bindHover(button, show);
   button.addEventListener("pointerleave", dismissTransient);
-  note.addEventListener("pointerenter", () => clearTimeout(timer));
+  function trackNotePointer(event) {
+    pointerOnNote = {x: event.clientX, y: event.clientY};
+    clearTimeout(timer);
+  }
+  note.addEventListener("pointerenter", trackNotePointer);
+  note.addEventListener("pointermove", trackNotePointer);
   note.addEventListener("pointerleave", dismissTransient);
   button.addEventListener("click", () => {
     if (pinned) close();
     else { show(); pinned = true; }
   });
+  if (trigger) {
+    trigger.addEventListener("focus", () => { if (trigger.matches(":focus-visible")) show(); });
+    trigger.addEventListener("blur", dismissTransient);
+    bindHover(trigger, () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (trigger.matches(":hover")) show(); }, 300);
+    });
+    trigger.addEventListener("pointerleave", dismissTransient);
+    trigger.addEventListener("click", close);
+  }
+}
+
+export function addFieldHelp(label, field, text) {
+  const heading = element("div", "", "field-heading");
+  const note = element("p", text, "field-help");
+  note.id = field.id + "-help";
+  const button = element("button", "", "field-help-toggle");
+  button.type = "button";
+  const icon = element("span", "?");
+  icon.setAttribute("aria-hidden", "true");
+  button.append(icon, element("span", "Help for " + label.textContent, "visually-hidden"));
+  label.replaceWith(heading);
+  heading.append(label, button);
+  field.after(note);
+  bindTooltip(button, note, {field});
 }
 
 // A navigation inside a mounted iframe would create a browser history entry of its own.
