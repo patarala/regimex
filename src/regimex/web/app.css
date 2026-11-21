@@ -1282,6 +1282,16 @@ iframe {
 #training-policy {
   margin-top: 16px;
 }
+.training-seed-entry {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+.training-seed-entry input {
+  flex: 1 1 9rem;
+  margin: 0;
+}
 .field-heading {
   display: flex;
   align-items: center;

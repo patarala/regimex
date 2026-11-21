@@ -116,8 +116,13 @@ selection on that reservation. The form lists the benchmarks available to your a
    overrides.
 
    The **Logistic baseline** uses one seed and compares regularization settings.
-   For the **Temporal convolutional network (TCN)**, each seed trains a separate
-   model. **Model size** shows each preset's channel count and number of trainable
+   Choose **Generate seed** for a fresh value. For the **Temporal convolutional
+   network (TCN)**, set **Training repeats** to the number of models to train.
+   The form fills in one seed per repeat. Choose **Generate seeds** for a fresh
+   set, or paste the seeds from an earlier run to reuse them. You'll find the
+   saved list under `policy.seeds` in **Run details and settings**.
+
+   **Model size** shows each TCN preset's channel count and number of trainable
    parameters. For a custom layout, edit **Model configuration (JSON)** under
    **Advanced settings**. The run history also shows the parameter count beside
    the architecture. [TCN architecture and measurements](tcn.md)

@@ -47,6 +47,7 @@ def create_service(settings: ServiceSettings) -> AnalysisService:
         settings.work_root,
         max_pending=settings.max_pending_per_owner,
         integration_max_pending=settings.integration_max_pending,
+        max_training_seeds=settings.max_training_seeds,
         max_owner_storage_bytes=settings.max_owner_storage_bytes,
         max_integration_storage_bytes=settings.max_integration_storage_bytes,
         heartbeat_seconds=settings.heartbeat_seconds,

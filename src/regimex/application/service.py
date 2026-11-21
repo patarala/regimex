@@ -198,6 +198,7 @@ class AnalysisService:
         *,
         max_pending: int = 8,
         integration_max_pending: int = 32,
+        max_training_seeds: int | None = None,
         heartbeat_seconds: float = 10.0,
         stale_seconds: int = 120,
         cache_budget_bytes: int = 512 * 1024**2,
@@ -228,6 +229,7 @@ class AnalysisService:
         self.work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.max_pending = max_pending
         self.integration_max_pending = integration_max_pending
+        self.max_training_seeds = max_training_seeds
         self.heartbeat_seconds = heartbeat_seconds
         self.stale_seconds = stale_seconds
         self.cache_budget_bytes = cache_budget_bytes
@@ -656,7 +658,10 @@ class AnalysisService:
     def list_architectures(self, principal: Principal) -> tuple[ArchitectureInfo, ...]:
         if principal.role != "admin":
             raise Forbidden()
-        return tuple(descriptor.describe() for descriptor in self.registry.descriptors)
+        return tuple(
+            descriptor.describe(max_training_seeds=self.max_training_seeds)
+            for descriptor in self.registry.descriptors
+        )
 
     def register_bundle(
         self,

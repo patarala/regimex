@@ -28,7 +28,8 @@ const help = {
   batch_size: "Maximum number of instrument sequences grouped into one training batch. Larger batches use more memory.",
   learning_rate: "Controls the size of each weight update. Lower values change the weights more gradually.",
   weight_decay: "Shrinks weights at each optimizer step. Larger values shrink them more. Set to zero to turn it off.",
-  seeds: "Enter one integer per repeat, separated by commas. Use the same seeds when comparing settings.",
+  repeats: "Each repeat trains the model with a different seed. Increasing the count adds seeds to the list.",
+  seeds: "Generate a set or enter one integer per repeat, separated by commas. Reuse the same seeds to compare settings.",
 };
 
 class PolicyError extends Error {
@@ -36,6 +37,30 @@ class PolicyError extends Error {
     super(message);
     this.field = field;
   }
+}
+
+function repeatLimit(architecture) {
+  if (architecture.architecture_id === "baseline") return 1;
+  const workspaceLimit = architecture.max_training_seeds ?? 64;
+  return architecture.architecture_id === "tcn" ? Math.min(32, workspaceLimit) : workspaceLimit;
+}
+
+function isSeed(value) {
+  return Number.isInteger(value) && value >= 0 && value <= maxSeed;
+}
+
+function extendSeeds(seeds, count, excluded = []) {
+  const result = [...new Set(seeds.filter(isSeed))].slice(0, count);
+  const used = new Set([...excluded, ...result]);
+  const word = new Uint32Array(1);
+  while (result.length < count) {
+    const seed = crypto.getRandomValues(word)[0];
+    if (!used.has(seed)) {
+      result.push(seed);
+      used.add(seed);
+    }
+  }
+  return result;
 }
 
 function validate(architecture, raw) {
@@ -62,14 +87,14 @@ function validate(architecture, raw) {
   if (policy.selection_metric !== selectionMetric)
     throw new PolicyError("selection_metric", "The supported selection metric is " + selectionMetric + ".");
   if (!Array.isArray(policy.seeds) || !policy.seeds.length ||
-      policy.seeds.some(seed => !Number.isInteger(seed) || seed < 0 || seed > maxSeed))
+      !policy.seeds.every(isSeed))
     throw new PolicyError("seeds", "Seeds must be whole numbers between 0 and 4294967295.");
   if (new Set(policy.seeds).size !== policy.seeds.length)
     throw new PolicyError("seeds", "Enter each seed only once.");
   if (architecture.architecture_id === "baseline" && policy.seeds.length !== 1)
     throw new PolicyError("seeds", "The logistic baseline requires exactly one seed.");
-  if (architecture.architecture_id === "tcn" && policy.seeds.length > 32)
-    throw new PolicyError("seeds", "Choose at most 32 seeds for TCN.");
+  if (policy.seeds.length > repeatLimit(architecture))
+    throw new PolicyError("seeds", `Choose at most ${repeatLimit(architecture)} training repeats.`);
   for (const key of numeric) {
     const {min, max, step, title, fallback} = numbers[key];
     const value = key in raw ? raw[key] : fallback;
@@ -103,7 +128,8 @@ function automaticCheckpoints(updates) {
 
 export function policyDraft(architecture, rawPolicy, previousDraft = null) {
   const policy = validate(architecture, rawPolicy);
-  const draft = {...previousDraft, ...policy, budget: policy.budget || "epochs", seeds: policy.seeds.join(", ")};
+  const draft = {...previousDraft, ...policy, budget: policy.budget || "epochs",
+    seeds: policy.seeds.join(", "), repeats: policy.seeds.length};
   if (policy.budget === "updates") {
     draft.optimizer = previousDraft?.optimizer ?? architecture.default_training_policy.optimizer;
     const automatic = automaticCheckpoints(policy.updates);
@@ -161,7 +187,7 @@ export function createTrainingPolicy(container) {
     input.min = min;
     if (max !== undefined) input.max = max;
     input.step = step;
-    add(key, title, input);
+    return add(key, title, input);
   }
 
   function choice(key, title, choices, labels) {
@@ -170,12 +196,53 @@ export function createTrainingPolicy(container) {
     return add(key, title, select);
   }
 
+  function seedControls(single) {
+    const repeats = single ? null : number("repeats", {
+      title: "Training repeats", min: 1, max: repeatLimit(architecture),
+    });
+    const seeds = single ? number("seeds", {title: "Random seed", min: 0, max: maxSeed})
+      : add("seeds", "Random seeds", element("input"));
+    seeds.required = true;
+    const entry = element("div", "", "training-seed-entry");
+    if (!single) seeds.parentElement.classList.add("training-wide");
+    seeds.before(entry);
+    const generate = element("button", single ? "Generate seed" : "Generate seeds", "quiet");
+    generate.type = "button";
+    entry.append(seeds, generate);
+
+    const current = () => integerList(seeds.value);
+    if (repeats) {
+      let previous;
+      repeats.addEventListener("input", () => {
+        if (!repeats.validity.valid) return;
+        // Keep the original prefix while a multi-digit count is still being typed.
+        previous ??= current();
+        const resized = extendSeeds(previous, repeats.valueAsNumber);
+        if (resized.length > previous.length) previous = resized;
+        seeds.value = resized.join(", ");
+      });
+      repeats.addEventListener("blur", () => { previous = null; });
+      seeds.addEventListener("input", () => {
+        const list = current();
+        if (list.every(isSeed)) repeats.value = list.length;
+      });
+    }
+    generate.addEventListener("click", () => {
+      if (repeats && !repeats.reportValidity()) {
+        repeats.focus();
+        return;
+      }
+      seeds.value = extendSeeds([], repeats?.valueAsNumber ?? 1, current()).join(", ");
+      seeds.dispatchEvent(new Event("input", {bubbles: true}));
+    });
+  }
+
   function render() {
     container.replaceChildren();
     fields.clear();
     if (!architecture) return;
     if (architecture.architecture_id === "baseline") {
-      number("seeds", {title: "Random seed", min: 0, max: maxSeed});
+      seedControls(true);
       return;
     }
     const optimizers = architecture.supported_optimizers || [values.optimizer];
@@ -199,15 +266,14 @@ export function createTrainingPolicy(container) {
       if (optimizers.length > 1) choice("optimizer", "Optimizer", optimizers, optimizerNames);
     }
     for (const key of commonNumbers) number(key);
-    const seeds = element("input");
-    seeds.required = true;
-    add("seeds", "Random seeds", seeds);
+    seedControls(false);
   }
 
   function select(next, draft = null) {
     architecture = next;
     const defaults = architecture?.default_training_policy;
-    values = defaults ? {...defaults, seeds: defaults.seeds.join(", "), budget: "epochs", ...draft} : {};
+    const seeds = defaults?.seeds.slice(0, repeatLimit(next));
+    values = defaults ? {...defaults, seeds: seeds.join(", "), repeats: seeds.length, budget: "epochs", ...draft} : {};
     render();
   }
 
@@ -224,8 +290,8 @@ export function createTrainingPolicy(container) {
     const policy = fixed
       ? {budget: "updates", optimizer: "adamw", selection_metric: defaults.selection_metric, seeds}
       : {...defaults, optimizer: fields.get("optimizer")?.value ?? defaults.optimizer, seeds};
-    for (const [key, field] of fields)
-      if (field.type === "number") policy[key] = field.valueAsNumber;
+    for (const key of [...(fixed ? ["updates"] : epochNumbers), ...commonNumbers])
+      policy[key] = fields.get(key).valueAsNumber;
     if (fixed) {
       const schedule = fields.get("validation_updates").value.trim();
       policy.validation_updates = schedule ? integerList(schedule) : automaticCheckpoints(policy.updates);

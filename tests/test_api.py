@@ -78,6 +78,27 @@ def authorization(token: str = TOKEN) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def test_architecture_catalog_reports_the_configured_training_seed_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from regimex.service_bootstrap import create_service
+    from regimex.service_settings import ServiceSettings
+
+    monkeypatch.setenv("REGIMEX_DATABASE_DSN", "dbname=not_connected")
+    monkeypatch.setenv("REGIMEX_OBJECT_ROOT", str(tmp_path / "objects"))
+    monkeypatch.setenv("REGIMEX_WORK_ROOT", str(tmp_path / "work"))
+    monkeypatch.setenv("REGIMEX_MAX_TRAINING_SEEDS", "5")
+    service = create_service(ServiceSettings.from_env())
+    admin = Principal(owner_id="fixture-admin", role="admin", token_id=uuid4())
+    monkeypatch.setattr(service, "authenticate", lambda _: admin)
+    with TestClient(create_app(service)) as client:
+        catalog = client.get("/api/v1/architectures", headers=authorization())
+        detail = client.get("/api/v1/architectures/tcn", headers=authorization())
+    assert catalog.status_code == detail.status_code == 200
+    assert {item["max_training_seeds"] for item in catalog.json()["items"]} == {5}
+    assert detail.json()["max_training_seeds"] == 5
+
+
 def test_validation_uses_strict_json_contract_without_model_or_storage(
     boundary_client: TestClient,
 ) -> None:

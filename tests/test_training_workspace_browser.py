@@ -574,6 +574,65 @@ def test_epoch_policy_uses_catalog_defaults_and_focuses_the_invalid_field(browse
         page.close()
 
 
+def test_repeat_count_and_generated_seeds_round_trip_through_run_json(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page(viewport={"width": 320, "height": 640})
+    page.route(ORIGIN + "/**", api.dispatch)
+    architecture = {**TCN, "default_training_policy": POLICY, "max_training_seeds": 5}
+    page.route(
+        ORIGIN + "/api/v1/architectures*", lambda r: r.fulfill(json={"items": [architecture]})
+    )
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        page.get_by_text("Training policy", exact=True).click()
+        repeats = page.get_by_label("Training repeats", exact=True)
+        seeds = page.get_by_label("Random seeds", exact=True)
+        expect(repeats).to_have_value(str(len(POLICY["seeds"])))
+        seeds.fill("0, 4294967295, 7")
+        expect(repeats).to_have_value("3")
+        repeats.fill("1")
+        expect(seeds).to_have_value("0")
+        # Each draw repeats once so extending a list must handle collisions.
+        page.evaluate("""() => {
+            let draws = 0;
+            crypto.getRandomValues = words => {
+                for (let i = 0; i < words.length; i++) words[i] = Math.floor(draws++ / 2);
+                return words;
+            };
+        }""")
+        expect(repeats).to_have_attribute("max", "5")
+        repeats.fill("5")
+        expanded = [int(value) for value in seeds.input_value().split(",")]
+        assert len(expanded) == len(set(expanded)) == 5 and expanded[0] == 0
+        repeats.fill("6")
+        start = page.get_by_role("button", name="Start training")
+        start.click()
+        expect(repeats).to_be_focused()
+        assert not api.posts
+
+        repeats.fill("4")
+        generate = page.get_by_role("button", name="Generate seeds", exact=True)
+        for control in (repeats, seeds, generate):
+            box = control.bounding_box()
+            assert box and 0 <= box["x"] < box["x"] + box["width"] <= 320
+        generate.press("Enter")
+        generated = [int(value) for value in seeds.input_value().split(",")]
+        assert len(generated) == len(set(generated)) == 4 and generated != expanded[:4]
+        assert all(0 <= value < 2**32 for value in generated)
+        page.get_by_role("button", name="Edit JSON").click()
+        expected_policy = {**POLICY, "seeds": generated}
+        editor = page.get_by_label("Run configuration (JSON)")
+        assert json.loads(editor.input_value())["policy"] == expected_policy
+        page.get_by_role("button", name="Use form").click()
+        expect(repeats).to_have_value("4")
+        start.click()
+        expect(page.get_by_role("heading", name="TCN · development")).to_be_visible()
+        assert api.posts[0][1]["policy"] == expected_policy
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("custom", [False, True], ids=["automatic", "custom"])
 def test_update_budget_submits_only_update_settings(browser: Any, custom: bool) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
@@ -643,6 +702,7 @@ def test_pasting_a_policy_preserves_the_rest_of_the_run(browser: Any, submit_in_
             expect(page.get_by_label("Updates per seed")).to_have_value("6")
             expect(page.get_by_label("Learning rate")).to_have_value("0.025")
             expect(page.get_by_label("Random seeds", exact=True)).to_have_value("4")
+            expect(page.get_by_label("Training repeats", exact=True)).to_have_value("1")
         start.click()
         expect(page.get_by_role("heading", name="Checkpoint run")).to_be_visible()
         assert api.posts[0][1] == {**SPEC, "display_name": "Checkpoint run", "policy": policy}
@@ -1618,9 +1678,13 @@ def test_policy_drafts_survive_architecture_changes_and_browser_navigation(brows
         architecture.select_option("baseline")
         seed = page.get_by_label("Random seed", exact=True)
         expect(seed).to_have_value("11")
+        seed.fill("")
+        page.get_by_role("button", name="Generate seed", exact=True).click()
+        assert 0 <= int(seed.input_value()) < 2**32
         expect(parameters).to_have_value("{}")
         for label in (
             "Training budget",
+            "Training repeats",
             "Batch size",
             "Learning rate",
             "Weight decay",

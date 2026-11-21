@@ -228,6 +228,7 @@ class ArchitectureInfo(StrictModel):
     parameter_schema: dict[str, JsonValue]
     sizes: tuple[ModelSize, ...] = ()
     default_training_policy: TrainingPolicy
+    max_training_seeds: Annotated[int, Field(ge=1)] | None = None
     supported_optimizers: tuple[Optimizer, ...]
     supported_training_budgets: tuple[TrainingBudget, ...] = ("epochs",)
     required_observation_fields: tuple[ObservationField, ...]
@@ -325,7 +326,7 @@ class ArchitectureDescriptor(StrictModel):
                 + ", ".join(sorted(missing))
             )
 
-    def describe(self) -> ArchitectureInfo:
+    def describe(self, *, max_training_seeds: int | None = None) -> ArchitectureInfo:
         return ArchitectureInfo(
             descriptor_version=self.descriptor_version,
             architecture_id=self.architecture_id,
@@ -334,6 +335,7 @@ class ArchitectureDescriptor(StrictModel):
             parameter_schema=self.parameters_model.model_json_schema(),
             sizes=self.sizes,
             default_training_policy=self.default_training_policy,
+            max_training_seeds=max_training_seeds,
             supported_optimizers=self.supported_optimizers,
             supported_training_budgets=self.supported_training_budgets,
             required_observation_fields=self.required_observation_fields,
