@@ -447,9 +447,16 @@ class AdminService:
         return self.repository.get_dataset(principal, dataset_id)
 
     def list_datasets(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        development_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> tuple[DatasetRecord, ...]:
-        return self.repository.list_datasets(principal, limit=limit, offset=offset)
+        return self.repository.list_datasets(
+            principal, development_only=development_only, limit=limit, offset=offset
+        )
 
     def get_reference_set(self, principal: Principal, reference_set_id: str) -> ReferenceSetRecord:
         return self.repository.get_reference_set(principal, reference_set_id)

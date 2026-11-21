@@ -288,10 +288,12 @@ regularization candidates under the epoch policy. For a fixed TCN budget, set
 ```
 
 Training returns `202` with the run URL in `Location`. These routes report
-the signed-in administrator's runs:
+run status and the choices available to the signed-in administrator:
 
 | Request | Result |
 | --- | --- |
+| `GET /datasets?development_only=true&limit=100&offset=0` | Registered development datasets owned by this account |
+| `GET /training-options/benchmarks?dataset_id=ID` | Eligible open selection reservations for this dataset, returned as `benchmark_ids` |
 | `GET /training-runs?limit=20&offset=0` | Newest training runs first |
 | `GET /training-runs/{id}` | Submitted settings, model version ID, job stage, attempts and failure reason |
 | `POST /jobs/{id}/cancel` | Request cancellation of a queued or running training job |

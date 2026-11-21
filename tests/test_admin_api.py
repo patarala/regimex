@@ -106,6 +106,8 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
     [
         ("POST", "/api/v1/models/{identifier}/publish", {"evaluation_run_id": str(uuid4())}),
         ("GET", "/api/v1/datasets/{identifier}", None),
+        ("GET", "/api/v1/training-options/benchmarks?dataset_id={identifier}", None),
+        ("GET", "/api/v1/training-options/benchmarks?dataset_id=desk%00north", None),
         ("GET", "/api/v1/reference-sets/{identifier}/annotations", None),
         ("POST", "/api/v1/benchmarks/{identifier}/open", None),
         ("GET", "/api/v1/benchmarks?benchmark_id=desk%00north", None),
@@ -678,6 +680,11 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         "/api/v1/benchmarks/history/datasets", headers=headers, json={"dataset_id": dataset_id}
     )
     assert history.status_code == 200, history.text
+    registered = context.client.get(
+        "/api/v1/datasets", params={"development_only": True}, headers=headers
+    )
+    assert registered.status_code == 200
+    assert [item["dataset_id"] for item in registered.json()["items"]] == [dataset_id]
     namespaces = sorted(
         {
             member["source_namespace"]
@@ -710,10 +717,22 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert reservation.status_code == 201, reservation.text
     detail = context.client.get(reservation.headers["Location"], headers=headers)
     assert detail.status_code == 200 and detail.json() == reservation.json()
+
+    def assert_benchmark_options(expected_ids: list[str]) -> None:
+        options = context.client.get(
+            "/api/v1/training-options/benchmarks",
+            params={"dataset_id": dataset_id},
+            headers=headers,
+        )
+        assert options.status_code == 200, options.text
+        assert options.json() == {"benchmark_ids": expected_ids}
+
+    assert_benchmark_options([])
     started = context.client.post(
         "/api/v1/benchmarks/selection-start", params=benchmark_query, headers=headers
     )
     assert started.status_code == 200, started.text
+    assert_benchmark_options([benchmark_id])
     tcn = architecture == "tcn"
     training = {
         "dataset_id": dataset_id,
@@ -813,6 +832,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         json={"model_version_id": model_id},
     )
     assert frozen.status_code == 200, frozen.text
+    assert_benchmark_options([])
     assert (
         context.client.post(
             "/api/v1/training-runs", json=training, headers=context.headers

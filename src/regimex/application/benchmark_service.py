@@ -109,6 +109,9 @@ class BenchmarkService:
     def get_benchmark(self, principal: Principal, benchmark_id: str) -> BenchmarkView:
         return self.repository.get_benchmark(principal, benchmark_id)
 
+    def selection_benchmarks(self, principal: Principal, dataset_id: str) -> tuple[str, ...]:
+        return self.repository.selection_benchmarks(principal, dataset_id)
+
     @staticmethod
     def _reserved_dataset_keys(connection: Connection) -> set[tuple[str, ...]]:
         rows = connection.execute(

@@ -19,11 +19,13 @@ from regimex.benchmark_contracts import (
 )
 from regimex.benchmarks import (
     BenchmarkRegistry,
+    BenchmarkReservation,
     RegistryRevision,
     _member_keys,
     _preserves_history,
     exposure_keys_overlap,
 )
+from regimex.data_catalog import CURRENT_TRAINING_SEMANTICS
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.service_contracts import Conflict, Forbidden, ModelRecord, NotFound, Principal
@@ -153,13 +155,17 @@ class BenchmarkRepository:
             return self.view(connection, self.load(connection), principal.owner_id, benchmark_id)
 
     @staticmethod
-    def require_inventory_scope(state: RegistryState, view: BenchmarkView) -> None:
-        """A later assertion cannot narrow the scope that justified this benchmark."""
+    def _has_inventory_scope(state: RegistryState, reservation: BenchmarkReservation) -> bool:
         attestation = state.registry.history_attestation
-        required = set(view.reservation.inventory_attestation.source_namespaces)
-        if view.reservation.freeze is not None:
-            required.update(view.reservation.freeze.inventory_attestation.source_namespaces)
-        if attestation is None or not required <= set(attestation.source_namespaces):
+        required = set(reservation.inventory_attestation.source_namespaces)
+        if reservation.freeze is not None:
+            required.update(reservation.freeze.inventory_attestation.source_namespaces)
+        return attestation is not None and required.issubset(attestation.source_namespaces)
+
+    @classmethod
+    def require_inventory_scope(cls, state: RegistryState, view: BenchmarkView) -> None:
+        """A later assertion cannot narrow the scope that justified this benchmark."""
+        if not cls._has_inventory_scope(state, view.reservation):
             raise Forbidden(
                 "The current inventory attestation must retain "
                 "the reserved and frozen source scope."
@@ -171,6 +177,70 @@ class BenchmarkRepository:
             connection, view.binding.owner_id, view.binding.dataset_id
         )
         require_selection_dataset(dataset.manifest)
+
+    @staticmethod
+    def _selection_is_open(reservation: BenchmarkReservation) -> bool:
+        return (
+            reservation.selection_started_at is not None
+            and reservation.freeze is None
+            and reservation.opened_at is None
+        )
+
+    @staticmethod
+    def _has_development_history(
+        connection: Connection, state: RegistryState, owner_id: str, dataset: DatasetRecord
+    ) -> bool:
+        row = connection.execute(
+            "SELECT dataset_sha256 FROM regimex_benchmark_history_datasets "
+            "WHERE dataset_id=%s AND owner_id=%s",
+            (dataset.dataset_id, owner_id),
+        ).fetchone()
+        return (
+            dataset.owner_id == owner_id
+            and row == (dataset.manifest.content_sha256,)
+            and any(
+                item.dataset_sha256 == dataset.manifest.content_sha256
+                for item in state.registry.history
+            )
+        )
+
+    def selection_benchmarks(self, principal: Principal, dataset_id: str) -> tuple[str, ...]:
+        self.database._admin(principal)
+        with self.database.connection() as connection:
+            # A consistent snapshot keeps browsing from blocking a freeze. Submission
+            # checks the same reservation again under the registry lock.
+            connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            dataset = AdminRepository._dataset(connection, principal.owner_id, dataset_id)
+            state = self.load(connection)
+            if not dataset.manifest.has_native_seed_groups or not self._has_development_history(
+                connection, state, principal.owner_id, dataset
+            ):
+                return ()
+            candidates = [
+                reservation.benchmark_id
+                for reservation in state.registry.benchmarks
+                if self._selection_is_open(reservation)
+                and self._has_inventory_scope(state, reservation)
+                and reservation.reference.semantics == CURRENT_TRAINING_SEMANTICS
+            ]
+            if not candidates:
+                return ()
+            rows = connection.execute(
+                "SELECT b.benchmark_id,d.document,c.benchmark_id "
+                "FROM regimex_benchmark_bindings b JOIN regimex_datasets d "
+                "ON d.dataset_id=b.dataset_id AND d.owner_id=b.owner_id "
+                "LEFT JOIN regimex_benchmark_choices c ON c.benchmark_id=b.benchmark_id "
+                "WHERE b.owner_id=%s AND b.benchmark_id=ANY(%s) ORDER BY b.benchmark_id",
+                (principal.owner_id, candidates),
+            )
+            eligible = []
+            for benchmark_id, document, frozen_id in rows:
+                if frozen_id is not None:
+                    raise Conflict("The benchmark freeze and immutable model binding disagree.")
+                reserved = DatasetRecord.model_validate_json(json_bytes(document))
+                if reserved.manifest.has_native_seed_groups:
+                    eligible.append(str(benchmark_id))
+            return tuple(eligible)
 
     @classmethod
     def validate_selection(
@@ -184,25 +254,10 @@ class BenchmarkRepository:
         cls.require_inventory_scope(state, view)
         require_selection_dataset(dataset.manifest)
         cls.require_reserved_seed_groups(connection, view)
-        reservation = view.reservation
-        if (
-            reservation.selection_started_at is None
-            or reservation.freeze is not None
-            or reservation.opened_at is not None
-            or state.registry.history_attestation is None
-        ):
+        if not cls._selection_is_open(view.reservation):
             raise Forbidden("Selection requires a current attestation and an open selection phase.")
-        row = connection.execute(
-            "SELECT dataset_sha256 FROM regimex_benchmark_history_datasets "
-            "WHERE dataset_id=%s AND owner_id=%s",
-            (dataset.dataset_id, owner_id),
-        ).fetchone()
-        if (
-            spec.dataset_id != dataset.dataset_id
-            or dataset.owner_id != owner_id
-            or row != (dataset.manifest.content_sha256,)
-            or dataset.manifest.content_sha256
-            not in {item.dataset_sha256 for item in state.registry.history}
+        if spec.dataset_id != dataset.dataset_id or not cls._has_development_history(
+            connection, state, owner_id, dataset
         ):
             raise Forbidden(
                 "The complete immutable development dataset must be registered as history."

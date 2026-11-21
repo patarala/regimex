@@ -16,6 +16,7 @@ from pydantic import ConfigDict, Field, model_validator
 from regimex.benchmarks import DirectionSemantics, ReferenceProvenance
 from regimex.contracts import MAX_STEPS, Identifier, Observation, Seed, StrictModel
 from regimex.directions import (
+    DECODER_VERSION,
     DIRECTION_POLICY,
     AnalysisConfig,
     DirectionAnnotations,
@@ -39,6 +40,11 @@ def content_hash(value: object) -> str:
 
 def analysis_profile_hash(profile: AnalysisConfig) -> str:
     return content_hash(profile.model_dump(mode="json"))
+
+
+CURRENT_TRAINING_SEMANTICS = DirectionSemantics(
+    profile_sha256=analysis_profile_hash(AnalysisConfig()), decoder_version=DECODER_VERSION
+)
 
 
 class SplitGroup(CatalogRecord):
@@ -177,11 +183,15 @@ class DatasetPayload(CatalogRecord):
 class DatasetManifest(DatasetPayload):
     content_sha256: SHA256
 
-    def require_native_seed_groups(self) -> None:
-        if any(
-            member.source_id == "regimex-exchange" and member.split_group.seed is None
+    @property
+    def has_native_seed_groups(self) -> bool:
+        return all(
+            member.source_id != "regimex-exchange" or member.split_group.seed is not None
             for member in self.members
-        ):
+        )
+
+    def require_native_seed_groups(self) -> None:
+        if not self.has_native_seed_groups:
             raise ValueError(
                 "A native market snapshot in this dataset has no registered seed. "
                 "Regenerate it with its original seed and create a new dataset for model selection."

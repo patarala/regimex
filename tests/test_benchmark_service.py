@@ -45,7 +45,7 @@ from regimex.data_catalog import (
     seal_dataset,
     seal_reference_set,
 )
-from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
+from regimex.directions import DECODER_VERSION, DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
 from regimex.exports import ExportPayloadV2, seal_export
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
 from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, TrainingEvidence
@@ -108,6 +108,7 @@ def dataset(
     name: str,
     offset: int,
     *,
+    owner: str = "administrator",
     run_id: str | None = None,
     source_namespace: str = "benchmark-fixtures",
     unknown_native_seed: bool = False,
@@ -153,7 +154,7 @@ def dataset(
         sources.append(source)
         snapshot = SnapshotRecord(
             snapshot_id=uuid4(),
-            owner_id="administrator",
+            owner_id=owner,
             source_id=source.export.source.source_id,
             run_id=source.export.source.run_id,
             source_snapshot_id=source.export.source.snapshot_id,
@@ -178,7 +179,7 @@ def dataset(
     partitions: tuple[Partition, ...] = ("train", "validation", "test")
     record = DatasetRecord(
         dataset_id=name,
-        owner_id="administrator",
+        owner_id=owner,
         manifest=seal_dataset(
             name,
             tuple(
@@ -189,11 +190,16 @@ def dataset(
         snapshot_ids=tuple(snapshot.snapshot_id for snapshot in snapshots),
         created_at=datetime.now(UTC),
     )
-    return service.admin_repository.add_dataset(principal(), record, bindings=tuple(bindings))
+    return service.admin_repository.add_dataset(principal(owner), record, bindings=tuple(bindings))
 
 
 def references(
-    service: BenchmarkService, tmp_path: Path, dataset: DatasetRecord, partition: Partition
+    service: BenchmarkService,
+    tmp_path: Path,
+    dataset: DatasetRecord,
+    partition: Partition,
+    *,
+    decoder_version: str = DECODER_VERSION,
 ) -> ReferenceSetRecord:
     members = tuple(member for member in dataset.manifest.members if member.partition == partition)
     objects = tuple(
@@ -213,7 +219,7 @@ def references(
         policy="retrospective-directions/3.0",
         semantics=DirectionSemantics(
             profile_sha256=analysis_profile_hash(AnalysisConfig()),
-            decoder_version="duration-viterbi/1.0",
+            decoder_version=decoder_version,
         ),
         analysis_profile=AnalysisConfig(),
         members=tuple(
@@ -240,7 +246,7 @@ def references(
         ),
         created_at=datetime.now(UTC),
     )
-    return service.admin_repository.add_reference_set(principal(), record)
+    return service.admin_repository.add_reference_set(principal(dataset.owner_id), record)
 
 
 def model(service: BenchmarkService, tmp_path: Path, dataset: DatasetRecord) -> ModelRecord:
@@ -367,20 +373,25 @@ def test_metadata_lifecycle_never_reads_final_payload_and_blocks_selection_after
         )
 
     monkeypatch.setattr(service.store, "materialize", guarded)
+    assert service.selection_benchmarks(principal(), development.dataset_id) == ()
     with pytest.raises(Forbidden):
         service.authorize_selection(principal(), training(development), development)
     service.start_selection(principal(), "fresh")
+    assert service.selection_benchmarks(principal(), development.dataset_id) == ("fresh",)
+    assert service.selection_benchmarks(principal(), final.dataset_id) == ()
     service.authorize_selection(principal(), training(development), development)
     with pytest.raises(Forbidden):
         service.authorize_final_evaluation(principal(), "fresh", registered.model_version_id)
     frozen = service.freeze(principal(), "fresh", registered.model_version_id)
     assert frozen.reservation.freeze is not None and len(frozen.reservation.members) == 1
+    assert service.selection_benchmarks(principal(), development.dataset_id) == ()
     assert frozen.reservation.members[0].experiment_id == final.manifest.members[-1].snapshot_id
     with pytest.raises(Forbidden):
         service.authorize_selection(principal(), training(development), development)
     with pytest.raises(Forbidden):
         service.authorize_final_evaluation(principal(), "fresh", registered.model_version_id)
     opened = service.open(principal(), "fresh")
+    assert service.selection_benchmarks(principal(), development.dataset_id) == ()
     grant = service.authorize_final_evaluation(principal(), "fresh", registered.model_version_id)
     assert grant.dataset_id == final.dataset_id and grant.partition == "test"
     assert grant.bundle_sha256 == registered.bundle_sha256
@@ -406,6 +417,7 @@ def test_current_attestation_and_exact_registered_development_identity_are_requi
         service.authorize_selection(principal(), training(other), other)
     state = service.register_dataset_history(principal(), other.dataset_id)
     assert state.registry.history_attestation is None
+    assert service.selection_benchmarks(principal(), development.dataset_id) == ()
     with pytest.raises(Forbidden):
         service.authorize_selection(principal(), training(development), development)
     service.attest(
@@ -414,10 +426,39 @@ def test_current_attestation_and_exact_registered_development_identity_are_requi
         "Renewed fixture inventory after another complete dataset.",
     )
     service.authorize_selection(principal(), training(development), development)
+    assert service.selection_benchmarks(principal(), other.dataset_id) == ("fresh",)
     assert (
         service.register_dataset_history(principal(), other.dataset_id).revision
         == service.get_registry(principal()).revision
     )
+
+
+def test_selection_options_are_owner_scoped_and_development_filter_precedes_pagination(
+    service: BenchmarkService, tmp_path: Path
+) -> None:
+    owner, other = principal(), principal("other")
+    development, _ = reserved(service, tmp_path)
+    other_development = dataset(service, tmp_path, "other-development", 21, owner=other.owner_id)
+    other_final = dataset(service, tmp_path, "other-final", 40, owner=other.owner_id)
+    sealed = references(service, tmp_path, other_final, "test")
+    service.register_dataset_history(other, other_development.dataset_id)
+    service.attest(other, ("benchmark-fixtures",), "Both owners' fixture datasets inventoried.")
+    service.reserve(other, "private", other_final.dataset_id, sealed.references.reference_set_id)
+    service.start_selection(other, "private")
+    service.start_selection(owner, "fresh")
+    assert service.selection_benchmarks(owner, development.dataset_id) == ("fresh",)
+    assert service.selection_benchmarks(other, other_development.dataset_id) == ("private",)
+    with pytest.raises(NotFound):
+        service.selection_benchmarks(other, development.dataset_id)
+    with pytest.raises(Forbidden):
+        service.selection_benchmarks(principal(role="user"), development.dataset_id)
+
+    dataset(service, tmp_path, "a-unregistered", 50)
+    list_datasets = service.admin_repository.list_datasets
+    assert list_datasets(owner, limit=1)[0].dataset_id == "a-unregistered"
+    assert list_datasets(owner, development_only=True, limit=1) == (development,)
+    assert list_datasets(owner, development_only=True, limit=1, offset=1) == ()
+    assert list_datasets(other, development_only=True) == (other_development,)
 
 
 def test_benchmark_ownership_and_default_final_reference_denial(
@@ -436,6 +477,19 @@ def test_benchmark_ownership_and_default_final_reference_denial(
         service.get_registry(principal(role="user"))
     with pytest.raises(Forbidden):
         service.admin_repository.get_reference_set(principal(), f"{final.dataset_id}-test")
+
+
+def test_selection_options_offer_only_benchmarks_compatible_with_current_training(
+    service: BenchmarkService, tmp_path: Path
+) -> None:
+    development, _ = reserved(service, tmp_path)
+    owner = principal()
+    older = dataset(service, tmp_path, "older-final", 20)
+    sealed = references(service, tmp_path, older, "test", decoder_version="historical-decoder")
+    service.reserve(owner, "earlier-profile", older.dataset_id, sealed.references.reference_set_id)
+    service.start_selection(owner, "earlier-profile")
+    service.start_selection(owner, "fresh")
+    assert service.selection_benchmarks(owner, development.dataset_id) == ("fresh",)
 
 
 @pytest.mark.parametrize(
@@ -505,6 +559,8 @@ def test_old_native_manifests_remain_readable_but_cannot_enter_new_selection(
         previous.setattr(DatasetManifest, "require_native_seed_groups", lambda self: None)
         service.start_selection(owner, "fresh")
         original = service.admin_repository.submit(owner, request, idempotency_key="old-training")
+    assert service.selection_benchmarks(owner, verified.dataset_id) == ()
+    assert service.selection_benchmarks(owner, development.dataset_id) == ()
     with pytest.raises(Conflict, match=expected):
         service.authorize_selection(owner, training(verified), verified)
     assert (
@@ -727,11 +783,13 @@ def test_renewed_attestation_cannot_drop_immutable_reserved_or_frozen_source_sco
     attest(complete_scope)
     service.start_selection(principal(), "fresh")
     attest(incomplete_scope)
+    assert service.selection_benchmarks(principal(), development.dataset_id) == ()
     with pytest.raises(Forbidden, match="scope"):
         service.authorize_selection(principal(), training(development), development)
     with pytest.raises(Forbidden, match="scope"):
         service.freeze(principal(), "fresh", registered.model_version_id)
     attest(complete_scope)
+    assert service.selection_benchmarks(principal(), development.dataset_id) == ("fresh",)
     frozen = service.freeze(principal(), "fresh", registered.model_version_id)
     assert frozen.reservation.freeze is not None
     assert frozen.reservation.freeze.inventory_attestation.source_namespaces == complete_scope

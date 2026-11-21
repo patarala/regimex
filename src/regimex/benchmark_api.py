@@ -29,6 +29,8 @@ from regimex.storage import json_bytes
 class BenchmarkAPIService(Protocol):
     def get_registry(self, principal: Principal) -> RegistryState: ...
 
+    def selection_benchmarks(self, principal: Principal, dataset_id: str) -> tuple[str, ...]: ...
+
     def get_benchmark(self, principal: Principal, benchmark_id: str) -> BenchmarkView: ...
 
     def register_dataset_history(self, principal: Principal, dataset_id: str) -> RegistryState: ...
@@ -76,6 +78,10 @@ class DatasetHistoryRequest(StrictModel):
     dataset_id: Identifier
 
 
+class SelectionBenchmarks(StrictModel):
+    benchmark_ids: tuple[Identifier, ...]
+
+
 class FinalReferenceRequest(StrictModel):
     """Human final annotations enter through a separate sealed access boundary."""
 
@@ -94,11 +100,11 @@ class InventoryRequest(StrictModel):
     statement: Annotated[str, Field(min_length=1, max_length=4096)]
 
 
-BenchmarkId = Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
+RegistryIdentifier = Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
 
 
 class BenchmarkRequest(StrictModel):
-    benchmark_id: BenchmarkId
+    benchmark_id: RegistryIdentifier
     dataset_id: Identifier
     reference_set_id: Identifier
 
@@ -142,6 +148,12 @@ def install_benchmark_routes(
     @app.get("/api/v1/benchmarks/registry")
     def registry(identity: Identity) -> RegistryState:
         return service.get_registry(identity)
+
+    @app.get("/api/v1/training-options/benchmarks")
+    def selection_benchmarks(
+        identity: Identity, dataset_id: RegistryIdentifier
+    ) -> SelectionBenchmarks:
+        return SelectionBenchmarks(benchmark_ids=service.selection_benchmarks(identity, dataset_id))
 
     @app.post(
         "/api/v1/benchmarks/reference-sets",
@@ -197,24 +209,26 @@ def install_benchmark_routes(
 
     @app.get("/api/v1/benchmarks")
     @app.get("/api/v1/benchmarks/{benchmark_id}")
-    def get_benchmark(benchmark_id: BenchmarkId, identity: Identity) -> BenchmarkView:
+    def get_benchmark(benchmark_id: RegistryIdentifier, identity: Identity) -> BenchmarkView:
         return service.get_benchmark(identity, benchmark_id)
 
     @app.post("/api/v1/benchmarks/selection-start")
     @app.post("/api/v1/benchmarks/{benchmark_id}/selection-start")
-    def selection_start(benchmark_id: BenchmarkId, identity: Identity) -> BenchmarkView:
+    def selection_start(benchmark_id: RegistryIdentifier, identity: Identity) -> BenchmarkView:
         return service.start_selection(identity, benchmark_id)
 
     @app.post("/api/v1/benchmarks/freeze", openapi_extra=_request_body(FrozenModelRequest))
     @app.post(
         "/api/v1/benchmarks/{benchmark_id}/freeze", openapi_extra=_request_body(FrozenModelRequest)
     )
-    def freeze(benchmark_id: BenchmarkId, identity: Identity, intake: ModelBody) -> BenchmarkView:
+    def freeze(
+        benchmark_id: RegistryIdentifier, identity: Identity, intake: ModelBody
+    ) -> BenchmarkView:
         return service.freeze(identity, benchmark_id, intake.model_version_id)
 
     @app.post("/api/v1/benchmarks/open")
     @app.post("/api/v1/benchmarks/{benchmark_id}/open")
-    def open_references(benchmark_id: BenchmarkId, identity: Identity) -> BenchmarkView:
+    def open_references(benchmark_id: RegistryIdentifier, identity: Identity) -> BenchmarkView:
         return service.open(identity, benchmark_id)
 
     @app.post(
@@ -228,7 +242,7 @@ def install_benchmark_routes(
         openapi_extra=_request_body(FrozenModelRequest),
     )
     def evaluate_final(
-        benchmark_id: BenchmarkId,
+        benchmark_id: RegistryIdentifier,
         identity: Identity,
         intake: ModelBody,
         idempotency_key: Key,

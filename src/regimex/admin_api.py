@@ -33,9 +33,13 @@ from regimex.admin_contracts import (
 )
 from regimex.api import OperationView, _json_dependency, _operation, _request_body
 from regimex.contracts import Identifier, StrictModel
-from regimex.data_catalog import DatasetManifest, ReferenceSet, content_hash
+from regimex.data_catalog import (
+    CURRENT_TRAINING_SEMANTICS,
+    DatasetManifest,
+    ReferenceSet,
+    content_hash,
+)
 from regimex.directions import (
-    DECODER_VERSION,
     DEFAULT_ANALYSIS_PROFILE,
     AnalysisConfig,
     DirectionAnnotations,
@@ -155,6 +159,7 @@ class AdminAPIService(Protocol):
         self,
         principal: Principal,
         *,
+        development_only: bool = False,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[DatasetRecord, ...]: ...
@@ -372,8 +377,7 @@ def _reference(record: ReferenceSetRecord) -> ReferenceView:
         reviewer=references.reviewer,
         created_at=record.created_at,
         annotations_sealed=references.partition == "test",
-        current_training_profile=references.analysis_profile == AnalysisConfig()
-        and references.semantics.decoder_version == DECODER_VERSION,
+        current_training_profile=references.semantics == CURRENT_TRAINING_SEMANTICS,
         manifest_url=f"/api/v1/reference-sets/{references.reference_set_id}/manifest",
     )
 
@@ -436,11 +440,15 @@ def install_admin_routes(
         return _dataset(dataset)
 
     @app.get("/api/v1/datasets")
-    def list_datasets(identity: Identity, limit: Limit = 100, offset: Offset = 0) -> DatasetPage:
+    def list_datasets(
+        identity: Identity, limit: Limit = 100, offset: Offset = 0, development_only: bool = False
+    ) -> DatasetPage:
         return DatasetPage(
             items=tuple(
                 _dataset(item)
-                for item in service.list_datasets(identity, limit=limit, offset=offset)
+                for item in service.list_datasets(
+                    identity, development_only=development_only, limit=limit, offset=offset
+                )
             ),
             limit=limit,
             offset=offset,

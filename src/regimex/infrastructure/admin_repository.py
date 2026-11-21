@@ -175,14 +175,25 @@ class AdminRepository:
             return self._dataset(connection, principal.owner_id, dataset_id)
 
     def list_datasets(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        development_only: bool = False,
+        limit: int = 100,
+        offset: int = 0,
     ) -> tuple[DatasetRecord, ...]:
         self.database._admin(principal)
         self.database._page(limit, offset)
         with self.database.connection() as connection:
+            query = "SELECT d.document FROM regimex_datasets d WHERE d.owner_id=%s"
+            if development_only:
+                query += (
+                    " AND EXISTS (SELECT 1 FROM regimex_benchmark_history_datasets h "
+                    "WHERE h.dataset_id=d.dataset_id AND h.owner_id=d.owner_id "
+                    "AND h.dataset_sha256=d.content_sha256)"
+                )
             rows = connection.execute(
-                "SELECT document FROM regimex_datasets WHERE owner_id=%s "
-                "ORDER BY dataset_id LIMIT %s OFFSET %s",
+                query + " ORDER BY d.dataset_id LIMIT %s OFFSET %s",
                 (principal.owner_id, limit, offset),
             ).fetchall()
             return tuple(DatasetRecord.model_validate_json(json_bytes(row[0])) for row in rows)
