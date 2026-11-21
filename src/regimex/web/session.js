@@ -25,6 +25,7 @@ export function createSession({onActivate, onReset}) {
     $("owner").textContent = "";
     $("workspace").hidden = true;
     $("account").hidden = true;
+    $("logout").hidden = true;
     $("login-panel").hidden = false;
     onReset();
   }
@@ -84,6 +85,7 @@ export function createSession({onActivate, onReset}) {
     $("login-panel").hidden = true;
     $("workspace").hidden = false;
     $("account").hidden = false;
+    $("logout").hidden = false;
     notice();
     await onActivate();
   }

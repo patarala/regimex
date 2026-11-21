@@ -24,6 +24,7 @@ _HEADERS = {
 _ASSETS = {
     "app.css": "text/css",
     "app.js": "text/javascript",
+    "theme.js": "text/javascript",
     "session.js": "text/javascript",
     "history.js": "text/javascript",
     "experiment-history.js": "text/javascript",

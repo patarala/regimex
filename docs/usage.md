@@ -5,6 +5,9 @@ the JSON export of a completed experiment. The [Docker Compose guide](deployment
 uses `https://localhost:8443`. The [source setup](#start-locally) below
 serves `http://127.0.0.1:8000`.
 
+The sun or moon in the header switches between light and dark. Regimex follows
+your device by default and resumes following it when you switch back to its theme.
+
 | What you want to do | Where to start |
 | --- | --- |
 | Analyze one export or a batch | **Analyses → New analysis** |
