@@ -114,9 +114,55 @@ def test_two_sandboxed_previews_share_one_plotting_runtime(browser: Any) -> None
                             && node.layout.yaxis.title.text.endsWith(' / B');
                     }"""
                 )
+                assert frame.evaluate("window.origin") == "null"
+                frame.evaluate(
+                    """() => new Promise(resolve => {
+                      window.addEventListener('message', () => resolve(), {once: true});
+                      window.postMessage({type: 'regimex-theme', theme: 'dark'}, '*');
+                    })"""
+                )
+                assert frame.locator("html").get_attribute("data-theme") is None
+                page.locator("iframe").evaluate(
+                    """iframe => iframe.contentWindow.postMessage(
+                      {type: 'regimex-theme', theme: 'dark'}, '*'
+                    )"""
+                )
+                frame.wait_for_function(
+                    """() => document.documentElement.dataset.theme === 'dark' &&
+                        document.getElementById('price').layout.paper_bgcolor === '#1a1a1c'"""
+                )
+                assert frame.locator("#price").evaluate("plot => plot.layout.xaxis.range") == [
+                    101,
+                    102,
+                ]
             assert transfers == [f"/assets/plotly/{runtime.digest}.js"]
         finally:
             page.close()
+
+
+def test_model_comparison_tables_follow_system_theme_offline(browser: Any, tmp_path: Path) -> None:
+    from test_comparison import evaluation
+
+    from regimex.comparison import render_model_comparison
+
+    target = tmp_path / "models"
+    render_model_comparison((evaluation("baseline"), evaluation("tcn")), target)
+    page = browser.new_page(offline=True, color_scheme="dark")
+    try:
+        page.goto((target / "index.html").as_uri())
+        page.locator("tbody").first.wait_for()
+        surface = page.locator("section").first
+        dark = surface.evaluate("el => getComputedStyle(el).backgroundColor")
+        page.emulate_media(color_scheme="light")
+        page.wait_for_function(
+            """dark => {
+                const section = document.querySelector("section");
+                return getComputedStyle(section).backgroundColor !== dark;
+            }""",
+            arg=dark,
+        )
+    finally:
+        page.close()
 
 
 @pytest.mark.parametrize("width", [1280, 390])
@@ -164,6 +210,20 @@ def test_offline_download_preserves_original_export(
                 110,
                 111,
             ]
+        price = page.locator("#price")
+        light_price = price.evaluate("plot => plot.data[0].line.color")
+        page.emulate_media(color_scheme="dark")
+        page.wait_for_function(
+            "light => document.getElementById('price').data[0].line.color !== light",
+            arg=light_price,
+        )
+        assert price.evaluate("plot => plot.layout.xaxis.range") == [110, 111]
+        assert page.locator("#instrument").input_value() == "A/Q"
+        page.emulate_media(color_scheme="light")
+        page.wait_for_function(
+            "light => document.getElementById('price').data[0].line.color === light",
+            arg=light_price,
+        )
         assert page.get_by_role("combobox").evaluate("(node) => document.activeElement === node")
         page.get_by_role("button", name="Reset zoom").click()
         page.wait_for_function("document.getElementById('coverage').layout.xaxis.range[0] === 100")
@@ -268,6 +328,13 @@ def test_cli_report_switches_lanes_within_the_zoomed_experiment(
         )
         assert "ETH" in page.locator("#sample-meta").inner_text()
         assert page.locator("#explorer").evaluate("(node) => node.layout.xaxis.range") == [1, 5]
+        page.evaluate("() => Plotly.relayout('explorer', {'yaxis.range': [10, 30]})")
+        page.emulate_media(color_scheme="dark")
+        page.wait_for_function(
+            "document.getElementById('explorer').layout.paper_bgcolor === '#1a1a1c'"
+        )
+        assert page.locator("#explorer").evaluate("plot => plot.layout.xaxis.range") == [1, 5]
+        assert page.locator("#explorer").evaluate("plot => plot.layout.yaxis.range") == [10, 30]
         page.get_by_label("Instrument").select_option(label="BTC/USD")
         assert page.locator("#explorer").evaluate("(node) => node.layout.xaxis.range") == [1, 5]
         page.get_by_label("Experiment", exact=True).select_option("snapshot-2")
@@ -404,6 +471,16 @@ def test_comparison_keeps_nanosecond_bins_distinct_when_zoomed(
         page.get_by_label("Start step").fill("10")
         page.get_by_label("Stop step").fill("14")
         page.get_by_role("button", name="Apply range").click()
+        band = page.locator('#chart rect[y="232"]').first
+        light_fill = band.evaluate("el => getComputedStyle(el).fill")
+        page.emulate_media(color_scheme="dark")
+        page.wait_for_function(
+            """light => {
+                const band = document.querySelector('#chart rect[y="232"]');
+                return getComputedStyle(band).fill !== light;
+            }""",
+            arg=light_fill,
+        )
         assert page.locator('#chart text[y="377"]').all_text_contents() == [
             "10",
             "11",

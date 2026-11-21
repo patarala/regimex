@@ -6,6 +6,14 @@
   const blind = report.kind === "reference";
   const predicted = report.kind === "prediction";
   const names = ["sideways", "growth", "decline", "unclassified"];
+  let colors;
+  function setColors() {
+    colors = reportPlotColors();
+    colors.unclassified = colors.no_trades;
+    if (!reportIsDark()) Object.assign(colors, report.colors);
+    for (const name of names) document.documentElement.style.setProperty("--direction-" + name, colors[name]);
+  }
+  setColors();
   const arrows = { sideways: "→", growth: "↗", decline: "↘", unclassified: "—" };
   const human = (value) => String(value).replaceAll("_", " ");
   const priceChange = (stats) =>
@@ -98,7 +106,7 @@
       const item = document.createElement("span");
       const dot = document.createElement("span");
       dot.className = "dot";
-      dot.style.background = report.colors[name];
+      dot.style.background = "var(--direction-" + name + ")";
       item.append(dot, document.createTextNode(arrows[name] + " " + name));
       item.title = {
         sideways: "No sustained direction at this scale",
@@ -113,9 +121,9 @@
     return;
   }
   const guides = [
-    "<b>Price</b> · black: last transaction · dotted blue: bid · dashed pink: ask",
+    "<b>Price</b> · solid: last transaction · dotted: bid · dashed: ask",
     "<b>Log return</b> · 100 × ln(current price / previous price)",
-    "<b>Activity</b> · solid gray: trades · dashed green: BUY · dotted red: SELL",
+    "<b>Activity</b> · solid: trades · dashed: buys · dotted: sells",
     "<b>Volume</b> · same line styles as activity",
     "<b>Unavailable values</b> · × known absence · | unknown observation",
   ];
@@ -152,14 +160,7 @@
       pct(stats.trade_active_fraction) +
       "%";
   }
-  async function render(generation, visibleRange) {
-    current = samples[Number($("sample").value)];
-    const observations = current.observations;
-    const steps = current.steps;
-    const intervals = current.intervals;
-    const group = experiments.get(current.experiment_id);
-    const paired = predicted && group.length > 1;
-    const compact = $("explorer").clientWidth < 600;
+  function renderDetails(steps, intervals, paired) {
     const classified = intervals.reduce(
       (sum, interval) => sum + (interval.direction == null ? 0 : interval.stop - interval.start),
       0,
@@ -167,25 +168,6 @@
     $("sample-meta").textContent =
       countLabel(steps.length, "step") + " · price: " + current.quote_asset + " / " +
       current.base_asset + " · volume: " + current.base_asset + " per step";
-    const missingFields = Object.keys(observations).filter(
-      (field) => observations[field].some((value) => value === null),
-    );
-    panelCount = missingFields.length ? 5 : 4;
-    const panelDomains = missingFields.length
-      ? [
-          [0.8, 0.99],
-          [0.61, 0.73],
-          [0.41, 0.54],
-          [0.21, 0.34],
-          [0, 0.14],
-        ]
-      : [
-          [0.77, 0.99],
-          [0.52, 0.69],
-          [0.27, 0.44],
-          [0.02, 0.19],
-        ];
-    const domains = paired ? panelDomains.map((domain) => domain.map((value) => value * 0.86)) : panelDomains;
     const grid = current.time_grid;
     $("time-guide").textContent =
       "Step width: " + fmt(grid.bin_width, 6) + " " + grid.unit +
@@ -235,7 +217,7 @@
         const button = document.createElement("button");
         const fraction = (interval.stop - interval.start) / steps.length;
         button.style.width = 100 * fraction + "%";
-        button.style.borderTopColor = report.colors[interval.direction || "unclassified"];
+        button.style.borderTopColor = "var(--direction-" + (interval.direction || "unclassified") + ")";
         button.textContent = fraction >= 0.09 ? label(interval) : "";
         button.title = description;
         button.setAttribute("aria-label", description);
@@ -260,6 +242,35 @@
       ].forEach((value) => cell(row, value));
       $("intervals").append(row);
     });
+  }
+  async function render(generation, visibleRange, themeOnly) {
+    current = samples[Number($("sample").value)];
+    const observations = current.observations;
+    const steps = current.steps;
+    const intervals = current.intervals;
+    const group = experiments.get(current.experiment_id);
+    const paired = predicted && group.length > 1;
+    const compact = $("explorer").clientWidth < 600;
+    const missingFields = Object.keys(observations).filter(
+      (field) => observations[field].some((value) => value === null),
+    );
+    panelCount = missingFields.length ? 5 : 4;
+    const panelDomains = missingFields.length
+      ? [
+          [0.8, 0.99],
+          [0.61, 0.73],
+          [0.41, 0.54],
+          [0.21, 0.34],
+          [0, 0.14],
+        ]
+      : [
+          [0.77, 0.99],
+          [0.52, 0.69],
+          [0.27, 0.44],
+          [0.02, 0.19],
+        ];
+    const domains = paired ? panelDomains.map((domain) => domain.map((value) => value * 0.86)) : panelDomains;
+    if (!themeOnly) renderDetails(steps, intervals, paired);
     const traces = [];
     function line(name, values, panel, color, extras = {}) {
       const suffix = panel ? String(panel + 1) : "";
@@ -282,13 +293,13 @@
         ...extras,
       });
     }
-    line("Last transaction price", observations.last_price, 0, "#0f172a");
-    line("Best bid", observations.best_bid, 0, "#0891b2", {
-      line: { color: "#0891b2", dash: "dot", width: 0.8 },
+    line("Last transaction price", observations.last_price, 0, colors.price);
+    line("Best bid", observations.best_bid, 0, colors.growth, {
+      line: { color: colors.growth, dash: "dot", width: 0.8 },
       visible: $("quotes").checked,
     });
-    line("Best ask", observations.best_ask, 0, "#be185d", {
-      line: { color: "#be185d", dash: "dash", width: 0.8 },
+    line("Best ask", observations.best_ask, 0, colors.decline, {
+      line: { color: colors.decline, dash: "dash", width: 0.8 },
       visible: $("quotes").checked,
     });
     const returns = observations.last_price.map((price, index, prices) =>
@@ -296,11 +307,11 @@
         ? null
         : 100 * (Math.log(price) - Math.log(prices[index - 1])),
     );
-    line("Adjacent log return (%)", returns, 1, "#334155");
+    line("Adjacent log return (%)", returns, 1, colors.ink);
     ["trade", "buy_order", "sell_order"].forEach((field, index) => {
       const style = {
         line: {
-          color: ["#334155", "#059669", "#e11d48"][index],
+          color: [colors.ink, colors.growth, colors.decline][index],
           dash: ["solid", "dash", "dot"][index],
           width: 1.2,
         },
@@ -337,7 +348,7 @@
         yaxis: "y5",
         showlegend: false,
         marker: {
-          color: knownAbsence.map((known) => (known ? "#64748b" : "#7c3aed")),
+          color: knownAbsence.map((known) => (known ? colors.no_trades : colors.unknown)),
           size: 6,
           symbol: knownAbsence.map((known) => (known ? "x-open" : "line-ns-open")),
         },
@@ -346,9 +357,13 @@
     });
     const layout = {
       height: (missingFields.length ? 1150 : 940) + (paired ? 120 : 0),
+      uirevision: themeOnly ? $("explorer").layout?.uirevision : generation,
       margin: { l: compact ? 85 : 140, r: compact ? 10 : 25, t: 30, b: 60 },
+      paper_bgcolor: colors.paper, plot_bgcolor: colors.plot,
+      modebar: {color: colors.no_trades, activecolor: colors.ink, bgcolor: colors.paper},
+      hoverlabel: {bgcolor: colors.paper, font: {color: colors.ink}},
       hovermode: paired ? "closest" : "x unified",
-      font: { family: "system-ui, sans-serif", size: 12, color: "#334155" },
+      font: { family: "system-ui, sans-serif", size: 12, color: colors.ink },
       annotations: (compact ? compactGuides : guides).slice(0, panelCount).map((text, index) => ({
         text,
         xref: "paper",
@@ -369,7 +384,7 @@
         x1: interval.stop - 0.5,
         y0: domains[0][0],
         y1: domains[0][1],
-        fillcolor: report.colors[interval.direction || "unclassified"],
+        fillcolor: colors[interval.direction || "unclassified"],
         opacity: 0.1,
         line: { width: 0 },
         layer: "below",
@@ -388,14 +403,14 @@
         anchor: "y" + suffix,
         matches: index ? "x" : undefined,
         range: visibleRange ? [...visibleRange] : [-0.5, steps.length - 0.5],
-        gridcolor: "#eef2f6",
+        gridcolor: colors.grid,
         title: index === panelCount - 1 ? { text: "Step index" } : undefined,
       };
       layout["yaxis" + suffix] = {
         domain: domains[index],
         anchor: "x" + suffix,
         title: { text: title },
-        gridcolor: "#eef2f6",
+        gridcolor: colors.grid,
         rangemode: index === 2 || index === 3 ? "tozero" : "normal",
       };
     });
@@ -411,7 +426,7 @@
     if (paired) {
       const lanes = instrumentLanes(
         group.map((index) => samples[index]), current.instrument_id,
-        {...report.colors, no_trades: report.colors.unclassified, insufficient_data: report.colors.unclassified},
+        colors,
         (step) => step - 0.5,
       );
       const suffix = panelCount + 1;
@@ -466,12 +481,12 @@
       });
     }
   }
-  function update(keepZoom = false) {
+  function update(keepZoom = false, themeOnly = false) {
     const visibleRange = keepZoom ? $("explorer").layout?.xaxis.range : null;
     const generation = ++renderGeneration;
     $("render-error").hidden = true;
     $("explorer").hidden = false;
-    render(generation, visibleRange).catch((error) => {
+    render(generation, visibleRange, themeOnly).catch((error) => {
       // A late failure from a previous selection cannot hide the current view.
       if (generation !== renderGeneration) return;
       $("render-error").textContent = "Could not display this selection: " + error.message;
@@ -493,5 +508,9 @@
   };
   $("reset").onclick = () => update();
   $("quotes").onchange = () => update(true);
+  watchReportTheme(() => {
+    setColors();
+    update(true, true);
+  });
   update();
 })();

@@ -1,10 +1,7 @@
 :root {
   font-family: system-ui, sans-serif;
-  color: #20252c;
-  background: #fff;
   line-height: 1.5;
   font-size: 14px;
-  color-scheme: light;
 }
 * {
   box-sizing: border-box;
@@ -20,7 +17,7 @@ main {
 header {
   padding-bottom: 16px;
   margin-bottom: 24px;
-  border-bottom: 1px solid #d9dde2;
+  border-bottom: 1px solid var(--line);
 }
 section {
   margin: 0 0 28px;
@@ -43,7 +40,7 @@ h2 {
   gap: 16px;
 }
 .report-brand {
-  color: #626a75;
+  color: var(--muted);
   font-size: 13px;
 }
 header p {
@@ -51,7 +48,7 @@ header p {
   margin: 10px 16px 0 0;
 }
 .muted {
-  color: #626a75;
+  color: var(--muted);
   font-size: 0.9rem;
 }
 .dataset-counts {
@@ -67,8 +64,8 @@ select,
 button {
   font: inherit;
   color: inherit;
-  background: white;
-  border: 1px solid #7c92aa;
+  background: var(--paper);
+  border: 1px solid var(--field-border);
   border-radius: 5px;
   padding: 7px 11px;
   max-width: 100%;
@@ -78,7 +75,7 @@ button {
 }
 button:hover,
 select:focus {
-  background: #edf4fc;
+  background: var(--hover);
 }
 .plot {
   width: 100%;
@@ -96,7 +93,7 @@ select:focus {
 }
 .interval-link {
   padding: 2px 4px;
-  color: #245d89;
+  color: var(--accent);
   background: transparent;
   border: 0;
   text-decoration: underline;
@@ -111,17 +108,17 @@ th,
 td {
   padding: 9px 11px;
   text-align: left;
-  border-bottom: 1px solid #dce4ed;
+  border-bottom: 1px solid var(--line);
   white-space: nowrap;
 }
 th {
-  background: #f3f5f7;
+  background: var(--surface);
 }
 .provenance {
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid #d9dde2;
-  color: #626a75;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
   font-size: 12px;
 }
 .provenance h2 {
@@ -135,7 +132,7 @@ th {
   margin: 0;
 }
 .provenance dt {
-  color: #626a75;
+  color: var(--muted);
 }
 .provenance dd {
   margin: 0;
@@ -143,8 +140,8 @@ th {
 }
 #plot-error {
   padding: 12px;
-  background: #fff2e6;
-  border: 1px solid #d7a77c;
+  background: var(--error-surface);
+  border: 1px solid var(--error);
 }
 [hidden] {
   display: none !important;

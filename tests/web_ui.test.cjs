@@ -23,7 +23,7 @@ class Element {
     this.value = "";
     this.textContent = "";
     this.dataset = {};
-    this.style = {};
+    this.style = {setProperty(name, value) { this[name] = value; }};
     this.classList = {toggle() {}, add() {}, remove() {}};
   }
   append(...children) { this.children.push(...children); }
@@ -1358,9 +1358,20 @@ test("an earlier session's diagnostics cannot overwrite a new session", async ()
 });
 
 function reportScript(name) {
-  return ["instrument-timeline.js", "report-time.js", name]
+  return ["report-theme.js", "plot-colors.js", "instrument-timeline.js", "report-time.js", name]
     .map((script) => fs.readFileSync(path.join(root, "src/regimex/templates", script), "utf8"))
     .join("\n");
+}
+
+function reportEnvironment(get) {
+  const window = new Element();
+  window.parent = window;
+  return {
+    document: {documentElement: new Element(), getElementById: get,
+      createElement: () => new Element(), createTextNode: (text) => text},
+    matchMedia: () => ({matches: false, addEventListener() {}}),
+    window,
+  };
 }
 
 test("offline chart rendering removes the PNG export control", async () => {
@@ -1384,7 +1395,7 @@ test("offline chart rendering removes the PNG export control", async () => {
   get("sample").value = "0";
   const configurations = [];
   vm.runInNewContext(reportScript("direction-report.js"), {
-    document: {getElementById: get, createElement: () => new Element(), createTextNode: (text) => text},
+    ...reportEnvironment(get),
     Plotly: {react: async (_node, _traces, _layout, config) => configurations.push(config)},
     history: {replaceState() {}}, location: {hash: ""}, URLSearchParams,
   });
@@ -1426,7 +1437,7 @@ async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
   });
   const plots = [];
   vm.runInNewContext(reportScript("analysis-report.js"), {
-    document: {getElementById: get, createElement: () => new Element()},
+    ...reportEnvironment(get),
     Plotly: {
       react: async (node, traces, layout) => {
         node.data = traces;

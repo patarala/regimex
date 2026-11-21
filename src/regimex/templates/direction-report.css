@@ -1,16 +1,9 @@
-:root {
-  color-scheme: light;
-  --ink: #20252c;
-  --muted: #626a75;
-  --line: #d9dde2;
-  --blue: #285b91;
-}
 * {
   box-sizing: border-box;
 }
 body {
   margin: 0;
-  background: #f5f6f7;
+  background: var(--surface);
   color: var(--ink);
   font:
     14px/1.5 system-ui,
@@ -50,7 +43,7 @@ p {
   color: var(--muted);
 }
 .card {
-  background: white;
+  background: var(--paper);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 22px;
@@ -78,7 +71,7 @@ p {
 }
 .focus-summary {
   padding: 10px 12px;
-  background: #f1f5f9;
+  background: var(--surface);
   border-radius: 6px;
   font-size: 13px;
   margin-top: 12px;
@@ -90,7 +83,7 @@ p {
 .table-wrap:focus-visible,
 summary:focus-visible,
 input:focus-visible {
-  outline: 3px solid #93c5fd;
+  outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
 #sample-meta {
@@ -111,7 +104,8 @@ select {
   border: 1px solid var(--line);
   border-radius: 6px;
   font: inherit;
-  background: white;
+  background: var(--paper);
+  color: var(--ink);
 }
 .report-selectors {
   display: grid;
@@ -135,8 +129,8 @@ select {
 button,
 .download {
   cursor: pointer;
-  background: white;
-  color: var(--blue);
+  background: var(--paper);
+  color: var(--accent);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 9px 14px;
@@ -146,13 +140,13 @@ button,
 }
 button:hover,
 .download:hover {
-  border-color: var(--blue);
-  background: #f5f8fe;
+  border-color: var(--accent);
+  background: var(--hover);
 }
 button:focus-visible,
 select:focus-visible,
 a:focus-visible {
-  outline: 3px solid #93c5fd;
+  outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
 .legend {
@@ -186,7 +180,7 @@ th {
   text-align: left;
   color: var(--muted);
   font-weight: 650;
-  background: #f8fafc;
+  background: var(--surface);
 }
 td,
 th {
@@ -210,7 +204,7 @@ pre {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   padding: 14px;
-  background: #f4f6fa;
+  background: var(--surface);
   border-radius: 6px;
 }
 details {
@@ -218,7 +212,7 @@ details {
 }
 summary {
   cursor: pointer;
-  color: var(--blue);
+  color: var(--accent);
   font-weight: 600;
 }
 .small {
@@ -290,8 +284,8 @@ p:empty {
   display: none;
 }
 #render-error {
-  color: #9f1239;
-  background: #fff1f2;
+  color: var(--error);
+  background: var(--error-surface);
   padding: 12px;
   border-radius: 6px;
 }

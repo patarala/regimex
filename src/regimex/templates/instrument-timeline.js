@@ -32,7 +32,7 @@ function instrumentLanes(sequences, selected, colors, boundary, timeUnit) {
       base: pieces.map(({ interval }) => boundary(interval.start)),
       x: pieces.map(({ interval }) => boundary(interval.stop) - boundary(interval.start)),
       customdata: pieces.map(({ interval }) => [interval.start, interval.stop]),
-      width: 0.65, marker: { color: colors[state], line: { color: "white", width: 1 } },
+      width: 0.65, marker: { color: colors[state], line: { color: colors.paper, width: 1 } },
       text: pieces.map(() => symbol), textposition: "inside", insidetextanchor: "middle",
       hovertext: pieces.map(({ lane, interval }) => {
         const time = timeUnit ? "<br>" + plotLabel(timeUnit) + " [" +

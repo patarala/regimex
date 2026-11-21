@@ -6,7 +6,6 @@ import html
 import re
 from dataclasses import dataclass
 from importlib.metadata import version
-from importlib.resources import files
 from typing import TYPE_CHECKING
 
 from regimex.contracts import MAX_INPUT_BYTES, Observation
@@ -19,6 +18,7 @@ from regimex.storage import json_bytes
 if TYPE_CHECKING:
     from regimex.application.service import AnalysisResult
 
+from regimex.report_assets import report_assets
 from regimex.report_contracts import MAX_REPORT_BYTES, REPORT_RENDERER_VERSION
 from regimex.report_licenses import license_notices
 
@@ -167,12 +167,14 @@ def render_analysis_report(
     plotly_version = version("plotly")
     if "</script" in plotly_js.lower():
         raise ObjectIntegrityError("embedded plotting runtime contains an unsafe HTML delimiter")
-    resources = files("regimex").joinpath("templates")
-    template = resources.joinpath("analysis-report.html").read_text()
-    css = resources.joinpath("analysis-report.css").read_text()
-    script = "\n".join(
-        resources.joinpath(name).read_text()
-        for name in ("instrument-timeline.js", "report-time.js", "analysis-report.js")
+    template = report_assets("analysis-report.html")
+    css = report_assets("report-theme.css", "analysis-report.css")
+    script = report_assets(
+        "report-theme.js",
+        "plot-colors.js",
+        "instrument-timeline.js",
+        "report-time.js",
+        "analysis-report.js",
     )
     # Row order is part of the export digest. Use instrument indexes so long
     # identifiers are not repeated in every observation of a multi-instrument run.

@@ -2,7 +2,6 @@
 
 import json
 import math
-from importlib.resources import files
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -12,6 +11,7 @@ from regimex.contracts import Identifier
 from regimex.data_catalog import content_hash
 from regimex.directions import DIRECTION_NAMES
 from regimex.operations import Sha256
+from regimex.report_assets import report_assets
 from regimex.report_licenses import license_notices
 from regimex.storage import digest, output_directory, write_json
 
@@ -513,20 +513,17 @@ def render_model_comparison(evaluations: tuple[dict[str, JsonValue], ...], outpu
         .replace(">", "\\u003e")
         .replace("&", "\\u0026")
     )
-    templates = files("regimex").joinpath("templates")
     with output_directory(output) as target:
         (target / "LICENSES.md").write_bytes(license_notices().encode("utf-8"))
         (target / "index.html").write_text(
-            templates.joinpath("model-comparison.html")
-            .read_text(encoding="utf-8")
-            .replace("__COMPARISON_JSON__", encoded),
+            report_assets("model-comparison.html").replace("__COMPARISON_JSON__", encoded),
             encoding="utf-8",
         )
-        for suffix in ("js", "css"):
-            (target / f"comparison.{suffix}").write_text(
-                templates.joinpath(f"model-comparison.{suffix}").read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )
+        (target / "comparison.js").write_text(
+            report_assets("model-comparison.js"), encoding="utf-8"
+        )
+        css = report_assets("report-theme.css", "model-comparison.css")
+        (target / "comparison.css").write_text(css, encoding="utf-8")
         write_json(target / "evaluations.json", list(evaluations))
         write_json(target / "paired-comparisons.json", payload["paired_comparisons"])
         write_json(

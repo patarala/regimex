@@ -3,13 +3,13 @@
 import html
 import re
 from dataclasses import dataclass
-from importlib.resources import files
 from typing import TYPE_CHECKING
 
 from regimex.application.report import _hash_source, _script_json, validate_analysis_result
 from regimex.directions import DirectionInterval
 from regimex.exports import ExportV2
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectIntegrityError
+from regimex.report_assets import report_assets
 from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.report_licenses import license_notices
 from regimex.storage import json_bytes
@@ -17,7 +17,7 @@ from regimex.storage import json_bytes
 if TYPE_CHECKING:
     from regimex.application.service import AnalysisResult
 
-COMPARISON_RENDERER_VERSION = "analysis-comparison/1.2"
+COMPARISON_RENDERER_VERSION = "analysis-comparison/1.3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,13 +138,9 @@ def render_analysis_comparison(
             }
         )
     )
-    resources = files("regimex").joinpath("templates")
-    template = resources.joinpath("analysis-comparison.html").read_text(encoding="utf-8")
-    css = resources.joinpath("analysis-comparison.css").read_text(encoding="utf-8")
-    script = "\n".join(
-        resources.joinpath(name).read_text(encoding="utf-8")
-        for name in ("report-time.js", "analysis-comparison.js")
-    )
+    template = report_assets("analysis-comparison.html")
+    css = report_assets("report-theme.css", "analysis-comparison.css")
+    script = report_assets("report-theme.js", "report-time.js", "analysis-comparison.js")
     csp = (
         "default-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none'; "
         "img-src data:; style-src 'unsafe-inline'; script-src "

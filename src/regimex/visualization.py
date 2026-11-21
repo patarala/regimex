@@ -3,7 +3,6 @@
 import json
 from collections.abc import Mapping
 from importlib.metadata import version
-from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,6 +17,7 @@ from regimex.inspection import (
     Inspection,
     inspect_snapshots,
 )
+from regimex.report_assets import report_assets
 from regimex.report_licenses import license_notices
 from regimex.storage import digest, output_directory, write_json
 
@@ -43,21 +43,18 @@ def _script_json(value: object) -> str:
 
 
 def _write_direction_assets(target: Path, payload: Mapping[str, object]) -> None:
-    templates = files("regimex").joinpath("templates")
     (target / "LICENSES.md").write_bytes(license_notices(include_plotly=True).encode("utf-8"))
     (target / "plotly.min.js").write_text(get_plotlyjs(), encoding="utf-8")
     (target / "index.html").write_text(
-        templates.joinpath("direction-report.html")
-        .read_text(encoding="utf-8")
-        .replace("__REPORT_JSON__", _script_json(payload)),
+        report_assets("direction-report.html").replace("__REPORT_JSON__", _script_json(payload)),
         encoding="utf-8",
     )
-    script = "\n".join(
-        templates.joinpath(name).read_text(encoding="utf-8")
-        for name in ("instrument-timeline.js", "direction-report.js")
+    script = report_assets(
+        "report-theme.js", "plot-colors.js", "instrument-timeline.js", "direction-report.js"
     )
     (target / "report.js").write_text(script, encoding="utf-8")
-    (target / "report.css").write_bytes(templates.joinpath("direction-report.css").read_bytes())
+    css = report_assets("report-theme.css", "direction-report.css")
+    (target / "report.css").write_text(css, encoding="utf-8")
 
 
 def _write_manifest(target: Path, *, kind: str, source_sha256: str) -> None:

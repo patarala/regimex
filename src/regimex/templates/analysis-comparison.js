@@ -1,6 +1,7 @@
 "use strict";
 (() => {
   const $ = (id) => document.getElementById(id);
+  watchReportTheme();
   const data = JSON.parse($("comparison-data").textContent);
   const svg = $("chart");
   const width = 1000;
@@ -14,11 +15,11 @@
   const axis = reportTimeAxis(grid, data.last_bin_fraction);
   const count = grid.step_count;
   const states = {
-    growth: {label: "Growth", symbol: "↑", fill: "#d6eadc"},
-    decline: {label: "Decline", symbol: "↓", fill: "#f3d9ce"},
-    sideways: {label: "Sideways", symbol: "→", fill: "#e1e5ea"},
+    growth: {label: "Growth", symbol: "↑", fill: "light-dark(#d6eadc, #244c39)"},
+    decline: {label: "Decline", symbol: "↓", fill: "light-dark(#f3d9ce, #57372f)"},
+    sideways: {label: "Sideways", symbol: "→", fill: "light-dark(#e1e5ea, #394956)"},
     no_trades: {label: "No trades", symbol: "Ø", fill: "url(#unavailable)"},
-    insufficient_data: {label: "Insufficient data", symbol: "?", fill: "#f5f6f7"},
+    insufficient_data: {label: "Insufficient data", symbol: "?", fill: "var(--surface)"},
   };
   let selected = 0;
   let start = 0;
@@ -64,8 +65,8 @@
   function definePatterns() {
     const pattern = element("pattern", {id: "unavailable", width: 8, height: 8, patternUnits: "userSpaceOnUse"});
     pattern.append(
-      element("rect", {width: 8, height: 8, fill: "#f0f2f5"}),
-      element("path", {d: "M-2 2 L2 -2 M0 8 L8 0 M6 10 L10 6", stroke: "#b8c1cb", "stroke-width": 1}),
+      element("rect", {width: 8, height: 8, fill: "var(--surface)"}),
+      element("path", {d: "M-2 2 L2 -2 M0 8 L8 0 M6 10 L10 6", stroke: "var(--field-border)", "stroke-width": 1}),
     );
     const defs = element("defs");
     defs.append(pattern);
@@ -103,7 +104,7 @@
       const point = `${x(step)} ${y(price)}`;
       const state = series.price_states[step] === "carried" ? "carried" : "observed";
       if (previous !== null) paths[state].push(`M${previous} L${point}`);
-      else svg.append(element("circle", {cx: x(step), cy: y(price), r: 2.5, fill: "#283747"}));
+      else svg.append(element("circle", {cx: x(step), cy: y(price), r: 2.5, fill: "var(--ink)"}));
       previous = point;
     }
     for (const [state, segments] of Object.entries(paths)) {
@@ -116,7 +117,7 @@
       intervals.filter(visible).forEach((interval) => {
         const style = states[interval.state];
         const rect = band(interval, laneY[index], 34, style.fill);
-        rect.setAttribute("stroke", "#fff");
+        rect.setAttribute("stroke", "var(--paper)");
         rect.append(element("title", {}, `${stateLabel(interval.state)} · [${interval.start}, ${interval.stop})`));
         const a = Math.max(start, interval.start);
         const b = Math.min(stop, interval.stop);
@@ -133,7 +134,7 @@
     $("differences").replaceChildren();
     items.forEach((item) => {
       totals[item.kind] += item.stop - item.start;
-      const fill = item.kind === "direction" ? "#e9bc68" : "url(#unavailable)";
+      const fill = item.kind === "direction" ? "light-dark(#e9bc68, #916d31)" : "url(#unavailable)";
       const rect = band(item, differenceY, 18, fill);
       rect.append(element("title", {}, `${item.kind} difference · [${item.start}, ${item.stop})`));
       const row = document.createElement("tr");

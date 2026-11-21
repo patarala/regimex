@@ -24,7 +24,6 @@
 
   const selector = $("instrument");
   const quotes = $("quotes");
-  const colors = { growth: "#147d64", decline: "#b84c34", sideways: "#416ea7", no_trades: "#8a8e98", insufficient_data: "#a29b84" };
   const nodes = ["price", "timeline", "activity", "volume", "coverage", "probability"].map($);
   const axis = reportTimeAxis(grid, data.last_bin_fraction);
   delete data.last_bin_fraction;
@@ -47,22 +46,24 @@
     selector.append(option);
   }
 
-  function layout(title, unit, height) {
+  function layout(colors, title, unit, height) {
     const plotHeight = height - 75;
     return {
       title: { text: title.replace(/(.{26,40})\s/g, "$1<br>"), font: { size: 14 } },
       height: height + 110,
       margin: { l: paired ? 84 : 65, r: 20, t: 45, b: 140 },
-      paper_bgcolor: "white", plot_bgcolor: "#fbfcfe",
-      font: { family: "system-ui, sans-serif", color: "#17283d" },
+      paper_bgcolor: colors.paper, plot_bgcolor: colors.plot,
+      modebar: {color: colors.no_trades, activecolor: colors.ink, bgcolor: colors.paper},
+      hoverlabel: {bgcolor: colors.paper, font: {color: colors.ink}},
+      font: { family: "system-ui, sans-serif", color: colors.ink },
       xaxis: {
         title: { text: plotLabel(timeUnit.length > 24 ? timeUnit.slice(0, 24) + "…" : timeUnit) },
         // Plotly mutates axis ranges during interactive zoom.
-        range: [...visibleRange], showgrid: true, gridcolor: "#e7edf4",
+        range: [...visibleRange], showgrid: true, gridcolor: colors.grid,
       },
       yaxis: {
         title: { text: unit.length > 36 ? unit.slice(0, 36) + "…" : unit },
-        fixedrange: false, gridcolor: "#e7edf4",
+        fixedrange: false, gridcolor: colors.grid,
       },
       // Leave room below the axis title for legends that wrap on narrow screens.
       legend: { orientation: "h", y: -70 / plotHeight, yanchor: "top" },
@@ -83,7 +84,7 @@
       hovertemplate: "%{x}<br>%{y}" + (state ? "<br>%{customdata}" : "") + "<extra>" + name + "</extra>",
     };
   }
-  function unavailable(rows, fields) {
+  function unavailable(colors, rows, fields) {
     return fields.map((field) => {
       const absent = rows.filter((row) => row[field] === null);
       const states = absent.map((row) => {
@@ -98,7 +99,7 @@
         customdata: states, showlegend: false,
         marker: {
           size: 7,
-          color: states.map((state) => state === "Unknown observation" ? "#7c3aed" : "#64748b"),
+          color: states.map((state) => state === "Unknown observation" ? colors.unknown : colors.no_trades),
           symbol: states.map((state) => state === "Unknown observation" ? "line-ns-open" : "x-open"),
         },
         hovertemplate: "%{y}<br>%{x}<br>%{customdata}<extra></extra>",
@@ -107,6 +108,7 @@
   }
 
   async function draw(current) {
+    const colors = reportPlotColors();
     const instrument = input.instruments.find((item) => item.instrument_id === selector.value);
     const sequence = result.sequences.find((item) => item.instrument_id === selector.value);
     const rows = input.observations.filter((row) => row.instrument_id === selector.value);
@@ -116,32 +118,32 @@
       "Time: " + grid.unit + " · bin width: " + grid.bin_width + " · price: " +
       instrument.quote_asset + " / " + instrument.base_asset + " · volume: " +
       instrument.base_asset + " · history [" + grid.origin + ", " + grid.completed_horizon + ")";
-    const price = [trace(rows, "last_price", "Last price", "#263b55")];
+    const price = [trace(rows, "last_price", "Last price", colors.price)];
     if (quotes.checked) price.push(
-      trace(rows, "best_bid", "Best bid", "#247961", "dot"),
-      trace(rows, "best_ask", "Best ask", "#a14f48", "dash"),
+      trace(rows, "best_bid", "Best bid", colors.growth, "dot"),
+      trace(rows, "best_ask", "Best ask", colors.decline, "dash"),
     );
     const lanes = instrumentLanes(sequences, selector.value, colors, coordinate, timeUnit);
-    const timeline = layout("Predicted directions", "", paired ? 192 : 160);
+    const timeline = layout(colors, "Predicted directions", "", paired ? 192 : 160);
     timeline.barmode = "overlay";
     timeline.hovermode = "closest";
     timeline.yaxis = lanes.axis;
     const count = [
-      trace(rows, "trade_count", "Executions", "#263b55"),
-      trace(rows, "buy_order_count", "Accepted buys", "#247961"),
-      trace(rows, "sell_order_count", "Accepted sells", "#a14f48"),
+      trace(rows, "trade_count", "Executions", colors.price),
+      trace(rows, "buy_order_count", "Accepted buys", colors.growth),
+      trace(rows, "sell_order_count", "Accepted sells", colors.decline),
     ];
     const volume = [
-      trace(rows, "trade_volume", "Executed volume", "#263b55"),
-      trace(rows, "buy_order_volume", "Accepted buy volume", "#247961"),
-      trace(rows, "sell_order_volume", "Accepted sell volume", "#a14f48"),
+      trace(rows, "trade_volume", "Executed volume", colors.price),
+      trace(rows, "buy_order_volume", "Accepted buy volume", colors.growth),
+      trace(rows, "sell_order_volume", "Accepted sell volume", colors.decline),
     ];
     const fields = ["last_price", "trade_count", "trade_volume", "buy_order_count", "sell_order_count", "buy_order_volume", "sell_order_volume", "best_bid", "best_ask"]
       .filter((field) => rows.some((row) => row[field] === null));
-    const availability = layout("Unavailable: × known absence · | unknown", "", 230);
+    const availability = layout(colors, "Unavailable: × known absence · | unknown", "", 230);
     availability.margin.l = 135;
     availability.yaxis = {
-      type: "category", categoryorder: "array",
+      ...availability.yaxis, type: "category", categoryorder: "array",
       categoryarray: fields.map((field) => field.replaceAll("_", " ")), autorange: "reversed",
     };
     const probabilities = result.class_names.map((name, index) => ({
@@ -150,14 +152,14 @@
       line: { color: colors[name], width: 1.6 },
       hovertemplate: "%{x}<br>%{y:.4f}<extra>" + name + "</extra>",
     }));
-    const probability = layout("Model probabilities", "Probability", 290);
+    const probability = layout(colors, "Model probabilities", "Probability", 290);
     probability.yaxis.range = [0, 1];
     const definitions = [
-      [$("price"), price, layout("Execution price and historical quotes", priceUnit, 290)],
+      [$("price"), price, layout(colors, "Execution price and historical quotes", priceUnit, 290)],
       [$("timeline"), lanes.traces, timeline],
-      [$("activity"), count, layout("Executions and accepted orders", "Count per bin", 290)],
-      [$("volume"), volume, layout("Execution and accepted order volumes", volumeUnit + " per bin", 290)],
-      ...(fields.length ? [[$("coverage"), unavailable(rows, fields), availability]] : []),
+      [$("activity"), count, layout(colors, "Executions and accepted orders", "Count per bin", 290)],
+      [$("volume"), volume, layout(colors, "Execution and accepted order volumes", volumeUnit + " per bin", 290)],
+      ...(fields.length ? [[$("coverage"), unavailable(colors, rows, fields), availability]] : []),
       [$("probability"), probabilities, probability],
     ];
     const drawn = definitions.map(([node]) => node);
@@ -202,6 +204,7 @@
     $("plot-error").hidden = true;
     draw(current).catch((error) => { if (current === generation) failed(error); });
   }
+  watchReportTheme(refresh);
   selector.addEventListener("change", refresh);
   quotes.addEventListener("change", refresh);
   function setRange(range) {
