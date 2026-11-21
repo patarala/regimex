@@ -94,18 +94,18 @@ both versions must have been published or activated.
 
 ## Train a model
 
-Sign in with an administrator token and open **Training**. The service needs a
-running `admin` worker. If this is your first training run, use the API to
-create a development dataset with training and validation partitions, generate
+Sign in with an administrator token and open **Training** at `/training`. The
+service needs a running `admin` worker. If this is your first training run, use
+the API to create a development dataset with training and validation partitions, generate
 a reference set for each, and register the dataset as development history.
 Reserve a separate final dataset with sealed test references, then start
 selection on that reservation. The form lists the benchmarks available to your account.
 [Data preparation](api.md#1-create-observations-and-references) ·
 [Benchmark reservation](api.md#2-reserve-final-data-before-selection)
 
-1. Choose **New run**. You can name the run after its data or the change you
-   are testing, for example `EUR/USD quiet sessions`. Select a development
-   dataset. The form shows its compatible training labels, validation
+1. Choose **New run**, or open `/training/new` directly. You can name the run
+   after its data or the change you are testing, for example `EUR/USD quiet sessions`.
+   Select a development dataset. The form shows its compatible training labels, validation
    labels and reserved benchmarks.
    Hover over a **?** or tab to it for a field explanation. Click or tap the
    **?** to keep the explanation open. Press Escape or tap outside to dismiss it.

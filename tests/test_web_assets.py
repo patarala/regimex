@@ -37,6 +37,28 @@ def test_packaged_browser_assets_are_available_without_authentication() -> None:
         assert client.get("/assets/missing.js").status_code == 404
 
 
+def test_workspace_deep_links_serve_the_app_shell_only_on_known_routes() -> None:
+    app = FastAPI()
+    install_web_routes(app)
+    resource_id = "12345678-1234-1234-1234-123456789abc"
+    with TestClient(app) as client:
+        home = client.get("/")
+        policy = home.headers["content-security-policy"]
+        for path in (
+            "/training",
+            "/training/new",
+            f"/training/{resource_id}?view=archived",
+            "/connections",
+            f"/connections/{resource_id}",
+        ):
+            page = client.get(path, follow_redirects=False)
+            assert page.status_code == 200, path
+            assert page.content == home.content
+            assert page.headers["content-security-policy"] == policy
+        for path in ("/training/not-a-run", "/connections/new", "/missing", "/api/v1/missing"):
+            assert client.get(path).status_code == 404, path
+
+
 def test_plotting_asset_only_serves_an_installed_digest() -> None:
     app = FastAPI()
     install_web_routes(app)

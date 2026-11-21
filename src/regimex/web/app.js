@@ -19,6 +19,7 @@ const session = createSession({
   onReset: () => {
     screen = null;
     lastLocation = null;
+    $("open-analyses").href = "/";
     integrations.reset();
     training.reset();
     storage.reset();
@@ -60,12 +61,36 @@ const training = createTraining({session, navigate, deletion, onPublication: () 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 let screen = null, lastLocation = null;
 
-function navigate(hash, replace = false) {
-  const url = new URL(location.href);
-  url.hash = hash;
-  if (url.href !== location.href)
-    window.history[replace ? "replaceState" : "pushState"](null, "", url);
+function navigate(path, replace = false) {
+  const url = new URL(path, location.href);
+  if (url.href !== location.href) {
+    const state = url.pathname === "/" ? null : reportTabState(new URL($("open-analyses").href, url));
+    window.history[replace ? "replaceState" : "pushState"](state, "", url);
+  }
   return restoreLocation();
+}
+
+// Keep the Analyses tab on its selected report after a reload without putting
+// those report IDs in a training or connection link someone might share.
+function reportTabState(home) {
+  const analysis = home.searchParams.get("analysis"), compare = home.searchParams.get("compare");
+  if (!uuid.test(analysis)) return null;
+  const search = new URLSearchParams({analysis});
+  if (uuid.test(compare)) search.set("compare", compare);
+  return {reportQuery: search.toString(), owner: session.value?.principal.owner_id ?? null};
+}
+
+// Bookmarks from the fragment router may also contain the last open analysis.
+function restoreBookmark(url) {
+  const match = url.pathname === "/" && /^#(training|connections)(?:\/([^/?]+))?(?:\?(.*))?$/.exec(url.hash);
+  if (!match) return url;
+  const [, section, id, query] = match;
+  const target = new URL("/" + section, url);
+  if (id && (uuid.test(id) || (section === "training" && id === "new"))) target.pathname += "/" + id;
+  const view = new URLSearchParams(query).get("view");
+  if (section === "training" && ["archived", "all"].includes(view)) target.searchParams.set("view", view);
+  window.history.replaceState(reportTabState(url), "", target);
+  return target;
 }
 
 function saveReportLocation(url, replace) {
@@ -93,18 +118,24 @@ function rememberComparison(id) {
 }
 
 async function restoreLocation() {
-  if (!session.value || lastLocation === location.href) return;
-  lastLocation = location.href;
-  const url = new URL(location.href);
-  const [path, query] = url.hash.split("?");
-  const match = /^#(training|connections)(?:\/([^/]+))?$/.exec(path);
+  let url = restoreBookmark(new URL(location.href));
+  if (!session.value || lastLocation === url.href) return;
+  const match = /^\/(training|connections)(?:\/([^/]+))?$/.exec(url.pathname);
   const admin = session.value.principal.role === "admin";
-  if (match && !admin) {
-    url.hash = "";
-    window.history.replaceState(null, "", url);
-    lastLocation = url.href;
-    notice((match[1] === "training" ? "Training" : "Connections") + " is available to administrators.");
+  if (match) {
+    const home = new URL("/", url), state = window.history.state;
+    if (admin && state?.reportQuery && (state.owner === null || state.owner === session.value.principal.owner_id)) {
+      home.search = state.reportQuery;
+      if (state.owner === null) window.history.replaceState(reportTabState(home), "", url);
+    }
+    $("open-analyses").href = home.href;
+    if (!admin) {
+      url = home;
+      window.history.replaceState(null, "", url);
+      notice((match[1] === "training" ? "Training" : "Connections") + " is available to administrators.");
+    }
   }
+  lastLocation = url.href;
   const section = admin && match ? match[1] : "analyses";
   const id = match?.[2] || null;
   const previous = screen;
@@ -123,16 +154,12 @@ async function restoreLocation() {
     if (section === name) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
-  const analysesUrl = new URL(url);
-  analysesUrl.hash = "";
-  $("open-analyses").href = analysesUrl.href;
   if (section === "training" || section === "connections") {
-    if (id && !uuid.test(id) && !(section === "training" && id === "new"))
-      return navigate("#" + section, true);
     if (section === "connections") return integrations.show(id);
-    const view = new URLSearchParams(query).get("view");
+    const view = url.searchParams.get("view");
     return training.show(id, ["archived", "all"].includes(view) ? view : "active");
   }
+  $("open-analyses").href = url.href;
   if (previous && previous !== section) $("open-analyses").focus();
   const analysisId = url.searchParams.get("analysis");
   if (analysisId && uuid.test(analysisId)) {
@@ -149,14 +176,14 @@ async function restoreLocation() {
   }
 }
 
-for (const [id, hash] of [["open-analyses", ""], ["open-training", "#training"], ["open-connections", "#connections"]]) {
-  $(id).addEventListener("click", event => {
-    if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-    event.preventDefault();
-    if (!session.value || (hash && session.value.principal.role !== "admin")) return;
-    void navigate(hash);
-  });
-}
+window.addEventListener("click", event => {
+  if (event.defaultPrevented || event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  const link = event.target.closest?.("a[data-workspace-link]");
+  if (!link || !session.value || link.target || link.hasAttribute("download")) return;
+  event.preventDefault();
+  void navigate(link.href);
+});
 window.addEventListener("popstate", restoreLocation);
 window.addEventListener("hashchange", restoreLocation);
+restoreBookmark(new URL(location.href));
 void session.start();

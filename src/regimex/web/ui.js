@@ -134,7 +134,7 @@ export function bindTooltip(button, note, {field, trigger} = {}) {
     window.addEventListener("resize", position, {signal});
     window.visualViewport?.addEventListener("resize", position, {signal});
     window.visualViewport?.addEventListener("scroll", position, {signal});
-    window.addEventListener("hashchange", close, {signal});
+    window.addEventListener("popstate", close, {signal});
     window.addEventListener("pagehide", close, {signal});
     observer = new MutationObserver(position);
     observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "open"]});

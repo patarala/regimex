@@ -82,7 +82,7 @@ async function workspace(role = "admin") {
   const routes = [];
   const controller = entry.namespace.createIntegrations({session, navigate(route) {
     routes.push(route);
-    if (route) return controller.show(route.split("/")[1]);
+    if (route) return controller.show(route.split("/").at(-1));
     controller.reset();
   }});
   controller.reset();
@@ -121,7 +121,7 @@ test("issued secret can be copied and is cleared when leaving connections", asyn
   page.controller.reset();
   assert.equal(page.get("connection-secret-value").value, "");
   assert.equal(page.get("connections").hidden, true);
-  assert.deepEqual(page.routes, ["#connections/one"]);
+  assert.deepEqual(page.routes, ["/connections/one"]);
 });
 
 test("delete permission is opt-in and resets after key creation and sign-out", async () => {

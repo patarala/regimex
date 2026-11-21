@@ -123,7 +123,7 @@ export function createIntegrations({session, navigate}) {
       button.type = "button";
       button.setAttribute("aria-current", String(item.integration_id === selectedId));
       button.append(element("span", item.display_name), element("span", item.enabled ? "Active" : "Paused", "hint"));
-      button.addEventListener("click", () => navigate("#connections/" + encodeURIComponent(item.integration_id)));
+      button.addEventListener("click", () => navigate("/connections/" + encodeURIComponent(item.integration_id)));
       row.append(button);
       return row;
     }));
@@ -276,7 +276,7 @@ export function createIntegrations({session, navigate}) {
       for (const id of ["connection-new-name", "connection-new-owner", "connection-new-source"])
         $(id).value = "";
       pages.connections.offset = 0;
-      navigate("#connections/" + encodeURIComponent(result.integration_id));
+      navigate("/connections/" + encodeURIComponent(result.integration_id));
     });
   });
 

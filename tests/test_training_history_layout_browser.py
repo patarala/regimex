@@ -33,7 +33,7 @@ def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, wid
     try:
         # Older dates include the year even in the narrowest selection layout.
         page.clock.set_fixed_time("2027-01-01T13:00:00Z")
-        page.goto(f"{ORIGIN}/#training/new?view=all")
+        page.goto(f"{ORIGIN}/training/new?view=all")
         if width == 320:
             page.get_by_role("button", name="Run history", exact=True).click()
         row = page.locator(f'#training-runs button[data-run-id="{RUN_ID}"]')
@@ -117,7 +117,7 @@ def test_history_tooltip_keeps_parameter_counts_and_dataset_ids_readable(
     page = browser.new_page(viewport={"width": width, "height": 800}, locale="en-US")
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        page.goto(f"{ORIGIN}/#training/new")
+        page.goto(f"{ORIGIN}/training/new")
         if width < 821:
             page.get_by_role("button", name="Run history", exact=True).click()
         for run in api.runs:

@@ -81,7 +81,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   const progress = createTrainingProgress(session, metrics);
   const archive = createRunArchive({apply: setArchived, renderRows});
   const runsToggle = $("training-runs-toggle");
-  const runHash = (id, filter = view) => "#training" + (id ? "/" + encodeURIComponent(id) : "") +
+  const runPath = (id, filter = view) => "/training" + (id ? "/" + encodeURIComponent(id) : "") +
     (filter === "active" ? "" : "?view=" + filter);
   const pending = new Map();
   const isAdmin = () => session.value?.principal.role === "admin";
@@ -254,7 +254,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     prev.disabled = next.disabled = false;
     prev.hidden = offset === 0;
     next.hidden = page.items.length <= pageSize;
-    if (preselect && target === null && rows.length) navigate(runHash(rows[0].run_id), true);
+    if (preselect && target === null && rows.length) navigate(runPath(rows[0].run_id), true);
   }
 
   // A network error can arrive after the server committed. Reuse that exact request's key.
@@ -551,7 +551,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   function chooseFromHistory(id) {
-    if (id !== target) return navigate(runHash(id));
+    if (id !== target) return navigate(runPath(id));
     runsToggle.setAttribute("aria-expanded", "false");
     $(id === "new" ? "training-config-title" : "training-detail-title").focus();
   }
@@ -559,7 +559,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     runsToggle.setAttribute("aria-expanded", String(runsToggle.getAttribute("aria-expanded") !== "true"));
   });
   $("training-history-view").addEventListener("change", event => {
-    void navigate(runHash(target, event.target.value));
+    void navigate(runPath(target, event.target.value));
   });
   $("training-new").addEventListener("click", () => chooseFromHistory("new"));
   $("training-form").addEventListener("submit", event => {
@@ -571,7 +571,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       offset = 0;
       form.discard();
       listed.set(record.run_id, record);
-      navigate(runHash(record.run_id, "active"), true);
+      navigate(runPath(record.run_id, "active"), true);
       void list();
     });
   });

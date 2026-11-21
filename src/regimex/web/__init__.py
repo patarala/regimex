@@ -69,11 +69,20 @@ def install_web_routes(app: FastAPI) -> None:
             },
         )
 
-    @app.get("/", include_in_schema=False)
     def standalone() -> HTMLResponse:
         return HTMLResponse(
             files("regimex.web").joinpath("index.html").read_bytes(), headers=_HEADERS
         )
+
+    for path in (
+        "/",
+        "/training",
+        "/training/new",
+        "/training/{run_id:uuid}",
+        "/connections",
+        "/connections/{integration_id:uuid}",
+    ):
+        app.add_api_route(path, standalone, methods=["GET"], include_in_schema=False)
 
     @app.get("/assets/{name}", include_in_schema=False)
     def asset(name: str) -> Response:

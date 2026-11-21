@@ -18,7 +18,7 @@ def metric_page(browser: Any, history: dict[str, Any], **options: Any) -> Iterat
     page = browser.new_page(locale="en-US", **options)
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
         yield page
     finally:
         page.close()
@@ -160,7 +160,7 @@ def test_new_epochs_preserve_the_keyboard_inspection_point(browser: Any) -> None
     page.route(ORIGIN + "/**", api.dispatch)
     try:
         page.clock.install()
-        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
         loss = chart_figure(page, "Training loss by epoch")
         inspector = loss.get_by_role("slider")
         inspector.press("Home")

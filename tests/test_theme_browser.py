@@ -174,7 +174,7 @@ def test_training_chart_text_curves_and_markers_contrast_in_both_themes(browser:
     page = browser.new_page(color_scheme="light")
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
         loss = page.get_by_role("img", name="Training loss by epoch")
         score = page.get_by_role("img", name="Validation interval macro-F1 by epoch")
         expect(loss).to_be_visible()

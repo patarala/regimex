@@ -114,11 +114,7 @@ export function createSession({onActivate, onReset}) {
       }
     }
     reset();
-    const url = new URL(location.href);
-    url.searchParams.delete("analysis");
-    url.searchParams.delete("compare");
-    url.hash = "";
-    window.history.replaceState(null, "", url);
+    window.history.replaceState(null, "", new URL("/", location.href));
     notice();
   });
   async function start() {

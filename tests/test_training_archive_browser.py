@@ -15,7 +15,7 @@ def test_archive_and_restore_a_published_run_without_losing_its_details(browser:
     api.runs.append(api.run)
     page = browser.new_page()
     page.route(ORIGIN + "/**", api.dispatch)
-    detail_url = ORIGIN + "/#training/" + RUN_ID
+    detail_url = ORIGIN + "/training/" + RUN_ID
     try:
         page.goto(detail_url)
         expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
@@ -61,7 +61,7 @@ def test_navigation_during_archive_ignores_a_stale_detail(browser: Any) -> None:
     patches: list[Any] = []
     reads: list[Any] = []
     try:
-        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}?view=archived")
         expect(page.get_by_role("button", name="Evaluate model")).to_be_enabled()
         page.route("**/training-runs/archive", lambda route: patches.append(route), times=1)
         with page.expect_request(lambda request: request.method == "PATCH"):
@@ -70,7 +70,7 @@ def test_navigation_during_archive_ignores_a_stale_detail(browser: Any) -> None:
         expect(page.get_by_role("heading", name="New training run")).to_be_visible()
         page.route("**" + detail_path, lambda route: reads.append(route), times=1)
         with page.expect_request(lambda request: request.url.endswith(detail_path)):
-            page.evaluate("hash => { location.hash = hash; }", f"#training/{RUN_ID}?view=archived")
+            page.go_back()
         expect(page.get_by_text("No archived runs.")).to_be_visible()
         api.dispatch(patches.pop())
         restore = page.get_by_role("button", name="Restore run")
@@ -93,7 +93,7 @@ def test_filter_preserves_the_run_selected_repeat_and_epoch_table(browser: Any) 
     page = browser.new_page()
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        url = f"{ORIGIN}/#training/{RUN_ID}"
+        url = f"{ORIGIN}/training/{RUN_ID}"
         page.goto(url)
         expect(page.get_by_role("button", name="Evaluate model")).to_be_enabled()
         seed = page.get_by_label("Training repeat")
@@ -137,7 +137,7 @@ def test_filter_preserves_unfinished_run_json_on_a_phone(browser: Any) -> None:
     page = browser.new_page(viewport={"width": 375, "height": 820})
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        url = ORIGIN + "/#training/new"
+        url = ORIGIN + "/training/new"
         page.goto(url)
         expect(page.get_by_role("button", name="Start training")).to_be_enabled()
         page.get_by_role("button", name="Edit JSON").click()
@@ -181,7 +181,7 @@ def test_a_slower_filter_keeps_old_rows_until_the_latest_view_loads(
     pending: list[Any] = []
     try:
         page.clock.install()
-        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
         history = page.locator("#training-runs")
         current = history.get_by_text("Current trial", exact=True)
         expect(current).to_be_visible()
@@ -225,7 +225,7 @@ def test_bulk_archive_across_pages_and_restore_a_mixed_selection(browser: Any) -
     page = browser.new_page(viewport={"width": 390, "height": 800})
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        page.goto(ORIGIN + "/#training")
+        page.goto(ORIGIN + "/training")
         expect(page.get_by_role("heading", name="Trial 0", exact=True)).to_be_visible()
         page.get_by_role("button", name="Run history", exact=True).click()
         view = page.get_by_role("combobox", name="Run history view")

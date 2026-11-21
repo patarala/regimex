@@ -43,7 +43,7 @@ def test_bulk_actions_keep_their_place_from_empty_selection_to_limit(
     page = browser.new_page(viewport={"width": width, "height": 800})
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        page.goto(ORIGIN + "/#training/new")
+        page.goto(ORIGIN + "/training/new")
         if width == 320:
             page.get_by_role("button", name="Run history", exact=True).click()
         view = page.get_by_role("combobox", name="Run history view")

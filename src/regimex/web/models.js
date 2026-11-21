@@ -64,7 +64,8 @@ export function createModels({session, getSelection, getBusy, getUploadReady, ge
       $(id).textContent = message;
       if (linkToTraining) {
         const link = document.createElement("a");
-        link.href = "#training";
+        link.href = "/training";
+        link.dataset.workspaceLink = "";
         link.textContent = "Open Training";
         $(id).append(link);
       }

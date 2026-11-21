@@ -71,7 +71,7 @@ def test_discard_weights_and_resume_cleanup_with_metrics_and_evaluation(browser:
         ),
     )
     try:
-        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
         expect(page.get_by_role("button", name="Use as default")).to_be_visible()
         page.get_by_text("Run details and settings", exact=True).click()
         page.get_by_role("button", name="Delete model weights").press("Enter")
@@ -123,7 +123,7 @@ def test_previously_published_model_has_no_delete_action(browser: Any) -> None:
     page = browser.new_page()
     page.route(ORIGIN + "/**", api.dispatch)
     try:
-        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
         expect(page.locator("#training-actions")).to_contain_text("Publication")
         page.get_by_text("Run details and settings", exact=True).click()
         expect(page.get_by_role("button", name="Delete model weights")).to_be_hidden()
