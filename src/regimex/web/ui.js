@@ -9,16 +9,26 @@ export function analysisStateLabel(state) {
   return analysisStates[state] || state;
 }
 
+export function shortDate(value) {
+  return new Date(value).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "short"});
+}
+
 export function notice(message = "", error = false) {
   $("notice").textContent = message;
   $("notice").classList.toggle("error", error);
   $("notice").hidden = !message;
 }
 
+export function element(tag, text = "", className = "") {
+  const el = document.createElement(tag);
+  el.textContent = text;
+  if (className) el.className = className;
+  return el;
+}
+
 export function option(value, label) {
-  const item = document.createElement("option");
+  const item = element("option", label);
   item.value = value;
-  item.textContent = label;
   return item;
 }
 

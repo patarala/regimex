@@ -65,21 +65,20 @@ jobs:
           "$RUNNER_TEMP/regimex-wheel/bin/regimex" --version
           "$RUNNER_TEMP/regimex-wheel/bin/python" -m regimex --version
           "$RUNNER_TEMP/regimex-wheel/bin/python" - <<'PY'
+          import os
           from importlib.resources import files
+          from pathlib import Path
 
           templates = files("regimex").joinpath("templates")
           for suffix in ("html", "css", "js"):
               for stem in ("direction-report", "analysis-report", "analysis-comparison", "model-comparison"):
                   asset = templates.joinpath(f"{stem}.{suffix}")
                   assert asset.is_file() and asset.read_text(encoding="utf-8").strip(), asset
-          for name in (
-              "index.html", "app.css", "app.js", "ui.js", "session.js", "history.js",
-              "models.js", "analysis.js", "uploads.js", "comparison.js", "queue-status.js",
-              "experiment-history.js", "integrations.js", "storage.js", "deletion.js",
-              "training.js", "training-form.js", "training-metrics.js",
-          ):
-              asset = files("regimex").joinpath("web", name)
-              assert asset.is_file() and asset.read_bytes(), asset
+          source = Path(os.environ["GITHUB_WORKSPACE"]) / "src/regimex/web"
+          shipped = files("regimex").joinpath("web")
+          for asset in source.iterdir():
+              if asset.suffix in {".html", ".css", ".js"}:
+                  assert shipped.joinpath(asset.name).read_bytes() == asset.read_bytes(), asset
           PY
 
   scientific:

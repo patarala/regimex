@@ -1,10 +1,4 @@
-import {$, option} from "./ui.js";
-
-function node(tag, text = "") {
-  const element = document.createElement(tag);
-  element.textContent = text;
-  return element;
-}
+import {$, element, option} from "./ui.js";
 
 function svgNode(tag, attrs, text = "") {
   const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -70,8 +64,14 @@ function lossCeiling(points) {
 
 function plot(metric, axis, gutter) {
   const {points, ceiling, ticks} = metric;
-  const figure = node("figure");
-  figure.append(node("figcaption", metric.label));
+  const figure = element("figure");
+  const caption = element("figcaption", metric.label);
+  if (metric.sampling) {
+    const sampling = element("span", metric.sampling);
+    sampling.className = "metric-sampling";
+    caption.append(" ", sampling);
+  }
+  figure.append(caption);
   const graph = svgNode("svg", {width: "100%", height: 168, role: "img",
     "aria-label": metric.label + " by " + axis.label.toLowerCase()});
   const start = points[0], end = points.at(-1);
@@ -111,47 +111,50 @@ function plot(metric, axis, gutter) {
   return figure;
 }
 
-function valuesTable(history, records, metrics, open) {
-  const details = node("details");
+function valuesTable(history, metric, open) {
+  const {points} = metric;
+  const details = element("details");
   details.className = "training-observations";
+  details.dataset.metric = metric.field;
   details.open = open;
-  details.append(node("summary", "Metric values"));
-  const table = node("table");
-  table.setAttribute("aria-label", "Recorded metric values by " + history.label.toLowerCase());
+  const summary = element("summary", "Values");
+  summary.setAttribute("aria-label", metric.label + " values");
+  details.append(summary);
+  const table = element("table");
+  table.setAttribute("aria-label", metric.label + " by " + history.label.toLowerCase());
   const headings = table.createTHead().insertRow();
-  for (const label of [history.label, ...metrics.map(metric => metric.label)]) {
-    const cell = node("th", label);
+  for (const label of [history.label, metric.label]) {
+    const cell = element("th", label);
     cell.scope = "col";
     headings.append(cell);
   }
   const body = table.createTBody();
-  const wrapper = node("div");
+  const wrapper = element("div");
   wrapper.className = "training-values";
   wrapper.append(table);
   details.append(wrapper);
   const perPage = 20;
-  const previous = node("button", "Previous values"), next = node("button", "Next values");
-  const range = node("span");
+  const previous = element("button", "Previous values"), next = element("button", "Next values");
+  const range = element("span");
   range.setAttribute("role", "status");
   let offset = 0;
   function render() {
     body.replaceChildren();
-    for (const record of records.slice(offset, offset + perPage)) {
+    for (const [x, value] of points.slice(offset, offset + perPage)) {
       const row = body.insertRow();
-      const index = node("th", format(record[history.field]));
+      const index = element("th", format(x));
       index.scope = "row";
       row.append(index);
-      for (const {field} of metrics) {
-        row.insertCell().textContent = Number.isFinite(record[field]) ? format(record[field]) : "Not recorded";
-      }
+      row.insertCell().textContent = format(value);
     }
-    const limit = Math.min(offset + perPage, records.length);
+    const limit = Math.min(offset + perPage, points.length);
     previous.disabled = offset === 0;
-    next.disabled = limit === records.length;
-    range.textContent = (offset + 1) + "–" + limit + " of " + records.length;
+    next.disabled = limit === points.length;
+    range.textContent = (offset + 1) + "–" + limit + " of " + points.length;
   }
-  if (records.length > perPage) {
-    const nav = node("div");
+  if (points.length > perPage) {
+    const nav = element("nav");
+    nav.setAttribute("aria-label", metric.label + " values");
     nav.className = "training-values-nav";
     for (const [button, delta] of [[previous, -perPage], [next, perPage]]) {
       button.type = "button";
@@ -171,25 +174,29 @@ function valuesTable(history, records, metrics, open) {
 
 export function showTrainingMetrics(metrics) {
   $("training-metrics").hidden = false;
-  $("training-score").replaceChildren("The saved model (seed " + metrics.selected_seed + ") scored ",
-    node("strong", format(metrics.validation_segment_macro_f1)), " on validation interval macro-F1.");
+  const history = histories.find(schema => Array.isArray(metrics.history?.[schema.rows]));
+  const saved = history?.rows === "candidates" ? "saved model" : "saved model (seed " + metrics.selected_seed + ")";
+  $("training-score").replaceChildren(element("strong", format(metrics.validation_segment_macro_f1)),
+    " validation interval macro-F1 · " + saved);
   const charts = $("training-charts"), seed = $("training-seed");
   charts.replaceChildren();
   seed.replaceChildren();
   $("training-seed-label").hidden = true;
   seed.onchange = null;
-  const history = histories.find(schema => Array.isArray(metrics.history?.[schema.rows]));
   const records = history && metrics.history[history.rows].filter(row => row && Number.isFinite(row[history.field]));
   if (!records?.length) {
-    charts.append(node("p", metrics.history_note || "The run has no recorded metric values to plot."));
+    charts.append(element("p", metrics.history_note || "The run has no recorded metric values to plot."));
     return;
   }
   const seeds = [...new Set(records.map(row => row.seed).filter(Number.isInteger))];
-  for (const value of seeds) seed.append(option(String(value), String(value)));
+  for (const value of seeds) {
+    const label = "Seed " + value + (value === metrics.selected_seed ? " (saved model)" : "");
+    seed.append(option(String(value), label));
+  }
   if (seeds.length) seed.value = String(seeds.includes(metrics.selected_seed) ? metrics.selected_seed : seeds[0]);
   $("training-seed-label").hidden = seeds.length < 2;
   function draw() {
-    const keepTableOpen = charts.querySelector("details")?.open || false;
+    const openTables = new Set(Array.from(charts.querySelectorAll("details[open]"), table => table.dataset.metric));
     const selected = records.filter(row => !seeds.length || row.seed === Number(seed.value))
       .sort((a, b) => a[history.field] - b[history.field]);
     const axis = horizontalAxis(history, selected);
@@ -200,16 +207,24 @@ export function showTrainingMetrics(metrics) {
       if (!points.length) continue;
       const ceiling = metric.field === "training_loss" ? lossCeiling(points) : 1;
       const ticks = [0, ceiling / 2, ceiling].map(value => ({value, label: format(value)}));
-      series.push({...metric, points, ceiling, ticks});
+      let sampling = "";
+      if (metric.field === "validation_segment_macro_f1" && points.length < selected.length &&
+          (history.field === "epoch" || history.field === "update")) {
+        sampling = points.length + " of " + selected.length + " " + history.field + "s evaluated";
+      }
+      series.push({...metric, points, ceiling, ticks, sampling});
     }
     if (!series.length) {
-      charts.replaceChildren(node("p", "No metric values were recorded for this seed."));
+      charts.replaceChildren(element("p", "No metric values were recorded for this seed."));
       return;
     }
     const tickWidths = series.flatMap(chart => chart.ticks.map(({label}) => label.length * 9));
     const gutter = Math.max(36, Math.max(...tickWidths) + 14);
-    charts.replaceChildren(...series.map(metric => plot(metric, axis, gutter)),
-      valuesTable(history, selected, series, keepTableOpen));
+    charts.replaceChildren(...series.map(metric => {
+      const figure = plot(metric, axis, gutter);
+      figure.append(valuesTable(history, metric, openTables.has(metric.field)));
+      return figure;
+    }));
   }
   seed.onchange = draw;
   draw();

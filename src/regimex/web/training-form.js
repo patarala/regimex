@@ -14,6 +14,11 @@ function shortId(id) {
   return id.replace(/^(?:dataset|reference)-([0-9a-f]{8})[0-9a-f]{24}$/, "$1");
 }
 
+export function datasetName(id) {
+  const key = shortId(id);
+  return key === id ? id : "Dataset " + key;
+}
+
 function choices(id, items, empty) {
   const select = $(id);
   select.replaceChildren(...(items.length ? items.map(([value, label]) => {
@@ -116,6 +121,7 @@ export function createTrainingForm({session, eachPage}) {
   }
   async function open() {
     const stamp = ++generation, valid = () => generation === stamp;
+    if ($("training-config").hidden) $("training-name").value = draft?.["training-name"] || "";
     $("training-config").hidden = false;
     feedback();
     for (const id of selectors) choices(id, [], "Loading…");
@@ -126,7 +132,7 @@ export function createTrainingForm({session, eachPage}) {
       ]);
       if (!valid()) return;
       choices("training-dataset", datasets.filter(row => row.partitions.train && row.partitions.validation)
-        .map(row => [row.dataset_id, shortId(row.dataset_id) + " · " + row.partitions.train +
+        .map(row => [row.dataset_id, datasetName(row.dataset_id) + " · " + row.partitions.train +
           " training · " + row.partitions.validation + " validation"]), "No development datasets");
       architectures = backends.filter(row => row.executable !== false);
       choices("training-architecture", architectures.map(row => [row.architecture_id, architectureName(row.architecture_id)]),
@@ -143,12 +149,16 @@ export function createTrainingForm({session, eachPage}) {
   }
   function close(remember = true) {
     if (!remember) draft = null;
-    else if (!$("training-config").hidden && $("training-architecture").value) {
-      draft = Object.fromEntries([...selectors, ...settings].map(id => [id, $(id).value]));
-      draft.expanded = $("training-form-settings").open;
+    else if (!$("training-config").hidden) {
+      if ($("training-architecture").value) {
+        draft = Object.fromEntries([...selectors, ...settings].map(id => [id, $(id).value]));
+        draft.expanded = $("training-form-settings").open;
+      }
+      draft = {...draft, "training-name": $("training-name").value};
     }
     generation++;
     architectures = [];
+    $("training-name").value = "";
     $("training-config").hidden = true;
     $("training-form-settings").open = false;
     for (const id of settings) {
@@ -163,7 +173,9 @@ export function createTrainingForm({session, eachPage}) {
   for (const id of settings)
     $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
   function payload() {
+    const name = $("training-name").value;
     return {
+      display_name: name.trim() ? name : undefined,
       dataset_id: $("training-dataset").value, architecture_id: $("training-architecture").value,
       labels_reference_set_id: $("training-labels").value, validation_reference_set_id: $("training-validation").value,
       benchmark_selection_id: $("training-benchmark").value, policy: readSettings("training-policy"),

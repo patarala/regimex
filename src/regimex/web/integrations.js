@@ -1,4 +1,4 @@
-import {$} from "./ui.js";
+import {$, element} from "./ui.js";
 import {clearStorage, renderStorage, storageError} from "./storage.js";
 
 const ROOT = "/api/v1/admin/integrations";
@@ -10,13 +10,6 @@ const eventNames = {
   "key.created": "Service key created",
   "key.revoked": "Service key revoked",
 };
-
-function element(tag, text, className = "") {
-  const node = document.createElement(tag);
-  node.textContent = text;
-  node.className = className;
-  return node;
-}
 
 function date(value, fallback = "Never") {
   return value ? new Date(value).toLocaleString() : fallback;

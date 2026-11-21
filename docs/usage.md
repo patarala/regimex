@@ -100,26 +100,40 @@ selection on that reservation. The form lists the benchmarks available to your a
 [Data preparation](api.md#1-create-observations-and-references) ·
 [Benchmark reservation](api.md#2-reserve-final-data-before-selection)
 
-1. Choose **New run**. Select a development dataset. The form shows its
-   compatible training labels, validation references and selection benchmarks.
+1. Choose **New run**. You can name the run after its data or the change you
+   are testing, for example `EUR/USD quiet sessions`. Select a development
+   dataset. The form shows its compatible training labels, validation
+   references and selection benchmarks.
    If data is missing, use the setup links beside the fields.
 2. Choose **Logistic baseline** or **Temporal convolutional network (TCN)**.
    **Training settings** lets you edit architecture parameters, the training
    policy and CPU runtime limits. Choose **Start training** to queue the run.
    You can bookmark the run or leave and return while the worker trains it.
    If you leave a form before submitting, browser Back restores the draft in the same tab.
-3. Select a run from the list, or open **Run history** on a phone. You can
+3. Select a run from the list, or open **Run history** on a phone. Unnamed
+   runs show the architecture and dataset. Choose **Rename** to change the
+   name, or clear the field and save to restore the automatic title. You can
    cancel a run while it is queued or running.
    The page checks active jobs about every 2.5 seconds. When training succeeds,
-   the charts appear automatically. The baseline plots validation interval
-   macro-F1 against regularization. The TCN plots loss and validation scores
-   by epoch or optimizer update. **Chart seed** switches the displayed curves.
-   The score above the charts always describes the saved model. Open **Metric
-   values** to read individual measurements.
-4. Choose **Evaluate candidate** to score its saved weights on the same
-   validation references. Open **Evaluation JSON** for the full metrics.
-   To make this model the default for new analyses, choose **Publish candidate**
-   and confirm the active model it will replace.
+   the charts appear automatically. Open **Values** under a chart for its
+   individual measurements.
+
+   The baseline scores each regularization setting on the validation data.
+   The TCN records training loss at every epoch or optimizer update. With an
+   epoch budget, it checks validation interval macro-F1 at epoch 1, every
+   `validation_interval` epochs, and at the final scheduled epoch if reached.
+   With an update budget, it checks the updates listed in `validation_updates`.
+
+   If the TCN trained several times on the same data, use **Training repeat**
+   to switch curves. Each seed sets the starting weights and training order.
+   The repeat marked **saved model** produced the checkpoint with the best
+   validation interval macro-F1. Its score stays above the charts.
+4. Under **Model evaluation**, choose **Evaluate model** to score the saved
+   weights on the validation references. Open **View evaluation** to see the
+   interval and step scores and the results for each direction. **All fields**
+   shows the full report in the browser. **Download JSON** saves a copy.
+   To make this model the default for new analyses, choose **Use as default**
+   and confirm the change.
 
 You can train and compare several candidates under one reservation. The
 training screen keeps the final test references sealed. Once you have chosen the

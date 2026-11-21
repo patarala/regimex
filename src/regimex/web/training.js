@@ -1,16 +1,22 @@
-import {$, analysisStateLabel} from "./ui.js";
+import {$, analysisStateLabel, element, shortDate} from "./ui.js";
+import {showTrainingActions} from "./training-evaluation.js";
 import {showTrainingMetrics} from "./training-metrics.js";
-import {architectureName, createTrainingForm} from "./training-form.js";
+import {architectureName, createTrainingForm, datasetName} from "./training-form.js";
+import {createRunNameEditor} from "./training-name.js";
 
 const api = "/api/v1/";
 const pageSize = 12;
 const inProgress = (job) => ["queued", "running", "cancel_requested"].includes(job.state);
 const route = (id) => api + "training-runs/" + encodeURIComponent(id);
 
-function text(tag, value) {
-  const el = document.createElement(tag);
-  el.textContent = value;
-  return el;
+function runContext(row) {
+  return architectureName(row.training.architecture_id, true) + " · " + datasetName(row.training.dataset_id);
+}
+
+// A polling response can have been read before a rename in this or another tab.
+function withLatestName(row, known) {
+  if ((known?.name_revision ?? 0) <= (row.name_revision ?? 0)) return row;
+  return {...row, display_name: known.display_name, name_revision: known.name_revision};
 }
 
 export function createTraining({session, navigate, onPublication}) {
@@ -20,6 +26,7 @@ export function createTraining({session, navigate, onPublication}) {
   let pendingDownstream = false, retryDelay = 2500, target = null;
   let listed = new Map();
   const form = createTrainingForm({session, eachPage});
+  const names = createRunNameEditor({session, getRun: () => run, applyName});
   const runsToggle = $("training-runs-toggle");
   const runHash = id => "#training/" + encodeURIComponent(id);
   const pending = new Map();
@@ -37,6 +44,7 @@ export function createTraining({session, navigate, onPublication}) {
     selection++;
     clearTimeout(timer);
     form.close();
+    names.close();
     retryDelay = 2500;
     $("training-sync").hidden = true;
     $("training-run-details").open = false;
@@ -82,23 +90,32 @@ export function createTraining({session, navigate, onPublication}) {
     if (current(stamp)) message(error.message, true);
   }
 
-  async function list(preselect = false) {
-    const stamp = epoch, request = ++listRequest;
-    const page = await session.json(api + "training-runs?limit=" + (pageSize + 1) + "&offset=" + offset);
-    if (!current(stamp) || request !== listRequest) return;
+  function renderRows() {
     const focused = document.activeElement?.dataset?.runId;
-    const rows = page.items.slice(0, pageSize);
-    listed = new Map(rows.map(row => [row.run_id, row]));
-    $("training-runs").replaceChildren(...rows.map((row) => {
+    const rows = [...listed.values()].map(row => ({
+      row, context: runContext(row), date: shortDate(row.job.created_at),
+    }));
+    $("training-runs").replaceChildren(...rows.map(({row, context, date}) => {
       const item = document.createElement("li");
-      const button = text("button", "");
+      const button = element("button", "");
       button.type = "button";
       button.className = "quiet";
       button.dataset.runId = row.run_id;
       button.setAttribute("aria-current", String(row.run_id === target));
-      const time = new Date(row.job.created_at).toLocaleString();
-      button.append(text("strong", architectureName(row.training.architecture_id, true) + " · " + analysisStateLabel(row.job.state)),
-        text("span", time), text("small", row.run_id.slice(0, 8)));
+      const time = element("time", date);
+      time.dateTime = row.job.created_at;
+      const sameLabel = rows.some(other => other.row !== row && other.row.display_name === row.display_name &&
+        other.context === context && other.date === date);
+      if (sameLabel)
+        time.append(" · …" + row.run_id.slice(-8));
+      const title = element("strong", row.display_name || context);
+      title.dir = "auto";
+      button.title = title.textContent;
+      button.append(title);
+      if (row.display_name) button.append(element("span", context, "training-run-context"));
+      const state = element("span", analysisStateLabel(row.job.state));
+      state.dataset.state = row.job.state;
+      button.append(time, state);
       button.addEventListener("click", () => chooseFromHistory(row.run_id));
       item.append(button);
       return item;
@@ -106,6 +123,20 @@ export function createTraining({session, navigate, onPublication}) {
     if (focused) {
       for (const li of $("training-runs").children)
         if (li.children[0].dataset.runId === focused) li.children[0].focus({preventScroll: true});
+    }
+  }
+
+  async function list(preselect = false) {
+    const stamp = epoch, request = ++listRequest;
+    const page = await session.json(api + "training-runs?limit=" + (pageSize + 1) + "&offset=" + offset);
+    if (!current(stamp) || request !== listRequest) return;
+    const rows = page.items.slice(0, pageSize).map(row =>
+      withLatestName(row, run?.run_id === row.run_id ? run : listed.get(row.run_id)));
+    listed = new Map(rows.map(row => [row.run_id, row]));
+    renderRows();
+    if (run && listed.has(run.run_id)) {
+      run = withLatestName(run, listed.get(run.run_id));
+      showTitle();
     }
     $("training-empty").hidden = page.items.length !== 0;
     $("training-prev").hidden = offset === 0;
@@ -135,15 +166,32 @@ export function createTraining({session, navigate, onPublication}) {
     return rows;
   }
 
+  function showTitle() {
+    const context = runContext(run);
+    $("training-detail-title").textContent = run.display_name || context;
+    $("training-created").textContent = (run.display_name ? context + " · " : "") + "Created " + shortDate(run.job.created_at);
+  }
+
+  function applyName(id, name, revision) {
+    const saved = {display_name: name, name_revision: revision};
+    if (run?.run_id === id) {
+      run = withLatestName(run, saved);
+      showTitle();
+    }
+    if (listed.has(id)) {
+      listed.set(id, withLatestName(listed.get(id), saved));
+      renderRows();
+    }
+  }
+
   function facts() {
     const spec = run.training;
-    $("training-detail-title").textContent = architectureName(spec.architecture_id, true) + " training";
+    showTitle();
     $("training-state").textContent = analysisStateLabel(run.job.state);
     $("training-state").dataset.state = run.job.state;
-    $("training-created").textContent = "Created " + new Date(run.job.created_at).toLocaleString();
     const entries = [["Run", run.run_id], ["Dataset", spec.dataset_id], ["Selection benchmark", spec.benchmark_selection_id],
       ["Model version", spec.model_version_id]];
-    $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [text("dt", key), text("dd", value || "—")]));
+    $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [element("dt", key), element("dd", value || "—")]));
     $("training-settings").textContent = JSON.stringify({parameters: spec.parameters, policy: spec.policy,
       training_runtime: spec.training_runtime, inference_runtime: spec.inference_runtime,
       analysis_profile_id: spec.analysis_profile_id, labels_reference_set_id: spec.labels_reference_set_id,
@@ -178,24 +226,21 @@ export function createTraining({session, navigate, onPublication}) {
       models.active_model_version_id === run.training.model_version_id;
     activeModel = models.active_model_version_id;
     if (newlyActive) void onPublication();
-    $("training-actions").replaceChildren(...rows.map(row => {
-      const item = text("li", (row.job.kind === "evaluation" ? "Validation" : "Publication") + " · " +
-        analysisStateLabel(row.job.state) + (row.job.failure ? " · " + row.job.failure.message : ""));
-      if (row.job.kind === "evaluation" && row.job.state === "succeeded") {
-        const link = text("a", "Evaluation JSON");
-        link.href = api + "evaluations/" + encodeURIComponent(row.run_id) + "/result";
-        link.download = "evaluation-" + row.run_id + ".json";
-        item.append(document.createTextNode(" · "), link);
-      }
-      return item;
-    }));
-    pendingDownstream = rows.some(row => inProgress(row.job));
+    showTrainingActions($("training-actions"), rows, session);
+    const outstanding = rows.find(row => inProgress(row.job));
+    pendingDownstream = Boolean(outstanding);
     $("training-evaluate").disabled = busy || pendingDownstream;
     $("training-publish").hidden = !evaluation || activeModel === run.training.model_version_id;
     $("training-publish").disabled = busy || pendingDownstream;
-    $("training-publication").textContent = activeModel === run.training.model_version_id ?
-      "This candidate is active." : evaluation ? "Current active model: " + (activeModel || "none") :
-      "Evaluate this fixed candidate on its validation references before publishing.";
+    let nextStep = "Evaluate the saved model on its validation data before making it the default for new analyses.";
+    if (outstanding) {
+      nextStep = outstanding.job.kind === "evaluation" ? "Evaluating the saved model." : "Updating the default model.";
+    } else if (activeModel === run.training.model_version_id) {
+      nextStep = "New analyses use this model by default.";
+    } else if (evaluation) {
+      nextStep = "Evaluation complete. You can now make this model the default for new analyses.";
+    }
+    $("training-publication").textContent = nextStep;
     $("training-downstream").hidden = false;
     return pendingDownstream;
   }
@@ -210,7 +255,8 @@ export function createTraining({session, navigate, onPublication}) {
       if (fetchRun) {
         const next = await session.json(route(run.run_id));
         if (!valid()) return;
-        run = next;
+        if (next.name_revision > run.name_revision) applyName(run.run_id, next.display_name, next.name_revision);
+        run = withLatestName(next, run);
       }
       facts();
       if (run.job.state !== before) void list().catch(error => reportIfCurrent(workspace, error));
@@ -276,7 +322,7 @@ export function createTraining({session, navigate, onPublication}) {
     try {
       const row = listed.get(id) || await session.json(route(id));
       if (!selected(stamp)) return;
-      run = row;
+      run = withLatestName(row, listed.get(id));
       void refresh(stamp, false);
       $("training-detail-title").focus();
     } catch (error) {
@@ -346,7 +392,10 @@ export function createTraining({session, navigate, onPublication}) {
   }));
   $("training-publish").addEventListener("click", () => action(async (stamp) => {
     const id = run.training.model_version_id;
-    if (!evaluation || activeModel === undefined || !window.confirm("Activate " + id + "? Current model: " + (activeModel || "none"))) return;
+    if (!evaluation || activeModel === undefined) return;
+    const confirmation = "Use " + id + " as the default for new analyses?" +
+      (activeModel ? "\nThis replaces " + activeModel + "." : "");
+    if (!window.confirm(confirmation)) return;
     await post(api + "models/" + encodeURIComponent(id) + "/publish",
       {evaluation_run_id: evaluation.run_id, expected_previous: activeModel});
     if (selected(stamp)) {

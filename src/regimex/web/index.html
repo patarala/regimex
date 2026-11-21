@@ -227,7 +227,7 @@
                 <span>Runs</span>
                 <button id="training-runs-toggle" class="quiet" type="button" aria-controls="training-history" aria-expanded="true">Run history</button>
               </h2>
-              <button id="training-new" type="button">New run</button>
+              <button id="training-new" class="quiet" type="button">New run</button>
             </div>
             <div id="training-history">
               <p id="training-empty" class="hint" hidden>No training runs yet.</p>
@@ -243,6 +243,7 @@
             <h2 id="training-config-title" tabindex="-1">New training run</h2>
             <form id="training-form" class="training-form">
               <div class="training-form-grid">
+                <label class="training-wide">Run name <span class="field-optional">(optional)</span><input id="training-name" type="text" dir="auto" autocomplete="off"></label>
                 <label class="training-wide">Development dataset<select id="training-dataset" required></select></label>
                 <label>Training labels<select id="training-labels" required></select></label>
                 <label>Validation references<select id="training-validation" required></select></label>
@@ -262,27 +263,39 @@
           </section>
           <section id="training-detail" class="panel" aria-labelledby="training-detail-title" hidden>
             <div class="section-heading training-run-heading">
-              <h2 id="training-detail-title" tabindex="-1">Run</h2>
+              <h2 id="training-detail-title" tabindex="-1" dir="auto">Run</h2>
               <span id="training-state" class="job-state"></span>
             </div>
-            <p id="training-created" class="hint"></p>
+            <div class="training-run-caption">
+              <p id="training-created" class="hint"></p>
+              <button id="training-rename" type="button" class="quiet">Rename</button>
+            </div>
+            <form id="training-name-editor" hidden>
+              <label for="training-edited-name">Run name</label>
+              <input id="training-edited-name" type="text" dir="auto" autocomplete="off">
+              <div class="actions">
+                <button id="training-name-save" type="submit">Save name</button>
+                <button id="training-name-cancel" type="button" class="quiet">Cancel</button>
+              </div>
+              <p id="training-name-status" class="hint" role="status"></p>
+            </form>
             <p id="training-sync" class="notice" role="status" hidden></p>
             <p id="training-stage" class="hint" role="status" hidden></p>
             <button id="training-cancel" type="button" class="quiet" hidden>Cancel training</button>
             <section id="training-metrics" class="training-section" aria-labelledby="training-metrics-title" hidden>
               <h3 id="training-metrics-title">Training metrics</h3>
               <p id="training-score"></p>
-              <label id="training-seed-label" hidden>Chart seed <select id="training-seed"></select></label>
+              <label id="training-seed-label" hidden>Training repeat <select id="training-seed"></select></label>
               <div id="training-charts"></div>
               <a id="training-metric-data" download>Download metric data</a>
             </section>
             <section id="training-downstream" class="training-section" aria-labelledby="training-actions-title" hidden>
-              <h3 id="training-actions-title">Validation and publication</h3>
+              <h3 id="training-actions-title">Model evaluation</h3>
               <ul id="training-actions" class="training-actions"></ul>
               <p id="training-publication" class="hint"></p>
               <div class="actions">
-                <button id="training-evaluate" type="button" class="quiet">Evaluate candidate</button>
-                <button id="training-publish" type="button" hidden>Publish candidate</button>
+                <button id="training-evaluate" type="button" class="quiet">Evaluate model</button>
+                <button id="training-publish" type="button" hidden>Use as default</button>
               </div>
             </section>
             <details id="training-run-details" class="training-run-details">

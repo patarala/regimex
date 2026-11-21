@@ -1,4 +1,4 @@
-import {analysisStateLabel, notice} from "./ui.js";
+import {analysisStateLabel, notice, shortDate} from "./ui.js";
 
 const PAGE_SIZE = 20;
 
@@ -13,10 +13,6 @@ function button(className, text) {
   const node = element("button", className, text);
   node.type = "button";
   return node;
-}
-
-function shortDate(value) {
-  return new Date(value).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "short"});
 }
 
 export function createExperimentHistory({session, experiment, filters, isActive, getSelection,

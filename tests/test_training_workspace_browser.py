@@ -33,8 +33,32 @@ SPEC = {
 def completed_run(run_id: str, kind: str) -> dict[str, Any]:
     return {
         "run_id": run_id,
+        "display_name": None,
+        "name_revision": 0,
         "job": {"created_at": "2026-01-01T12:00:00Z", "kind": kind, "state": "succeeded"},
         "training": {**SPEC, "model_version_id": CANDIDATE} if kind == "training" else None,
+    }
+
+
+def evaluation_report() -> dict[str, Any]:
+    return {
+        "evaluation_version": "2.4",
+        "scope": "fixed_model_validation",
+        "segment_macro_f1": 0.6,
+        "point_macro_f1": 0.8,
+        "experiment_count": 3,
+        "instrument_sequence_count": 5,
+        "reference_kind": "automatic",
+        "point_metrics": {"defined": True},
+        "segment_metrics": {
+            "iou_threshold": 0.5,
+            "class_names": ["sideways", "growth", "decline"],
+            "per_class": {
+                "sideways": {"support": 3, "predicted": 2, "matched": 2, "f1": 0.8},
+                "growth": {"support": 1, "predicted": 1, "matched": 1, "f1": 1.0},
+                "decline": {"support": 1, "predicted": 0, "matched": 0, "f1": 0.0},
+            },
+        },
     }
 
 
@@ -151,6 +175,7 @@ class TrainingAPI:
             f"training-runs/{RUN_ID}": self.run,
             f"training-runs/{RUN_ID}/actions": {"items": self.actions},
             f"training-runs/{RUN_ID}/metrics": self.metrics,
+            f"evaluations/{EVALUATION_ID}/result": evaluation_report(),
         }
         route.fulfill(json=resources[path])
 
@@ -168,6 +193,7 @@ class TrainingAPI:
         if path == "training-runs":
             if len(self.posts) == 1:
                 # The server accepted the run, but the response never reached the browser.
+                self.run["display_name"] = request.post_data_json.get("display_name")
                 self.runs.append(self.run)
                 route.abort("connectionreset")
                 return
@@ -183,7 +209,7 @@ class TrainingAPI:
         route.fulfill(status=202, json=result)
 
 
-@pytest.mark.parametrize("width", [390, 1280], ids=["phone", "desktop"])
+@pytest.mark.parametrize("width", [320, 1280], ids=["phone", "desktop"])
 def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width: int) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
@@ -208,7 +234,11 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         expect(page.get_by_label("Selection benchmark")).to_have_value("selection-v1")
         expect(start).to_be_enabled()
         expected_intake = SPEC.copy()
+        title = "TCN · development"
         if width == 1280:
+            title = "Morning volatility"
+            page.get_by_label("Run name (optional)").fill(title)
+            expected_intake["display_name"] = title
             page.locator("#training-form summary").click()
             runtime = page.get_by_label("Training runtime overrides")
             runtime.fill("[]")
@@ -221,7 +251,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         start.press("Enter")
         expect(page.locator("#training-notice")).to_contain_text("Could not connect")
         start.press("Enter")
-        expect(page.get_by_role("heading", name="TCN training")).to_be_visible()
+        expect(page.get_by_role("heading", name=title)).to_be_visible()
         assert api.posts[0] == api.posts[1]
         assert api.posts[0][:2] == ("training-runs", expected_intake)
 
@@ -229,8 +259,9 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         expect(page.get_by_role("link", name="Download metric data")).to_have_attribute(
             "href", f"/api/v1/training-runs/{RUN_ID}/metrics"
         )
-        seed = page.get_by_label("Chart seed")
+        seed = page.get_by_label("Training repeat")
         expect(seed).to_have_value("23")
+        expect(seed.locator("option:checked")).to_have_text("Seed 23 (saved model)")
         loss = page.get_by_role("img", name="Training loss by epoch")
         expect(loss.locator("circle title")).to_have_text("Epoch 1: 0.56")
         seed.select_option("11")
@@ -240,12 +271,44 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         ).to_be_visible()
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
 
-        publish = page.get_by_role("button", name="Publish candidate")
+        publish = page.get_by_role("button", name="Use as default")
         expect(publish).to_be_hidden()
-        page.get_by_role("button", name="Evaluate candidate").press("Enter")
-        expect(page.get_by_role("link", name="Evaluation JSON")).to_have_attribute(
-            "href", f"/api/v1/evaluations/{EVALUATION_ID}/result"
+        page.get_by_role("button", name="Evaluate model").press("Enter")
+        results = page.locator("details.evaluation-result")
+        path = f"evaluations/{EVALUATION_ID}/result"
+        expect(results.locator(":scope > summary")).to_contain_text("View evaluation")
+        assert path not in api.pages
+        results.locator(":scope > summary").press("Enter")
+        expect(results.get_by_role("link", name="Download JSON")).to_have_attribute(
+            "href", f"/api/v1/{path}"
         )
+        expect(results).to_contain_text("3 validation experiments")
+        expect(results.locator("dt")).to_have_text(["Interval macro-F1", "Per-step macro-F1"])
+        expect(results.locator("dd")).to_have_text(["0.6", "0.8"])
+        intervals = results.get_by_role("table", name="Intervals by direction")
+        expect(intervals.get_by_role("columnheader")).to_have_text(
+            ["Metric", "Sideways", "Growth", "Decline"]
+        )
+        expect(intervals.get_by_role("rowheader")).to_have_text(
+            ["F1", "Reference", "Predicted", "Matched"]
+        )
+        for label, values in [
+            ("F1", ["0.8", "1", "0"]),
+            ("Reference", ["3", "1", "1"]),
+            ("Predicted", ["2", "1", "0"]),
+            ("Matched", ["2", "1", "0"]),
+        ]:
+            row = intervals.get_by_role("row").filter(
+                has=page.get_by_role("rowheader", name=label, exact=True)
+            )
+            expect(row.get_by_role("cell")).to_have_text(values)
+        assert intervals.evaluate("table => table.offsetWidth <= table.parentElement.clientWidth")
+        results.get_by_text("All fields", exact=True).press("Enter")
+        expect(results.locator("pre")).to_contain_text('"segment_macro_f1": 0.6')
+        results.locator(":scope > summary").press("Enter")
+        results.locator(":scope > summary").press("Enter")
+        expect(intervals).to_be_visible()
+        assert api.pages.count(path) == 1
         assert api.posts[2][:2] == (
             "evaluations",
             {
@@ -261,7 +324,9 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         assert len(api.posts) == 3
         page.once("dialog", lambda dialog: dialog.accept())
         publish.press("Enter")
-        expect(page.get_by_text("This candidate is active.")).to_be_visible()
+        expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
+        expect(intervals).to_be_visible()
+        assert api.pages.count(path) == 1
         assert api.posts[3][:2] == (
             f"models/{CANDIDATE}/publish",
             {
@@ -272,7 +337,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         page.get_by_role("link", name="Analyses", exact=True).press("Enter")
         expect(page.locator("#workspace")).to_be_visible()
         page.get_by_role("link", name="Training", exact=True).press("Enter")
-        expect(page.get_by_text("This candidate is active.")).to_be_visible()
+        expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
         assert len(api.posts) == 4
         assert script_errors == []
     finally:
@@ -310,7 +375,7 @@ def test_phone_run_history_collapses_on_selection_and_preserves_keyboard_access(
         page.get_by_role("button", name="Older").press("Enter")
         expect(rows).to_have_count(1)
         rows.first.press("Enter")
-        heading = page.get_by_role("heading", name="TCN training")
+        heading = page.get_by_role("heading", name="TCN · development")
         expect(heading).to_be_focused()
         expect(toggle).to_have_attribute("aria-expanded", "false")
         expect(page.locator("#training-history")).to_be_hidden()
@@ -339,6 +404,110 @@ def test_analysis_user_has_no_training_controls(browser: Any) -> None:
         expect(page.locator("#workspace")).to_be_visible()
         expect(page.get_by_role("link", name="Training", exact=True)).to_be_hidden()
         assert "training-runs" not in api.pages
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("name", ["W" * 120, "سوق" * 40])
+def test_long_run_names_fit_phone_history_and_detail(browser: Any, name: str) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["display_name"] = name
+    api.runs.append(api.run)
+    page = browser.new_page(viewport={"width": 320, "height": 820})
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        title = page.get_by_role("heading", name=name)
+        expect(title).to_be_visible()
+        assert title.evaluate("el => el.clientWidth >= el.scrollWidth")
+        page.get_by_role("button", name="Run history").click()
+        row = page.locator("#training-runs button")
+        expect(row).to_have_attribute("title", name)
+        expect(row.locator("strong")).to_have_text(name)
+        assert row.evaluate("el => el.clientWidth >= el.scrollWidth")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    finally:
+        page.close()
+
+
+def test_run_names_survive_conflicts_and_older_list_responses(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    dataset_id = "dataset-12345678abcdef0012345678abcdef00"
+    default_title = "TCN · Dataset 12345678"
+    api.run["training"]["dataset_id"] = dataset_id
+    api.runs.append(api.run)
+    old_row = api.run.copy()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    received: list[dict[str, Any]] = []
+
+    def rename(route: Any) -> None:
+        request = route.request
+        assert request.method == "PATCH"
+        assert request.headers["x-csrf-token"] == "test"
+        update = request.post_data_json
+        received.append(update)
+        if update["expected_revision"] != api.run["name_revision"]:
+            route.fulfill(status=409, json={"error": {"message": "The name was changed."}})
+            return
+        name = update["display_name"]
+        api.run["display_name"] = name.strip() if name else None
+        api.run["name_revision"] += 1
+        route.fulfill(
+            json={
+                "run_id": RUN_ID,
+                "display_name": api.run["display_name"],
+                "revision": api.run["name_revision"],
+            }
+        )
+
+    page.route(f"**/training-runs/{RUN_ID}/name", rename)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        heading = page.locator("#training-detail-title")
+        row = page.locator("#training-runs button[aria-current=true]")
+        expect(heading).to_have_text(default_title)
+        expect(row.locator("strong")).to_have_text(default_title)
+        page.get_by_text("Run details and settings").click()
+        expect(page.locator("#training-facts")).to_contain_text(dataset_id)
+
+        held: list[Any] = []
+        page.route("**/training-runs?*", lambda route: held.append(route), times=1)
+        with page.expect_request(lambda req: urlsplit(req.url).path.endswith("/training-runs")):
+            page.get_by_role("button", name="Refresh", exact=True).click()
+        page.get_by_role("button", name="Rename", exact=True).click()
+        field = page.get_by_label("Run name", exact=True)
+        save = page.get_by_role("button", name="Save name")
+        draft = "  Opening Δ  "
+        field.fill(draft)
+        api.run.update(display_name="Another desk", name_revision=1)
+        save.press("Enter")
+        expect(heading).to_have_text("Another desk")
+        expect(field).to_have_value(draft)
+        expect(page.locator("#training-name-status")).to_contain_text("name changed elsewhere")
+        save.press("Enter")
+        expect(heading).to_have_text("Opening Δ")
+        expect(row.locator(".training-run-context")).to_have_text(default_title)
+        expect(page.get_by_role("button", name="Rename", exact=True)).to_be_focused()
+
+        with page.expect_request_finished(
+            lambda req: urlsplit(req.url).path.endswith("/training-runs")
+        ):
+            held[0].fulfill(json={"items": [old_row]})
+        expect(row.locator("strong")).to_have_text("Opening Δ")
+        expect(heading).to_have_text("Opening Δ")
+        page.get_by_role("button", name="Rename", exact=True).click()
+        field.fill("")
+        save.press("Enter")
+        expect(heading).to_have_text(default_title)
+        expect(row.locator(".training-run-context")).to_have_count(0)
+        assert received == [
+            {"display_name": draft, "expected_revision": 0},
+            {"display_name": draft, "expected_revision": 1},
+            {"display_name": None, "expected_revision": 2},
+        ]
     finally:
         page.close()
 
@@ -386,8 +555,8 @@ def test_validation_and_publication_stay_locked_until_their_status_arrives(brows
     try:
         page.goto(ORIGIN)
         page.get_by_role("link", name="Training", exact=True).click()
-        evaluate = page.get_by_role("button", name="Evaluate candidate")
-        publish = page.get_by_role("button", name="Publish candidate")
+        evaluate = page.get_by_role("button", name="Evaluate model")
+        publish = page.get_by_role("button", name="Use as default")
         expect(evaluate).to_be_enabled()
         pattern = f"**/training-runs/{RUN_ID}/actions?*"
         held: list[Any] = []
@@ -420,8 +589,50 @@ def test_validation_and_publication_stay_locked_until_their_status_arrives(brows
             if kind == "evaluation":
                 expect(publish).to_be_enabled()
             else:
-                expect(page.get_by_text("This candidate is active.")).to_be_visible()
+                expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
         assert [path for path, _, _ in api.posts] == ["evaluations", f"models/{CANDIDATE}/publish"]
+    finally:
+        page.close()
+
+
+def test_evaluation_retries_without_resubmitting_and_ignores_old_responses(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.runs.append(api.run)
+    api.actions.append(completed_run(EVALUATION_ID, "evaluation"))
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    path = f"/api/v1/evaluations/{EVALUATION_ID}/result"
+    requests: list[Any] = []
+
+    def send_report(route: Any) -> None:
+        requests.append(route)
+        if len(requests) == 2:
+            route.fulfill(status=503, json={"error": {"message": "Storage unavailable."}})
+        elif len(requests) == 3:
+            route.fulfill(json=evaluation_report())
+
+    page.route("**" + path, send_report)
+    results = page.locator("details.evaluation-result")
+    try:
+        page.goto(ORIGIN + "/#training/" + RUN_ID)
+        with page.expect_request(lambda request: urlsplit(request.url).path == path):
+            results.locator(":scope > summary").press("Enter")
+        expect(results.get_by_role("status")).to_have_text("Loading evaluation…")
+        page.get_by_role("button", name="New run", exact=True).click()
+        page.go_back()
+        expect(results.locator(":scope > summary")).to_be_visible()
+        requests[0].fulfill(json=evaluation_report())
+        expect(results.get_by_role("table", include_hidden=True)).to_have_count(0)
+
+        with page.expect_request(lambda request: urlsplit(request.url).path == path):
+            results.locator(":scope > summary").press("Enter")
+        expect(results.get_by_role("status")).to_have_text("Storage unavailable.")
+        expect(results.get_by_role("link", name="Download JSON")).to_be_visible()
+        with page.expect_request(lambda request: urlsplit(request.url).path == path):
+            results.get_by_role("button", name="Retry loading").press("Enter")
+        expect(results.get_by_role("table", name="Intervals by direction")).to_be_visible()
+        assert not api.posts
     finally:
         page.close()
 
@@ -480,8 +691,14 @@ def test_metrics_appear_when_training_finishes_and_seed_changes_stay_local(brows
         )
         expect(loss).to_be_visible(timeout=7000)
         expect(loss.locator("circle title")).to_have_text("Epoch 1: 0.56")
-        page.get_by_label("Chart seed").select_option("11")
+        page.locator('summary[aria-label="Training loss values"]').press("Enter")
+        page.get_by_label("Training repeat").select_option("11")
         expect(loss.locator("circle title")).to_have_text("Epoch 1: 0.91")
+        table = page.get_by_role("table", name="Training loss by epoch")
+        expect(table.get_by_role("cell")).to_have_text("0.91")
+        expect(
+            page.get_by_role("table", name="Validation interval macro-F1 by epoch")
+        ).to_be_hidden()
         expect(page.locator("#training-score")).to_contain_text("seed 23")
         assert api.pages.count(metrics_path) == 1
         assert len(navigations) == 1
@@ -589,16 +806,20 @@ def test_sparse_charts_align_and_all_values_are_keyboard_accessible_on_a_phone(
                 return box.left >= area.left && box.right <= area.right;
             });
         }""")
-        page.get_by_text("Metric values", exact=True).press("Enter")
-        table = page.get_by_role("table", name="Recorded metric values by update")
-        expect(table.get_by_role("row")).to_have_count(21)
-        expect(table.get_by_role("row").nth(1)).to_contain_text("Not recorded")
+        expect(page.get_by_text("1 of 23 updates evaluated")).to_be_visible()
+        page.locator('summary[aria-label="Validation interval macro-F1 values"]').press("Enter")
+        scores = page.get_by_role("table", name="Validation interval macro-F1 by update")
+        expect(scores.get_by_role("rowheader")).to_have_text(["23"])
+        expect(scores.get_by_role("cell")).to_have_text(["0.72"])
+        page.locator('summary[aria-label="Training loss values"]').press("Enter")
+        losses = page.get_by_role("table", name="Training loss by update")
+        expect(losses.get_by_role("row")).to_have_count(21)
         page.get_by_role("button", name="Next values").press("Enter")
         expect(page.get_by_role("button", name="Previous values")).to_be_focused()
-        expect(table.get_by_role("row")).to_have_count(4)
-        expect(table.get_by_role("row").last).to_contain_text("0.72")
+        expect(losses.get_by_role("rowheader")).to_have_text(["21", "22", "23"])
+        expect(scores.get_by_role("rowheader")).to_have_text(["23"])
         page.get_by_role("button", name="Previous values").press("Enter")
-        expect(table.get_by_role("rowheader").first).to_have_text("1")
+        expect(losses.get_by_role("rowheader").first).to_have_text("1")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     finally:
         page.close()
@@ -619,7 +840,7 @@ def test_saved_baseline_link_reopens_the_regularization_chart(browser: Any) -> N
     page.route(ORIGIN + "/**", api.dispatch)
     try:
         page.goto(f"{ORIGIN}/#training/{RUN_ID}")
-        heading = page.get_by_role("heading", name="Baseline training")
+        heading = page.get_by_role("heading", name="Baseline · development")
         expect(heading).to_be_visible()
         chart = page.get_by_role("img", name="Validation interval macro-F1 by regularization")
         expect(chart).to_be_visible()
@@ -631,7 +852,7 @@ def test_saved_baseline_link_reopens_the_regularization_chart(browser: Any) -> N
         assert 0 < positions[0] < positions[1] < positions[2]
         assert positions[1] - positions[0] == pytest.approx(positions[2] - positions[1], abs=1)
         expect(chart.get_by_text("Regularization (log scale)", exact=True)).to_be_visible()
-        expect(page.get_by_label("Chart seed")).to_be_hidden()
+        expect(page.get_by_label("Training repeat")).to_be_hidden()
         expect(page.get_by_role("img", name="Training loss")).to_be_hidden()
         page.reload()
         expect(heading).to_be_visible()
@@ -642,6 +863,8 @@ def test_saved_baseline_link_reopens_the_regularization_chart(browser: Any) -> N
         page.locator("#training-form-settings summary").click()
         runtime = page.get_by_label("Training runtime overrides")
         runtime.fill('{"threads": 2}')
+        name = page.get_by_label("Run name (optional)")
+        name.fill("Weekend baseline")
         page.go_back()
         expect(heading).to_be_visible()
         expect(chart).to_be_visible()
@@ -649,6 +872,7 @@ def test_saved_baseline_link_reopens_the_regularization_chart(browser: Any) -> N
         expect(new_run).to_be_visible()
         expect(page.get_by_role("button", name="Start training")).to_be_enabled()
         expect(runtime).to_have_value('{"threads": 2}')
+        expect(name).to_have_value("Weekend baseline")
     finally:
         page.close()
 
