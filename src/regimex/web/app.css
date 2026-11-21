@@ -1091,13 +1091,11 @@ iframe {
 .training-runs li {
   position: relative;
 }
-.training-history-tools, .training-selection .actions {
+.training-history-tools {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-}
-.training-history-tools {
   margin-bottom: 8px;
   justify-content: space-between;
 }
@@ -1109,13 +1107,17 @@ iframe {
 }
 .training-selection {
   margin-block: 8px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
 }
 .training-selection :is(.hint, .actions) {
   margin: 0;
+}
+.training-selection .actions {
+  flex-wrap: nowrap;
+  align-items: stretch;
+  gap: 6px;
 }
 .training-runs li:has(input) {
   display: grid;
@@ -1192,6 +1194,12 @@ iframe {
   gap: 0 10px;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+.training-run-meta [data-state] {
+  margin-inline-start: auto;
+}
+.training-run-meta .training-run-id {
+  flex-basis: 100%;
 }
 .training-run-meta [data-state="failed"] {
   color: var(--danger);

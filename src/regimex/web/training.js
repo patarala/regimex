@@ -186,7 +186,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       const meta = element("span", "", "training-run-meta");
       meta.append(time, state);
       const suffix = sameLabel ? "#" + row.id.slice(-8) : "";
-      if (suffix) meta.append(element("span", suffix));
+      if (suffix) meta.append(element("span", suffix, "training-run-id"));
       button.append(meta);
       button.addEventListener("click", () => chooseFromHistory(row.id));
       const label = suffix ? row.name + " " + suffix : row.name;

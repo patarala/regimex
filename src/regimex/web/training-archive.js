@@ -16,16 +16,21 @@ export function createRunArchive({apply, renderRows}) {
     toggle.disabled = saving || stale;
     $("training-selection").hidden = !selecting;
     $("training-selection-count").textContent = selected.size === selectionLimit
-      ? selected.size + " selected (limit reached)" : selected.size + " selected";
+      ? selectionLimit + " of " + selectionLimit + " selected" : selected.size + " selected";
+    const view = $("training-history-view").value;
     const statuses = [...selected.values()];
     for (const [id, archived] of bulkActions) {
       const button = $(id);
       const count = statuses.filter(alreadyArchived => alreadyArchived !== archived).length;
-      button.hidden = !count;
-      button.disabled = saving || stale;
-      const verb = archived ? "Archive" : "Restore";
-      button.textContent = count === selected.size
-        ? verb + " selected" : verb + " " + count + (count === 1 ? " run" : " runs");
+      button.hidden = view !== "all" && view !== (archived ? "active" : "archived");
+      button.disabled = !count || saving || stale;
+      if (count && count < selected.size) {
+        button.title = count + (count === 1 ? " run" : " runs");
+        button.setAttribute("aria-label", button.textContent + " (" + button.title + ")");
+      } else {
+        button.removeAttribute("title");
+        button.removeAttribute("aria-label");
+      }
     }
   }
 
@@ -58,7 +63,9 @@ export function createRunArchive({apply, renderRows}) {
   }
 
   for (const [id, archived] of bulkActions) {
-    $(id).addEventListener("click", () => {
+    const button = $(id);
+    button.addEventListener("click", () => {
+      if (!selecting || button.hidden || button.disabled) return;
       const ids = [...selected].filter(([, state]) => state !== archived).map(([id]) => id);
       void save(ids, archived);
     });
@@ -81,6 +88,7 @@ export function createRunArchive({apply, renderRows}) {
     input.checked = selected.has(row.run_id);
     input.disabled = saving || !finished(row.job) || (!input.checked && selected.size >= selectionLimit);
     input.addEventListener("change", () => {
+      if (input.disabled || saving || stale || !selecting) return;
       if (input.checked) selected.set(row.run_id, Boolean(row.archived_at));
       else selected.delete(row.run_id);
       renderRows();

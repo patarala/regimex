@@ -11,7 +11,7 @@ from test_training_workspace_browser import ORIGIN, RUN_ID, TrainingAPI, complet
 def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, width: int) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
-    name = "Сравнение валют " + "W" * 84
+    name = "سوق العملات " + "W" * 84
     dataset = "market_" + "momentum" * 12
     api.runs = [api.run, completed_run("00000000-0000-0000-0000-000000000002", "training")]
     for run in api.runs:
@@ -19,6 +19,12 @@ def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, wid
         run["training"]["dataset_id"] = dataset
         run["trainable_parameters"] = 120000
         run["job"]["created_at"] = "2026-09-30T23:59:00Z"
+        run["job"]["state"] = "cancelled"
+        run["archived_at"] = "2026-10-01T12:00:00Z"
+    short = completed_run("00000000-0000-0000-0000-000000000003", "training")
+    short["display_name"] = "Trial"
+    short["job"].update(state="queued", created_at="2027-01-01T01:00:00Z")
+    api.runs.append(short)
 
     page = browser.new_page(
         viewport={"width": width, "height": 900}, locale="en-US", timezone_id="UTC"
@@ -27,11 +33,14 @@ def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, wid
     try:
         # Older dates include the year even in the narrowest selection layout.
         page.clock.set_fixed_time("2027-01-01T13:00:00Z")
-        page.goto(f"{ORIGIN}/#training/new")
+        page.goto(f"{ORIGIN}/#training/new?view=all")
         if width == 320:
             page.get_by_role("button", name="Run history", exact=True).click()
         row = page.locator(f'#training-runs button[data-run-id="{RUN_ID}"]')
         expect(row.locator("strong")).to_have_text(name)
+        expect(row.locator("strong")).to_have_css("direction", "rtl")
+        expect(row.locator("[data-state]")).to_have_text("Cancelled · Archived")
+        expect(row.locator(".training-run-id")).to_have_text("#00000001")
         expect(row.locator("time")).to_contain_text("PM")
         expect(row.locator("time")).to_contain_text("2026")
         for selecting in (False, True):
@@ -60,6 +69,34 @@ def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, wid
             title, timestamp, state = layout
             assert title["lines"] > 2
             assert timestamp["lines"] == state["lines"] == 1
+            for run_id in (RUN_ID, short["run_id"]):
+                control = page.locator(f'button[data-run-id="{run_id}"]')
+                alignment = control.evaluate(
+                    """button => {
+                      const row = button.parentElement;
+                      const box = selector => row.querySelector(selector)?.getBoundingClientRect();
+                      const meta = box(".training-run-meta"), info = box("[data-run-info]");
+                      const suffix = box(".training-run-id");
+                      function textBox(selector) {
+                        const range = document.createRange();
+                        range.selectNodeContents(button.querySelector(selector));
+                        return range.getBoundingClientRect();
+                      }
+                      const time = textBox("time"), state = textBox("[data-state]");
+                      return {
+                        timeInset: time.left - meta.left, stateInset: meta.right - state.right,
+                        wrapped: state.top >= time.bottom,
+                        clearsInfo: state.top >= info.bottom || state.right <= info.left,
+                        clearsSuffix: !suffix || suffix.top >= Math.max(time.bottom, state.bottom)
+                      };
+                    }"""
+                )
+                assert abs(alignment["timeInset"]) <= 1 and abs(alignment["stateInset"]) <= 1
+                assert alignment["clearsInfo"] and alignment["clearsSuffix"]
+                if run_id == RUN_ID and width == 821 and selecting:
+                    assert alignment["wrapped"]
+                if run_id == short["run_id"] and width == 320:
+                    assert not alignment["wrapped"]
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     finally:
         page.close()
