@@ -262,12 +262,12 @@
                     <select id="training-benchmark" required></select>
                   </div>
                   <div>
-                    <label for="training-architecture" data-help="Choose the model family. The logistic baseline fits a linear classifier. The TCN learns patterns across time with convolutions.">Architecture</label>
+                    <label for="training-architecture" data-help="Choose an installed model design. The form shows the training settings it supports and fills in its defaults.">Architecture</label>
                     <select id="training-architecture" required></select>
                   </div>
                 </div>
                 <div id="training-size-field" hidden>
-                  <label for="training-size" data-help="The TCN presets vary the hidden channel count and use 50 input features and eight dilated blocks. Other settings, including dropout, carry over. Edit a custom layout under Advanced settings.">Model size</label>
+                  <label for="training-size" data-help="Each preset sets the model’s layout and shows how many parameters it learns. You can edit a custom layout under Advanced settings.">Model size</label>
                   <select id="training-size"></select>
                 </div>
                 <details id="training-form-settings">
@@ -277,7 +277,7 @@
                 <details id="training-advanced-settings">
                   <summary>Advanced settings</summary>
                   <div>
-                    <label for="training-parameters" data-help="Set options specific to the architecture, such as TCN dropout or baseline regularization candidates. Omitted settings use the architecture defaults.">Model configuration (JSON)</label>
+                    <label for="training-parameters" data-help="Enter only the settings you want to override. The selected architecture defines their names, allowed values and defaults.">Model configuration (JSON)</label>
                     <textarea id="training-parameters" rows="3" spellcheck="false">{}</textarea>
                   </div>
                   <div>
