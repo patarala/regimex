@@ -173,6 +173,7 @@ selection on that reservation. The form lists the benchmarks available to your a
 To put a finished run away, choose **Archive run**. To move several at once,
 choose **Select runs** in the history, check the runs and choose **Archive
 selected**. Switch from **Current runs** to **Archived runs** to find them.
+The history filter keeps your open run or draft in place.
 Open an archived run and choose **Restore run** to return it to the current
 list. The same link opens its charts in either view. Archiving preserves any
 saved weights and keeps published models available for analyses.

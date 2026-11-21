@@ -8,12 +8,12 @@ export function createRunArchive({apply, renderRows}) {
   const selected = new Map();
   const toggle = $("training-select-runs");
   const detail = $("training-archive-run");
-  let selecting = false, saving = false, current = null;
+  let selecting = false, saving = false, stale = false, current = null;
 
   function controls() {
     toggle.textContent = selecting ? "Done" : "Select runs";
     toggle.setAttribute("aria-pressed", String(selecting));
-    toggle.disabled = saving;
+    toggle.disabled = saving || stale;
     $("training-selection").hidden = !selecting;
     $("training-selection-count").textContent = selected.size === selectionLimit
       ? selected.size + " selected (limit reached)" : selected.size + " selected";
@@ -22,11 +22,14 @@ export function createRunArchive({apply, renderRows}) {
       const button = $(id);
       const count = statuses.filter(alreadyArchived => alreadyArchived !== archived).length;
       button.hidden = !count;
-      button.disabled = saving;
+      button.disabled = saving || stale;
       const verb = archived ? "Archive" : "Restore";
       button.textContent = count === selected.size
         ? verb + " selected" : verb + " " + count + (count === 1 ? " run" : " runs");
     }
+  }
+
+  function runControl() {
     detail.hidden = !current || !finished(current.job);
     detail.disabled = saving;
     detail.textContent = current?.archived_at ? "Restore run" : "Archive run";
@@ -36,6 +39,7 @@ export function createRunArchive({apply, renderRows}) {
     if (saving || !ids.length) return;
     const trigger = document.activeElement;
     saving = true;
+    runControl();
     renderRows();
     try {
       if (await apply(ids, archived)) {
@@ -44,6 +48,7 @@ export function createRunArchive({apply, renderRows}) {
       }
     } finally {
       saving = false;
+      runControl();
       renderRows();
       if (bulkActions.some(([id]) => $(id) === trigger) && document.activeElement === document.body &&
           !$("training").hidden) {
@@ -87,8 +92,10 @@ export function createRunArchive({apply, renderRows}) {
   }
   return {
     checkbox,
-    showRun(row) { current = row; controls(); },
-    showPage(rows) {
+    get selecting() { return selecting; },
+    showRun(row) { current = row; runControl(); },
+    showPage(rows, outdated = false) {
+      stale = outdated;
       for (const row of rows) {
         if (selected.has(row.run_id)) selected.set(row.run_id, Boolean(row.archived_at));
       }

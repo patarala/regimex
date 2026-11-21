@@ -27,24 +27,34 @@ function historyDate(value) {
   });
 }
 
+function historyEntry(row, view) {
+  const {architecture_id, dataset_id} = row.training;
+  return {
+    id: row.run_id, name: row.display_name || architectureName(architecture_id, true) + " · " + datasetName(dataset_id),
+    created: row.job.created_at, date: historyDate(row.job.created_at), state: row.job.state,
+    archived: view === "all" && Boolean(row.archived_at),
+    architecture: architectureName(architecture_id), dataset: dataset_id, parameters: row.trainable_parameters,
+  };
+}
+
 function appendRunInfo(item, button, row, label) {
   const info = element("button", "", "field-help-toggle training-run-info");
   info.type = "button";
-  info.dataset.runInfo = row.run_id;
+  info.dataset.runInfo = row.id;
   info.setAttribute("aria-label", "Details for " + label);
   const icon = element("span", "i");
   icon.setAttribute("aria-hidden", "true");
   info.append(icon);
   const note = element("div", "", "field-help run-info");
   const model = element("div", "", "run-info-line");
-  model.append(element("strong", architectureName(row.training.architecture_id)));
-  if (row.trainable_parameters != null) {
-    model.append(" ", element("span", parameterCountLabel(row.trainable_parameters), "run-info-size"));
+  model.append(element("strong", row.architecture));
+  if (row.parameters != null) {
+    model.append(" ", element("span", parameterCountLabel(row.parameters), "run-info-size"));
   }
   const dataset = element("div", "", "run-info-line");
-  dataset.append(element("span", "Dataset:"), " ", element("span", row.training.dataset_id, "run-info-dataset"));
-  note.append(model, dataset, element("div", "Created " + shortDate(row.job.created_at)));
-  note.id = "run-info-" + row.run_id;
+  dataset.append(element("span", "Dataset:"), " ", element("span", row.dataset, "run-info-dataset"));
+  note.append(model, dataset, element("div", "Created " + shortDate(row.created)));
+  note.id = "run-info-" + row.id;
   item.append(info, note);
   bindTooltip(info, note, {trigger: button});
 }
@@ -63,7 +73,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   let offset = 0, timer = null, busy = false, pollRevision = 0;
   let run = null, evaluation = null, activeModel, metricsLoaded = false;
   let pendingDownstream = false, retryDelay = 2500, target = null;
-  let view = "active";
+  let view = "active", listedView = null, listedOffset = 0, renderedRows = null;
   let listed = new Map();
   const form = createTrainingForm({session, eachPage});
   const names = createRunNameEditor({session, getRun: () => run, applyName});
@@ -124,12 +134,15 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     opened = false;
     target = null;
     listed.clear();
+    listedView = renderedRows = null;
     archive.reset();
     busy = false;
     deselect();
     $("training").hidden = true;
     $("training-config").hidden = true;
     $("training-runs").replaceChildren();
+    $("training-runs").setAttribute("aria-busy", "false");
+    $("training-runs").inert = false;
     message();
   }
 
@@ -144,40 +157,40 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     if (current(stamp)) message(error.message, true);
   }
 
-  function renderRows() {
+  function renderRows(reuse = false) {
     const focused = document.activeElement?.dataset;
-    const rows = [...listed.values()].map(row => ({
-      row,
-      name: row.display_name || architectureName(row.training.architecture_id, true) + " · " + datasetName(row.training.dataset_id),
-      date: historyDate(row.job.created_at),
-    }));
-    archive.showPage([...listed.values()]);
-    $("training-runs").replaceChildren(...rows.map(({row, name, date}) => {
+    const page = [...listed.values()];
+    const rows = page.map(row => historyEntry(row, listedView));
+    archive.showPage(page, listedView !== view);
+    const content = JSON.stringify([archive.selecting, rows]);
+    if (reuse && renderedRows === content) return;
+    renderedRows = content;
+    $("training-runs").replaceChildren(...rows.map(row => {
       const item = document.createElement("li");
       const button = element("button", "");
       button.type = "button";
       button.className = "quiet training-run-link";
-      button.dataset.runId = row.run_id;
-      button.setAttribute("aria-current", String(row.run_id === target));
-      const time = element("time", date);
-      time.dateTime = row.job.created_at;
-      const sameLabel = rows.some(other => other.row !== row && other.name === name && other.date === date);
-      const [first, ...parts] = name.split("_");
+      button.dataset.runId = row.id;
+      button.setAttribute("aria-current", String(row.id === target));
+      const time = element("time", row.date);
+      time.dateTime = row.created;
+      const sameLabel = rows.some(other => other !== row && other.name === row.name && other.date === row.date);
+      const [first, ...parts] = row.name.split("_");
       const title = element("strong", first);
       title.dir = "auto";
       for (const part of parts) title.append("_", document.createElement("wbr"), part);
       button.append(title);
-      const state = element("span", analysisStateLabel(row.job.state));
-      state.dataset.state = row.job.state;
-      if (row.archived_at && view === "all") state.append(" · Archived");
+      const state = element("span", analysisStateLabel(row.state));
+      state.dataset.state = row.state;
+      if (row.archived) state.append(" · Archived");
       const meta = element("span", "", "training-run-meta");
       meta.append(time, state);
-      const suffix = sameLabel ? "#" + row.run_id.slice(-8) : "";
+      const suffix = sameLabel ? "#" + row.id.slice(-8) : "";
       if (suffix) meta.append(element("span", suffix));
       button.append(meta);
-      button.addEventListener("click", () => chooseFromHistory(row.run_id));
-      const label = suffix ? name + " " + suffix : name;
-      const check = archive.checkbox(row, label);
+      button.addEventListener("click", () => chooseFromHistory(row.id));
+      const label = suffix ? row.name + " " + suffix : row.name;
+      const check = archive.checkbox(listed.get(row.id), label);
       if (check) item.append(check);
       item.append(button);
       appendRunInfo(item, button, row, label);
@@ -192,25 +205,55 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   async function list(preselect = false) {
     const stamp = epoch, request = ++listRequest;
-    const page = await session.json(api + "training-runs?archive=" + view + "&limit=" + (pageSize + 1) + "&offset=" + offset);
-    if (!current(stamp) || request !== listRequest) return;
+    const valid = () => current(stamp) && request === listRequest;
+    const history = $("training-runs"), empty = $("training-empty");
+    const prev = $("training-prev"), next = $("training-next");
+    history.setAttribute("aria-busy", "true");
+    history.inert = listedView !== view;
+    prev.disabled = next.disabled = true;
+    archive.showPage([...listed.values()], history.inert);
+    if (history.inert) empty.hidden = true;
+    let page;
+    try {
+      page = await session.json(api + "training-runs?archive=" + view + "&limit=" + (pageSize + 1) + "&offset=" + offset);
+    } catch (error) {
+      if (valid()) {
+        history.setAttribute("aria-busy", "false");
+        prev.disabled = next.disabled = history.inert;
+        if (!history.inert) offset = listedOffset;
+        empty.textContent = (history.inert && listed.size ? "Showing previous results. " : "") + error.message;
+        empty.hidden = false;
+      }
+      return;
+    }
+    if (!valid()) return;
     if (!page.items.length && offset > 0) {
       offset = Math.max(0, offset - pageSize);
       return list(preselect);
     }
     const rows = page.items.slice(0, pageSize).map(row =>
       withSavedChanges(row, run?.run_id === row.run_id ? run : listed.get(row.run_id)));
+    listedView = view;
+    listedOffset = offset;
     listed = new Map(rows.map(row => [row.run_id, row]));
-    renderRows();
+    history.inert = false;
+    renderRows(true);
+    history.setAttribute("aria-busy", "false");
     if (run && listed.has(run.run_id)) {
-      run = withSavedChanges(run, listed.get(run.run_id));
-      showTitle();
-      if (run.weights_deletion_id) showRemovedWeights();
+      const item = listed.get(run.run_id);
+      const updated = withSavedChanges(run, item);
+      if (updated !== run) {
+        run = updated;
+        showTitle();
+        if (run.weights_deletion_id) showRemovedWeights();
+      }
+      if ((item.archived_at ?? null) !== (run.archived_at ?? null)) void refreshDetail();
     }
-    $("training-empty").hidden = page.items.length !== 0;
-    $("training-empty").textContent = {active: "No current runs.", archived: "No archived runs.", all: "No training runs yet."}[view];
-    $("training-prev").hidden = offset === 0;
-    $("training-next").hidden = page.items.length <= pageSize;
+    empty.hidden = page.items.length !== 0;
+    empty.textContent = {active: "No current runs.", archived: "No archived runs.", all: "No training runs yet."}[view];
+    prev.disabled = next.disabled = false;
+    prev.hidden = offset === 0;
+    next.hidden = page.items.length <= pageSize;
     if (preselect && target === null && rows.length) navigate(runHash(rows[0].run_id), true);
   }
 
@@ -275,18 +318,15 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   async function reloadArchivedRuns(ids) {
-    const workspace = epoch;
     const detail = ids.includes(target) ? refreshDetail() : null;
-    await Promise.all([detail, list().catch(error => reportIfCurrent(workspace, error))]);
+    await Promise.all([detail, list()]);
   }
 
   function refreshDetail() {
     if (run) return refresh(selection);
     if (target && target !== "new") {
       // Supersede a detail request started before the mutation was acknowledged.
-      const id = target;
-      target = null;
-      return show(id, view);
+      return loadRun(target, ++selection);
     }
   }
 
@@ -382,7 +422,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   async function refresh(stamp, fetchRun = true) {
     if (!selected(stamp) || !run || busy) return;
     clearTimeout(timer);
-    const revision = ++pollRevision, workspace = epoch;
+    const revision = ++pollRevision;
     const valid = () => selected(stamp) && pollRevision === revision;
     const before = run.job.state;
     try {
@@ -393,7 +433,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
         run = withSavedChanges(next, run);
       }
       facts();
-      if (run.job.state !== before) void list().catch(error => reportIfCurrent(workspace, error));
+      if (run.job.state !== before) void list();
       let waiting = inProgress(run.job);
       if (["running", "cancel_requested"].includes(run.job.state)) {
         // A slow history page must not delay cancellation or completion updates.
@@ -446,21 +486,20 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       view = filter;
       $("training-history-view").value = view;
       offset = 0;
-      listed.clear();
       archive.reset();
-      renderRows();
-      $("training-empty").hidden = $("training-prev").hidden = $("training-next").hidden = true;
+      if (entering) $("training-empty").hidden = $("training-prev").hidden = $("training-next").hidden = true;
     }
+    if (!entering && id === target) {
+      void list();
+      return;
+    }
+    if (!entering) deletion.close();
     target = id;
     runsToggle.setAttribute("aria-expanded", String(id === null));
     deselect();
     lock(false);
     message();
-    const stamp = selection, workspace = epoch;
-    if (entering || viewChanged || id === null) {
-      const preselect = id === null && (entering || !viewChanged || !window.matchMedia("(max-width: 820px)").matches);
-      void list(preselect).catch(error => reportIfCurrent(workspace, error));
-    }
+    if (entering || viewChanged || id === null) void list(entering && id === null);
     if (id === null) {
       if (!filterFocused) $("training-title").focus();
       return;
@@ -471,15 +510,18 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       return;
     }
     markCurrent(id);
+    return loadRun(id, selection, listed.get(id), !filterFocused);
+  }
+
+  async function loadRun(id, stamp, cached, focus = false) {
     try {
-      const cached = listed.get(id);
       const row = cached || await session.json(route(id));
       if (!selected(stamp)) return;
       run = withSavedChanges(row, listed.get(id));
       const recheckRun = Boolean(cached && finished(row.job));
       if (recheckRun) facts();
       void refresh(stamp, recheckRun);
-      if (!filterFocused) $("training-detail-title").focus();
+      if (focus && document.activeElement !== $("training-history-view")) $("training-detail-title").focus();
     } catch (error) {
       if (selected(stamp)) message(error.message, true);
     }
@@ -517,7 +559,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     runsToggle.setAttribute("aria-expanded", String(runsToggle.getAttribute("aria-expanded") !== "true"));
   });
   $("training-history-view").addEventListener("change", event => {
-    void navigate(runHash(null, event.target.value));
+    void navigate(runHash(target, event.target.value));
   });
   $("training-new").addEventListener("click", () => chooseFromHistory("new"));
   $("training-form").addEventListener("submit", event => {
@@ -530,8 +572,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       form.discard();
       listed.set(record.run_id, record);
       navigate(runHash(record.run_id, "active"), true);
-      const workspace = epoch;
-      void list().catch(error => reportIfCurrent(workspace, error));
+      void list();
     });
   });
   $("training-cancel").addEventListener("click", () => action(async stamp => {
@@ -539,8 +580,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     if (selected(stamp)) {
       run = {...run, job};
       facts();
-      const workspace = epoch;
-      void list().catch(error => reportIfCurrent(workspace, error));
+      void list();
     }
   }));
   $("training-evaluate").addEventListener("click", () => action(async stamp => {
@@ -575,10 +615,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   for (const [id, delta] of [["training-prev", -pageSize], ["training-next", pageSize], ["training-refresh", 0]])
     $(id).addEventListener("click", () => {
       offset = Math.max(0, offset + delta);
-      const stamp = epoch;
       message();
-      void list(target === null && !window.matchMedia("(max-width: 820px)").matches)
-        .catch(error => reportIfCurrent(stamp, error));
+      void list();
       if (!delta) void refreshDetail();
     });
 

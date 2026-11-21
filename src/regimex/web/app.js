@@ -108,9 +108,8 @@ async function restoreLocation() {
   const section = admin && match ? match[1] : "analyses";
   const id = match?.[2] || null;
   const previous = screen;
-  if (previous === "training") deletion.close();
   if (previous !== section) {
-    if (previous === "analyses") deletion.close();
+    if (previous === "analyses" || previous === "training") deletion.close();
     if (previous === "training") training.close();
     if (previous === "connections") integrations.reset();
   }
