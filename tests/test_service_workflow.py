@@ -32,6 +32,7 @@ pytest.importorskip("procrastinate")
 pytest.importorskip("alembic")
 
 from psycopg import Connection
+from test_analysis_report import embedded_data
 from test_application_training import source
 from test_baseline_backend import bundle, rehash
 
@@ -252,8 +253,13 @@ def test_signed_zero_and_exponent_result_report_and_preview_survive_real_worker(
                 assert repr(value["time_grid"]["origin"]) == "-0.0"
                 assert type(value["instruments"][0]["initial_price"]) is float
                 assert value["instruments"][0]["initial_price"] == 1e20
-            elif suffix.startswith("/report"):
+            elif suffix == "/report":
                 assert response.content == report
+            elif suffix == "/report/preview":
+                assert len(response.content) < len(report)
+                assert json_bytes(embedded_data(response.content)) == json_bytes(
+                    embedded_data(report)
+                )
 
 
 def test_real_baseline_result_survives_restart_and_redelivery(

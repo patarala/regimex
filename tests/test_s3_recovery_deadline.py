@@ -16,8 +16,10 @@ from test_recovery import databases as databases
 from test_recovery import minimal as minimal
 from test_recovery import tools as tools
 
-from regimex.application.recovery import backup_service, restore_service
+from regimex.application import recovery
+from regimex.application.recovery_objects import Transfer, transfer_objects
 from regimex.infrastructure.maintenance import maintenance_lock
+from regimex.infrastructure.object_store import ObjectInfo, ObjectStore
 from regimex.infrastructure.s3_config import S3Config
 from regimex.infrastructure.s3_object_store import S3ObjectStore
 from regimex.recovery_contracts import PostgresTools, RecoveryLimits
@@ -133,7 +135,27 @@ def test_offline_deadline_closes_stalled_s3_request(
     payload = (minimal.directory / "objects" / info.sha256).read_bytes()
     database = minimal.source if stage == "download" else databases(minimal.source.schema)
     destination = tmp_path / "interrupted-backup"
-    limits = RecoveryLimits(timeout_seconds=3)
+    limits = RecoveryLimits(timeout_seconds=60)
+    target = {"download": "backup", "inventory": "check_empty", "upload": "restore"}[stage]
+    transfer_deadline: float | None = None
+
+    def transfer(
+        operation: Transfer,
+        store: ObjectStore,
+        objects: tuple[ObjectInfo, ...],
+        archive: Path,
+        *,
+        deadline: float,
+    ) -> dict[str, ObjectInfo]:
+        nonlocal transfer_deadline
+        if operation == target:
+            # pg_restore and preflight may take longer than the network deadline on CI.
+            # Give the actual S3 subprocess three seconds starting at its own transfer.
+            transfer_deadline = min(deadline, time.monotonic() + 3)
+            deadline = transfer_deadline
+        return transfer_objects(operation, store, objects, archive, deadline=deadline)
+
+    monkeypatch.setattr(recovery, "transfer_objects", transfer)
     with unresponsive_s3(stage, payload) as (endpoint, request):
         config = S3Config(
             endpoint_url=endpoint,
@@ -146,10 +168,9 @@ def test_offline_deadline_closes_stalled_s3_request(
             max_attempts=1,
         )
         store = S3ObjectStore(config, max_object_bytes=len(payload), max_total_bytes=len(payload))
-        started = time.monotonic()
         with pytest.raises(TimeoutError, match="wall-time"):
             if stage == "download":
-                backup_service(
+                recovery.backup_service(
                     SecretStr(database._dsn),
                     database.schema,
                     store,
@@ -159,7 +180,7 @@ def test_offline_deadline_closes_stalled_s3_request(
                     limits=limits,
                 )
             else:
-                restore_service(
+                recovery.restore_service(
                     SecretStr(database._dsn),
                     store,
                     minimal.directory,
@@ -168,7 +189,8 @@ def test_offline_deadline_closes_stalled_s3_request(
                     attestation=stopped(),
                     limits=limits,
                 )
-        assert time.monotonic() - started < limits.timeout_seconds + 1.5
+        assert transfer_deadline is not None
+        assert transfer_deadline <= time.monotonic() < transfer_deadline + 1.5
         assert request.entered.is_set()
         assert request.disconnected.wait(1)
         # A subsequent maintenance command must be able to acquire both locks.
