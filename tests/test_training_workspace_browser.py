@@ -1520,13 +1520,15 @@ def test_sparse_charts_align_and_all_values_are_keyboard_accessible_on_a_phone(
         loss = page.get_by_role("img", name="Training loss by update")
         validation = page.get_by_role("img", name="Validation interval macro-F1 by update")
         # Both curves must use the full update range, even with a single validation checkpoint.
-        expect(validation.locator("circle")).to_be_visible()
-        last_loss = loss.locator("circle").last.bounding_box()
-        last_validation = validation.locator("circle").bounding_box()
+        expect(validation.locator("[data-last]")).to_be_visible()
+        last_loss = loss.locator(".training-point[data-last]").bounding_box()
+        last_validation = validation.locator(".training-point[data-last]").bounding_box()
         assert last_loss and last_validation
-        assert last_loss["x"] == pytest.approx(last_validation["x"], abs=1)
-        first_loss = loss.locator("circle").first.bounding_box()
-        assert first_loss and last_loss["x"] - first_loss["x"] > 100
+        loss_x = last_loss["x"] + last_loss["width"] / 2
+        validation_x = last_validation["x"] + last_validation["width"] / 2
+        assert loss_x == pytest.approx(validation_x, abs=1)
+        curve = loss.locator("polyline").bounding_box()
+        assert curve and curve["width"] > 100
         label = loss.locator("text").first.bounding_box()
         assert label and label["height"] >= 11
         assert loss.evaluate("""svg => {
@@ -1574,13 +1576,13 @@ def test_saved_baseline_link_reopens_the_regularization_chart(browser: Any) -> N
         expect(heading).to_be_visible()
         chart = page.get_by_role("img", name="Validation interval macro-F1 by regularization")
         expect(chart).to_be_visible()
-        markers = chart.locator("circle")
-        expect(markers).to_have_count(3)
-        positions = markers.evaluate_all(
-            "(nodes) => nodes.map(node => node.getBoundingClientRect().x)"
-        )
-        assert 0 < positions[0] < positions[1] < positions[2]
-        assert positions[1] - positions[0] == pytest.approx(positions[2] - positions[1], abs=1)
+        expect(chart.locator(".training-point")).to_have_count(2)
+        best = chart.locator(".training-point[data-best]")
+        latest = chart.locator(".training-point[data-last]")
+        expect(best.locator("title")).to_contain_text("0.1")
+        expect(latest.locator("title")).to_contain_text("10")
+        assert float(best.get_attribute("cx").removesuffix("%")) == pytest.approx(50)
+        assert float(latest.get_attribute("cx").removesuffix("%")) == pytest.approx(100)
         expect(chart.get_by_text("Regularization (log scale)", exact=True)).to_be_visible()
         expect(page.get_by_label("Training repeat")).to_be_hidden()
         expect(page.get_by_role("img", name="Training loss")).to_be_hidden()

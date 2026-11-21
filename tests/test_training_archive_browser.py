@@ -197,7 +197,7 @@ def test_a_slower_filter_keeps_old_rows_until_the_latest_view_loads(
         expect(current).to_be_visible()
         api.progress_rows.append({"seed": 11, "epoch": 2, "training_loss": 0.4})
         page.clock.fast_forward(3000)
-        expect(chart.locator("circle title")).to_have_text(["Epoch 1: 0.9", "Epoch 2: 0.4"])
+        expect(chart.locator("desc")).to_contain_text("Epoch 2: 0.4")
         view.select_option("all")
         expect(history.get_by_text("Older trial", exact=True)).to_be_visible()
         expect(history).to_have_attribute("aria-busy", "false")

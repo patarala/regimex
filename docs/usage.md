@@ -146,6 +146,11 @@ selection on that reservation. The form lists the benchmarks available to your a
    **Values** under a chart to read individual measurements. If the worker
    retries training, the charts start again with the new attempt.
 
+   Hover or tap inside a chart to read the nearest measurement. With the chart
+   cursor focused, use the arrow keys to move between measurements. Each curve
+   marks its most recent measurement. The validation curve also marks the
+   first measurement to reach its highest score.
+
    The baseline chart shows a validation score for each regularization setting.
    The TCN records training loss at every epoch or optimizer update. With an
    epoch budget, it scores validation interval macro-F1 at epoch 1, at the

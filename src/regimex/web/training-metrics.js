@@ -50,7 +50,7 @@ function horizontalAxis(history, records) {
   const middle = values.reduce((a, b) => Math.abs(percent(a) - 50) <= Math.abs(percent(b) - 50) ? a : b);
   const ticks = first === last ? [first] : [first, last];
   if (first !== last && percent(middle) >= 35 && percent(middle) <= 65) ticks.splice(1, 0, middle);
-  return {label: history.label + (useLog ? " (log scale)" : ""), percent, ticks};
+  return {dimension: history.label, label: history.label + (useLog ? " (log scale)" : ""), percent, ticks};
 }
 
 function lossCeiling(points) {
@@ -61,6 +61,8 @@ function lossCeiling(points) {
   const ceiling = magnitude * steps.find(step => magnitude * step >= peak);
   return Number.isFinite(ceiling) ? ceiling : peak;
 }
+
+const plotHeight = 106, plotRight = 16, plotTop = 12;
 
 function plot(metric, axis, gutter) {
   const {points, ceiling, ticks} = metric;
@@ -73,12 +75,12 @@ function plot(metric, axis, gutter) {
   const graph = svgNode("svg", {width: "100%", height: 168, role: "img",
     "aria-label": metric.label + " by " + axis.label.toLowerCase()});
   const start = points[0], end = points.at(-1);
-  const describe = ([x, y]) => axis.label + " " + format(x) + ": " + format(y);
-  graph.append(svgNode("desc", {}, points.length === 1 ? describe(start) :
-    describe(start) + ". " + describe(end) + "."));
+  const describe = ([x, y]) => axis.dimension + " " + format(x) + ": " + format(y);
+  const range = start === end ? describe(end) : describe(start) + ". " + describe(end);
+  graph.append(svgNode("desc", {}, range + "." + (metric.best ? " Best validation score: " + describe(metric.best) + "." : "")));
   // Only the line stretches horizontally. Labels and point markers retain their size on phones.
-  const height = 106;
-  const area = svgNode("svg", {x: gutter, y: 12, width: "calc(100% - " + (gutter + 16) + "px)",
+  const height = plotHeight;
+  const area = svgNode("svg", {x: gutter, y: plotTop, width: "calc(100% - " + (gutter + plotRight) + "px)",
     height, overflow: "visible"});
   const y = value => height * (1 - value / ceiling);
   for (const {value, label} of ticks) {
@@ -90,13 +92,14 @@ function plot(metric, axis, gutter) {
   line.append(svgNode("polyline", {points: envelope(points).map(([x, v]) => axis.percent(x) + "," + y(v)).join(" "),
     class: metric.style, "vector-effect": "non-scaling-stroke"}));
   area.append(line);
-  if (points.length <= 30) {
-    for (const point of points) {
-      const marker = svgNode("circle", {cx: axis.percent(point[0]) + "%", cy: y(point[1]), r: 3,
-        class: "training-point"});
-      marker.append(svgNode("title", {}, describe(point)));
-      area.append(marker);
-    }
+  const latest = points[metric.latestIndex];
+  for (const point of metric.best && metric.best !== latest ? [metric.best, latest] : [latest]) {
+    const marker = svgNode("circle", {cx: axis.percent(point[0]) + "%", cy: y(point[1]),
+      r: point === metric.best ? 4.5 : 3.5, class: "training-point"});
+    if (point === latest) marker.dataset.last = "";
+    if (point === metric.best) marker.dataset.best = "";
+    marker.append(svgNode("title", {}, describe(point)));
+    area.append(marker);
   }
   for (const tick of axis.ticks) {
     const x = axis.percent(tick);
@@ -105,7 +108,150 @@ function plot(metric, axis, gutter) {
   }
   area.append(svgNode("text", {x: "50%", y: height + 42, "text-anchor": "middle"}, axis.label));
   graph.append(area);
-  return [caption, graph];
+  return {caption, graph, area};
+}
+
+// Snap in screen coordinates so log-spaced candidates and unsampled intervals remain truthful.
+function nearestPoint(points, percent, at) {
+  let low = 0, high = points.length - 1;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (percent(points[mid][0]) < at) low = mid + 1;
+    else high = mid;
+  }
+  if (low && at - percent(points[low - 1][0]) <= percent(points[low][0]) - at) return low - 1;
+  return low;
+}
+
+function chartInspector() {
+  const container = element("div", "", "training-chart");
+  const control = element("div", "", "training-chart-inspector");
+  control.tabIndex = 0;
+  control.setAttribute("role", "slider");
+  control.setAttribute("aria-description", "Use the arrow keys to move between recorded measurements.");
+  const tooltip = element("div", "", "training-chart-tooltip");
+  tooltip.setAttribute("role", "tooltip");
+  tooltip.hidden = true;
+  const crosshair = svgNode("line", {class: "training-crosshair", y1: 0, y2: plotHeight});
+  const dot = svgNode("circle", {class: "training-hover-point", r: 4});
+  container.append(control, tooltip);
+  let graph, area, metric, axis, gutter, index = 0, mode, listeners;
+
+  function hide() {
+    mode = null;
+    tooltip.hidden = true;
+    crosshair.remove();
+    dot.remove();
+    listeners?.abort();
+    listeners = null;
+  }
+  function describe() {
+    const [x, value, row] = metric.points[index];
+    const lines = [axis.dimension + " " + format(x), metric.label + ": " + format(value)];
+    for (const other of metricsToPlot) {
+      if (other.field !== metric.field && Number.isFinite(row[other.field]))
+        lines.push(other.label + ": " + format(row[other.field]));
+    }
+    if (metric.points[index] === metric.best) lines.push("Best validation score");
+    if (index === metric.latestIndex) lines.push("Latest measurement");
+    return lines;
+  }
+  function place() {
+    if (!mode) return;
+    const rect = control.getBoundingClientRect(), width = rect.width - gutter - plotRight;
+    const [x, value] = metric.points[index];
+    const position = axis.percent(x) + "%", y = plotHeight * (1 - value / metric.ceiling);
+    crosshair.setAttribute("x1", position);
+    crosshair.setAttribute("x2", position);
+    dot.setAttribute("cx", position);
+    dot.setAttribute("cy", y);
+    const px = gutter + width * axis.percent(x) / 100;
+    const box = tooltip.getBoundingClientRect();
+    const fitsRight = px + 10 + box.width <= rect.width;
+    const fitsLeft = px - box.width - 10 >= 0;
+    const left = fitsRight ? px + 10 : px - box.width - 10;
+    tooltip.style.left = Math.max(0, Math.min(left, rect.width - box.width)) + "px";
+    let top = plotTop + y;
+    if (!fitsLeft && !fitsRight) {
+      const above = top - Math.max(0, -rect.top);
+      const below = Math.min(rect.height, window.innerHeight - rect.top) - top;
+      top += below >= box.height + 8 || below >= above ? 8 : -box.height - 8;
+    }
+    top = Math.max(0, Math.min(top, rect.height - box.height));
+    tooltip.style.top = Math.max(-rect.top, Math.min(top, window.innerHeight - rect.top - box.height)) + "px";
+  }
+  function inspect(next, source) {
+    if (next === index && mode) {
+      mode = source;
+      return;
+    }
+    index = next;
+    mode = source;
+    const lines = describe();
+    tooltip.replaceChildren(...lines.map((line, i) => element(i ? "span" : "strong", line)));
+    control.setAttribute("aria-valuenow", metric.points[index][0]);
+    control.setAttribute("aria-valuetext", lines.join(". "));
+    tooltip.hidden = false;
+    if (crosshair.parentNode !== area) area.append(crosshair, dot);
+    place();
+    if (!listeners) {
+      listeners = new AbortController();
+      const {signal} = listeners;
+      document.addEventListener("pointerdown", event => {
+        if (!control.contains(event.target)) hide();
+      }, {capture: true, signal});
+      document.addEventListener("keydown", event => {
+        if (event.key === "Escape") hide();
+      }, {signal});
+      window.addEventListener("resize", place, {signal});
+      const resize = new ResizeObserver(place);
+      resize.observe(container);
+      signal.addEventListener("abort", () => resize.disconnect(), {once: true});
+    }
+  }
+  function locate(event) {
+    const rect = control.getBoundingClientRect();
+    const percent = 100 * (event.clientX - rect.left - gutter) / Math.max(1, rect.width - gutter - plotRight);
+    inspect(nearestPoint(metric.points, axis.percent, percent), event.pointerType === "touch" ? "touch" : "mouse");
+  }
+  control.addEventListener("pointermove", locate);
+  control.addEventListener("pointerenter", event => { if (event.pointerType !== "touch") locate(event); });
+  control.addEventListener("pointerdown", locate);
+  control.addEventListener("pointerleave", () => { if (mode === "mouse") hide(); });
+  control.addEventListener("pointercancel", hide);
+  control.addEventListener("focus", () => {
+    if (control.matches(":focus-visible") && !mode) inspect(metric.latestIndex, "keyboard");
+  });
+  control.addEventListener("blur", hide);
+  control.addEventListener("keydown", event => {
+    if (event.key === "Escape") { hide(); return; }
+    const last = metric.points.length - 1;
+    const positions = {ArrowLeft: Math.max(0, index - 1), ArrowRight: Math.min(last, index + 1),
+      ArrowDown: Math.max(0, index - 1), ArrowUp: Math.min(last, index + 1), Home: 0, End: last};
+    if (!Object.hasOwn(positions, event.key)) return;
+    event.preventDefault();
+    inspect(positions[event.key], "keyboard");
+  });
+
+  function update(drawing, nextMetric, nextAxis, nextGutter, reset) {
+    const previousX = metric?.points[index][0], previousMode = mode;
+    hide();
+    graph?.remove();
+    ({graph, area} = drawing);
+    container.prepend(graph);
+    metric = nextMetric;
+    axis = nextAxis;
+    gutter = nextGutter;
+    const points = metric.points;
+    index = previousMode && !reset ? nearestPoint(points, axis.percent, axis.percent(previousX)) : metric.latestIndex;
+    control.setAttribute("aria-label", "Inspect " + metric.label.toLowerCase() + " by " + axis.dimension.toLowerCase());
+    control.setAttribute("aria-valuemin", points[0][0]);
+    control.setAttribute("aria-valuemax", points.at(-1)[0]);
+    control.setAttribute("aria-valuenow", points[index][0]);
+    control.setAttribute("aria-valuetext", describe().join(". "));
+    if (previousMode && !reset) inspect(index, previousMode);
+  }
+  return {container, update, hide};
 }
 
 function valuesTable(history, metric) {
@@ -174,7 +320,7 @@ function chartSeries(history, selected) {
   const series = [];
   for (const metric of metricsToPlot) {
     const points = selected.filter(row => Number.isFinite(row[metric.field]))
-      .map(row => [row[history.field], row[metric.field]]);
+      .map(row => [row[history.field], row[metric.field], row]);
     if (!points.length) continue;
     const ceiling = metric.field === "training_loss" ? lossCeiling(points) : 1;
     const ticks = [0, ceiling / 2, ceiling].map(value => ({value, label: format(value)}));
@@ -183,7 +329,12 @@ function chartSeries(history, selected) {
         (history.field === "epoch" || history.field === "update")) {
       sampling = points.length + " of " + selected.length + " " + history.field + "s evaluated";
     }
-    series.push({...metric, points, ceiling, ticks, sampling});
+    // Candidates can be evaluated in a different order from their numeric x-axis.
+    const latest = points.at(-1);
+    const best = metric.field === "validation_segment_macro_f1" ?
+      points.reduce((first, point) => point[1] > first[1] ? point : first) : null;
+    points.sort((a, b) => a[0] - b[0]);
+    series.push({...metric, points, ceiling, ticks, sampling, best, latestIndex: points.indexOf(latest)});
   }
   return series;
 }
@@ -211,6 +362,7 @@ export function createTrainingMetrics() {
     score.replaceChildren();
     chosenSeed = "";
     drawn = null;
+    for (const view of figures.values()) view.inspector.hide();
     figures.clear();
     charts.replaceChildren();
     seed.replaceChildren();
@@ -229,6 +381,7 @@ export function createTrainingMetrics() {
         " validation interval macro-F1 · " + selection);
     }
     if (!records?.length) {
+      for (const view of figures.values()) view.inspector.hide();
       figures.clear();
       charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
       ending.hidden = seedLabel.hidden = true;
@@ -254,6 +407,7 @@ export function createTrainingMetrics() {
       if (drawn?.rows === rows && drawn.seed === seed.value && drawn.count === selected.length) return;
       const resetPage = drawn?.seed !== seed.value;
       drawn = {rows, seed: seed.value, count: selected.length};
+      const series = chartSeries(history, selected);
       selected.sort((a, b) => a[history.field] - b[history.field]);
       const last = selected.at(-1);
       const outcome = result?.repeat_outcomes?.find(item => item.seed === last.seed && item.step === last[history.field]);
@@ -261,9 +415,9 @@ export function createTrainingMetrics() {
       if (ending.textContent !== summary) ending.textContent = summary;
       ending.hidden = !summary;
       const axis = horizontalAxis(history, selected);
-      const series = chartSeries(history, selected);
       for (const [key, view] of figures) {
         if (!series.some(metric => metric.field === key)) {
+          view.inspector.hide();
           view.figure.remove();
           figures.delete(key);
         }
@@ -277,17 +431,17 @@ export function createTrainingMetrics() {
       const gutter = Math.max(36, Math.max(...tickWidths) + 14);
       for (const [index, metric] of series.entries()) {
         let view = figures.get(metric.field);
-        const [caption, graph] = plot(metric, axis, gutter);
+        const drawing = plot(metric, axis, gutter);
         if (!view) {
-          const figure = element("figure"), values = valuesTable(history, metric);
-          figure.append(caption, graph, values.details);
+          const figure = element("figure"), values = valuesTable(history, metric), inspector = chartInspector();
+          figure.append(drawing.caption, inspector.container, values.details);
           charts.insertBefore(figure, charts.children[index] || null);
-          view = {figure, values};
+          view = {figure, values, inspector};
           figures.set(metric.field, view);
         } else {
-          view.figure.querySelector("figcaption").replaceWith(caption);
-          view.figure.querySelector("svg").replaceWith(graph);
+          view.figure.querySelector("figcaption").replaceWith(drawing.caption);
         }
+        view.inspector.update(drawing, metric, axis, gutter, resetPage);
         view.values.update(metric.points, resetPage);
       }
     }

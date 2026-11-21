@@ -1457,11 +1457,49 @@ iframe {
     min-height: 44px;
   }
 }
-#training-charts figure > svg {
+.training-chart {
+  position: relative;
+}
+.training-chart > svg {
   display: block;
   width: 100%;
   max-width: none;
   height: 168px;
+}
+.training-chart-inspector {
+  position: absolute;
+  inset: 0;
+  cursor: crosshair;
+  touch-action: pan-y pinch-zoom;
+}
+.training-chart-inspector:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.training-chart-tooltip {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  gap: 1px;
+  width: max-content;
+  max-width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--field-border);
+  border-radius: 4px;
+  background: var(--control);
+  color: var(--ink);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.training-crosshair {
+  stroke: var(--muted);
+  stroke-dasharray: 3 3;
+}
+.training-hover-point {
+  fill: var(--canvas);
+  stroke: var(--ink);
+  stroke-width: 2;
 }
 #training-charts text {
   fill: var(--muted);
@@ -1482,6 +1520,10 @@ iframe {
 }
 .training-point {
   fill: var(--ink);
+}
+.training-point[data-best] {
+  stroke: var(--focus);
+  stroke-width: 1.5;
 }
 .training-observations {
   margin: 10px 0 0;
@@ -1597,6 +1639,15 @@ iframe {
   }
   #training-charts text, .training-point {
     fill: CanvasText;
+  }
+  .training-crosshair, .training-hover-point {
+    stroke: CanvasText;
+  }
+  .training-hover-point {
+    fill: Canvas;
+  }
+  .training-point[data-best] {
+    stroke: Highlight;
   }
   .training-f1, .training-loss {
     stroke: CanvasText;
