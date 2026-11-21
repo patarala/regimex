@@ -99,12 +99,13 @@ def test_history_tooltip_keeps_parameter_counts_and_dataset_ids_readable(
                     return [...range.getClientRects()];
                   }
                   const id = fragments('.run-info-dataset');
+                  const prefix = fragments('.run-info-dataset', 'dataset-'.length + 1);
                   const size = fragments('.run-info-size');
                   const bounds = tip.getBoundingClientRect();
                   return {
                     sizeLines: size.length,
                     idLines: id.length,
-                    prefixTogether: fragments('.run-info-dataset', 'dataset-'.length + 1).length === 1,
+                    prefixTogether: prefix.length === 1,
                     inBounds: bounds.left >= 0 && bounds.right <= innerWidth &&
                       tip.scrollWidth <= tip.clientWidth &&
                       [...id, ...size].every(r => r.left >= bounds.left && r.right <= bounds.right)
