@@ -458,7 +458,7 @@
     });
     if (paired && generation === renderGeneration) {
       $("explorer").on("plotly_click", (event) => {
-        const index = group[instrumentLaneClick(event)];
+        const index = group[instrumentLanePoint(event)?.y];
         if (index !== undefined && $("sample").value !== String(index)) {
           $("sample").value = String(index);
           update(true);

@@ -1189,6 +1189,7 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
 ) -> None:
     from regimex.application.retention import RetentionService
     from regimex.infrastructure.retention_repository import RetentionRepository
+    from regimex.web.report_runtime import preview_html
 
     original = scientific_backup
     target = databases(original.database.schema)
@@ -1294,7 +1295,7 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
                     headers={"Authorization": "Bearer " + original.user_token},
                 )
                 with urllib.request.urlopen(preview_request, timeout=10) as preview_response:
-                    assert preview_response.read(16 * 1024**2 + 1) == report_body
+                    assert preview_response.read(16 * 1024**2 + 1) == preview_html(report_body)
                 http(
                     f"/api/v1/analyses/{analysis_id}/report",
                     token=original.other_token,

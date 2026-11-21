@@ -288,13 +288,20 @@ export function createAnalysis({session, models, history, comparison, onStorageC
 
   async function showResult(selection, metadata, active) {
     const id = selection.id;
-    const data = await session.json(`/api/v1/analyses/${id}/result`);
-    if (!active()) return;
-    result = data;
+    let instruments = metadata.instrument_ids;
+    let steps = metadata.step_count;
+    if (!instruments?.length || steps == null) {
+      // Snapshots created before grid summaries were stored only carry this in the result.
+      const data = await session.json(`/api/v1/analyses/${id}/result`);
+      if (!active()) return;
+      instruments = data.instruments.map((item) => item.instrument_id);
+      steps = data.time_grid.step_count;
+    }
+    result = metadata.result_available;
     $("result-summary").replaceChildren();
     [
-      ["Instruments", data.instruments.map((item) => item.instrument_id).join(", ")],
-      ["Time steps", data.time_grid.step_count],
+      ["Instruments", instruments.join(", ")],
+      ["Time steps", steps],
     ].forEach(([name, value]) => {
       const item = document.createElement("div");
       const term = document.createElement("dt");

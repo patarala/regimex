@@ -29,8 +29,10 @@ To try a saved classification without starting the service, open
 source release containing those assets, the same page is at `release/examples/index.html`.
 
 For an experiment with two instruments, the report shows both sets of
-predicted intervals on a shared timeline. Select a lane or choose its instrument
-in the dropdown to see its prices and trading activity at the current zoom.
+predicted intervals on a shared timeline. In the service and its downloaded HTML,
+select an interval on the timeline or activate its step range in the table to
+zoom all charts to that interval. Choose an instrument in the dropdown to switch
+prices and trading activity while keeping the current zoom.
 The other lane stays visible, so you can see when the two directions diverged.
 For a single instrument the report opens directly on its price history.
 Drag to zoom or use **Reset zoom** to return to the full run.

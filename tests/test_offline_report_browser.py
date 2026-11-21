@@ -4,7 +4,7 @@ import importlib
 import json
 import os
 import shutil
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,71 @@ def click_visible_lane(page: Any, selector: str, lane: int) -> None:
     plot.click(position=position)
 
 
+def test_two_sandboxed_previews_share_one_plotting_runtime(browser: Any) -> None:
+    pytest.importorskip("fastapi")
+    pytest.importorskip("uvicorn")
+    from fastapi import FastAPI, Request, Response
+    from fastapi.responses import HTMLResponse
+    from test_analysis_report import digest, report_inputs
+    from test_simulator_gateway_integration import tcp_server
+
+    from regimex.api import _html_report
+    from regimex.application.report import render_analysis_report
+    from regimex.web import install_web_routes
+    from regimex.web.report_runtime import plot_runtime, preview_html
+
+    export, result = report_inputs()
+    saved = render_analysis_report(export, result, result_sha256=digest(result)).html
+    preview = preview_html(saved)
+    runtime = plot_runtime()
+    assert runtime is not None and len(saved) - len(preview) > 0.99 * len(runtime.script)
+    app = FastAPI()
+    install_web_routes(app)
+    transfers: list[str] = []
+
+    @app.middleware("http")
+    async def count_assets(
+        request: Request, call_next: Callable[[Request], Awaitable[Response]]
+    ) -> Response:
+        if request.url.path.startswith("/assets/plotly/"):
+            transfers.append(request.url.path)
+        return await call_next(request)
+
+    @app.get("/preview/{analysis}")
+    def serve_preview() -> Response:
+        return _html_report(preview)
+
+    @app.get("/history")
+    def history() -> HTMLResponse:
+        return HTMLResponse('<iframe sandbox="allow-scripts allow-downloads"></iframe>')
+
+    with tcp_server(lambda origin: app) as server:
+        page = browser.new_page()
+        try:
+            page.goto(server.origin + "/history")
+            for report in ("first", "second"):
+                url = server.origin + "/preview/" + report
+                with page.expect_event(
+                    "framenavigated", predicate=lambda frame, expected=url: frame.url == expected
+                ):
+                    page.locator("iframe").evaluate("(frame, url) => frame.src = url", url)
+                frame = page.frame(url=url)
+                assert frame is not None
+                frame.locator("#probability .main-svg").first.wait_for()
+                frame.get_by_role("button", name="Zoom to B/Q steps [2, 4)", exact=True).click()
+                frame.wait_for_function(
+                    """() => {
+                        const node = document.getElementById("price");
+                        return node.layout.xaxis.range[0] === 101
+                            && node.layout.xaxis.range[1] === 102
+                            && node.layout.yaxis.title.text.endsWith(' / B');
+                    }"""
+                )
+            assert transfers == [f"/assets/plotly/{runtime.digest}.js"]
+        finally:
+            page.close()
+
+
 @pytest.mark.parametrize("width", [1280, 390])
 def test_offline_download_preserves_original_export(
     browser: Any, tmp_path: Path, width: int
@@ -84,11 +149,22 @@ def test_offline_download_preserves_original_export(
         page.wait_for_function(
             "document.getElementById('price').layout.yaxis.title.text.endsWith(' / B')"
         )
-        assert page.locator("#timeline").evaluate("(node) => node.layout.xaxis.range") == [103, 108]
-        assert page.locator("#price").evaluate("(node) => node.layout.xaxis.range") == [103, 108]
-        page.get_by_role("combobox").select_option("A/Q")
-        page.wait_for_function("document.getElementById('instrument').value === 'A/Q'")
-        assert page.locator("#price").evaluate("(node) => node.layout.xaxis.range") == [103, 108]
+        selected = next(i for i in result.sequences[1].intervals if i.start <= 11 < i.stop)
+        bounds = [100 + 0.5 * edge for edge in (selected.start, selected.stop)]
+        assert page.locator("#timeline").evaluate("(node) => node.layout.xaxis.range") == bounds
+        assert page.locator("#price").evaluate("(node) => node.layout.xaxis.range") == bounds
+        row = page.get_by_role("button", name="Zoom to A/Q steps [20, 22)", exact=True)
+        row.focus()
+        row.press("Enter")
+        page.wait_for_function(
+            "document.getElementById('price').layout.yaxis.title.text.endsWith(' / A')"
+        )
+        for panel in ("price", "timeline", "probability", "volume", "activity", "coverage"):
+            assert page.locator(f"#{panel}").evaluate("(node) => node.layout.xaxis.range") == [
+                110,
+                111,
+            ]
+        assert page.get_by_role("combobox").evaluate("(node) => document.activeElement === node")
         page.get_by_role("button", name="Reset zoom").click()
         page.wait_for_function("document.getElementById('coverage').layout.xaxis.range[0] === 100")
         assert page.locator("#plot-error").is_hidden()

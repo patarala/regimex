@@ -10,7 +10,7 @@ pytest.importorskip("httpx2", reason="install the service-test group")
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from regimex.web import install_web_routes
+from regimex.web import install_web_routes, report_runtime
 
 
 def test_packaged_browser_assets_are_available_without_authentication() -> None:
@@ -35,3 +35,29 @@ def test_packaged_browser_assets_are_available_without_authentication() -> None:
             assert response.content == resource.read_bytes()
         assert client.get("/assets/__init__.py").status_code == 404
         assert client.get("/assets/missing.js").status_code == 404
+
+
+def test_plotting_asset_only_serves_an_installed_digest() -> None:
+    app = FastAPI()
+    install_web_routes(app)
+    with TestClient(app) as client:
+        assert client.get("/assets/plotly/unknown.js").status_code == 404
+        runtime = report_runtime.plot_runtime()
+        if runtime is not None:
+            response = client.get(f"/assets/plotly/{runtime.digest}.js")
+            assert response.status_code == 200 and response.content == runtime.script
+            assert "immutable" in response.headers["cache-control"]
+            assert response.headers["access-control-allow-origin"] == "*"
+
+
+def test_preview_preserves_documents_with_other_or_unavailable_runtimes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = report_runtime.PlotRuntime(b"local", "digest", "integrity")
+    monkeypatch.setattr(report_runtime, "plot_runtime", lambda: runtime)
+    for document in (b"no chart", b"\n<script>older</script>", b"\n<script>local-extra</script>"):
+        assert report_runtime.preview_html(document) is document
+    document = b"\n<script>local</script>"
+    assert b"/assets/plotly/digest.js" in report_runtime.preview_html(document)
+    monkeypatch.setattr(report_runtime, "plot_runtime", lambda: None)
+    assert report_runtime.preview_html(document) is document

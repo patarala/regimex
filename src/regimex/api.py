@@ -56,6 +56,7 @@ from regimex.service_contracts import (
 )
 from regimex.storage import json_bytes
 from regimex.storage_contracts import StorageUsage
+from regimex.web.report_runtime import preview_html
 
 if TYPE_CHECKING:
     from regimex.admin_api import AdminAPIService
@@ -776,7 +777,7 @@ def create_app(
 
     @app.get("/api/v1/analyses/{analysis_id}/report/preview", include_in_schema=False)
     def preview_report(analysis_id: UUID, identity: Identity) -> Response:
-        return _html_report(service.read_report(identity, analysis_id))
+        return _html_report(preview_html(service.read_report(identity, analysis_id)))
 
     @app.get("/api/v1/analyses/{analysis_id}/comparison")
     def compare_analyses(analysis_id: UUID, other: UUID, identity: Identity) -> Response:

@@ -25,6 +25,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --network=none --mount=from=builder,source=/build/dist,target=/wheels \
     uv pip install --no-cache --python /opt/venv/bin/python --no-deps /wheels/*.whl
 
+FROM locked-environment AS report-assets
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked --no-default-groups --extra viz --no-install-project
+
 FROM python-base AS service-base
 ENV PATH="/opt/venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN useradd --uid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin regimex \
@@ -37,6 +41,8 @@ CMD ["--help"]
 
 FROM service-base AS api
 COPY --from=api-environment /opt/venv /opt/venv
+COPY --from=report-assets /opt/venv/lib/python3.14/site-packages/plotly/package_data/plotly.min.js /opt/venv/lib/python3.14/site-packages/regimex/web/vendor/
+COPY --from=report-assets /opt/venv/lib/python3.14/site-packages/plotly-*.dist-info/licenses/LICENSE.txt /opt/venv/lib/python3.14/site-packages/regimex/web/vendor/
 
 FROM service-base AS worker
 COPY --from=cpu-environment /opt/venv /opt/venv

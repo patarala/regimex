@@ -6,6 +6,8 @@ from importlib.resources import files
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 
+from regimex.web.report_runtime import plot_runtime
+
 _CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
     "frame-src 'self'; img-src 'self' data:; font-src 'self'; object-src 'none'; "
@@ -37,6 +39,24 @@ _ASSETS = {
 
 
 def install_web_routes(app: FastAPI) -> None:
+    @app.get("/assets/plotly/{digest}.js", include_in_schema=False)
+    def report_plotting_script(digest: str) -> Response:
+        runtime = plot_runtime()
+        if runtime is None or digest != runtime.digest:
+            raise HTTPException(404, "Plotting runtime was not found.")
+        return Response(
+            runtime.script,
+            media_type="text/javascript",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "ETag": f'"{runtime.digest}"',
+                "X-Content-Type-Options": "nosniff",
+                # The sandboxed preview has an opaque origin. This public file
+                # contains only installed JavaScript and needs CORS for SRI.
+                "Access-Control-Allow-Origin": "*",
+            },
+        )
+
     @app.get("/", include_in_schema=False)
     def standalone() -> HTMLResponse:
         return HTMLResponse(

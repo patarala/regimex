@@ -88,7 +88,7 @@ def _interval_table(result: AnalysisResult) -> str:
                 str(stats.longest_no_trade_run),
             )
             rows.append(
-                "<tr>"
+                f'<tr data-start="{interval.start}" data-stop="{interval.stop}">'
                 + "".join(f"<td>{html.escape(str(value))}</td>" for value in values)
                 + "</tr>"
             )

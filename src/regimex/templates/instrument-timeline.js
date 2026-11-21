@@ -31,6 +31,7 @@ function instrumentLanes(sequences, selected, colors, boundary, timeUnit) {
       y: pieces.map(({ lane }) => lane),
       base: pieces.map(({ interval }) => boundary(interval.start)),
       x: pieces.map(({ interval }) => boundary(interval.stop) - boundary(interval.start)),
+      customdata: pieces.map(({ interval }) => [interval.start, interval.stop]),
       width: 0.65, marker: { color: colors[state], line: { color: "white", width: 1 } },
       text: pieces.map(() => symbol), textposition: "inside", insidetextanchor: "middle",
       hovertext: pieces.map(({ lane, interval }) => {
@@ -52,7 +53,6 @@ function instrumentLanes(sequences, selected, colors, boundary, timeUnit) {
   };
 }
 
-function instrumentLaneClick(event) {
-  const point = event.points.find((point) => point.data.meta === "instrument-lane");
-  return point?.y;
+function instrumentLanePoint(event) {
+  return event.points.find((point) => point.data.meta === "instrument-lane");
 }

@@ -517,6 +517,21 @@ test("a late saved-result response cannot install the previous report", async ()
   assert.equal(ui.get("job-state").textContent, "Running");
 });
 
+test("a completed analysis shows its snapshot summary without fetching the full result", async () => {
+  const ui = await workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply({
+    ...metadata("finished", "succeeded"), instrument_ids: ["ADA/USD", "ETH/USD"], step_count: 512,
+  });
+  await flush();
+  assert.equal(ui.get("report-preview").src, `/api/v1/analyses/${id(1)}/report/preview`);
+  assert.equal(ui.calls.some((call) => call.url.endsWith("/result")), false);
+  const summary = ui.get("result-summary").children;
+  assert.equal(summary[0].children[1].textContent, "ADA/USD, ETH/USD");
+  assert.equal(summary[1].children[1].textContent, "512");
+});
+
 test("history pages reach every analysis without accumulating unbounded DOM rows", async () => {
   const ui = await workspace(45);
   await flush();
@@ -1311,6 +1326,7 @@ async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
     return elements.get(name);
   };
   get("instrument").value = "BTC/USD";
+  get("intervals").rows = [];
   get("quotes").checked = true;
   get("analysis-data").textContent = JSON.stringify({
     export: {

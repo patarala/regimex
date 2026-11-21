@@ -172,12 +172,9 @@
     }));
     if (current !== generation) return;
     activeNodes = drawn;
-    if (paired) $("timeline").on("plotly_click", (event) => {
-      const sequence = sequences[instrumentLaneClick(event)];
-      if (sequence && sequence.instrument_id !== selector.value) {
-        selector.value = sequence.instrument_id;
-        refresh();
-      }
+    $("timeline").on("plotly_click", (event) => {
+      const point = instrumentLanePoint(event);
+      if (point) selectInterval(sequences[point.y].instrument_id, ...point.customdata);
     });
     for (const node of activeNodes) {
       node.on("plotly_relayout", (change) => {
@@ -207,12 +204,38 @@
   }
   selector.addEventListener("change", refresh);
   quotes.addEventListener("change", refresh);
-  $("reset").addEventListener("click", () => {
-    visibleRange = [...extent];
+  function setRange(range) {
+    visibleRange = [...range];
     synchronizing = true;
-    Promise.all(activeNodes.map((node) => Plotly.relayout(node, { "xaxis.range": [...extent] })))
+    Promise.all(activeNodes.map((node) => Plotly.relayout(node, { "xaxis.range": [...range] })))
       .catch(failed).finally(() => { synchronizing = false; });
-  });
+  }
+  function selectInterval(instrument, start, stop) {
+    const range = [coordinate(start), coordinate(stop)];
+    if (selector.value === instrument) {
+      setRange(range);
+    } else {
+      selector.value = instrument;
+      visibleRange = range;
+      refresh();
+    }
+  }
+  for (const row of $("intervals").rows) {
+    const instrument = row.cells[0].textContent;
+    const bounds = row.cells[1];
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "interval-link";
+    button.textContent = bounds.textContent;
+    button.setAttribute("aria-label", `Zoom to ${instrument} steps ${bounds.textContent}`);
+    button.addEventListener("click", () => {
+      selectInterval(instrument, Number(row.dataset.start), Number(row.dataset.stop));
+      selector.focus({preventScroll: true});
+      $("observations").scrollIntoView({block: "start"});
+    });
+    bounds.replaceChildren(button);
+  }
+  $("reset").addEventListener("click", () => setRange(extent));
   // JSON.stringify normalizes -0 to 0. Preserve its sign for the content digest.
   function savedJSON(value) {
     if (typeof value === "number") return Object.is(value, -0) ? "-0.0" : JSON.stringify(value);

@@ -663,6 +663,9 @@ def run(
                 or b"whole requested completed snapshot" not in report
             ):
                 raise AssertionError("The actual worker did not produce a complete offline report.")
+            preview = api.raw(text(completed, "report_url") + "/preview")
+            if b'<script src="/assets/plotly/' not in preview or len(preview) >= len(report):
+                raise AssertionError("The API image did not serve a compact chart preview.")
             for field in ("result_url", "report_url", "polling_url"):
                 api.raw(text(completed, field), owner="bob", expected=404)
             command(

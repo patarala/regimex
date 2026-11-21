@@ -94,6 +94,14 @@ select:focus {
 .table-scroll {
   overflow: auto;
 }
+.interval-link {
+  padding: 2px 4px;
+  color: #245d89;
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 table {
   border-collapse: collapse;
   width: 100%;
