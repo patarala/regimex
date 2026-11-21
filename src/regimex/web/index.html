@@ -43,16 +43,17 @@
           <section class="panel upload-panel" aria-labelledby="upload-title">
             <h2 id="upload-title">New analysis</h2>
             <label for="export-file" id="drop-zone" class="drop-zone">
-              <strong>Choose JSON file</strong>
-              <span>or drop a completed experiment here</span>
+              <strong>Choose JSON files</strong>
+              <span>or drop completed experiments here</span>
               <input
                 id="export-file"
                 type="file"
+                multiple
                 accept="application/json,.json"
                 aria-describedby="file-limits"
               />
             </label>
-            <p id="file-limits" class="hint">Up to 16 MiB · 4,096 steps · 2 instruments</p>
+            <p id="file-limits" class="hint">Per file: up to 16 MiB · 4,096 steps · 2 instruments</p>
             <div id="file-details" class="file-details" hidden>
               <strong id="file-name"></strong>
               <span id="file-summary"></span>
@@ -70,6 +71,18 @@
             <div class="actions">
               <button id="classify" type="button" disabled>Analyze</button>
             </div>
+            <section id="batch-panel" aria-labelledby="batch-title" hidden>
+              <div class="section-heading">
+                <h3 id="batch-title">Batch</h3>
+                <button id="batch-close" type="button" class="quiet">Close batch</button>
+              </div>
+              <p id="batch-status" class="hint" role="status"></p>
+              <ol id="batch-files" class="batch-files"></ol>
+              <div class="actions">
+                <button id="batch-resume" type="button" hidden>Resume batch</button>
+                <button id="batch-retry" type="button" hidden>Retry failed</button>
+              </div>
+            </section>
             <div id="storage-status" class="storage-summary" role="status" aria-live="polite" hidden>
               <div class="storage-heading">
                 <span id="storage-usage"></span>

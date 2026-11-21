@@ -1404,3 +1404,140 @@ test("analysis report reset restores the full extent after repeated linked drag 
     for (const plot of plots) assert.deepEqual(Array.from(plot.layout.xaxis.range), [100, 116]);
   }
 });
+
+const batchFile = (name, content = '{"schema_version":"2.1"}') =>
+  ({name, size: content.length, text: async () => content});
+
+async function startBatch(ui, files) {
+  await ui.get("export-file").emit("change", {target: {files}});
+  assert.equal(ui.get("classify").textContent, `Analyze ${files.length} files`);
+  void ui.get("classify").click();
+  await flush();
+}
+
+async function acceptBatchFile(ui, number) {
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2000 + number)});
+  await flush();
+  const call = ui.pending("/api/v1/analyses");
+  call.reply({analysis_id: id(number)});
+  await flush();
+  return call;
+}
+
+test("batch bounds active jobs, keeps the selected model and retries only failed analyses", async () => {
+  const ui = await workspace();
+  await flush();
+  await startBatch(ui, [batchFile("a.json"), batchFile("b.json"), batchFile("c.json")]);
+  await acceptBatchFile(ui, 1);
+  const second = await acceptBatchFile(ui, 2);
+  const rows = ui.get("batch-files").children;
+  assert.equal(rows[2].children[1].textContent, "Ready");
+  const uploads = () => ui.calls.filter(call => call.url === "/api/v1/snapshots").length;
+  assert.equal(uploads(), 2);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata(id(1), "succeeded"));
+  await flush();
+  const failed = metadata(id(2), "failed");
+  failed.job.failure = {message: "Worker unavailable."};
+  ui.pending(`/api/v1/analyses/${id(2)}`).reply(failed);
+  await flush();
+  assert.match(rows[1].children[1].textContent, /Failed.*Worker unavailable/);
+  void ui.timers.values().next().value();
+  await flush();
+  await acceptBatchFile(ui, 3);
+  ui.pending(`/api/v1/analyses/${id(3)}`).reply(metadata(id(3), "succeeded"));
+  await flush();
+  ui.get("upload-model").value = "baseline-1";
+  assert.equal(ui.get("batch-retry").hidden, false);
+  void ui.get("batch-retry").click();
+  const retried = ui.pending("/api/v1/analyses");
+  assert.deepEqual(JSON.parse(retried.options.body), {snapshot_id: id(2002), model_version_id: "tcn-1"});
+  assert.notEqual(retried.options.headers["Idempotency-Key"], second.options.headers["Idempotency-Key"]);
+  assert.equal(uploads(), 3);
+  assert.equal(rows[0].children[1].textContent, "Complete");
+});
+
+test("batch resumes an ambiguous admission with its original key, then waits for quota", async () => {
+  const ui = await workspace();
+  await flush();
+  await startBatch(ui, [batchFile("invalid.json", "{"), batchFile("retry.json"), batchFile("quota.json")]);
+  const rows = ui.get("batch-files").children;
+  assert.match(rows[0].children[1].textContent, /valid JSON/);
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2100)});
+  await flush();
+  const first = ui.pending("/api/v1/analyses");
+  first.reply({error: {message: "Unavailable"}}, 503);
+  await flush();
+  assert.equal(ui.timers.size, 0);
+  assert.equal(ui.get("batch-resume").hidden, false);
+  void ui.get("batch-resume").click();
+  const retried = ui.pending("/api/v1/analyses");
+  assert.equal(retried.options.headers["Idempotency-Key"], first.options.headers["Idempotency-Key"]);
+  assert.equal(retried.options.body, first.options.body);
+  retried.reply({analysis_id: id(10)});
+  await flush();
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2200)});
+  await flush();
+  const denied = ui.pending("/api/v1/analyses");
+  denied.reply({error: {message: "Pending operation quota is exhausted."}}, 429);
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(10)}`).reply(metadata(id(10), "running"));
+  await flush();
+  assert.equal(ui.get("batch-resume").hidden, false);
+  void ui.timers.values().next().value();
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(10)}`).reply(metadata(id(10), "succeeded"));
+  await flush();
+  void ui.timers.values().next().value();
+  await flush();
+  const afterCapacity = ui.pending("/api/v1/analyses");
+  assert.equal(afterCapacity.options.headers["Idempotency-Key"], denied.options.headers["Idempotency-Key"]);
+  assert.equal(afterCapacity.options.body, denied.options.body);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/snapshots").length, 2);
+});
+
+test("retrying one failed file leaves the other failed analysis available", async () => {
+  const ui = await workspace();
+  await flush();
+  await startBatch(ui, [batchFile("a.json"), batchFile("b.json")]);
+  await acceptBatchFile(ui, 1);
+  const original = await acceptBatchFile(ui, 2);
+  for (const number of [1, 2]) {
+    ui.pending(`/api/v1/analyses/${id(number)}`).reply(metadata(id(number), "failed"));
+    await flush();
+  }
+  const [first, second] = ui.get("batch-files").children;
+  const [firstRetry, secondRetry] = [first, second].map(row =>
+    row.children.find(button => button.textContent === "Retry analysis"));
+  assert.equal(firstRetry.hidden, false);
+  assert.equal(secondRetry.hidden, false);
+  void secondRetry.click();
+  const retry = ui.pending("/api/v1/analyses");
+  assert.equal(retry.options.body, original.options.body);
+  assert.notEqual(retry.options.headers["Idempotency-Key"], original.options.headers["Idempotency-Key"]);
+  assert.equal(secondRetry.hidden, true);
+  await secondRetry.click();
+  retry.reply({analysis_id: id(3)});
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(3)}`).reply(metadata(id(3), "succeeded"));
+  await flush();
+  assert.equal(first.children[1].textContent, "Failed");
+  assert.equal(first.children[2].hidden, false);
+  assert.equal(firstRetry.hidden, false);
+  assert.equal(second.children[1].textContent, "Complete");
+  assert.equal(secondRetry.hidden, true);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/analyses").length, 3);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/snapshots").length, 2);
+});
+
+test("closing a batch during upload never submits a stale snapshot or starts later files", async () => {
+  const ui = await workspace();
+  await flush();
+  await startBatch(ui, [batchFile("a"), batchFile("b")]);
+  await ui.get("batch-close").click();
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(3000)});
+  await flush();
+  assert.equal(ui.get("batch-panel").hidden, true);
+  assert.equal(ui.get("export-file").disabled, false);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/snapshots").length, 1);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/analyses").length, 0);
+});

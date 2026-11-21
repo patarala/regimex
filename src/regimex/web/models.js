@@ -2,7 +2,7 @@ import {$, option} from "./ui.js";
 
 const MODEL_PAGE_SIZE = 100;
 
-export function createModels({session, getSelection, getBusy, getExport}) {
+export function createModels({session, getSelection, getBusy, getUploadReady, getBatchLocked}) {
   let models = [];
   let activeModelId = null;
   let modelOffset = 0;
@@ -37,9 +37,9 @@ export function createModels({session, getSelection, getBusy, getExport}) {
   }
 
   function updateActions() {
-    $("classify").disabled = getBusy() || !session.value || !getExport() || !modelsReady || !$("upload-model").value;
-    $("export-file").disabled = getBusy();
-    $("upload-model").disabled = getBusy() || modelsLoading || !modelsReady;
+    $("classify").disabled = getBusy() || !session.value || !getUploadReady() || !modelsReady || !$("upload-model").value;
+    $("export-file").disabled = getBusy() || getBatchLocked();
+    $("upload-model").disabled = getBusy() || getBatchLocked() || modelsLoading || !modelsReady;
     $("rerun-model").disabled = getBusy() || modelsLoading || !modelsReady;
     const saved = getSelection()?.metadata;
     const terminal = saved && ["succeeded", "failed", "cancelled"].includes(saved.job.state);

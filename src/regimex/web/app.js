@@ -30,7 +30,8 @@ const session = createSession({
 });
 const getSelection = () => analysis.current;
 const models = createModels({session, getSelection,
-  getBusy: () => analysis.busy, getExport: () => analysis.exportText});
+  getBusy: () => analysis.busy, getUploadReady: () => analysis.uploadReady,
+  getBatchLocked: () => analysis.batchLocked});
 const history = createHistory({session, getSelection, openAnalysis: (id) => analysis.open(id),
   deleteExperiment: (id, title) => deletion.open("experiment", id, title),
   compareAnalyses: async (first, second) => {

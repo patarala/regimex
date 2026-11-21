@@ -29,6 +29,7 @@ _ASSETS = {
     "experiment-history.js": "text/javascript",
     "models.js": "text/javascript",
     "analysis.js": "text/javascript",
+    "uploads.js": "text/javascript",
     "comparison.js": "text/javascript",
     "queue-status.js": "text/javascript",
     "ui.js": "text/javascript",

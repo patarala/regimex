@@ -1,7 +1,7 @@
 import {$, analysisStateLabel, notice} from "./ui.js";
 import {createQueueStatus} from "./queue-status.js";
+import {createBatch, readExport, requestAnalysis} from "./uploads.js";
 
-const MAX_BYTES = 16 * 1024 * 1024;
 const stages = {
   queued: "Waiting to start.",
   loading: "Loading the experiment.",
@@ -31,6 +31,8 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   let busy = false;
   let fileEpoch = 0;
   const queue = createQueueStatus({session, getSelection: () => current});
+  const batch = createBatch({session, openAnalysis, updateActions: models.updateActions,
+    refreshHistory: () => { void history.load(0); onStorageChange(); }});
 
   function clearReport() {
     $("report-preview").removeAttribute("src");
@@ -48,6 +50,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     clearFailure();
     queue.reset();
     current = snapshot = result = exportText = retryAction = null;
+    batch.clear();
     busy = false;
     $("export-file").value = "";
     $("file-details").hidden = true;
@@ -72,31 +75,28 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     $("cancel").disabled = true;
   }
 
-  async function chooseFile(file) {
-    if (busy)
+  async function chooseFiles(files) {
+    if (busy || batch.locked)
       throw new Error(
-        "Wait for the current request to be accepted before choosing another export.",
+        batch.locked ? "Close the current batch before choosing more files."
+          : "Wait for the current request to be accepted before choosing another export.",
       );
+    const selected = Array.from(files);
     const selection = ++fileEpoch;
     exportText = snapshot = null;
+    batch.clear();
     $("classify").disabled = true;
     $("file-details").hidden = true;
     notice();
+    if (selected.length > 1) {
+      batch.choose(selected);
+      return;
+    }
+    const [file] = selected;
     if (!file) return;
-    if (file.size > MAX_BYTES)
-      throw new Error("The export exceeds 16 MiB. Choose an export within the supported limit.");
-    if (file.size === 0) throw new Error("The selected file is empty.");
     try {
-      const text = await file.text();
+      const text = await readExport(file);
       if (selection !== fileEpoch || !session.value) return;
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        throw new Error("Choose a valid JSON export.");
-      }
-      if (data?.schema_version !== "2.1")
-        throw new Error("This file is not a supported experiment export.");
       const validated = await session.json("/api/v1/validate", { method: "POST", body: text });
       if (selection !== fileEpoch || !session.value) return;
       exportText = text;
@@ -116,7 +116,9 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   }
 
   async function submit() {
-    if (busy || !exportText || !models.ready || !$("upload-model").value) return;
+    if (busy || !models.ready || !$("upload-model").value) return;
+    if (batch.selected) return batch.start(models.selected("upload-model"));
+    if (!exportText) return;
     return submitRequest({
       snapshotId: snapshot?.snapshot_id || null,
       exportText,
@@ -169,11 +171,8 @@ export function createAnalysis({session, models, history, comparison, onStorageC
         submission.snapshotId = uploaded.snapshot_id;
         if (workspace === session.epoch && exportText === submission.exportText) snapshot = uploaded;
       }
-      const analysis = await session.json("/api/v1/analyses", {
-        method: "POST",
-        body: { snapshot_id: submission.snapshotId, model_version_id: submission.model },
-        headers: { "Idempotency-Key": submission.key },
-      });
+      if (workspace !== session.epoch) return;
+      const analysis = await requestAnalysis(session, submission.snapshotId, submission.model, submission.key);
       if (current === selection) await openAnalysis(analysis.analysis_id);
       if (workspace === session.epoch) await history.load(0);
     } catch (error) {
@@ -326,7 +325,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     $("comparison-controls").hidden = !metadata.snapshot_id;
   }
   $("export-file").addEventListener("change", (event) =>
-    chooseFile(event.target.files[0]).catch((error) => notice(error.message, true)),
+    chooseFiles(event.target.files).catch((error) => notice(error.message, true)),
   );
   ["dragenter", "dragover"].forEach((name) =>
     $("drop-zone").addEventListener(name, (event) => {
@@ -341,11 +340,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     }),
   );
   $("drop-zone").addEventListener("drop", (event) => {
-    if (event.dataTransfer.files.length !== 1) {
-      notice("Choose one completed-run export.", true);
-      return;
-    }
-    chooseFile(event.dataTransfer.files[0]).catch((error) => notice(error.message, true));
+    chooseFiles(event.dataTransfer.files).catch((error) => notice(error.message, true));
   });
   $("classify").addEventListener("click", submit);
   $("rerun").addEventListener("click", rerun);
@@ -388,6 +383,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     return deleteAnalysis(current.id, $("analysis-title").textContent);
   });
   function forgetDeleted(target) {
+    batch.forgetDeleted(target);
     if (target.kind === "experiment" && snapshot?.snapshot_id === target.id) snapshot = null;
     const affected = current && (target.kind === "analysis" ? current.id === target.id
       : current.metadata?.snapshot_id === target.id);
@@ -415,5 +411,6 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     }
   }
   return {reset, open: openAnalysis, forgetDeleted, get current() { return current; },
-    get busy() { return busy; }, get exportText() { return exportText; }};
+    get busy() { return busy; }, get uploadReady() { return Boolean(exportText) || batch.ready; },
+    get batchLocked() { return batch.locked; }};
 }

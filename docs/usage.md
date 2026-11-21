@@ -9,13 +9,22 @@ serves `http://127.0.0.1:8000`.
 
 1. Paste your token into **Access token** and select **Sign in**. The
    setup guides save the user token in `var/credentials/user.token`.
-2. Under **New analysis**, select **Choose JSON file** or drop an export there.
+2. Under **New analysis**, select **Choose JSON files** or drop an export there.
    For a first run from a checkout, [generate a 512-step example](#terminal-tools)
    and choose `var/run.json`.
 3. Check the run and instruments, select a published model, then choose
    **Analyze**. The analysis keeps that model version.
 4. When the job finishes, read the preview or select **Download HTML** for
    an offline copy. **Download JSON** saves the predictions and statistics.
+
+To analyze several exports with the same model, select or drop the files together.
+Select **Analyze files** (the button includes the count). Keep the batch open while
+files are waiting to be submitted. Each row shows its status and opens the accepted
+analysis. The browser keeps up to two analyses in progress. If a quota or a service
+interruption pauses submissions, use **Resume batch**. Choose **Retry analysis**
+on a failed file to run it again using its saved snapshot and original model.
+Once the batch finishes, **Retry failed** retries all failed jobs together.
+Accepted analyses stay in **Experiments** when you close the batch.
 
 You can sign out and return to **Experiments** later. A session lasts 30 minutes
 by default. Select an experiment to open its latest matching analysis, or

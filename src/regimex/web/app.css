@@ -847,3 +847,28 @@ iframe {
     opacity: 0.6;
   }
 }
+
+#batch-panel {
+  margin-top: 16px;
+}
+.batch-files {
+  list-style: none;
+  padding: 0;
+  max-height: 360px;
+  overflow: auto;
+}
+.batch-files li {
+  border-top: 1px solid var(--border);
+  padding: 8px 0;
+}
+.batch-files strong, .batch-files span {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.batch-files span {
+  color: var(--muted);
+  white-space: pre-line;
+}
+.batch-files button {
+  margin-top: 4px;
+}

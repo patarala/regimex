@@ -74,7 +74,7 @@ jobs:
                   assert asset.is_file() and asset.read_text(encoding="utf-8").strip(), asset
           for name in (
               "index.html", "app.css", "app.js", "ui.js", "session.js", "history.js",
-              "models.js", "analysis.js", "comparison.js", "queue-status.js",
+              "models.js", "analysis.js", "uploads.js", "comparison.js", "queue-status.js",
               "experiment-history.js", "integrations.js", "storage.js", "deletion.js",
           ):
               asset = files("regimex").joinpath("web", name)
