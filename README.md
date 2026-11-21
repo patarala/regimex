@@ -49,7 +49,8 @@ also reports how closely the reference TCN placed interval boundaries.
 | Task | Guide |
 | --- | --- |
 | Understand the data flow and design choices | [Architecture](docs/architecture.md) |
-| Automate analysis, train a model or publish a version | [API workflows](docs/api.md) |
+| Train, evaluate and publish a model | [Training screen](docs/usage.md#train-a-model) |
+| Automate analysis or model training | [API workflows](docs/api.md) |
 | Connect a simulator and manage its keys | [Integration protocol](docs/integration.md) · [Platform access](docs/access.md) |
 | Configure storage, back up data or recover an installation | [Storage and recovery](docs/storage.md) |
 | Compare worker capacity and measure queueing under sustained load | [Load testing](docs/load-testing.md) |

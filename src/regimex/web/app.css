@@ -872,3 +872,125 @@ iframe {
 .batch-files button {
   margin-top: 4px;
 }
+
+.training-layout {
+  display: grid;
+  grid-template-columns: minmax(210px, 1fr) minmax(0, 2.3fr);
+  align-items: start;
+  gap: 24px;
+}
+#training .section-heading h1, #training .section-heading h2 {
+  margin: 0;
+}
+.training-runs, .training-actions {
+  list-style: none;
+  margin: 14px 0;
+  padding: 0;
+}
+.training-runs li + li, .training-actions li + li {
+  border-top: 1px solid var(--border);
+}
+.training-runs button {
+  width: 100%;
+  text-align: left;
+  align-items: flex-start;
+  flex-direction: column;
+  padding: 10px;
+  border: 0;
+  font-weight: 500;
+}
+.training-runs [aria-current="true"] {
+  background: #eaf1f8;
+}
+.training-form label {
+  display: block;
+  font-weight: 600;
+}
+.training-form input, .training-form select, .training-form textarea {
+  display: block;
+  width: 100%;
+  margin: 4px 0 12px;
+  min-height: 38px;
+  background: white;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 7px 10px;
+  color: inherit;
+  font: inherit;
+  font-weight: 400;
+}
+.training-form textarea {
+  font: 13px/1.5 ui-monospace, monospace;
+  resize: vertical;
+}
+.training-form details {
+  margin: 14px 0;
+}
+.training-form summary {
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+.training-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 5px 18px;
+}
+.training-facts dt {
+  color: var(--muted);
+}
+.training-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+#training-settings {
+  max-height: 20rem;
+  overflow: auto;
+  font-size: 13px;
+}
+.training-section {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.training-actions li {
+  padding: 6px 0;
+}
+#training-charts figure {
+  margin: 14px 0 0;
+}
+#training-charts figcaption {
+  font-weight: 600;
+}
+#training-charts svg {
+  width: 100%;
+  max-width: 700px;
+  height: auto;
+}
+#training-charts text {
+  fill: var(--muted);
+  font-size: 12px;
+}
+.training-grid {
+  stroke: #dce2e8;
+}
+.training-f1, .training-loss {
+  fill: none;
+  stroke: #336b99;
+  stroke-width: 2;
+}
+.training-loss {
+  stroke: #937044;
+}
+.training-point {
+  fill: #385f78;
+}
+@media (max-width: 720px) {
+  .training-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #account {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+}

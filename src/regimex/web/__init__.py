@@ -34,6 +34,8 @@ _ASSETS = {
     "queue-status.js": "text/javascript",
     "ui.js": "text/javascript",
     "integrations.js": "text/javascript",
+    "training.js": "text/javascript",
+    "training-metrics.js": "text/javascript",
     "storage.js": "text/javascript",
     "deletion.js": "text/javascript",
 }

@@ -9,6 +9,9 @@ from numpy.typing import NDArray
 
 from regimex.contracts import Observation
 from regimex.directions import (
+    DECODER_VERSION as DECODER_VERSION,
+)
+from regimex.directions import (
     DIRECTION_NAMES,
     AnalysisConfig,
     AnnotationGrid,
@@ -18,8 +21,6 @@ from regimex.directions import (
     observation_blocks,
     summarize_interval,
 )
-
-DECODER_VERSION = "duration-viterbi/1.0"
 
 
 def eligible_mask(

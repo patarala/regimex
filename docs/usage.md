@@ -80,6 +80,40 @@ Select a step range in the table to zoom both predictions and the price chart.
 belong to the same saved snapshot. To compare the supplied baseline and TCN,
 both versions must have been published or activated.
 
+## Train a model
+
+Sign in with an administrator token and open **Training**. The service needs a
+running `admin` worker. If this is your first training run, use the API to
+create a development dataset with training and validation partitions, generate
+a reference set for each, and register the dataset as development history.
+Reserve a separate final dataset with sealed test references, then start
+selection on that reservation. Keep its benchmark ID for the form.
+[Data preparation](api.md#1-create-observations-and-references) ·
+[Benchmark reservation](api.md#2-reserve-final-data-before-selection)
+
+1. Choose **New run**. Select the development dataset, its training labels and
+   validation references. New training runs use the current analysis profile
+   (`direction-32/2.2`). Enter the **Selection benchmark ID**.
+2. Choose **baseline** or **tcn**. Under **Training settings**, you can edit
+   the architecture parameters, training policy and optional CPU runtime
+   overrides as JSON. Use the training runtime to set a time or memory budget
+   within your server's limits. Select **Start
+   training** to queue the run on CPU. You can close the page and return later.
+3. Select the run to see its stage and attempt, or use **Cancel training** while
+   it is queued or running. After it succeeds, check the selected validation
+   interval macro-F1. The baseline plots this score against regularization.
+   The TCN plots loss and validation scores by epoch or optimizer update.
+   Use **Training seed** to switch between seeds when a run used several.
+4. Choose **Evaluate candidate** to score its saved weights on the same
+   validation references. Open **Evaluation JSON** for the full metrics.
+   To make this model the default for new analyses, choose **Publish candidate**
+   and confirm the active model it will replace.
+
+You can train and compare several candidates under one reservation. The
+training screen keeps the final test references sealed. Once you have chosen the
+model for the final evaluation, freeze it and open the benchmark through the
+API. [Final evaluation](api.md#4-freeze-and-evaluate-final-data)
+
 ## Delete saved work
 
 Use **Delete analysis** under **Details** to remove one result, or **Delete

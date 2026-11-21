@@ -6,10 +6,12 @@ import {createAnalysis} from "./analysis.js";
 import {createIntegrations} from "./integrations.js";
 import {createStorage} from "./storage.js";
 import {createDeletion} from "./deletion.js";
+import {createTraining} from "./training.js";
 
 const session = createSession({
   onActivate: async () => {
     integrations.activate();
+    training.activate();
     void storage.load();
     void deletion.load();
     void models.load();
@@ -21,6 +23,7 @@ const session = createSession({
   },
   onReset: () => {
     integrations.reset();
+    training.reset();
     storage.reset();
     deletion.reset();
     history.reset();
@@ -50,4 +53,5 @@ const deletion = createDeletion({session, onApplied: (target) => {
   void storage.load();
 }});
 const integrations = createIntegrations({session});
+const training = createTraining({session, onPublication: () => models.load()});
 void session.start();

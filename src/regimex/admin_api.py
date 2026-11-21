@@ -28,12 +28,18 @@ from regimex.admin_contracts import (
     RequestDigest,
     RequestFingerprint,
     SplitPolicy,
+    TrainingMetrics,
     TrainingSpec,
 )
 from regimex.api import OperationView, _json_dependency, _operation, _request_body
 from regimex.contracts import Identifier, StrictModel
 from regimex.data_catalog import DatasetManifest, ReferenceSet, content_hash
-from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
+from regimex.directions import (
+    DECODER_VERSION,
+    DEFAULT_ANALYSIS_PROFILE,
+    AnalysisConfig,
+    DirectionAnnotations,
+)
 from regimex.model_registry import (
     ArchitectureId,
     InferenceRuntime,
@@ -45,6 +51,12 @@ from regimex.storage import json_bytes
 
 
 class AdminAPIService(Protocol):
+    def training_actions(
+        self, principal: Principal, run_id: UUID, *, limit: int, offset: int
+    ) -> tuple[AdminRunRecord, ...]: ...
+
+    def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics: ...
+
     def import_final_references(
         self,
         principal: Principal,
@@ -155,6 +167,7 @@ class AdminAPIService(Protocol):
         self,
         principal: Principal,
         *,
+        dataset_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[ReferenceSetRecord, ...]: ...
@@ -257,6 +270,7 @@ class AdminRunView(StrictModel):
     job: OperationView
     output: dict[str, JsonValue] | None
     polling_url: str
+    training: TrainingSpec | None = None
 
 
 class AdminRunPage(StrictModel):
@@ -293,6 +307,7 @@ class ReferenceView(StrictModel):
     reviewer: str | None
     created_at: AwareDatetime
     annotations_sealed: bool
+    current_training_profile: bool
     manifest_url: str
 
 
@@ -320,6 +335,7 @@ def _run(record: AdminRunRecord) -> AdminRunView:
     return AdminRunView(
         run_id=record.run_id,
         job=_operation(record.operation),
+        training=record.spec if isinstance(record.spec, TrainingSpec) else None,
         output=None
         if record.output is None
         else {name: value for name, value in record.output.items() if name in allowed},
@@ -356,6 +372,8 @@ def _reference(record: ReferenceSetRecord) -> ReferenceView:
         reviewer=references.reviewer,
         created_at=record.created_at,
         annotations_sealed=references.partition == "test",
+        current_training_profile=references.analysis_profile == AnalysisConfig()
+        and references.semantics.decoder_version == DECODER_VERSION,
         manifest_url=f"/api/v1/reference-sets/{references.reference_set_id}/manifest",
     )
 
@@ -483,12 +501,17 @@ def install_admin_routes(
 
     @app.get("/api/v1/reference-sets")
     def list_references(
-        identity: Identity, limit: Limit = 100, offset: Offset = 0
+        identity: Identity,
+        limit: Limit = 100,
+        offset: Offset = 0,
+        dataset_id: Identifier | None = None,
     ) -> ReferencePage:
         return ReferencePage(
             items=tuple(
                 _reference(item)
-                for item in service.list_reference_sets(identity, limit=limit, offset=offset)
+                for item in service.list_reference_sets(
+                    identity, dataset_id=dataset_id, limit=limit, offset=offset
+                )
             ),
             limit=limit,
             offset=offset,
@@ -570,6 +593,17 @@ def install_admin_routes(
     @app.get("/api/v1/training-runs/{run_id}")
     def get_training(run_id: UUID, identity: Identity) -> AdminRunView:
         return checked_run(identity, run_id, "training")
+
+    @app.get("/api/v1/training-runs/{run_id}/metrics")
+    def training_metrics(run_id: UUID, identity: Identity) -> TrainingMetrics:
+        return service.training_metrics(identity, run_id)
+
+    @app.get("/api/v1/training-runs/{run_id}/actions")
+    def training_actions(
+        run_id: UUID, identity: Identity, limit: Limit = 100, offset: Offset = 0
+    ) -> AdminRunPage:
+        records = service.training_actions(identity, run_id, limit=limit, offset=offset)
+        return AdminRunPage(items=tuple(_run(item) for item in records), limit=limit, offset=offset)
 
     @app.get("/api/v1/evaluations/{run_id}")
     def get_evaluation(run_id: UUID, identity: Identity) -> AdminRunView:

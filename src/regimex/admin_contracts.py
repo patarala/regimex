@@ -268,6 +268,14 @@ class AdminRunRecord(StrictModel):
         return self
 
 
+class TrainingMetrics(StrictModel):
+    model_version_id: Identifier
+    selected_seed: Seed
+    validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
+    history: JsonValue
+    history_note: str | None = None
+
+
 class EvaluationRecord(StrictModel):
     run_id: UUID
     owner_id: Identifier

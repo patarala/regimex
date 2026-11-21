@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal
 from uuid import UUID, uuid4
 
-from pydantic import Field, JsonValue, model_validator
+from pydantic import Field, JsonValue, ValidationError, model_validator
 
 from regimex.contracts import MAX_INPUT_BYTES, MAX_STEPS, Identifier, StrictModel
 from regimex.diagnostic_contracts import QueueStatus
@@ -134,6 +134,40 @@ def materialize_object(
         raise ObjectIntegrityError("object generation differs from its committed metadata")
 
 
+def read_bundle_manifest(
+    store: ObjectStore,
+    model: ModelRecord,
+    path: Path,
+    *,
+    before_copy: Callable[[ObjectInfo], None] | None = None,
+    checkpoint: Callable[[], None] | None = None,
+) -> ModelBundle:
+    if model.manifest.size_bytes > MAX_BUNDLE_MANIFEST_BYTES:
+        raise ObjectIntegrityError("stored bundle manifest exceeds its input size limit")
+    if model.manifest.sha256 != model.bundle_sha256:
+        raise ObjectIntegrityError("stored bundle manifest differs from its registered digest")
+    if before_copy is not None:
+        before_copy(model.manifest)
+    materialize_object(store, model.manifest, path, checkpoint=checkpoint)
+    try:
+        manifest = ModelBundle.model_validate_json(path.read_bytes())
+    except ValidationError as exc:
+        raise ObjectIntegrityError("stored bundle manifest is invalid") from exc
+    if (manifest.model_version_id, manifest.architecture_id) != (
+        model.model_version_id,
+        model.architecture_id,
+    ):
+        raise ObjectIntegrityError("stored bundle identity differs from its registration")
+    expected = {member.path: member for member in manifest.members}
+    if set(expected) != set(model.members):
+        raise ObjectIntegrityError("stored bundle membership differs from its manifest")
+    for name, info in model.members.items():
+        member = expected[name]
+        if (info.sha256, info.size_bytes) != (member.sha256, member.size_bytes):
+            raise ObjectIntegrityError("stored bundle member differs from its manifest")
+    return manifest
+
+
 def materialize_bundle(
     store: ObjectStore,
     model: ModelRecord,
@@ -142,20 +176,11 @@ def materialize_bundle(
     before_copy: Callable[[ObjectInfo], None] | None = None,
     checkpoint: Callable[[], None] | None = None,
 ) -> None:
-    if model.manifest.size_bytes > MAX_BUNDLE_MANIFEST_BYTES:
-        raise ObjectIntegrityError("stored bundle manifest exceeds its input size limit")
     destination.mkdir(mode=0o700)
-    if before_copy is not None:
-        before_copy(model.manifest)
-    materialize_object(store, model.manifest, destination / "manifest.json", checkpoint=checkpoint)
-    manifest = ModelBundle.model_validate_json((destination / "manifest.json").read_bytes())
-    expected = {member.path: member for member in manifest.members}
-    if set(expected) != set(model.members):
-        raise ObjectIntegrityError("stored bundle membership differs from its manifest")
+    read_bundle_manifest(
+        store, model, destination / "manifest.json", before_copy=before_copy, checkpoint=checkpoint
+    )
     for name, info in model.members.items():
-        member = expected[name]
-        if (info.sha256, info.size_bytes) != (member.sha256, member.size_bytes):
-            raise ObjectIntegrityError("stored bundle member differs from its manifest")
         path = destination / name
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         if before_copy is not None:

@@ -211,8 +211,8 @@ Create separate training and validation references with `POST /reference-sets`:
 {"mode":"automatic","dataset_id":"DATASET_ID","partition":"train"}
 ```
 
-Repeat with `partition: "validation"`. The default profile is
-`direction-32/2.2`; automatic labels use `retrospective-directions/3.0`.
+Repeat with `partition: "validation"`. New reference sets use the current
+`direction-32/2.2` profile. Automatic labels use `retrospective-directions/3.0`.
 To import human references, provide complete annotations and identify the
 reviewer. The reviewer attests to independence. The ordinary annotation
 download covers the training and validation partitions.
@@ -245,24 +245,34 @@ import them through `POST /benchmarks/reference-sets` before reservation.
 
 ### 3. Train and publish
 
-1. Read `/architectures` for `baseline` or `tcn` parameters. Submit
-   `POST /training-runs` with the development dataset, training-label and
-   validation-reference IDs, selection benchmark, analysis profile, parameters,
-   training policy and separate training/inference runtimes.
-2. Training requires at least one validation interval with a known direction.
-   The worker saves the candidate, reloads it and verifies the predictions.
-   Copy its model version ID from the completed run.
-3. Submit `POST /evaluations` for that concrete model and its development
-   validation references. This performs fixed-model evaluation without fitting.
-   Download `GET /evaluations/{id}/result` to inspect detailed metrics.
-4. Submit `POST /models/{id}/publish` with the successful matching evaluation and
-   `expected_previous`. Publication checks the bundle again and changes the
-   active pointer atomically. An outdated expectation conflicts.
+After starting selection on the reservation, use the [browser training
+screen](usage.md#train-a-model) or submit `POST /training-runs` with an
+administrator token and an `Idempotency-Key`. For example, replace the IDs
+in this baseline request with your own:
 
-Architecture descriptors list `supported_training_budgets`. The TCN accepts
-`epochs` and `updates`; baseline accepts `epochs`. Both default to an epoch policy.
-For a fixed budget, send the following `policy` object; epoch-only fields such as
-`epochs`, `patience` and `validation_interval` are rejected:
+```json
+{
+  "dataset_id": "DEVELOPMENT_DATASET_ID",
+  "labels_reference_set_id": "TRAIN_REFERENCE_ID",
+  "validation_reference_set_id": "VALIDATION_REFERENCE_ID",
+  "benchmark_selection_id": "BENCHMARK_ID",
+  "architecture_id": "baseline",
+  "parameters": {},
+  "policy": {"optimizer": "lbfgs", "seeds": [11]}
+}
+```
+
+Both reference sets must belong to the dataset and use the current training
+profile, `direction-32/2.2`. The service fills in this profile when you omit
+`analysis_profile_id`. Validation needs at least one interval with a known
+direction. Both built-in architectures run on CPU. Set `training_runtime` and
+`inference_runtime` to override their default thread counts or budgets.
+Read `GET /architectures` for parameter schemas, default policies and
+supported budgets.
+
+The TCN accepts `epochs` and `updates` budgets. The baseline evaluates its
+regularization candidates under the epoch policy. For a fixed TCN budget, set
+`architecture_id` to `tcn` and use this `policy`:
 
 ```json
 {
@@ -276,6 +286,29 @@ For a fixed budget, send the following `policy` object; epoch-only fields such a
   "weight_decay": 0.0001
 }
 ```
+
+Training returns `202` with the run URL in `Location`. These routes report
+the signed-in administrator's runs:
+
+| Request | Result |
+| --- | --- |
+| `GET /training-runs?limit=20&offset=0` | Newest training runs first |
+| `GET /training-runs/{id}` | Submitted settings, model version ID, job stage, attempts and failure reason |
+| `POST /jobs/{id}/cancel` | Request cancellation of a queued or running training job |
+| `GET /training-runs/{id}/metrics` | Selected seed, validation interval macro-F1 and the history saved by the backend. Returns `409` until the run succeeds. |
+| `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model |
+
+After the worker saves the candidate, reloads it and verifies its predictions:
+
+1. Submit `POST /evaluations` with the run's `model_version_id`, `dataset_id`,
+   the validation set as `reference_set_id` and `partition: "validation"`.
+   Download the completed metrics from `GET /evaluations/{id}/result`.
+2. To activate the candidate, submit `POST /models/{model_version_id}/publish`
+   with `evaluation_run_id` and `expected_previous`. Read the current
+   `active_model_version_id` from `GET /models`; use `null` for the first
+   publication. The worker verifies the package and changes the active model
+   atomically. If another publication changed it first, review the current
+   version before resubmitting.
 
 Publication makes the candidate available for analysis. A candidate
 evaluated on the development validation set has quality status

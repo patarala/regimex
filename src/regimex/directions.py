@@ -14,6 +14,7 @@ from regimex.observation_availability import known_no_executions
 
 DIRECTION_POLICY = "retrospective-directions/3.0"
 DEFAULT_ANALYSIS_PROFILE = "direction-32/2.2"
+DECODER_VERSION = "duration-viterbi/1.0"
 
 
 class AnnotationGrid(Protocol):

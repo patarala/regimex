@@ -29,7 +29,7 @@ from regimex.admin_contracts import (
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.data_catalog import validate_reference_membership
 from regimex.directions import DIRECTION_POLICY
-from regimex.infrastructure.database import DatabaseRepository
+from regimex.infrastructure.database import DatabaseRepository, _read_operation
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
 from regimex.operations import Operation, ResolvedModel, succeed
 from regimex.report_contracts import MAX_REPORT_BYTES
@@ -48,6 +48,27 @@ from regimex.storage import json_bytes
 _SPEC = RootModel[AdminSpec]
 _JSON = TypeAdapter(dict[str, JsonValue])
 Connection = psycopg.Connection[tuple[object, ...]]
+_RUN_SELECT = (
+    "SELECT r.operation_id,r.request,r.output,o.document FROM regimex_admin_runs r "
+    "JOIN regimex_operations o ON r.operation_id=o.operation_id"
+)
+
+
+def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
+    run_id, request, output, document = row
+    operation = _read_operation(document)
+    result = AdminRunRecord(
+        run_id=cast(UUID, run_id),
+        operation=operation,
+        spec=_SPEC.model_validate_json(json_bytes(request)).root,
+        output=None if output is None else _JSON.validate_python(output, strict=True),
+    )
+    if (
+        result.output is not None
+        and hashlib.sha256(json_bytes(result.output)).hexdigest() != operation.result_sha256
+    ):
+        raise Conflict("Administrative output differs from its committed digest.")
+    return result
 
 
 def _read_reference(document: object) -> ReferenceSetRecord:
@@ -475,24 +496,17 @@ class AdminRepository:
     def _run(
         self, connection: Connection, run_id: UUID, *, principal: Principal | None = None
     ) -> AdminRunRecord:
-        row = connection.execute(
-            "SELECT request,output FROM regimex_admin_runs WHERE operation_id=%s", (run_id,)
-        ).fetchone()
+        # Read the state and output in the same snapshot if the worker finishes during polling.
+        query = _RUN_SELECT + " WHERE r.operation_id=%s"
+        values: list[object] = [run_id]
+        if principal is not None:
+            self.database._admin(principal)
+            query += " AND o.owner_id=%s"
+            values.append(principal.owner_id)
+        row = connection.execute(query, values).fetchone()
         if row is None:
             raise NotFound()
-        operation = self.database._operation(connection, run_id, principal=principal)
-        result = AdminRunRecord(
-            run_id=run_id,
-            operation=operation,
-            spec=_SPEC.model_validate_json(json_bytes(row[0])).root,
-            output=None if row[1] is None else _JSON.validate_python(row[1], strict=True),
-        )
-        if (
-            result.output is not None
-            and hashlib.sha256(json_bytes(result.output)).hexdigest() != operation.result_sha256
-        ):
-            raise Conflict("Administrative output differs from its committed digest.")
-        return result
+        return _read_run(row)
 
     def get_run_internal(self, run_id: UUID) -> AdminRunRecord:
         with self.database.connection() as connection:
@@ -530,24 +544,37 @@ class AdminRepository:
         principal: Principal,
         *,
         kind: AdminKind | None = None,
+        training: TrainingSpec | None = None,
         limit: int = 100,
         offset: int = 0,
     ) -> tuple[AdminRunRecord, ...]:
         self.database._admin(principal)
         self.database._page(limit, offset)
         with self.database.connection() as connection:
-            query = (
-                "SELECT r.operation_id FROM regimex_admin_runs r JOIN regimex_operations o "
-                "ON r.operation_id=o.operation_id WHERE o.owner_id=%s"
-            )
+            query = _RUN_SELECT + " WHERE o.owner_id=%s"
             values: list[object] = [principal.owner_id]
             if kind is not None:
                 query += " AND r.kind=%s"
                 values.append(kind)
+            if training is not None:
+                query += (
+                    " AND r.request->>'model_version_id'=%s AND (r.kind='publication' OR "
+                    "(r.kind='evaluation' AND r.request->>'partition'='validation' "
+                    "AND r.request->>'dataset_id'=%s AND r.request->>'reference_set_id'=%s))"
+                )
+                values.extend(
+                    (
+                        training.model_version_id,
+                        training.dataset_id,
+                        training.validation_reference_set_id,
+                    )
+                )
             rows = connection.execute(
-                query + " ORDER BY r.operation_id LIMIT %s OFFSET %s", [*values, limit, offset]
+                query + " ORDER BY (o.document->>'created_at')::timestamptz DESC, "
+                "r.operation_id DESC LIMIT %s OFFSET %s",
+                [*values, limit, offset],
             ).fetchall()
-            return tuple(self._run(connection, cast(UUID, row[0])) for row in rows)
+            return tuple(_read_run(row) for row in rows)
 
     def _validate_spec(
         self, connection: Connection, owner_id: str, spec: AdminSpec

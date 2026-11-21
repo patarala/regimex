@@ -13,6 +13,7 @@
       <a href="/" class="brand" aria-label="Regimex home">Regimex</a>
       <div id="account" hidden>
         <span id="owner"></span>
+        <button id="open-training" type="button" class="quiet" hidden>Training</button>
         <button id="open-connections" type="button" class="quiet" hidden>Connections</button>
         <button id="logout" type="button" class="quiet">Sign out</button>
       </div>
@@ -210,6 +211,67 @@
           </section>
         </div>
       </div>
+      <section id="training" aria-labelledby="training-title" hidden>
+        <div class="section-heading">
+          <h1 id="training-title">Model training</h1>
+          <button id="close-training" type="button" class="quiet">Back to analyses</button>
+        </div>
+        <p id="training-notice" class="notice" role="status" hidden></p>
+        <div class="training-layout">
+          <section class="panel" aria-labelledby="training-runs-title">
+            <div class="section-heading"><h2 id="training-runs-title">Runs</h2>
+              <button id="training-refresh" type="button" class="quiet">Refresh</button></div>
+            <button id="training-new" type="button">New run</button>
+            <p id="training-empty" class="hint" hidden>No training runs yet.</p>
+            <ul id="training-runs" class="training-runs"></ul>
+            <nav class="history-pages" aria-label="Training runs">
+              <button id="training-prev" type="button" class="quiet" hidden>Newer</button>
+              <button id="training-next" type="button" class="quiet" hidden>Older</button>
+            </nav>
+          </section>
+          <section id="training-config" class="panel" aria-labelledby="training-config-title" hidden>
+            <h2 id="training-config-title">New training run</h2>
+            <form id="training-form" class="training-form">
+              <label>Development dataset<select id="training-dataset" required></select></label>
+              <label>Training labels<select id="training-labels" required></select></label>
+              <label>Validation references<select id="training-validation" required></select></label>
+              <label>Selection benchmark ID<input id="training-benchmark" required maxlength="128" /></label>
+              <p class="hint">Use a benchmark with selection already started. <a href="/docs" target="_blank" rel="noopener">Prepare data and reservations in the API</a>.</p>
+              <label>Architecture<select id="training-architecture" required></select></label>
+              <details><summary>Training settings</summary>
+                <label>Backend parameters (JSON)<textarea id="training-parameters" rows="3" required spellcheck="false">{}</textarea></label>
+                <label>Training policy (JSON)<textarea id="training-policy" rows="7" required spellcheck="false"></textarea></label>
+                <label>Training runtime overrides (JSON)<textarea id="training-runtime" rows="2" spellcheck="false" placeholder='{"threads": 2, "time_budget_seconds": 600}'></textarea></label>
+                <label>Inference runtime overrides (JSON)<textarea id="training-inference" rows="2" spellcheck="false" placeholder='{"threads": 2, "max_batch_size": 8}'></textarea></label>
+              </details>
+              <button id="training-submit" type="submit" disabled>Start training</button>
+            </form>
+          </section>
+          <section id="training-detail" class="panel" aria-labelledby="training-detail-title" hidden>
+            <div class="section-heading"><h2 id="training-detail-title">Run</h2><span id="training-state" class="job-state"></span></div>
+            <dl id="training-facts" class="training-facts"></dl>
+            <details><summary>Run settings</summary><pre id="training-settings"></pre></details>
+            <p id="training-stage" class="hint" role="status"></p>
+            <button id="training-cancel" type="button" class="quiet" hidden>Cancel training</button>
+            <section id="training-metrics" class="training-section" aria-labelledby="training-metrics-title" hidden>
+              <h3 id="training-metrics-title">Training metrics</h3>
+              <p id="training-score"></p>
+              <label id="training-seed-label" hidden>Training seed <select id="training-seed"></select></label>
+              <div id="training-charts"></div>
+              <a id="training-metric-data" download>Download metric data</a>
+            </section>
+            <section id="training-downstream" class="training-section" aria-labelledby="training-actions-title" hidden>
+              <h3 id="training-actions-title">Validation and publication</h3>
+              <ul id="training-actions" class="training-actions"></ul>
+              <div class="actions">
+                <button id="training-evaluate" type="button" class="quiet">Evaluate candidate</button>
+                <button id="training-publish" type="button" hidden>Publish candidate</button>
+              </div>
+              <p id="training-publication" class="hint"></p>
+            </section>
+          </section>
+        </div>
+      </section>
       <section id="connections" aria-labelledby="connections-title" hidden>
         <div class="section-heading">
           <h1 id="connections-title">Connections</h1>

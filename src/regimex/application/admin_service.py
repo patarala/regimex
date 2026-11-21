@@ -1,6 +1,8 @@
 """Administrative lifecycle use cases; scientific imports stay in child processes."""
 
 import hashlib
+import json
+import math
 import tempfile
 from collections.abc import Callable
 from contextlib import suppress
@@ -30,11 +32,17 @@ from regimex.admin_contracts import (
     ReferenceImportSpec,
     ReferenceSetRecord,
     RequestDigest,
+    TrainingMetrics,
     TrainingSpec,
 )
 from regimex.application.admin_results import AdminResultCommitter
 from regimex.application.attempt_supervision import AttemptSupervisor
-from regimex.application.service import AnalysisService, materialize_bundle, materialize_object
+from regimex.application.service import (
+    AnalysisService,
+    materialize_bundle,
+    materialize_object,
+    read_bundle_manifest,
+)
 from regimex.benchmark_contracts import FinalEvaluationGrant, require_selection_dataset
 from regimex.benchmarks import DirectionSemantics
 from regimex.computation_worker import (
@@ -56,10 +64,19 @@ from regimex.data_catalog import (
     seal_reference_set,
     validate_reference_membership,
 )
-from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
+from regimex.directions import (
+    DECODER_VERSION,
+    DEFAULT_ANALYSIS_PROFILE,
+    AnalysisConfig,
+    DirectionAnnotations,
+)
 from regimex.exports import ExportV2
 from regimex.infrastructure.intake_repository import IntakeRequest
-from regimex.infrastructure.object_store import ObjectCapacityError, ObjectInfo
+from regimex.infrastructure.object_store import (
+    ObjectCapacityError,
+    ObjectInfo,
+    ObjectIntegrityError,
+)
 from regimex.market_identity import imported_seed_group
 from regimex.model_registry import FixedUpdatePolicy, RegistryError
 from regimex.operations import OperationFailure
@@ -68,6 +85,7 @@ from regimex.service_contracts import (
     Conflict,
     Forbidden,
     ModelRecord,
+    NotFound,
     Principal,
     ServiceError,
     SnapshotRecord,
@@ -103,6 +121,13 @@ def _validate_request[T, **P](function: Callable[P, T], *args: P.args, **kwargs:
         ) from exc
     except ValueError as exc:
         raise ServiceError("invalid_data", str(exc), 422) from exc
+
+
+def _history_number(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("non-finite metric")
+    return number
 
 
 class AdminService:
@@ -362,6 +387,44 @@ class AdminService:
     def get_run(self, principal: Principal, run_id: UUID) -> AdminRunRecord:
         return self.repository.get_run(principal, run_id)
 
+    def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics:
+        run = self.get_run(principal, run_id)
+        if not isinstance(run.spec, TrainingSpec):
+            raise NotFound()
+        if run.output is None:
+            raise Conflict("Training has no completed metrics.")
+        model = self.analysis_service.get_model(principal, run.spec.model_version_id)
+        if run.output.get("bundle_sha256") != model.bundle_sha256:
+            raise ObjectIntegrityError("training output differs from its registered model")
+        with tempfile.TemporaryDirectory(dir=self.analysis_service.work_root) as tmp:
+            root = Path(tmp)
+            store = self.analysis_service.store
+            manifest = read_bundle_manifest(store, model, root / "manifest.json")
+            if manifest.training.run_id != str(run_id):
+                raise ObjectIntegrityError("model training provenance differs from the run")
+            member = next(item for item in manifest.members if item.role == "history")
+            history, note = None, None
+            if not member.path.endswith(".json") or member.size_bytes > MAX_INPUT_BYTES:
+                note = "The model's history format or size is outside the browser preview limits."
+            else:
+                path = root / "history.json"
+                materialize_object(store, model.members[member.path], path)
+                try:
+                    history = json.loads(
+                        path.read_bytes(),
+                        parse_float=_history_number,
+                        parse_constant=_history_number,
+                    )
+                except (ValueError, RecursionError) as exc:
+                    raise ObjectIntegrityError("model training history is invalid JSON") from exc
+        return TrainingMetrics(
+            model_version_id=model.model_version_id,
+            selected_seed=manifest.training.selected_seed,
+            validation_segment_macro_f1=manifest.training.validation_segment_macro_f1,
+            history=history,
+            history_note=note,
+        )
+
     def list_runs(
         self,
         principal: Principal,
@@ -371,6 +434,14 @@ class AdminService:
         offset: int = 0,
     ) -> tuple[AdminRunRecord, ...]:
         return self.repository.list_runs(principal, kind=kind, limit=limit, offset=offset)
+
+    def training_actions(
+        self, principal: Principal, run_id: UUID, *, limit: int, offset: int
+    ) -> tuple[AdminRunRecord, ...]:
+        run = self.get_run(principal, run_id)
+        if not isinstance(run.spec, TrainingSpec):
+            raise NotFound()
+        return self.repository.list_runs(principal, training=run.spec, limit=limit, offset=offset)
 
     def get_dataset(self, principal: Principal, dataset_id: str) -> DatasetRecord:
         return self.repository.get_dataset(principal, dataset_id)
@@ -384,9 +455,16 @@ class AdminService:
         return self.repository.get_reference_set(principal, reference_set_id)
 
     def list_reference_sets(
-        self, principal: Principal, *, limit: int = 100, offset: int = 0
+        self,
+        principal: Principal,
+        *,
+        dataset_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
     ) -> tuple[ReferenceSetRecord, ...]:
-        return self.repository.list_reference_sets(principal, limit=limit, offset=offset)
+        return self.repository.list_reference_sets(
+            principal, dataset_id=dataset_id, limit=limit, offset=offset
+        )
 
     def get_evaluation(self, principal: Principal, run_id: UUID) -> EvaluationRecord:
         return self.repository.get_evaluation(principal, run_id)
@@ -615,7 +693,7 @@ class AdminService:
                     policy="human-directions/1.0",
                     semantics=DirectionSemantics(
                         profile_sha256=analysis_profile_hash(spec.analysis),
-                        decoder_version="duration-viterbi/1.0",
+                        decoder_version=DECODER_VERSION,
                     ),
                     analysis_profile=spec.analysis,
                     reviewer=spec.reviewer,
@@ -689,8 +767,6 @@ class AdminService:
         ) as temporary:
             path = Path(temporary) / "evaluation.json"
             materialize_object(self.analysis_service.store, record.report, path)
-            import json
-
             return cast(dict[str, JsonValue], json.loads(path.read_bytes()))
 
     def _inputs(

@@ -658,6 +658,22 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     )
     assert final_reference.output is not None
     final_reference_id = final_reference.output["reference_set_id"]
+    listed = context.client.get(
+        "/api/v1/reference-sets", params={"dataset_id": dataset_id}, headers=headers
+    )
+    assert listed.status_code == 200
+    rows = listed.json()["items"]
+    assert {row["reference_set_id"] for row in rows} == {
+        references["train"],
+        references["validation"],
+    }
+    assert all(row["current_training_profile"] for row in rows)
+    assert (
+        context.client.get(
+            "/api/v1/reference-sets", params={"dataset_id": final_dataset_id}, headers=headers
+        ).json()["items"]
+        == []
+    )
     history = context.client.post(
         "/api/v1/benchmarks/history/datasets", headers=headers, json={"dataset_id": dataset_id}
     )
@@ -724,12 +740,23 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     response = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert response.status_code == 202, response.text
     run = AdminRunView.model_validate_json(response.content)
+    assert run.training is not None and run.training.dataset_id == dataset_id
+    run_path = f"/api/v1/training-runs/{run.run_id}"
+    assert context.client.get(run_path + "/metrics", headers=headers).status_code == 409
     completed = context.service.run_admin(run.run_id)
     assert completed is not None
     assert completed.operation.state == "succeeded", completed.operation.model_dump_json()
     assert completed.output is not None
     model_id = completed.output["model_version_id"]
     assert isinstance(model_id, str)
+    metrics = context.client.get(run_path + "/metrics", headers=headers)
+    assert metrics.status_code == 200, metrics.text
+    assert metrics.json()["model_version_id"] == model_id
+    assert 0 <= metrics.json()["validation_segment_macro_f1"] <= 1
+    assert metrics.json()["history"]["epochs" if tcn else "candidates"]
+    user_headers = {"Authorization": f"Bearer {context.user_token}"}
+    for part in ("metrics", "actions"):
+        assert context.client.get(run_path + "/" + part, headers=user_headers).status_code == 403
     assert (
         context.client.get(
             f"/api/v1/models/{model_id}", headers={"Authorization": f"Bearer {context.user_token}"}
@@ -835,3 +862,6 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert final_report.json()["reference_kind"] == "automatic"
     assert final_report.json()["quality_status"] == "validation_only"
     assert final_report.json()["independent"] is False
+    rows = context.client.get(run_path + "/actions", headers=headers).json()["items"]
+    assert [row["job"]["kind"] for row in rows] == ["publication", "evaluation"]
+    assert rows[1]["run_id"] == str(evaluation.run_id)

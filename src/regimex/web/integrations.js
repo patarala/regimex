@@ -261,6 +261,7 @@ export function createIntegrations({session}) {
     generation++;
     clearSecret();
     $("workspace").hidden = true;
+    $("open-training").hidden = true;
     $("connections").hidden = false;
     void runRead(loadList);
   });
@@ -268,6 +269,7 @@ export function createIntegrations({session}) {
     reset();
     $("open-connections").hidden = session.value?.principal.role !== "admin";
     $("workspace").hidden = !session.value;
+    $("open-training").hidden = session.value?.principal.role !== "admin";
   });
   $("connections-refresh").addEventListener("click", () => {
     clearSecret();
