@@ -104,6 +104,8 @@ selection on that reservation. The form lists the benchmarks available to your a
    are testing, for example `EUR/USD quiet sessions`. Select a development
    dataset. The form shows its compatible training labels, validation
    labels and reserved benchmarks.
+   Hover over a **?** or tab to it for a field explanation. Click or tap the
+   **?** to keep the explanation open. Press Escape or tap outside to dismiss it.
    If data is missing, use the setup links beside the fields.
 2. Choose an architecture. The form fills in its defaults. Choose **Start
    training** to use them, or open **Training policy** to adjust the run.

@@ -369,37 +369,132 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         page.close()
 
 
-def test_training_help_works_with_touch_and_keyboard(browser: Any) -> None:
+def test_hovered_training_help_floats_without_moving_fields(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.route(ORIGIN + "/**", TrainingAPI().dispatch)
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        button = page.get_by_role("button", name="Help for Reserved benchmark")
+        field = page.get_by_label("Reserved benchmark", exact=True)
+        note = page.locator("#" + str(field.get_attribute("aria-describedby")))
+        submit = page.get_by_role("button", name="Start training")
+        expect(submit).to_be_enabled()
+        position = "el => el.getBoundingClientRect().top + scrollY"
+        initial_positions = [control.evaluate(position) for control in (field, submit)]
+
+        button.hover()
+        expect(note).to_be_visible()
+        expect(note).to_contain_text("Its test labels stay sealed")
+        assert [control.evaluate(position) for control in (field, submit)] == initial_positions
+        page.clock.install()
+        note.hover()
+        # Let the pointer's grace period for crossing the gap expire while reading the note.
+        page.clock.run_for(1000)
+        expect(note).to_be_visible()
+        page.get_by_role("heading", name="New training run").hover()
+        page.clock.run_for(1000)
+        expect(note).to_be_hidden()
+
+        button.click()
+        page.get_by_role("heading", name="New training run").hover()
+        page.clock.run_for(1000)
+        expect(note).to_be_visible()
+        name = page.get_by_label("Run name (optional)")
+        name.click()
+        expect(note).to_be_hidden()
+        expect(name).to_be_focused()
+    finally:
+        page.close()
+
+
+def test_training_help_opens_on_keyboard_focus_and_survives_form_updates(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
-    page = browser.new_page(viewport={"width": 320, "height": 800}, has_touch=True)
+    page = browser.new_page()
     page.route(ORIGIN + "/**", api.dispatch)
     try:
         page.goto(ORIGIN + "/#training/new")
-        help_button = page.get_by_role("button", name="Help for Reserved benchmark")
-        note = page.get_by_text("Its test labels stay sealed", exact=False)
-        expect(note).to_be_hidden()
-        help_button.tap()
-        expect(note).to_be_visible()
-        expect(help_button).to_have_attribute("aria-expanded", "true")
-        help_button.tap()
-        expect(note).to_be_hidden()
-
         page.get_by_text("Training policy", exact=True).press("Enter")
         field = page.get_by_label("Checks without improvement", exact=True)
-        help_button = page.get_by_role("button", name="Help for Checks without improvement")
+        button = page.get_by_role("button", name="Help for Checks without improvement")
         before = field.input_value()
-        help_button.press("Space")
-        description = page.locator("#" + str(field.get_attribute("aria-describedby")))
-        expect(description).to_contain_text("validation interval macro-F1")
-        expect(description).to_be_visible()
-        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-        help_button.press("Tab")
+        note = page.locator("#" + str(field.get_attribute("aria-describedby")))
+        field.focus()
+        page.keyboard.press("Shift+Tab")
+        expect(button).to_be_focused()
+        expect(note).to_contain_text("validation interval macro-F1")
+        expect(note).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(note).to_be_hidden()
+        expect(button).to_be_focused()
+
+        page.keyboard.press("Tab")
+        page.keyboard.press("Shift+Tab")
+        expect(note).to_be_visible()
+        page.keyboard.press("Tab")
         expect(field).to_be_focused()
-        field.press("Escape")
-        expect(description).to_be_hidden()
-        expect(help_button).to_be_focused()
+        expect(note).to_be_hidden()
+        page.keyboard.press("Shift+Tab")
+        page.keyboard.press("Space")
+        page.keyboard.press("Tab")
+        expect(field).to_be_focused()
+        expect(note).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(note).to_be_hidden()
+        expect(button).to_be_focused()
         expect(field).to_have_value(before)
+
+        button.press("Enter")
+        expect(note).to_be_visible()
+        page.get_by_label("Architecture", exact=True).select_option("baseline")
+        expect(note).to_be_hidden()
+        seed_button = page.get_by_role("button", name="Help for Random seed", exact=True)
+        seed_button.focus()
+        seed = page.get_by_label("Random seed", exact=True)
+        seed_note = page.locator("#" + str(seed.get_attribute("aria-describedby")))
+        expect(seed_note).to_contain_text("logistic baseline")
+        expect(seed_note).to_be_visible()
+        assert not api.posts
+    finally:
+        page.close()
+
+
+def test_training_help_on_phone_stays_onscreen_and_dismisses_on_tap(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page(viewport={"width": 320, "height": 440}, has_touch=True)
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        button = page.get_by_role("button", name="Help for Reserved benchmark")
+        field = page.get_by_label("Reserved benchmark", exact=True)
+        note = page.locator("#" + str(field.get_attribute("aria-describedby")))
+        button.evaluate(
+            "el => scrollTo(0, scrollY + el.getBoundingClientRect().bottom - innerHeight + 6)"
+        )
+        expect(note).to_be_hidden()
+        button.tap()
+        expect(note).to_be_visible()
+        expect(button).to_have_attribute("aria-expanded", "true")
+        bounds = note.bounding_box()
+        assert bounds is not None
+        assert 0 <= bounds["x"] < bounds["x"] + bounds["width"] <= 320
+        assert 0 <= bounds["y"] < bounds["y"] + bounds["height"] <= 440
+        anchor = button.bounding_box()
+        assert anchor is not None
+        assert (
+            bounds["x"] <= anchor["x"] + anchor["width"]
+            and bounds["x"] + bounds["width"] >= anchor["x"]
+        )
+        assert abs(bounds["y"] + bounds["height"] - anchor["y"]) <= 20
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        button.tap()
+        expect(note).to_be_hidden()
+        button.tap()
+        expect(note).to_be_visible()
+        page.get_by_role("heading", name="New training run").tap()
+        expect(note).to_be_hidden()
         assert not api.posts
     finally:
         page.close()

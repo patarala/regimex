@@ -32,14 +32,40 @@ export function option(value, label) {
   return item;
 }
 
+let closeActiveHelp;
+
+function positionHelp(button, note) {
+  const anchor = button.getBoundingClientRect();
+  const viewport = window.visualViewport;
+  const left = viewport?.offsetLeft ?? 0, top = viewport?.offsetTop ?? 0;
+  const width = viewport?.width ?? document.documentElement.clientWidth;
+  const bottom = top + (viewport?.height ?? document.documentElement.clientHeight);
+  if (!anchor.width || !anchor.height || anchor.bottom <= top || anchor.top >= bottom ||
+      anchor.right <= left || anchor.left >= left + width) return false;
+
+  const margin = 8;
+  const below = bottom - anchor.bottom - margin, above = anchor.top - top - margin;
+  note.style.maxWidth = `min(22rem, ${width - 2 * margin}px)`;
+  note.style.maxHeight = Math.max(above, below, 0) + "px";
+  const panel = note.getBoundingClientRect();
+  const centered = anchor.left + (anchor.width - panel.width) / 2;
+  note.style.left = Math.max(left + margin, Math.min(centered, left + width - margin - panel.width)) + "px";
+  // Adjoining edges let the pointer move straight from the button onto the note.
+  note.style.top = (below >= panel.height || below >= above ? anchor.bottom : anchor.top - panel.height) + "px";
+  return true;
+}
+
 export function addFieldHelp(label, field, text) {
   const heading = element("div", "", "field-heading");
   const note = element("p", text, "field-help");
   note.id = field.id + "-help";
+  note.setAttribute("role", "tooltip");
+  note.setAttribute("popover", "manual");
   note.hidden = true;
   const button = element("button", "", "field-help-toggle");
   button.type = "button";
   button.setAttribute("aria-controls", note.id);
+  button.setAttribute("aria-describedby", note.id);
   button.setAttribute("aria-expanded", "false");
   const icon = element("span", "?");
   icon.setAttribute("aria-hidden", "true");
@@ -49,17 +75,71 @@ export function addFieldHelp(label, field, text) {
   field.after(note);
   field.setAttribute("aria-describedby", note.id);
 
-  function setOpen(open) {
-    note.hidden = !open;
-    button.setAttribute("aria-expanded", String(open));
+  let pinned = false, timer, observer, listeners;
+  function close() {
+    if (closeActiveHelp !== close) return;
+    clearTimeout(timer);
+    observer.disconnect();
+    listeners.abort();
+    if (note.hidePopover && note.matches(":popover-open")) note.hidePopover();
+    note.hidden = true;
+    pinned = false;
+    button.setAttribute("aria-expanded", "false");
+    closeActiveHelp = undefined;
   }
-  button.addEventListener("click", () => setOpen(note.hidden));
-  heading.parentElement.addEventListener("keydown", event => {
-    if (event.key === "Escape" && !note.hidden) {
-      setOpen(false);
-      button.focus();
+  function position() {
+    if (!positionHelp(button, note)) close();
+  }
+  function show() {
+    clearTimeout(timer);
+    if (closeActiveHelp === close) return;
+    closeActiveHelp?.();
+    closeActiveHelp = close;
+    listeners = new AbortController();
+    const {signal} = listeners;
+    note.hidden = false;
+    note.showPopover?.();
+    button.setAttribute("aria-expanded", "true");
+    document.addEventListener("pointerdown", event => {
+      if (!button.contains(event.target) && !note.contains(event.target)) close();
+    }, {capture: true, signal});
+    document.addEventListener("keydown", event => {
+      if (event.key !== "Escape") return;
+      if (document.activeElement === field) button.focus({preventScroll: true});
+      close();
       event.stopPropagation();
-    }
+    }, {capture: true, signal});
+    document.addEventListener("focusin", event => {
+      if (pinned && event.target !== field && event.target !== button && !note.contains(event.target)) close();
+    }, {signal});
+    document.addEventListener("scroll", position, {capture: true, passive: true, signal});
+    window.addEventListener("resize", position, {signal});
+    window.visualViewport?.addEventListener("resize", position, {signal});
+    window.visualViewport?.addEventListener("scroll", position, {signal});
+    window.addEventListener("hashchange", close, {signal});
+    window.addEventListener("pagehide", close, {signal});
+    observer = new MutationObserver(position);
+    observer.observe(document.body, {subtree: true, childList: true, attributes: true, attributeFilter: ["hidden", "open"]});
+    position();
+  }
+  function dismissTransient() {
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (closeActiveHelp === close && !pinned && document.activeElement !== button &&
+          !button.matches(":hover") && !note.matches(":hover")) close();
+    }, 100);
+  }
+  button.addEventListener("focus", show);
+  button.addEventListener("blur", dismissTransient);
+  button.addEventListener("pointerenter", event => {
+    if (event.pointerType !== "touch") show();
+  });
+  button.addEventListener("pointerleave", dismissTransient);
+  note.addEventListener("pointerenter", () => clearTimeout(timer));
+  note.addEventListener("pointerleave", dismissTransient);
+  button.addEventListener("click", () => {
+    if (pinned) close();
+    else { show(); pinned = true; }
   });
 }
 
