@@ -129,9 +129,11 @@ selection on that reservation. The form lists the benchmarks available to your a
    The repeat marked **saved model** produced the checkpoint with the best
    validation interval macro-F1. Its score stays above the charts.
 4. Under **Model evaluation**, choose **Evaluate model** to score the saved
-   weights on the validation references. Open **View evaluation** to see the
-   interval and step scores and the results for each direction. **All fields**
-   shows the full report in the browser. **Download JSON** saves a copy.
+   weights on the validation references. When the evaluation finishes, its
+   interval and step scores and results by direction appear on the run page.
+   Opening the run again shows the saved result. **All fields** shows the
+   full report in the browser, and **Download JSON** saves a copy. If the
+   evaluation fails or is cancelled, choose **Retry evaluation**.
    To make this model the default for new analyses, choose **Use as default**
    and confirm the change.
 

@@ -59,7 +59,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0009_training_run_names"
+_REVISION = "0010_evaluation_reuse"
 
 
 def _read_operation(document: object) -> Operation:

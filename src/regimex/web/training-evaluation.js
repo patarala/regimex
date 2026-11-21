@@ -62,32 +62,25 @@ function showReport(content, report) {
   }
 }
 
-function completedEvaluation(session, id, time) {
+function completedEvaluation(session, id) {
   const url = "/api/v1/evaluations/" + encodeURIComponent(id) + "/result";
-  const details = element("details", undefined, "evaluation-result");
-  const summary = element("summary");
-  summary.append(element("span", "View evaluation"), " ", time);
+  const result = element("div", "", "evaluation-result");
   const content = element("div");
   const status = element("p", "", "evaluation-status");
   status.setAttribute("role", "status");
-  status.hidden = true;
   const retry = element("button", "Retry loading", "quiet");
   retry.type = "button";
   retry.hidden = true;
   const download = element("a", "Download JSON");
   download.href = url;
   download.download = "evaluation-" + id + ".json";
-  details.append(summary, status, retry, content, download);
-  let loaded = false, loading = false;
+  result.append(status, retry, content, download);
   async function load() {
-    if (loaded || loading || !details.open) return;
-    loading = true;
     retry.hidden = true;
-    status.hidden = false;
     status.textContent = "Loading evaluation…";
     try {
       const report = await session.json(url);
-      if (!details.isConnected) return;
+      if (!result.isConnected) return;
       showReport(content, report);
       const fields = element("details", "", "evaluation-fields");
       const json = element("pre");
@@ -96,19 +89,16 @@ function completedEvaluation(session, id, time) {
         if (fields.open && !json.textContent) json.textContent = JSON.stringify(report, null, 2);
       });
       content.append(fields);
-      loaded = true;
       status.hidden = true;
     } catch (error) {
-      if (!details.isConnected) return;
+      if (!result.isConnected) return;
       status.textContent = error.message;
       retry.hidden = false;
-    } finally {
-      loading = false;
     }
   }
   retry.addEventListener("click", load);
-  details.addEventListener("toggle", load);
-  return details;
+  void load();
+  return result;
 }
 
 function actionRow(session, row) {
@@ -116,12 +106,12 @@ function actionRow(session, row) {
   item.dataset.id = row.run_id;
   item.dataset.state = row.job.state;
   item.dataset.failure = row.job.failure?.message || "";
-  const date = row.job.created_at;
-  const time = element("time", shortDate(date), "evaluation-history-time");
-  time.dateTime = date;
   if (row.job.kind === "evaluation" && row.job.state === "succeeded") {
-    item.append(completedEvaluation(session, row.run_id, time));
+    item.append(completedEvaluation(session, row.run_id));
   } else {
+    const date = row.job.created_at;
+    const time = element("time", shortDate(date), "evaluation-history-time");
+    time.dateTime = date;
     const action = row.job.kind === "evaluation" ? "Evaluation" : "Publication";
     item.append(element("span", action + " · " + analysisStateLabel(row.job.state)), " ", time);
     if (row.job.failure?.message) item.append(element("p", row.job.failure.message));
@@ -130,7 +120,7 @@ function actionRow(session, row) {
 }
 
 export function showTrainingActions(list, rows, session) {
-  // Keep an open evaluation and its keyboard focus when another job changes state.
+  // Polling a publication must preserve the loaded report and its keyboard focus.
   const existing = new Map(Array.from(list.children, item => [item.dataset.id, item]));
   for (const [index, row] of rows.entries()) {
     let item = existing.get(row.run_id);

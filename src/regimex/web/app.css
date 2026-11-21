@@ -1181,10 +1181,6 @@ iframe {
 .evaluation-fields {
   margin-block: 12px;
 }
-.evaluation-result > summary {
-  padding: 4px 0;
-  font-weight: 550;
-}
 .evaluation-history-time {
   display: inline-block;
   margin-inline-start: 8px;

@@ -808,14 +808,13 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         ).status_code
         == 404
     )
+    validation_request = {
+        "model_version_id": model_id,
+        "dataset_id": dataset_id,
+        "reference_set_id": references["validation"],
+    }
     response = context.client.post(
-        "/api/v1/evaluations",
-        json={
-            "model_version_id": model_id,
-            "dataset_id": dataset_id,
-            "reference_set_id": references["validation"],
-        },
-        headers=context.headers,
+        "/api/v1/evaluations", json=validation_request, headers=context.headers
     )
     assert response.status_code == 202, response.text
     evaluation = AdminRunView.model_validate_json(response.content)
@@ -823,6 +822,20 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert (
         completed_evaluation is not None and completed_evaluation.operation.state == "succeeded"
     ), completed_evaluation
+    again_headers = context.headers
+    repeated = context.client.post(
+        "/api/v1/evaluations", json=validation_request, headers=again_headers
+    )
+    assert (
+        repeated.status_code == 202 and repeated.headers["location"] == response.headers["location"]
+    )
+    assert repeated.json()["job"]["state"] == "succeeded"
+    conflicting = context.client.post(
+        "/api/v1/evaluations",
+        json={**validation_request, "reference_set_id": "another-set"},
+        headers=again_headers,
+    )
+    assert conflicting.status_code == 409
     response = context.client.post(
         f"/api/v1/models/{model_id}/publish",
         json={"evaluation_run_id": str(evaluation.run_id)},

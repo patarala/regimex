@@ -310,7 +310,9 @@ def test_restore_object_larger_than_compose_tmpfs(
     assert (restored.size_bytes, restored.sha256) == (size, weights.sha256)
 
 
-@pytest.mark.parametrize("revision", ["0007_resource_deletion", "0008_analysis_metadata"])
+@pytest.mark.parametrize(
+    "revision", ["0007_resource_deletion", "0008_analysis_metadata", "0009_training_run_names"]
+)
 def test_previous_schema_backup_can_be_restored_then_migrated(
     minimal: MinimalBackup,
     databases: DatabaseFactory,
@@ -320,9 +322,13 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
     revision: str,
 ) -> None:
     with minimal.source.connection() as connection:
-        connection.execute(
-            "ALTER TABLE regimex_training_runs DROP COLUMN display_name, DROP COLUMN name_revision"
-        )
+        connection.execute("DROP TABLE regimex_evaluation_keys")
+        connection.execute("DROP INDEX regimex_evaluation_inputs")
+        if revision != "0009_training_run_names":
+            connection.execute(
+                "ALTER TABLE regimex_training_runs "
+                "DROP COLUMN display_name, DROP COLUMN name_revision"
+            )
         if revision == "0007_resource_deletion":
             connection.execute("ALTER TABLE regimex_snapshots DROP COLUMN identifiers_search")
             connection.execute("ALTER TABLE regimex_analyses DROP COLUMN model_version_search")
@@ -1083,16 +1089,19 @@ def scientific_backup(
             )
             completed(service, training.run_id)
             model = "recovery-" + architecture
+            request = EvaluationSpec(
+                model_version_id=model,
+                dataset_id=dataset.dataset_id,
+                reference_set_id=validation.references.reference_set_id,
+            )
             evaluation = service.submit_evaluation(
-                principal,
-                EvaluationSpec(
-                    model_version_id=model,
-                    dataset_id=dataset.dataset_id,
-                    reference_set_id=validation.references.reference_set_id,
-                ),
-                idempotency_key="evaluate-" + architecture,
+                principal, request, idempotency_key="evaluate-" + architecture
             )
             completed(service, evaluation.run_id)
+            reused = service.submit_evaluation(
+                principal, request, idempotency_key="reuse-" + architecture
+            )
+            assert reused.run_id == evaluation.run_id
             publication = service.submit_publication(
                 principal,
                 PublicationSpec(
@@ -1219,6 +1228,7 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
         assert receipt.changed_versions == receipt.object_count > 0
         assert receipt.new_registered_claims == receipt.object_count
         assert receipt.table_evidence == original.backup.manifest.tables
+        assert receipt.table_evidence["regimex_evaluation_keys"].rows == 2
         assert target.readiness()
         admin = target.authenticate(original.admin_token)
         assert original.backup.manifest.source_maintenance_identity is not None

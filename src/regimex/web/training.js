@@ -221,26 +221,29 @@ export function createTraining({session, navigate, onPublication}) {
       session.json(api + "models?published_only=true&limit=1"),
     ]);
     if (!valid()) return false;
-    evaluation = rows.find(row => row.job.kind === "evaluation" && row.job.state === "succeeded");
+    const attempts = rows.filter(row => row.job.kind === "evaluation");
+    // Actions are newest first. The API reuses the earliest successful or active attempt.
+    evaluation = attempts.findLast(row => row.job.state === "succeeded");
+    const attempt = evaluation || attempts.findLast(row => inProgress(row.job)) || attempts[0];
+    const actions = rows.filter(row => row.job.kind === "publication");
+    if (attempt) actions.unshift(attempt);
     const newlyActive = activeModel !== undefined && activeModel !== models.active_model_version_id &&
       models.active_model_version_id === run.training.model_version_id;
     activeModel = models.active_model_version_id;
     if (newlyActive) void onPublication();
-    showTrainingActions($("training-actions"), rows, session);
-    const outstanding = rows.find(row => inProgress(row.job));
-    pendingDownstream = Boolean(outstanding);
-    $("training-evaluate").disabled = busy || pendingDownstream;
+    showTrainingActions($("training-actions"), actions, session);
+    pendingDownstream = actions.some(row => inProgress(row.job));
+    const evaluate = $("training-evaluate");
+    evaluate.hidden = Boolean(evaluation || (attempt && inProgress(attempt.job)));
+    evaluate.textContent = attempt ? "Retry evaluation" : "Evaluate model";
+    evaluate.disabled = busy || pendingDownstream;
     $("training-publish").hidden = !evaluation || activeModel === run.training.model_version_id;
     $("training-publish").disabled = busy || pendingDownstream;
-    let nextStep = "Evaluate the saved model on its validation data before making it the default for new analyses.";
-    if (outstanding) {
-      nextStep = outstanding.job.kind === "evaluation" ? "Evaluating the saved model." : "Updating the default model.";
-    } else if (activeModel === run.training.model_version_id) {
-      nextStep = "New analyses use this model by default.";
-    } else if (evaluation) {
-      nextStep = "Evaluation complete. You can now make this model the default for new analyses.";
-    }
+    let nextStep = "";
+    if (activeModel === run.training.model_version_id) nextStep = "New analyses use this model by default.";
+    else if (!attempt) nextStep = "Evaluate the saved model on its validation data before making it the default for new analyses.";
     $("training-publication").textContent = nextStep;
+    $("training-publication").hidden = !nextStep;
     $("training-downstream").hidden = false;
     return pendingDownstream;
   }

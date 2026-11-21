@@ -222,7 +222,9 @@ def admitted_dataset(repository: AdminRepository) -> DatasetRecord:
     return repository.add_dataset(principal(), record, bindings=bindings)
 
 
-def reference_record(dataset: DatasetRecord, partition: Partition) -> ReferenceSetRecord:
+def reference_record(
+    dataset: DatasetRecord, partition: Partition, reference_set_id: str | None = None
+) -> ReferenceSetRecord:
     raw = sources()
     member = next(item for item in dataset.manifest.members if item.partition == partition)
     source = next(item for item in raw if item.export.source.snapshot_id == member.snapshot_id)
@@ -242,7 +244,7 @@ def reference_record(dataset: DatasetRecord, partition: Partition) -> ReferenceS
     )
     references = seal_reference_set(
         ReferencePayload(
-            reference_set_id=f"references-{partition}",
+            reference_set_id=reference_set_id or f"references-{partition}",
             dataset_sha256=dataset.manifest.content_sha256,
             partition=partition,
             kind="automatic",
@@ -324,39 +326,141 @@ def trained(repository: AdminRepository) -> tuple[DatasetRecord, ModelRecord]:
     return dataset, model
 
 
-def evaluated(
+def evaluation_record(
     repository: AdminRepository,
     dataset: DatasetRecord,
     model: ModelRecord,
+    run_id: UUID,
     *,
-    key: str = "evaluation",
+    reference_set_id: str = "references-validation",
     metrics: dict[str, JsonValue] | None = None,
 ) -> EvaluationRecord:
-    spec = EvaluationSpec(
-        model_version_id=model.model_version_id,
-        dataset_id=dataset.dataset_id,
-        reference_set_id="references-validation",
-    )
-    run = repository.submit(principal(), spec, idempotency_key=key)
-    record = EvaluationRecord(
-        run_id=run.run_id,
+    return EvaluationRecord(
+        run_id=run_id,
         owner_id=dataset.owner_id,
         model_version_id=model.model_version_id,
         bundle_sha256=model.bundle_sha256,
         inference_policy_sha256=model.inference_policy_sha256,
         dataset_id=dataset.dataset_id,
         dataset_sha256=dataset.manifest.content_sha256,
-        reference_set_id="references-validation",
+        reference_set_id=reference_set_id,
         reference_sha256=repository.get_reference_set(
-            principal(), "references-validation"
+            principal(), reference_set_id
         ).references.content_sha256,
         partition="validation",
-        report=object_info(f"evaluations/{run.run_id}/report.json"),
+        report=object_info(f"evaluations/{run_id}/report.json"),
         metrics={"segment_macro_f1": 0.25} if metrics is None else metrics,
         created_at=datetime.now(UTC),
     )
+
+
+def evaluated(
+    repository: AdminRepository,
+    dataset: DatasetRecord,
+    model: ModelRecord,
+    *,
+    key: str = "evaluation",
+    reference_set_id: str = "references-validation",
+    metrics: dict[str, JsonValue] | None = None,
+) -> EvaluationRecord:
+    spec = EvaluationSpec(
+        model_version_id=model.model_version_id,
+        dataset_id=dataset.dataset_id,
+        reference_set_id=reference_set_id,
+    )
+    run = repository.submit(principal(), spec, idempotency_key=key)
+    record = evaluation_record(
+        repository, dataset, model, run.run_id, reference_set_id=reference_set_id, metrics=metrics
+    )
     repository.complete_evaluation(run.run_id, claim(repository, run.run_id), record)
     return record
+
+
+def test_validation_reuses_concurrent_requests_and_binds_keys_to_their_attempt(
+    repository: AdminRepository,
+) -> None:
+    dataset, model = trained(repository)
+    spec = EvaluationSpec(
+        model_version_id=model.model_version_id,
+        dataset_id=dataset.dataset_id,
+        reference_set_id="references-validation",
+    )
+
+    def submit(key: str) -> UUID:
+        return repository.submit(principal(), spec, idempotency_key=key, max_pending=1).run_id
+
+    keys = [f"validation-{n}" for n in range(6)]
+    with ThreadPoolExecutor(max_workers=len(keys)) as pool:
+        run_ids = set(pool.map(submit, keys))
+    assert len(run_ids) == 1
+    run_id = run_ids.pop()
+    assert len(repository.list_runs(principal(), kind="evaluation")) == 1
+    with repository.database.connection() as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM regimex_deliveries WHERE operation_id=%s", (run_id,)
+        ).fetchone() == (1,)
+    token = claim(repository, run_id)
+    assert submit("while-running") == run_id
+    repository.database.cancel_operation(principal(), run_id)
+    assert submit("while-cancelling") == run_id
+    failure = OperationFailure(code="invalid_data", message="Invalid validation data.")
+    assert repository.database.fail_operation(run_id, token, failure).state == "cancelled"
+    assert submit("while-running") == run_id
+    retry = submit("retry")
+    assert retry != run_id
+    token = claim(repository, retry)
+    assert repository.database.fail_operation(retry, token, failure).state == "failed"
+    assert submit("retry") == retry
+    last = submit("another-attempt")
+    assert last not in {run_id, retry}
+    with pytest.raises(Conflict, match="idempotency"):
+        repository.submit(
+            principal(),
+            spec.model_copy(update={"reference_set_id": "other"}),
+            idempotency_key="while-running",
+        )
+    with pytest.raises(NotFound):
+        repository.submit(principal("another-owner"), spec, idempotency_key="while-running")
+
+
+def test_old_validation_duplicates_choose_the_earliest_successful_run(
+    repository: AdminRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset, model = trained(repository)
+    spec = EvaluationSpec(
+        model_version_id=model.model_version_id,
+        dataset_id=dataset.dataset_id,
+        reference_set_id="references-validation",
+    )
+    # Simulate independently submitted evaluations from before run reuse.
+    with monkeypatch.context() as old:
+        old.setattr(repository, "_reuse_validation", lambda *args: None)
+        pending = repository.submit(principal(), spec, idempotency_key="first")
+        first_success = evaluated(repository, dataset, model, key="second")
+        last_success = evaluated(repository, dataset, model, key="third")
+    with repository.database.connection() as connection:
+        connection.execute(
+            "UPDATE regimex_admin_runs SET "
+            "request=(request::jsonb-'benchmark_id'-'partition')::json "
+            "WHERE operation_id=%s",
+            (first_success.run_id,),
+        )
+    assert (
+        repository.submit(principal(), spec, idempotency_key="new").run_id == first_success.run_id
+    )
+    assert repository.submit(principal(), spec, idempotency_key="first").run_id == pending.run_id
+    (training,) = repository.list_runs(principal(), kind="training")
+    assert isinstance(training.spec, TrainingSpec)
+    actions = repository.list_runs(principal(), training=training.spec)
+    assert {row.run_id for row in actions} == {
+        first_success.run_id,
+        last_success.run_id,
+        pending.run_id,
+    }
+    assert (
+        repository.submit(principal(), spec, idempotency_key="third").run_id == last_success.run_id
+    )
 
 
 def test_evaluation_preserves_large_per_experiment_metrics(repository: AdminRepository) -> None:
@@ -393,7 +497,11 @@ def test_evaluation_preserves_large_per_experiment_metrics(repository: AdminRepo
 
 def test_oversized_evaluation_metrics_cannot_commit(repository: AdminRepository) -> None:
     dataset, model = trained(repository)
-    previous = evaluated(repository, dataset, model)
+    other = reference_record(dataset, "validation", "other-validation")
+    repository.add_reference_set(principal(), other)
+    previous = evaluated(
+        repository, dataset, model, reference_set_id=other.references.reference_set_id
+    )
     spec = EvaluationSpec(
         model_version_id=model.model_version_id,
         dataset_id=dataset.dataset_id,
@@ -402,10 +510,8 @@ def test_oversized_evaluation_metrics_cannot_commit(repository: AdminRepository)
     run = repository.submit(principal(), spec, idempotency_key="oversized-evaluation")
     token = claim(repository, run.run_id)
     metrics: dict[str, JsonValue] = {"details": "x" * (16 * 1024 * 1024)}
-    record = previous.model_copy(
+    record = evaluation_record(repository, dataset, model, run.run_id, metrics=metrics).model_copy(
         update={
-            "run_id": run.run_id,
-            "metrics": metrics,
             "report": object_info(f"evaluations/{run.run_id}/report.json", json_bytes(metrics)),
         }
     )
@@ -1038,7 +1144,15 @@ def test_fixed_evaluation_identity_and_publication_cas_are_atomic(
     assert completed.operation.state == "succeeded"
     assert repository.database.get_active_model() == model
     assert repository.get_publication_evaluation(model.model_version_id) == evaluation
-    newer_evaluation = evaluated(repository, dataset, model, key="later-evaluation")
+    other = reference_record(dataset, "validation", "other-validation")
+    repository.add_reference_set(principal(), other)
+    newer_evaluation = evaluated(
+        repository,
+        dataset,
+        model,
+        key="later-evaluation",
+        reference_set_id=other.references.reference_set_id,
+    )
     assert newer_evaluation.run_id != evaluation.run_id
     assert repository.get_publication_evaluation(model.model_version_id) == evaluation
     assert (
@@ -1058,14 +1172,14 @@ def test_evaluation_cannot_commit_different_immutable_inputs(
     repository: AdminRepository, field: str
 ) -> None:
     dataset, model = trained(repository)
-    valid = evaluated(repository, dataset, model)
     spec = EvaluationSpec(
         model_version_id=model.model_version_id,
         dataset_id=dataset.dataset_id,
         reference_set_id="references-validation",
     )
     run = repository.submit(principal(), spec, idempotency_key="wrong-inputs")
-    wrong = valid.model_copy(update={"run_id": run.run_id, field: "f" * 64})
+    valid = evaluation_record(repository, dataset, model, run.run_id)
+    wrong = valid.model_copy(update={field: "f" * 64})
     with pytest.raises(Conflict, match="fixed model"):
         repository.complete_evaluation(run.run_id, claim(repository, run.run_id), wrong)
     with pytest.raises(NotFound):

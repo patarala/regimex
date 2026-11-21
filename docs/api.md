@@ -312,6 +312,11 @@ After the worker saves the candidate, reloads it and verifies its predictions:
 
 1. Submit `POST /evaluations` with the run's `model_version_id`, `dataset_id`,
    the validation set as `reference_set_id` and `partition: "validation"`.
+   Requests for the same model, dataset and validation references share one
+   evaluation. The service returns the earliest successful run, or an active
+   run if the evaluation is still in progress. If all attempts failed or were
+   cancelled, submit a new idempotency key to retry. Replaying a previously
+   accepted key always returns its original run.
    Download the completed metrics from `GET /evaluations/{id}/result`.
 2. To activate the candidate, submit `POST /models/{model_version_id}/publish`
    with `evaluation_run_id` and `expected_previous`. Read the current

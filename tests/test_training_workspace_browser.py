@@ -274,11 +274,9 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         publish = page.get_by_role("button", name="Use as default")
         expect(publish).to_be_hidden()
         page.get_by_role("button", name="Evaluate model").press("Enter")
-        results = page.locator("details.evaluation-result")
+        results = page.locator(".evaluation-result")
         path = f"evaluations/{EVALUATION_ID}/result"
-        expect(results.locator(":scope > summary")).to_contain_text("View evaluation")
-        assert path not in api.pages
-        results.locator(":scope > summary").press("Enter")
+        expect(page.get_by_role("button", name="Evaluate model")).to_be_hidden()
         expect(results.get_by_role("link", name="Download JSON")).to_have_attribute(
             "href", f"/api/v1/{path}"
         )
@@ -305,8 +303,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         assert intervals.evaluate("table => table.offsetWidth <= table.parentElement.clientWidth")
         results.get_by_text("All fields", exact=True).press("Enter")
         expect(results.locator("pre")).to_contain_text('"segment_macro_f1": 0.6')
-        results.locator(":scope > summary").press("Enter")
-        results.locator(":scope > summary").press("Enter")
+        results.get_by_text("All fields", exact=True).press("Enter")
         expect(intervals).to_be_visible()
         assert api.pages.count(path) == 1
         assert api.posts[2][:2] == (
@@ -573,8 +570,10 @@ def test_validation_and_publication_stay_locked_until_their_status_arrives(brows
             ):
                 button.click()
             # The mutation returned 202, and the follow-up status request is still pending.
-            expect(evaluate).to_be_disabled()
-            if kind == "publication":
+            if kind == "evaluation":
+                expect(evaluate).to_be_disabled()
+            else:
+                expect(evaluate).to_be_hidden()
                 expect(publish).to_be_disabled()
             pending_action = {
                 **api.actions[-1],
@@ -584,7 +583,7 @@ def test_validation_and_publication_stay_locked_until_their_status_arrives(brows
             page.unroute(pattern)
             held.pop().fulfill(json={"items": [*api.actions[:-1], pending_action]})
             expect(page.locator("#training-actions")).to_contain_text("Running")
-            expect(evaluate).to_be_disabled()
+            expect(page.locator("#training-evaluate")).to_be_hidden()
             page.get_by_role("button", name="Refresh", exact=True).click()
             if kind == "evaluation":
                 expect(publish).to_be_enabled()
@@ -613,26 +612,76 @@ def test_evaluation_retries_without_resubmitting_and_ignores_old_responses(brows
             route.fulfill(json=evaluation_report())
 
     page.route("**" + path, send_report)
-    results = page.locator("details.evaluation-result")
+    results = page.locator(".evaluation-result")
     try:
-        page.goto(ORIGIN + "/#training/" + RUN_ID)
         with page.expect_request(lambda request: urlsplit(request.url).path == path):
-            results.locator(":scope > summary").press("Enter")
+            page.goto(ORIGIN + "/#training/" + RUN_ID)
         expect(results.get_by_role("status")).to_have_text("Loading evaluation…")
         page.get_by_role("button", name="New run", exact=True).click()
-        page.go_back()
-        expect(results.locator(":scope > summary")).to_be_visible()
-        requests[0].fulfill(json=evaluation_report())
-        expect(results.get_by_role("table", include_hidden=True)).to_have_count(0)
-
         with page.expect_request(lambda request: urlsplit(request.url).path == path):
-            results.locator(":scope > summary").press("Enter")
+            page.go_back()
         expect(results.get_by_role("status")).to_have_text("Storage unavailable.")
+        with page.expect_request_finished(lambda request: urlsplit(request.url).path == path):
+            requests[0].fulfill(json=evaluation_report())
+        expect(results.get_by_role("table", include_hidden=True)).to_have_count(0)
         expect(results.get_by_role("link", name="Download JSON")).to_be_visible()
+        expect(page.locator("#training-evaluate")).to_be_hidden()
         with page.expect_request(lambda request: urlsplit(request.url).path == path):
             results.get_by_role("button", name="Retry loading").press("Enter")
         expect(results.get_by_role("table", name="Intervals by direction")).to_be_visible()
         assert not api.posts
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("state", ["failed", "cancelled"])
+def test_unsuccessful_evaluation_can_be_retried(browser: Any, state: str) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    attempt = completed_run(str(UUID(int=4)), "evaluation")
+    attempt["job"]["state"] = state
+    if state == "failed":
+        attempt["job"]["failure"] = {"message": "Worker timed out."}
+    api.actions.append(attempt)
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        actions = page.locator("#training-actions")
+        expect(actions).to_contain_text(state.capitalize())
+        if state == "failed":
+            expect(actions).to_contain_text("Worker timed out.")
+        page.get_by_role("button", name="Retry evaluation").press("Enter")
+        expect(actions.get_by_role("table", name="Intervals by direction")).to_be_visible()
+        expect(page.locator("#training-evaluate")).to_be_hidden()
+        expect(actions).not_to_contain_text(state.capitalize())
+        assert [path for path, _, _ in api.posts] == ["evaluations"]
+    finally:
+        page.close()
+
+
+def test_duplicate_evaluations_use_one_report_for_display_and_publication(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    # The actions API orders ties by descending ID.
+    api.actions = [completed_run(str(UUID(int=i)), "evaluation") for i in (5, 4, 2)]
+    api.actions[0]["job"]["state"] = "running"
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        actions = page.locator("#training-actions")
+        expect(actions.get_by_role("table", name="Intervals by direction")).to_be_visible()
+        expect(actions.locator("li")).to_have_count(1)
+        expect(page.locator("#training-evaluate")).to_be_hidden()
+        publish = page.get_by_role("button", name="Use as default")
+        page.once("dialog", lambda dialog: dialog.accept())
+        publish.press("Enter")
+        expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
+        assert [path for path in api.pages if path.startswith("evaluations/")] == [
+            f"evaluations/{EVALUATION_ID}/result"
+        ]
+        assert api.posts[0][1]["evaluation_run_id"] == EVALUATION_ID
     finally:
         page.close()
 

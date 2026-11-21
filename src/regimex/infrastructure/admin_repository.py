@@ -573,15 +573,60 @@ class AdminRepository:
         self.database._admin(principal)
         request = IntakeRequest(idempotency_key=idempotency_key, request_sha256=request_sha256)
         with self.database.connection() as connection:
-            row = connection.execute(
-                "SELECT operation_id,request_sha256 FROM regimex_operations "
-                "WHERE owner_id=%s AND kind=%s AND idempotency_key=%s",
-                (principal.owner_id, kind, idempotency_key),
-            ).fetchone()
-            if row is None:
-                return None
-            request.require_match(row[1])
-            return self._run(connection, cast(UUID, row[0]))
+            return self._find_replay(connection, principal, kind, request)
+
+    def _find_replay(
+        self, connection: Connection, principal: Principal, kind: AdminKind, request: IntakeRequest
+    ) -> AdminRunRecord | None:
+        query = (
+            "SELECT operation_id,request_sha256 FROM regimex_operations "
+            "WHERE owner_id=%s AND kind=%s AND idempotency_key=%s"
+        )
+        args = [principal.owner_id, kind, request.idempotency_key]
+        if kind == "evaluation":
+            query += (
+                " UNION ALL SELECT operation_id,request_sha256 FROM regimex_evaluation_keys "
+                "WHERE owner_id=%s AND idempotency_key=%s"
+            )
+            args.extend([principal.owner_id, request.idempotency_key])
+        row = connection.execute(query, args).fetchone()
+        if row is None:
+            return None
+        request.require_match(row[1])
+        return self._run(connection, cast(UUID, row[0]), principal=principal)
+
+    @staticmethod
+    def _reuse_validation(
+        connection: Connection, owner_id: str, spec: EvaluationSpec, request: IntakeRequest
+    ) -> AdminRunRecord | None:
+        # The owner intake lock serializes choosing a run and binding the new key.
+        # Existing installations can have multiple successful runs for these inputs.
+        row = connection.execute(
+            _RUN_SELECT + " JOIN regimex_evaluation_requests e ON e.operation_id=r.operation_id "
+            "WHERE o.owner_id=%s AND e.model_version_id=%s AND e.dataset_id=%s "
+            "AND e.reference_set_id=%s "
+            """AND ('{"partition":"validation","benchmark_id":null}'::jsonb """
+            "|| r.request::jsonb)=%s "
+            "AND o.state IN ('succeeded','queued','running','cancel_requested') "
+            "ORDER BY (o.state='succeeded') DESC, (o.document->>'created_at')::timestamptz, "
+            "o.operation_id LIMIT 1",
+            (
+                owner_id,
+                spec.model_version_id,
+                spec.dataset_id,
+                spec.reference_set_id,
+                Jsonb(spec.model_dump(mode="json")),
+            ),
+        ).fetchone()
+        if row is None:
+            return None
+        run = _read_run(row)
+        connection.execute(
+            "INSERT INTO regimex_evaluation_keys "
+            "(owner_id,idempotency_key,request_sha256,operation_id) VALUES (%s,%s,%s,%s)",
+            (owner_id, request.idempotency_key, request.digest, run.run_id),
+        )
+        return run
 
     def list_runs(
         self,
@@ -603,7 +648,8 @@ class AdminRepository:
             if training is not None:
                 query += (
                     " AND r.request->>'model_version_id'=%s AND (r.kind='publication' OR "
-                    "(r.kind='evaluation' AND r.request->>'partition'='validation' "
+                    "(r.kind='evaluation' AND r.request->>'benchmark_id' IS NULL "
+                    "AND COALESCE(r.request->>'partition','validation')='validation' "
                     "AND r.request->>'dataset_id'=%s AND r.request->>'reference_set_id'=%s))"
                 )
                 values.extend(
@@ -727,14 +773,14 @@ class AdminRepository:
             raise ValueError("pending quota must be positive")
         with self.database.connection() as connection:
             self.database._lock(connection, f"owner:{principal.owner_id}")
-            previous = connection.execute(
-                "SELECT operation_id,request_sha256 FROM regimex_operations "
-                "WHERE owner_id=%s AND kind=%s AND idempotency_key=%s",
-                (principal.owner_id, spec.kind, idempotency_key),
-            ).fetchone()
+            previous = self._find_replay(connection, principal, spec.kind, request)
             if previous is not None:
-                request.require_match(previous[1])
-                return self._run(connection, cast(UUID, previous[0]))
+                return previous
+            if isinstance(spec, EvaluationSpec) and spec.partition == "validation":
+                previous = self._reuse_validation(connection, principal.owner_id, spec, request)
+                if previous is not None:
+                    self._validate_spec(connection, principal.owner_id, spec)
+                    return previous
             count = connection.execute(
                 "SELECT count(*) FROM regimex_operations WHERE owner_id=%s "
                 "AND state IN ('queued','running','cancel_requested')",
