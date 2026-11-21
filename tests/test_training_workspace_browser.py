@@ -1,5 +1,6 @@
 """Exercise the administrator's model lifecycle through the shipped browser assets."""
 
+import json
 import mimetypes
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import pytest
 from test_offline_report_browser import browser as browser
 
 import regimex
+from regimex.model_registry import FixedUpdatePolicy, baseline_descriptor, tcn_descriptor
 
 ASSETS = Path(regimex.__file__).parent / "web"
 ORIGIN = "https://regimex.test"
@@ -18,7 +20,9 @@ EVALUATION_ID = str(UUID(int=2))
 PUBLICATION_ID = str(UUID(int=3))
 CANDIDATE = "model-browser-candidate"
 PREVIOUS = "model-already-active"
-POLICY = {"optimizer": "adamw", "epochs": 2, "seeds": [11, 23]}
+TCN = tcn_descriptor().describe().model_dump(mode="json")
+BASELINE = baseline_descriptor().describe().model_dump(mode="json")
+POLICY = {**TCN["default_training_policy"], "epochs": 2, "seeds": [11, 23]}
 SPEC = {
     "dataset_id": "development",
     "architecture_id": "tcn",
@@ -68,6 +72,7 @@ class TrainingAPI:
         self.runs: list[dict[str, Any]] = []
         self.actions: list[dict[str, Any]] = []
         self.posts: list[tuple[str, dict[str, Any], str]] = []
+        self.drop_first_training_response = False
         self.cancellations: list[str] = []
         self.active_model = PREVIOUS
         self.pages: list[str] = []
@@ -133,8 +138,12 @@ class TrainingAPI:
             dataset = parse_qs(url.query)["dataset_id"][0]
             route.fulfill(json={"benchmark_ids": self.benchmarks[dataset]})
             return
+        train_ref, validation_ref = "training-labels", "validation-labels"
         if path == "reference-sets":
-            assert parse_qs(url.query)["dataset_id"][0] in self.benchmarks
+            dataset = parse_qs(url.query)["dataset_id"][0]
+            assert dataset in self.benchmarks
+            if dataset != "development":
+                train_ref, validation_ref = f"{dataset}-train", f"{dataset}-validation"
         if path == "datasets":
             assert parse_qs(url.query)["development_only"] == ["true"]
         resources = {
@@ -162,16 +171,10 @@ class TrainingAPI:
             },
             "architectures": {
                 "items": [
-                    {
-                        "architecture_id": name,
-                        "executable": executable,
-                        "default_training_policy": POLICY,
-                    }
-                    for name, executable in (
-                        ("metadata-only", False),
-                        ("tcn", None),
-                        ("worker-verified", True),
-                    )
+                    {**TCN, "architecture_id": "metadata-only", "executable": False},
+                    {**TCN, "default_training_policy": POLICY},
+                    BASELINE,
+                    {**TCN, "architecture_id": "worker-verified", "executable": True},
                 ]
             },
             "reference-sets": {
@@ -184,8 +187,8 @@ class TrainingAPI:
                     }
                     for name, partition, compatible in (
                         ("other-profile", "train", False),
-                        ("training-labels", "train", True),
-                        ("validation-labels", "validation", True),
+                        (train_ref, "train", True),
+                        (validation_ref, "validation", True),
                         ("final-labels", "test", True),
                     )
                 ]
@@ -210,11 +213,14 @@ class TrainingAPI:
         self.posts.append((path, request.post_data_json, key))
         if path == "training-runs":
             if len(self.posts) == 1:
-                # The server accepted the run, but the response never reached the browser.
-                self.run["display_name"] = request.post_data_json.get("display_name")
+                training = request.post_data_json.copy()
+                self.run["display_name"] = training.pop("display_name", None)
+                self.run["training"].update(training)
                 self.runs.append(self.run)
-                route.abort("connectionreset")
-                return
+                if self.drop_first_training_response:
+                    # The server accepted the run, but the response never reached the browser.
+                    route.abort("connectionreset")
+                    return
             result = self.run
         elif path == "evaluations":
             result = completed_run(EVALUATION_ID, "evaluation")
@@ -231,6 +237,7 @@ class TrainingAPI:
 def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width: int) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
+    api.drop_first_training_response = True
     page = browser.new_page(viewport={"width": width, "height": 900})
     script_errors: list[str] = []
     page.on("pageerror", lambda error: script_errors.append(str(error)))
@@ -246,7 +253,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         expect(page.get_by_label("Validation references").locator("option")).to_have_count(1)
         expect(page.get_by_label("Development dataset").locator("option")).to_have_count(1)
         expect(page.get_by_label("Architecture").locator("option")).to_have_text(
-            ["Temporal convolutional network (TCN)", "worker-verified"]
+            ["Temporal convolutional network (TCN)", "Logistic baseline", "worker-verified"]
         )
         start = page.get_by_role("button", name="Start training")
         expect(page.get_by_label("Selection benchmark")).to_have_value("selection-v1")
@@ -257,7 +264,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
             title = "Morning volatility"
             page.get_by_label("Run name (optional)").fill(title)
             expected_intake["display_name"] = title
-            page.locator("#training-form summary").click()
+            page.get_by_text("Advanced settings", exact=True).click()
             runtime = page.get_by_label("Training runtime overrides")
             runtime.fill("[]")
             start.press("Enter")
@@ -268,6 +275,9 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
             expected_intake["training_runtime"] = {"time_budget_seconds": 60}
         start.press("Enter")
         expect(page.locator("#training-notice")).to_contain_text("Could not connect")
+        if width == 1280:
+            page.get_by_role("button", name="Edit JSON").press("Enter")
+            expect(page.get_by_label("Run configuration (JSON)")).to_be_visible()
         start.press("Enter")
         expect(page.get_by_role("heading", name=title)).to_be_visible()
         assert api.posts[0] == api.posts[1]
@@ -355,6 +365,226 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
         assert len(api.posts) == 4
         assert script_errors == []
+    finally:
+        page.close()
+
+
+def test_epoch_policy_uses_catalog_defaults_and_focuses_the_invalid_field(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        policy = page.get_by_text("Training policy", exact=True)
+        policy.press("Enter")
+        budget = page.get_by_label("Training budget")
+        expect(budget).to_have_value("epochs")
+        epochs = page.get_by_label("Epochs", exact=True)
+        expect(epochs).to_have_value("2")
+        seeds = page.get_by_label("Seeds", exact=True)
+        assert [int(value) for value in seeds.input_value().split(",")] == POLICY["seeds"]
+        epochs.fill("12")
+        seeds.fill("5, 7")
+        batch_size = page.get_by_label("Batch size")
+        batch_size.fill("0")
+        policy.press("Enter")
+        expect(batch_size).to_be_hidden()
+        start = page.get_by_role("button", name="Start training")
+        start.press("Enter")
+        expect(batch_size).to_be_focused()
+        assert batch_size.evaluate("field => field.validity.rangeUnderflow")
+        assert not api.posts
+
+        batch_size.fill("8")
+        page.get_by_label("Learning rate").fill("0.01")
+        page.get_by_label("Weight decay").fill("0")
+        page.get_by_label("Validate every (epochs)").fill("3")
+        page.get_by_label("Patience (validation checks)").fill("2")
+        start.press("Enter")
+        expect(page.get_by_role("heading", name="TCN · development")).to_be_visible()
+        assert api.posts[0][1]["policy"] == {
+            **POLICY,
+            "epochs": 12,
+            "seeds": [5, 7],
+            "batch_size": 8,
+            "learning_rate": 0.01,
+            "weight_decay": 0,
+            "validation_interval": 3,
+            "patience": 2,
+        }
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("custom", [False, True], ids=["automatic", "custom"])
+def test_update_budget_submits_only_update_settings(browser: Any, custom: bool) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        page.get_by_text("Training policy", exact=True).press("Enter")
+        page.get_by_label("Training budget").select_option("updates")
+        for label in ("Epochs", "Patience (validation checks)", "Validate every (epochs)"):
+            expect(page.get_by_label(label, exact=True)).to_be_hidden()
+        page.get_by_label("Updates per seed").fill("3")
+        checkpoints = page.get_by_label("Validation checkpoints")
+        start = page.get_by_role("button", name="Start training")
+        if custom:
+            checkpoints.fill("1, 2")
+            start.press("Enter")
+            expect(checkpoints).to_be_focused()
+            expect(checkpoints).to_have_attribute("aria-invalid", "true")
+            assert not api.posts
+            checkpoints.fill("1, 3")
+        else:
+            expect(checkpoints).to_have_value("")
+
+        start.press("Enter")
+        expect(page.get_by_role("heading", name="TCN · development")).to_be_visible()
+        expected = FixedUpdatePolicy(
+            seeds=(11, 23), updates=3, validation_updates=(1, 3) if custom else (1, 2, 3)
+        )
+        assert api.posts[0][1]["policy"] == expected.model_dump(mode="json")
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("submit_in_json", [False, True], ids=["use-form", "start-in-json"])
+def test_pasting_a_policy_preserves_the_rest_of_the_run(browser: Any, submit_in_json: bool) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.drop_first_training_response = not submit_in_json
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        page.get_by_label("Run name (optional)").fill("Checkpoint run")
+        page.get_by_role("button", name="Edit JSON").click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        policy = FixedUpdatePolicy(
+            seeds=(4,),
+            updates=6,
+            validation_updates=(2, 6),
+            learning_rate=0.025,
+        ).model_dump(mode="json", exclude_unset=True)
+        editor.fill(json.dumps(policy))
+        start = page.get_by_role("button", name="Start training")
+        if not submit_in_json:
+            start.click()
+            expect(page.locator("#training-notice")).to_contain_text("Could not connect")
+            page.get_by_role("button", name="Use form").click()
+            expect(editor).to_be_hidden()
+            page.get_by_text("Training policy", exact=True).click()
+            expect(page.get_by_label("Training budget")).to_have_value("updates")
+            expect(page.get_by_label("Updates per seed")).to_have_value("6")
+            expect(page.get_by_label("Learning rate")).to_have_value("0.025")
+            expect(page.get_by_label("Seeds", exact=True)).to_have_value("4")
+        start.click()
+        expect(page.get_by_role("heading", name="Checkpoint run")).to_be_visible()
+        assert api.posts[0][1] == {**SPEC, "display_name": "Checkpoint run", "policy": policy}
+        if not submit_in_json:
+            assert api.posts[0] == api.posts[1]
+    finally:
+        page.close()
+
+
+def test_run_json_returns_to_the_form_with_the_selected_dataset_and_references(
+    browser: Any,
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.benchmarks["prices"] = ["prices-selection"]
+    page = browser.new_page(viewport={"width": 320, "height": 800})
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        start = page.get_by_role("button", name="Start training")
+        expect(start).to_be_enabled()
+        edit = page.get_by_role("button", name="Edit JSON")
+        edit.click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        assert json.loads(editor.input_value()) == SPEC
+        editor.fill('{"policy":')
+        start.click()
+        expect(editor).to_be_focused()
+        expect(editor).to_have_value('{"policy":')
+        assert not api.posts
+
+        request = {
+            **SPEC,
+            "architecture_id": "baseline",
+            "dataset_id": "prices",
+            "display_name": "Price sensitivity",
+            "analysis_profile_id": "prices-v2",
+            "benchmark_selection_id": "prices-selection",
+            "labels_reference_set_id": "prices-train",
+            "validation_reference_set_id": "prices-validation",
+            "policy": {**BASELINE["default_training_policy"], "seeds": [8]},
+            "parameters": {"regularization": [0.5, 2]},
+            "training_runtime": {"threads": 1},
+            "inference_runtime": {"max_batch_size": 32},
+        }
+        use_form = page.get_by_role("button", name="Use form")
+        invalid = json.dumps({**request, "validation_reference_set_id": "unknown-reference"})
+        editor.fill(invalid)
+        use_form.click()
+        expect(editor).to_be_focused()
+        expect(editor).to_have_value(invalid)
+        assert not api.posts
+
+        editor.fill(json.dumps(request))
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        use_form.click()
+        expect(editor).to_be_hidden()
+        expect(page.get_by_label("Development dataset")).to_have_value("prices")
+        expect(page.get_by_label("Training labels")).to_have_value("prices-train")
+        expect(page.get_by_label("Validation references")).to_have_value("prices-validation")
+        expect(page.get_by_label("Selection benchmark")).to_have_value("prices-selection")
+        expect(page.get_by_label("Architecture")).to_have_value("baseline")
+        edit.click()
+        assert json.loads(editor.input_value()) == request
+        request["training_runtime"] = {"memory_budget_bytes": 9007199254740993}
+        editor.fill(json.dumps(request))
+        use_form.click()
+        expect(page.locator("#training-prerequisite")).to_contain_text("precision")
+        expect(editor).to_be_focused()
+        start.click()
+        expect(page.get_by_role("heading", name="Price sensitivity")).to_be_visible()
+        assert api.posts[0][1] == request
+    finally:
+        page.close()
+
+
+def test_invalid_json_draft_survives_back_forward_until_discarded(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training")
+        page.get_by_role("button", name="New run", exact=True).click()
+        name = page.get_by_label("Run name (optional)")
+        name.fill("Draft before paste")
+        page.get_by_role("button", name="Edit JSON").click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        invalid = '{"optimizer": "adamw",'
+        editor.fill(invalid)
+        page.get_by_role("button", name="Use form").click()
+        expect(editor).to_be_focused()
+        page.go_back()
+        expect(page.get_by_text("No training runs yet.")).to_be_visible()
+        page.go_forward()
+        expect(editor).to_be_visible()
+        expect(editor).to_have_value(invalid)
+        page.get_by_role("button", name="Discard JSON edits").click()
+        expect(name).to_be_visible()
+        expect(name).to_have_value("Draft before paste")
+        page.get_by_role("button", name="Edit JSON").click()
+        assert json.loads(editor.input_value()) == {**SPEC, "display_name": "Draft before paste"}
+        assert not api.posts
     finally:
         page.close()
 
@@ -1042,21 +1272,75 @@ def test_saved_baseline_link_reopens_the_regularization_chart(browser: Any) -> N
         expect(heading).to_be_visible()
         expect(chart).to_be_visible()
         page.get_by_role("button", name="New run", exact=True).click()
+        expect(page.get_by_role("heading", name="New training run")).to_be_visible()
+        page.go_back()
+        expect(heading).to_be_visible()
+        expect(chart).to_be_visible()
+    finally:
+        page.close()
+
+
+def test_policy_drafts_survive_architecture_changes_and_browser_navigation(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training")
+        page.get_by_role("button", name="New run", exact=True).click()
         new_run = page.get_by_role("heading", name="New training run")
         expect(new_run).to_be_visible()
-        page.locator("#training-form-settings summary").click()
+        page.get_by_text("Training policy", exact=True).click()
+        page.get_by_text("Advanced settings", exact=True).click()
+        parameters = page.get_by_label("Backend parameters (JSON)")
+        parameters.fill('{"channels": 8}')
+        architecture = page.get_by_label("Architecture")
+        epochs = page.get_by_label("Epochs", exact=True)
+        epochs.fill("8")
+        architecture.select_option("baseline")
+        seed = page.get_by_label("Seed", exact=True)
+        expect(seed).to_have_value("11")
+        expect(parameters).to_have_value("{}")
+        for label in (
+            "Training budget",
+            "Batch size",
+            "Learning rate",
+            "Weight decay",
+            "Epochs",
+            "Validate every (epochs)",
+            "Patience (validation checks)",
+        ):
+            expect(page.get_by_label(label, exact=True)).to_be_hidden()
+        seed.fill("19")
+        parameters.fill('{"context_sizes": [4, 16]}')
+        architecture.select_option("tcn")
+        expect(parameters).to_have_value('{"channels": 8}')
+        expect(epochs).to_have_value("8")
+        architecture.select_option("baseline")
+        expect(seed).to_have_value("19")
         runtime = page.get_by_label("Training runtime overrides")
         runtime.fill('{"threads": 2}')
         name = page.get_by_label("Run name (optional)")
         name.fill("Weekend baseline")
         page.go_back()
-        expect(heading).to_be_visible()
-        expect(chart).to_be_visible()
+        expect(page.get_by_text("No training runs yet.")).to_be_visible()
         page.go_forward()
         expect(new_run).to_be_visible()
         expect(page.get_by_role("button", name="Start training")).to_be_enabled()
         expect(runtime).to_have_value('{"threads": 2}')
         expect(name).to_have_value("Weekend baseline")
+        expect(seed).to_be_visible()
+        expect(seed).to_have_value("19")
+        page.get_by_role("button", name="Start training").click()
+        expect(page.get_by_role("heading", name="Weekend baseline")).to_be_visible()
+        assert api.posts[0][1] == {
+            **SPEC,
+            "architecture_id": "baseline",
+            "display_name": "Weekend baseline",
+            "training_runtime": {"threads": 2},
+            "parameters": {"context_sizes": [4, 16]},
+            "policy": {**BASELINE["default_training_policy"], "seeds": [19]},
+        }
     finally:
         page.close()
 

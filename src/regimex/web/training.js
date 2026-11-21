@@ -3,6 +3,7 @@ import {showTrainingActions} from "./training-evaluation.js";
 import {createTrainingMetrics} from "./training-metrics.js";
 import {createTrainingProgress} from "./training-progress.js";
 import {architectureName, createTrainingForm, datasetName} from "./training-form.js";
+import {trainingRequestKey} from "./training-json.js";
 import {createRunNameEditor} from "./training-name.js";
 
 const api = "/api/v1/";
@@ -149,7 +150,7 @@ export function createTraining({session, navigate, onPublication}) {
 
   // A network error can arrive after the server committed. Reuse that exact request's key.
   async function post(path, body) {
-    const request = JSON.stringify([path, body]);
+    const request = JSON.stringify([path, trainingRequestKey(body)]);
     const key = pending.get(request) || crypto.randomUUID();
     pending.set(request, key);
     const result = await session.json(path, {method: "POST", body, headers: {"Idempotency-Key": key}});

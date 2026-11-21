@@ -240,24 +240,38 @@
             </div>
           </section>
           <section id="training-config" class="panel" aria-labelledby="training-config-title" hidden>
-            <h2 id="training-config-title" tabindex="-1">New training run</h2>
+            <div class="section-heading">
+              <h2 id="training-config-title" tabindex="-1">New training run</h2>
+              <button id="training-edit-mode" type="button" class="quiet" aria-controls="training-fields training-json-panel">Edit JSON</button>
+            </div>
             <form id="training-form" class="training-form">
-              <div class="training-form-grid">
-                <label class="training-wide">Run name <span class="field-optional">(optional)</span><input id="training-name" type="text" dir="auto" autocomplete="off"></label>
-                <label class="training-wide">Development dataset<select id="training-dataset" required></select></label>
-                <label>Training labels<select id="training-labels" required></select></label>
-                <label>Validation references<select id="training-validation" required></select></label>
-                <label>Selection benchmark<select id="training-benchmark" required></select></label>
-                <label>Architecture<select id="training-architecture" required></select></label>
+              <fieldset id="training-fields" aria-label="Training configuration">
+                <div class="training-form-grid">
+                  <label class="training-wide">Run name <span class="field-optional">(optional)</span><input id="training-name" type="text" dir="auto" autocomplete="off"></label>
+                  <label class="training-wide">Development dataset<select id="training-dataset" required></select></label>
+                  <label>Training labels<select id="training-labels" required></select></label>
+                  <label>Validation references<select id="training-validation" required></select></label>
+                  <label>Selection benchmark<select id="training-benchmark" required></select></label>
+                  <label>Architecture<select id="training-architecture" required></select></label>
+                </div>
+                <details id="training-form-settings">
+                  <summary>Training policy</summary>
+                  <div id="training-policy" class="training-form-grid"></div>
+                </details>
+                <details id="training-advanced-settings">
+                  <summary>Advanced settings</summary>
+                  <label>Backend parameters (JSON)<textarea id="training-parameters" rows="3" spellcheck="false">{}</textarea></label>
+                  <label>Training runtime overrides (JSON)<textarea id="training-runtime" rows="2" spellcheck="false" placeholder='{"threads": 2, "time_budget_seconds": 600}'></textarea></label>
+                  <label>Inference runtime overrides (JSON)<textarea id="training-inference" rows="2" spellcheck="false" placeholder='{"threads": 2, "max_batch_size": 8}'></textarea></label>
+                </details>
+              </fieldset>
+              <div id="training-json-panel" hidden>
+                <label for="training-json">Run configuration (JSON)</label>
+                <p class="hint" id="training-json-hint">Paste a full run configuration or just the policy for the selected architecture.</p>
+                <textarea id="training-json" aria-describedby="training-json-hint" rows="16" spellcheck="false" autocapitalize="off"></textarea>
+                <button id="training-discard-json" class="quiet" type="button" hidden>Discard JSON edits</button>
               </div>
               <div id="training-prerequisite" class="notice" role="status" hidden></div>
-              <details id="training-form-settings">
-                <summary>Training settings</summary>
-                <label>Backend parameters (JSON)<textarea id="training-parameters" rows="3" spellcheck="false">{}</textarea></label>
-                <label>Training policy (JSON)<textarea id="training-policy" rows="7" spellcheck="false"></textarea></label>
-                <label>Training runtime overrides (JSON)<textarea id="training-runtime" rows="2" spellcheck="false" placeholder='{"threads": 2, "time_budget_seconds": 600}'></textarea></label>
-                <label>Inference runtime overrides (JSON)<textarea id="training-inference" rows="2" spellcheck="false" placeholder='{"threads": 2, "max_batch_size": 8}'></textarea></label>
-              </details>
               <button id="training-submit" type="submit" disabled>Start training</button>
             </form>
           </section>

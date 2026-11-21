@@ -105,9 +105,24 @@ selection on that reservation. The form lists the benchmarks available to your a
    dataset. The form shows its compatible training labels, validation
    references and selection benchmarks.
    If data is missing, use the setup links beside the fields.
-2. Choose **Logistic baseline** or **Temporal convolutional network (TCN)**.
-   **Training settings** lets you edit architecture parameters, the training
-   policy and CPU runtime limits. Choose **Start training** to queue the run.
+2. Choose an architecture. The form fills in its defaults. Choose **Start
+   training** to use them, or open **Training policy** to adjust the run.
+   **Advanced settings** holds the architecture parameters and CPU runtime
+   overrides.
+
+   The **Logistic baseline** uses one seed and compares regularization settings.
+   For the **Temporal convolutional network (TCN)**, each seed trains a separate
+   model. Under **Training budget**, choose **Epochs** to limit passes over the
+   training data, or **Optimizer updates** to give every seed a fixed number of
+   weight updates. For a fixed budget, enter **Updates per seed**. Leave
+   **Validation checkpoints** blank to spread up to ten checks across each repeat,
+   or enter the update numbers to check, ending with the final update.
+
+   Choose **Edit JSON** to edit or paste a complete run configuration. You can
+   also paste just a training policy to use it with the data and architecture
+   you selected. Choose **Start training** in the editor to submit the JSON, or
+   **Use form** to continue editing the same configuration in the form.
+
    You can bookmark the run or leave and return while the worker trains it.
    If you leave a form before submitting, browser Back restores the draft in the same tab.
 3. Select a run from the list, or open **Run history** on a phone. Unnamed
@@ -119,11 +134,12 @@ selection on that reservation. The form lists the benchmarks available to your a
    **Values** under a chart to read individual measurements. If the worker
    retries training, the charts start again with the new attempt.
 
-   The baseline scores each regularization setting on the validation data.
+   The baseline chart shows a validation score for each regularization setting.
    The TCN records training loss at every epoch or optimizer update. With an
-   epoch budget, it checks validation interval macro-F1 at epoch 1, every
-   `validation_interval` epochs, and at the final scheduled epoch if reached.
-   With an update budget, it checks the updates listed in `validation_updates`.
+   epoch budget, it scores validation interval macro-F1 at epoch 1, at the
+   chosen interval and at the final scheduled epoch if reached. **Patience**
+   counts consecutive validation checks without improvement. With an update
+   budget, validation scores appear at the chosen checkpoints.
 
    For a TCN with several repeats, the charts follow the repeat being trained.
    Choose a **Training repeat** to keep its curves on screen. Each seed sets

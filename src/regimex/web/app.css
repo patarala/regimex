@@ -1096,6 +1096,21 @@ iframe {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px 18px;
 }
+#training-fields {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+#training-json-panel {
+  margin-bottom: 20px;
+}
+#training-json-hint {
+  margin: 4px 0 8px;
+}
+#training-discard-json {
+  margin-top: 8px;
+}
 .training-wide {
   grid-column: 1 / -1;
 }
@@ -1127,8 +1142,12 @@ iframe {
 .training-form details {
   margin-bottom: 20px;
 }
-.training-form details label {
+#training-advanced-settings label,
+#training-policy {
   margin-top: 16px;
+}
+#training-policy .hint {
+  margin: 4px 0 0;
 }
 .training-form summary,
 .training-run-details summary,

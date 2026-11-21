@@ -1,7 +1,14 @@
 import {$, option} from "./ui.js";
+import {parseTrainingJSON, trainingJSONBody} from "./training-json.js";
+import {createTrainingPolicy, policyDraft} from "./training-policy.js";
 
-const selectors = ["training-dataset", "training-architecture", "training-labels", "training-validation", "training-benchmark"];
-const settings = ["training-parameters", "training-policy", "training-runtime", "training-inference"];
+const selectionFields = {
+  "training-dataset": "dataset_id", "training-architecture": "architecture_id",
+  "training-labels": "labels_reference_set_id", "training-validation": "validation_reference_set_id",
+  "training-benchmark": "benchmark_selection_id",
+};
+const selectors = Object.keys(selectionFields);
+const runtimes = ["training-runtime", "training-inference"];
 const api = "/api/v1/";
 
 export function architectureName(id, compact = false) {
@@ -38,7 +45,7 @@ function readSettings(id, optional = false) {
   } catch {
     // Use the same field-level message for malformed JSON and the wrong JSON type.
   }
-  $("training-form-settings").open = true;
+  $("training-advanced-settings").open = true;
   field.setAttribute("aria-invalid", "true");
   field.focus();
   throw new Error("Enter a JSON object for " + field.labels[0].firstChild.textContent.trim() + ".");
@@ -46,6 +53,12 @@ function readSettings(id, optional = false) {
 
 export function createTrainingForm({session, eachPage}) {
   let generation = 0, busy = false, architectures = [], draft = null;
+  let currentArchitecture = null;
+  let jsonBase = null, jsonOriginal = "", importedBody = null;
+  let converting = false, loading = false, analysisProfile;
+  const jsonField = $("training-json");
+  const architectureDrafts = new Map();
+  const policy = createTrainingPolicy($("training-policy"));
   const hint = $("training-prerequisite");
   function feedback(message = "", ...actions) {
     hint.replaceChildren();
@@ -67,21 +80,53 @@ export function createTrainingForm({session, eachPage}) {
     }
   }
   function updateSubmit() {
-    $("training-submit").disabled = busy || selectors.some(id => $(id).disabled || !$(id).value);
+    const locked = busy || converting;
+    $("training-edit-mode").disabled = locked || loading;
+    $("training-discard-json").disabled = locked;
+    $("training-json").readOnly = locked;
+    $("training-submit").disabled = locked || (!jsonBase && selectors.some(id => $(id).disabled || !$(id).value));
   }
-  function policy() {
-    const selected = architectures.find(row => row.architecture_id === $("training-architecture").value);
-    $("training-policy").value = selected ? JSON.stringify(selected.default_training_policy, null, 2) : "";
-    $("training-parameters").value = "{}";
-    for (const id of settings.slice(0, 2)) $(id).removeAttribute("aria-invalid");
+  function saveArchitecture() {
+    if (currentArchitecture) architectureDrafts.set(currentArchitecture, {
+      policy: policy.snapshot(), parameters: $("training-parameters").value,
+    });
+  }
+  function selectArchitecture() {
+    saveArchitecture();
+    const architecture = architectures.find(row => row.architecture_id === $("training-architecture").value);
+    currentArchitecture = architecture?.architecture_id;
+    const saved = architectureDrafts.get(currentArchitecture);
+    policy.select(architecture, saved?.policy);
+    $("training-parameters").value = saved?.parameters ?? "{}";
+    $("training-parameters").removeAttribute("aria-invalid");
   }
   const dependent = ["training-labels", "training-validation", "training-benchmark"];
   function restoreChoice(id, saved) {
     if (saved && Array.from($(id).options).some(item => item.value === saved)) $(id).value = saved;
   }
+  async function datasetOptions(id, valid) {
+    const query = "?dataset_id=" + encodeURIComponent(id);
+    const [references, benchmarks] = await Promise.all([
+      eachPage(api + "reference-sets" + query, valid), session.json(api + "training-options/benchmarks" + query),
+    ]);
+    const referencesFor = partition => references
+      .filter(row => row.partition === partition && row.current_training_profile)
+      .map(row => [row.reference_set_id, [
+        row.kind === "automatic" ? "Automatic" : "Human", row.reviewer, shortId(row.reference_set_id),
+      ].filter(Boolean).join(" · ")]);
+    return {
+      "training-labels": referencesFor("train"), "training-validation": referencesFor("validation"),
+      "training-benchmark": benchmarks.benchmark_ids.map(id => [id, id]),
+    };
+  }
+  function setDatasetOptions(options) {
+    for (const id of dependent)
+      choices(id, options[id], id === "training-benchmark" ? "No eligible benchmarks" : "No matching references");
+  }
   async function loadDataset() {
     const stamp = ++generation, valid = () => generation === stamp;
     const id = $("training-dataset").value;
+    loading = Boolean(id);
     feedback();
     for (const key of dependent) choices(key, [], id ? "Loading…" : "Choose a dataset first");
     updateSubmit();
@@ -92,24 +137,15 @@ export function createTrainingForm({session, eachPage}) {
       return;
     }
     try {
-      const query = "?dataset_id=" + encodeURIComponent(id);
-      const [references, benchmarks] = await Promise.all([
-        eachPage(api + "reference-sets" + query, valid), session.json(api + "training-options/benchmarks" + query),
-      ]);
+      const options = await datasetOptions(id, valid);
       if (!valid()) return;
-      for (const [field, partition] of [["training-labels", "train"], ["training-validation", "validation"]]) {
-        const rows = references.filter(row => row.partition === partition && row.current_training_profile);
-        choices(field, rows.map(row => [row.reference_set_id, [
-          row.kind === "automatic" ? "Automatic" : "Human", row.reviewer, shortId(row.reference_set_id),
-        ].filter(Boolean).join(" · ")]), "No matching references");
-      }
-      choices("training-benchmark", benchmarks.benchmark_ids.map(value => [value, value]), "No eligible benchmarks");
+      setDatasetOptions(options);
       if (draft?.["training-dataset"] === id)
         for (const field of dependent) restoreChoice(field, draft[field]);
       if (!$("training-labels").value || !$("training-validation").value)
         feedback("This dataset needs compatible references for both training and validation.",
           ["Create references", "create_references_api_v1_reference_sets_post"]);
-      else if (!benchmarks.benchmark_ids.length)
+      else if (!options["training-benchmark"].length)
         feedback("This dataset has no benchmark open for model selection.",
           ["Reserve a benchmark", "reserve_api_v1_benchmarks_post"],
           ["Start benchmark selection", "selection_start_api_v1_benchmarks_selection_start_post"]);
@@ -117,12 +153,18 @@ export function createTrainingForm({session, eachPage}) {
     } catch (error) {
       if (valid()) feedback(error.message, ["Retry", loadDataset]);
     }
-    if (valid()) updateSubmit();
+    if (valid()) { loading = false; updateSubmit(); }
   }
   async function open() {
     const stamp = ++generation, valid = () => generation === stamp;
-    if ($("training-config").hidden) $("training-name").value = draft?.["training-name"] || "";
+    if ($("training-config").hidden) {
+      $("training-name").value = draft?.["training-name"] || "";
+      analysisProfile = draft?.analysisProfile;
+      importedBody = draft?.importedBody;
+      if (draft?.jsonBase) showEditor(draft.jsonBase, draft.jsonOriginal, draft.jsonText);
+    }
     $("training-config").hidden = false;
+    loading = true;
     feedback();
     for (const id of selectors) choices(id, [], "Loading…");
     updateSubmit();
@@ -139,29 +181,45 @@ export function createTrainingForm({session, eachPage}) {
         "No training backends");
       restoreChoice("training-dataset", draft?.["training-dataset"]);
       restoreChoice("training-architecture", draft?.["training-architecture"]);
-      policy();
-      if (draft && draft["training-architecture"] === $("training-architecture").value) {
-        for (const id of settings) $(id).value = draft[id];
-        $("training-form-settings").open = draft.expanded;
+      selectArchitecture();
+      if (draft) {
+        for (const id of runtimes) $(id).value = draft[id] ?? "";
+        $("training-form-settings").open = draft.policyExpanded;
+        $("training-advanced-settings").open = draft.advancedExpanded;
       }
       await loadDataset();
-    } catch (error) { if (valid()) feedback(error.message, ["Retry", open]); }
+    } catch (error) {
+      if (valid()) { loading = false; updateSubmit(); feedback(error.message, ["Retry", open]); }
+    }
   }
   function close(remember = true) {
-    if (!remember) draft = null;
-    else if (!$("training-config").hidden) {
-      if ($("training-architecture").value) {
-        draft = Object.fromEntries([...selectors, ...settings].map(id => [id, $(id).value]));
-        draft.expanded = $("training-form-settings").open;
+    if (!remember) {
+      draft = null;
+      architectureDrafts.clear();
+    } else if (!$("training-config").hidden) {
+      if (currentArchitecture) {
+        saveArchitecture();
+        draft = Object.fromEntries([...selectors, ...runtimes].map(id => [id, $(id).value]));
+        draft.policyExpanded = $("training-form-settings").open;
+        draft.advancedExpanded = $("training-advanced-settings").open;
       }
-      draft = {...draft, "training-name": $("training-name").value};
+      draft = {...draft, "training-name": $("training-name").value, analysisProfile,
+        importedBody, jsonBase, jsonOriginal, jsonText: jsonField.value};
     }
     generation++;
     architectures = [];
+    loading = false;
+    converting = false;
+    analysisProfile = undefined;
+    importedBody = null;
+    showEditor(null);
+    currentArchitecture = null;
+    policy.select(null);
     $("training-name").value = "";
     $("training-config").hidden = true;
     $("training-form-settings").open = false;
-    for (const id of settings) {
+    $("training-advanced-settings").open = false;
+    for (const id of ["training-parameters", ...runtimes]) {
       $(id).value = "";
       $(id).removeAttribute("aria-invalid");
     }
@@ -169,19 +227,114 @@ export function createTrainingForm({session, eachPage}) {
     feedback();
   }
   $("training-dataset").addEventListener("change", loadDataset);
-  $("training-architecture").addEventListener("change", policy);
-  for (const id of settings)
+  $("training-architecture").addEventListener("change", selectArchitecture);
+  $("training-policy").addEventListener("invalid", () => { $("training-form-settings").open = true; }, true);
+  for (const id of ["training-parameters", ...runtimes])
     $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
-  function payload() {
+  function fieldPayload() {
     const name = $("training-name").value;
     return {
       display_name: name.trim() ? name : undefined,
-      dataset_id: $("training-dataset").value, architecture_id: $("training-architecture").value,
-      labels_reference_set_id: $("training-labels").value, validation_reference_set_id: $("training-validation").value,
-      benchmark_selection_id: $("training-benchmark").value, policy: readSettings("training-policy"),
-      parameters: readSettings("training-parameters"), training_runtime: readSettings("training-runtime", true),
+      ...Object.fromEntries(selectors.map(id => [selectionFields[id], $(id).value])),
+      policy: currentArchitecture ? policy.payload() : undefined,
+      parameters: readSettings("training-parameters", true) ?? {}, training_runtime: readSettings("training-runtime", true),
       inference_runtime: readSettings("training-inference", true),
+      analysis_profile_id: analysisProfile,
     };
+  }
+  function showEditor(base, original = "", text = original) {
+    jsonBase = base;
+    jsonOriginal = original;
+    $("training-fields").hidden = Boolean(base);
+    $("training-fields").disabled = Boolean(base);
+    $("training-json-panel").hidden = !base;
+    $("training-edit-mode").textContent = base ? "Use form" : "Edit JSON";
+    jsonField.value = text;
+    jsonField.removeAttribute("aria-invalid");
+    $("training-discard-json").hidden = text === original;
+    updateSubmit();
+  }
+  function markJsonError() {
+    jsonField.setAttribute("aria-invalid", "true");
+    jsonField.focus();
+  }
+  async function useForm() {
+    if (jsonField.value === jsonOriginal) {
+      showEditor(null);
+      $("training-name").focus();
+      return;
+    }
+    const request = parseTrainingJSON(jsonField.value, jsonBase);
+    const architecture = architectures.find(row => row.architecture_id === request.architecture_id);
+    if (!architecture) throw new Error("The selected architecture is unavailable in this workspace.");
+    if (!Array.from($("training-dataset").options).some(item => item.value === request.dataset_id))
+      throw new Error("Choose a development dataset available in this workspace.");
+    const saved = currentArchitecture === request.architecture_id
+      ? policy.snapshot() : architectureDrafts.get(request.architecture_id)?.policy;
+    const imported = policyDraft(architecture, request.policy, saved);
+    const stamp = generation, valid = () => generation === stamp;
+    converting = true;
+    updateSubmit();
+    try {
+      const options = await datasetOptions(request.dataset_id, valid);
+      if (!valid()) return;
+      for (const id of dependent) {
+        if (!options[id].some(([value]) => value === request[selectionFields[id]]))
+          throw new Error(selectionFields[id] + " is unavailable for this dataset.");
+      }
+      saveArchitecture();
+      setDatasetOptions(options);
+      for (const id of selectors) $(id).value = request[selectionFields[id]];
+      currentArchitecture = request.architecture_id;
+      policy.select(architecture, imported);
+      $("training-name").value = request.display_name ?? "";
+      $("training-parameters").value = JSON.stringify(request.parameters, null, 2);
+      for (const [id, value] of [["training-runtime", request.training_runtime], ["training-inference", request.inference_runtime]])
+        $(id).value = value === undefined ? "" : JSON.stringify(value, null, 2);
+      analysisProfile = request.analysis_profile_id;
+      // Keep sparse API requests intact when a retry goes through the form.
+      importedBody = {fields: JSON.stringify(fieldPayload()), text: trainingJSONBody(jsonField.value, jsonBase)};
+      showEditor(null);
+      $("training-name").focus();
+    } catch (error) {
+      if (valid()) throw error;
+    } finally {
+      if (valid()) { converting = false; updateSubmit(); }
+    }
+  }
+  $("training-edit-mode").addEventListener("click", async () => {
+    feedback();
+    try {
+      if (jsonBase) await useForm();
+      else {
+        const body = fieldsBody();
+        if (typeof body === "string") showEditor(JSON.parse(body), body);
+        else showEditor(body, JSON.stringify(body, null, 2));
+        jsonField.focus();
+      }
+    } catch (error) {
+      feedback(error.message);
+      if (jsonBase) markJsonError();
+    }
+  });
+  jsonField.addEventListener("input", () => {
+    jsonField.removeAttribute("aria-invalid");
+    $("training-discard-json").hidden = jsonField.value === jsonOriginal;
+    feedback();
+  });
+  $("training-discard-json").addEventListener("click", () => {
+    showEditor(null);
+    feedback();
+    $("training-name").focus();
+  });
+  function fieldsBody() {
+    const fields = fieldPayload();
+    return importedBody?.fields === JSON.stringify(fields) ? importedBody.text : fields;
+  }
+  function payload() {
+    if (!jsonBase) return fieldsBody();
+    try { return trainingJSONBody(jsonField.value, jsonBase); }
+    catch (error) { markJsonError(); throw error; }
   }
   return {
     open, close, payload,
