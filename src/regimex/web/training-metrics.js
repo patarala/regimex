@@ -132,6 +132,8 @@ function chartInspector() {
   const tooltip = element("div", "", "training-chart-tooltip");
   tooltip.setAttribute("role", "tooltip");
   tooltip.hidden = true;
+  const reading = element("strong"), stepLabel = element("span");
+  tooltip.append(reading, stepLabel);
   const crosshair = svgNode("line", {class: "training-crosshair", y1: 0, y2: plotHeight});
   const dot = svgNode("circle", {class: "training-hover-point", r: 4});
   container.append(control, tooltip);
@@ -145,16 +147,19 @@ function chartInspector() {
     listeners?.abort();
     listeners = null;
   }
-  function describe() {
+  function updateReadout() {
     const [x, value, row] = metric.points[index];
-    const lines = [axis.dimension + " " + format(x), metric.label + ": " + format(value)];
+    reading.textContent = format(value);
+    stepLabel.textContent = axis.dimension + " " + format(x);
+    const lines = [stepLabel.textContent, metric.label + ": " + reading.textContent];
     for (const other of metricsToPlot) {
       if (other.field !== metric.field && Number.isFinite(row[other.field]))
         lines.push(other.label + ": " + format(row[other.field]));
     }
     if (metric.points[index] === metric.best) lines.push("Best validation score");
     if (index === metric.latestIndex) lines.push("Latest measurement");
-    return lines;
+    control.setAttribute("aria-valuenow", x);
+    control.setAttribute("aria-valuetext", lines.join(". "));
   }
   function place() {
     if (!mode) return;
@@ -185,12 +190,11 @@ function chartInspector() {
       mode = source;
       return;
     }
-    index = next;
+    if (next !== index) {
+      index = next;
+      updateReadout();
+    }
     mode = source;
-    const lines = describe();
-    tooltip.replaceChildren(...lines.map((line, i) => element(i ? "span" : "strong", line)));
-    control.setAttribute("aria-valuenow", metric.points[index][0]);
-    control.setAttribute("aria-valuetext", lines.join(". "));
     tooltip.hidden = false;
     if (crosshair.parentNode !== area) area.append(crosshair, dot);
     place();
@@ -247,8 +251,7 @@ function chartInspector() {
     control.setAttribute("aria-label", "Inspect " + metric.label.toLowerCase() + " by " + axis.dimension.toLowerCase());
     control.setAttribute("aria-valuemin", points[0][0]);
     control.setAttribute("aria-valuemax", points.at(-1)[0]);
-    control.setAttribute("aria-valuenow", points[index][0]);
-    control.setAttribute("aria-valuetext", describe().join(". "));
+    updateReadout();
     if (previousMode && !reset) inspect(index, previousMode);
   }
   return {container, update, hide};

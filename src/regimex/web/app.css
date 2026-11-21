@@ -1495,10 +1495,14 @@ iframe {
   border: 1px solid var(--field-border);
   border-radius: 4px;
   background: var(--control);
-  color: var(--ink);
+  color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   pointer-events: none;
+}
+.training-chart-tooltip strong {
+  color: var(--ink);
+  font-size: 14px;
 }
 .training-crosshair {
   stroke: var(--muted);

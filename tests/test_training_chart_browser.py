@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from test_offline_report_browser import browser as browser
-from test_theme_browser import assert_contrast
+from test_theme_browser import assert_contrast, rendered_colors
 from test_training_workspace_browser import ORIGIN, RUN_ID, TrainingAPI
 
 
@@ -48,8 +48,9 @@ def expect_readout(figure: Any, observation: str, metric: str, value: str) -> No
     expect = pytest.importorskip("playwright.sync_api").expect
     tip = figure.locator(".training-chart-tooltip")
     expect(tip).to_be_visible()
-    for text in (observation, metric, value):
-        expect(tip).to_contain_text(text)
+    expect(tip.locator(":scope > *")).to_have_text([value, observation])
+    description = figure.get_by_role("slider").get_attribute("aria-valuetext")
+    assert description and observation in description and f"{metric}: {value}" in description
 
 
 def test_hover_snaps_to_measured_updates_and_marks_first_best_and_last(browser: Any) -> None:
@@ -78,11 +79,11 @@ def test_hover_snaps_to_measured_updates_and_marks_first_best_and_last(browser: 
         # At update 21 loss is recorded, but the nearest measured validation score is at 8.
         page.mouse.move(*plot_position(loss, 20 / 99))
         expect_readout(loss, "Update 21", "Training loss", "0.72")
-        expect(loss.get_by_role("tooltip")).not_to_contain_text("Validation")
+        assert "Validation" not in loss.get_by_role("slider").get_attribute("aria-valuetext")
         page.mouse.move(*plot_position(score, 20 / 99))
         expect_readout(score, "Update 8", "Validation interval macro-F1", "0.8")
-        expect(score.get_by_role("tooltip")).to_contain_text("Training loss: 0.83")
-        expect(score.get_by_role("tooltip")).to_contain_text("Best validation score")
+        description = score.get_by_role("slider").get_attribute("aria-valuetext")
+        assert "Training loss: 0.83" in description and "Best validation score" in description
         expected_x, _ = plot_position(score, 7 / 99)
         guide = score.locator(".training-crosshair").evaluate(
             "line => line.getBoundingClientRect().toJSON()"
@@ -115,7 +116,7 @@ def test_regularization_inspector_uses_the_log_axis_and_measured_keyboard_steps(
         inspector.focus()
         expect_readout(score, "Regularization 0.1", metric, "0.87")
         inspector.press("Home")
-        expect_readout(score, "0.01", metric, "0.15")
+        expect_readout(score, "Regularization 0.01", metric, "0.15")
         inspector.press("ArrowRight")
         expect_readout(score, "Regularization 0.1", metric, "0.87")
         expect(inspector).to_have_attribute("aria-valuenow", "0.1")
@@ -206,6 +207,9 @@ def test_tapping_both_chart_edges_keeps_the_readout_visible_on_a_phone(
               return box.left >= 0 && box.right <= innerWidth &&
                 box.top >= 0 && box.bottom <= innerHeight;
             }""")
-            assert_contrast(tooltip, 4.5)
+            value_text, axis_text = tooltip.locator("strong"), tooltip.locator("span")
+            assert_contrast(value_text, 4.5)
+            assert_contrast(axis_text, 4.5)
+            assert rendered_colors(value_text)[1] != rendered_colors(axis_text)[1]
         page.get_by_role("heading", name="Training metrics").tap()
         expect(tooltip).to_be_hidden()
