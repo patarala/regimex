@@ -1,5 +1,6 @@
-import {$, analysisStateLabel, option} from "./ui.js";
+import {$, analysisStateLabel} from "./ui.js";
 import {showTrainingMetrics} from "./training-metrics.js";
+import {architectureName, createTrainingForm} from "./training-form.js";
 
 const api = "/api/v1/";
 const pageSize = 12;
@@ -12,29 +13,15 @@ function text(tag, value) {
   return el;
 }
 
-function options(id, items, empty) {
-  $(id).replaceChildren(...(items.length ? items.map(([value, label]) => option(value, label)) : [option("", empty)]));
-}
-
-function readSettings(id, required = true) {
-  const field = $(id), input = field.value.trim();
-  if (!input && !required) return undefined;
-  try {
-    const value = JSON.parse(input);
-    if (value && typeof value === "object" && !Array.isArray(value)) return value;
-  } catch {
-    // Identify the editable field instead of exposing a parser-specific error.
-  }
-  field.closest("details").open = true;
-  field.focus();
-  throw new Error("Enter a JSON object for " + field.labels[0].textContent.trim() + ".");
-}
-
-export function createTraining({session, onPublication}) {
-  let opened = false, epoch = 0, selection = 0, listRequest = 0, referenceRequest = 0;
+export function createTraining({session, navigate, onPublication}) {
+  let opened = false, epoch = 0, selection = 0, listRequest = 0;
   let offset = 0, timer = null, busy = false, pollRevision = 0;
   let run = null, evaluation = null, activeModel, metricsLoaded = false;
-  let architectures = [], pendingDownstream = false;
+  let pendingDownstream = false, retryDelay = 2500, target = null;
+  let listed = new Map();
+  const form = createTrainingForm({session, eachPage});
+  const runsToggle = $("training-runs-toggle");
+  const runHash = id => "#training/" + encodeURIComponent(id);
   const pending = new Map();
   const isAdmin = () => session.value?.principal.role === "admin";
   const current = (stamp) => opened && stamp === epoch && isAdmin();
@@ -49,6 +36,11 @@ export function createTraining({session, onPublication}) {
   function deselect() {
     selection++;
     clearTimeout(timer);
+    form.close();
+    retryDelay = 2500;
+    $("training-sync").hidden = true;
+    $("training-run-details").open = false;
+    for (const li of $("training-runs").children) li.children[0].setAttribute("aria-current", "false");
     run = evaluation = null;
     activeModel = undefined;
     pendingDownstream = false;
@@ -69,6 +61,8 @@ export function createTraining({session, onPublication}) {
   function close() {
     epoch++;
     opened = false;
+    target = null;
+    listed.clear();
     busy = false;
     deselect();
     $("training").hidden = true;
@@ -79,14 +73,8 @@ export function createTraining({session, onPublication}) {
 
   function reset() {
     close();
+    form.discard();
     pending.clear();
-    architectures = [];
-    $("training-benchmark").value = "";
-    $("training-parameters").value = "{}";
-    $("training-policy").value = "";
-    $("training-runtime").value = $("training-inference").value = "";
-    for (const id of ["training-dataset", "training-architecture", "training-labels", "training-validation"])
-      $(id).replaceChildren();
     $("open-training").hidden = true;
   }
 
@@ -98,24 +86,31 @@ export function createTraining({session, onPublication}) {
     const stamp = epoch, request = ++listRequest;
     const page = await session.json(api + "training-runs?limit=" + (pageSize + 1) + "&offset=" + offset);
     if (!current(stamp) || request !== listRequest) return;
-    $("training-runs").replaceChildren(...page.items.slice(0, pageSize).map((row) => {
+    const focused = document.activeElement?.dataset?.runId;
+    const rows = page.items.slice(0, pageSize);
+    listed = new Map(rows.map(row => [row.run_id, row]));
+    $("training-runs").replaceChildren(...rows.map((row) => {
       const item = document.createElement("li");
       const button = text("button", "");
       button.type = "button";
       button.className = "quiet";
       button.dataset.runId = row.run_id;
-      button.setAttribute("aria-current", String(row.run_id === run?.run_id));
+      button.setAttribute("aria-current", String(row.run_id === target));
       const time = new Date(row.job.created_at).toLocaleString();
-      button.append(text("strong", row.training.architecture_id + " · " + analysisStateLabel(row.job.state)),
+      button.append(text("strong", architectureName(row.training.architecture_id, true) + " · " + analysisStateLabel(row.job.state)),
         text("span", time), text("small", row.run_id.slice(0, 8)));
-      button.addEventListener("click", () => select(row));
+      button.addEventListener("click", () => chooseFromHistory(row.run_id));
       item.append(button);
       return item;
     }));
+    if (focused) {
+      for (const li of $("training-runs").children)
+        if (li.children[0].dataset.runId === focused) li.children[0].focus({preventScroll: true});
+    }
     $("training-empty").hidden = page.items.length !== 0;
     $("training-prev").hidden = offset === 0;
     $("training-next").hidden = page.items.length <= pageSize;
-    if (preselect && !run && $("training-config").hidden && page.items.length) select(page.items[0]);
+    if (preselect && target === null && rows.length) navigate(runHash(rows[0].run_id), true);
   }
 
   // A network error can arrive after the server committed. Reuse that exact request's key.
@@ -140,70 +135,33 @@ export function createTraining({session, onPublication}) {
     return rows;
   }
 
-  function submitReady() {
-    $("training-submit").disabled = busy || ![$("training-dataset"), $("training-architecture"),
-      $("training-labels"), $("training-validation"), $("training-benchmark")].every(el => el.value.trim());
-  }
-
-  async function references(stamp) {
-    const request = ++referenceRequest;
-    const valid = () => selected(stamp) && request === referenceRequest;
-    options("training-labels", [], "No training labels");
-    options("training-validation", [], "No validation references");
-    submitReady();
-    if (!$("training-dataset").value) return;
-    const rows = await eachPage(api + "reference-sets?dataset_id=" + encodeURIComponent($("training-dataset").value), valid);
-    if (!valid()) return;
-    for (const [id, partition] of [["training-labels", "train"], ["training-validation", "validation"]]) {
-      options(id, rows.filter(row => row.partition === partition && row.current_training_profile)
-        .map(row => [row.reference_set_id, row.kind + " · " + row.reference_set_id]), "No " + partition + " references");
-    }
-    submitReady();
-  }
-
-  function policy() {
-    const arch = architectures.find(a => a.architecture_id === $("training-architecture").value);
-    $("training-policy").value = arch ? JSON.stringify(arch.default_training_policy, null, 2) : "";
-    $("training-parameters").value = "{}";
-    submitReady();
-  }
-
-  async function configure() {
-    deselect();
-    const stamp = selection;
-    message();
-    $("training-config").hidden = false;
-    options("training-dataset", [], "Loading datasets…");
-    options("training-architecture", [], "Loading architectures…");
-    submitReady();
-    const valid = () => selected(stamp);
-    try {
-      const [datasets, backends] = await Promise.all([eachPage(api + "datasets", valid), eachPage(api + "architectures", valid)]);
-      if (!valid()) return;
-      architectures = backends.filter(row => row.executable !== false);
-      const eligibleDatasets = datasets.filter(row => row.partitions.train && row.partitions.validation);
-      options("training-dataset", eligibleDatasets.map(row => [row.dataset_id, row.dataset_id + " · " +
-        row.partitions.train + " train / " + row.partitions.validation + " validation"]), "No development datasets");
-      options("training-architecture", architectures.map(row => [row.architecture_id, row.architecture_id]),
-        "No training backends");
-      policy();
-      await references(stamp);
-    } catch (error) { if (valid()) message(error.message, true); }
-  }
-
   function facts() {
     const spec = run.training;
-    $("training-detail-title").textContent = spec.architecture_id + " training";
+    $("training-detail-title").textContent = architectureName(spec.architecture_id, true) + " training";
     $("training-state").textContent = analysisStateLabel(run.job.state);
+    $("training-state").dataset.state = run.job.state;
+    $("training-created").textContent = "Created " + new Date(run.job.created_at).toLocaleString();
     const entries = [["Run", run.run_id], ["Dataset", spec.dataset_id], ["Selection benchmark", spec.benchmark_selection_id],
-      ["Model version", spec.model_version_id], ["Created", new Date(run.job.created_at).toLocaleString()]];
+      ["Model version", spec.model_version_id]];
     $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [text("dt", key), text("dd", value || "—")]));
     $("training-settings").textContent = JSON.stringify({parameters: spec.parameters, policy: spec.policy,
       training_runtime: spec.training_runtime, inference_runtime: spec.inference_runtime,
       analysis_profile_id: spec.analysis_profile_id, labels_reference_set_id: spec.labels_reference_set_id,
       validation_reference_set_id: spec.validation_reference_set_id}, null, 2);
-    $("training-stage").textContent = run.job.failure?.message ||
-      (inProgress(run.job) ? "Stage: " + run.job.stage + " · Attempt " + run.job.attempt + " of " + run.job.max_attempts : "");
+    const stages = {
+      queued: "Waiting for a worker.", loading: "Loading training data.",
+      "administrative-computation": "Training the model.", committing: "Saving the model and metrics.",
+      retry_wait: "Waiting to retry.",
+    };
+    let status = run.job.failure?.message || "";
+    if (run.job.state === "cancel_requested") status = "Cancellation requested.";
+    else if (inProgress(run.job)) {
+      status = stages[run.job.stage] || (run.job.state === "queued" ? stages.queued : "Training the model.");
+      if (run.job.attempt > 1) status += " Attempt " + run.job.attempt + " of " + run.job.max_attempts + ".";
+      status += " Charts appear when training finishes.";
+    }
+    if ($("training-stage").textContent !== status) $("training-stage").textContent = status;
+    $("training-stage").hidden = !status;
     $("training-cancel").hidden = !["running", "queued"].includes(run.job.state);
     $("training-cancel").disabled = busy;
     $("training-detail").hidden = false;
@@ -268,20 +226,62 @@ export function createTraining({session, onPublication}) {
         }
         waiting = await downstream(valid);
       }
-      if (valid() && waiting) timer = setTimeout(() => refresh(stamp), 2500);
-    } catch (error) { if (valid()) message(error.message, true); }
+      if (!valid()) return;
+      $("training-sync").hidden = true;
+      retryDelay = 2500;
+      if (waiting) timer = setTimeout(() => refresh(stamp), 2500);
+    } catch (error) {
+      if (!valid()) return;
+      if (error.status && error.status !== 429 && error.status < 500) {
+        $("training-sync").hidden = true;
+        message(error.message, true);
+        return;
+      }
+      $("training-sync").textContent = "Could not update this run. Retrying automatically…";
+      $("training-sync").hidden = false;
+      timer = setTimeout(() => refresh(stamp), retryDelay);
+      retryDelay = Math.min(retryDelay * 2, 30000);
+    }
   }
 
-  function select(row) {
+  async function show(id = null) {
+    if (!isAdmin()) return;
+    const entering = !opened;
+    if (entering) {
+      opened = true;
+      epoch++;
+      offset = 0;
+      $("training").hidden = false;
+    } else if (id === target) return;
+    target = id;
+    runsToggle.setAttribute("aria-expanded", String(id === null));
     deselect();
+    lock(false);
     message();
-    $("training-config").hidden = true;
-    run = row;
+    const stamp = selection, workspace = epoch;
+    if (entering || id === null) void list(id === null).catch(error => reportIfCurrent(workspace, error));
+    if (id === null) {
+      $("training-title").focus();
+      return;
+    }
+    if (id === "new") {
+      void form.open();
+      $("training-config-title").focus();
+      return;
+    }
     for (const li of $("training-runs").children) {
       const button = li.children[0];
-      button.setAttribute("aria-current", String(button.dataset.runId === row.run_id));
+      button.setAttribute("aria-current", String(button.dataset.runId === id));
     }
-    void refresh(selection, false);
+    try {
+      const row = listed.get(id) || await session.json(route(id));
+      if (!selected(stamp)) return;
+      run = row;
+      void refresh(stamp, false);
+      $("training-detail-title").focus();
+    } catch (error) {
+      if (selected(stamp)) message(error.message, true);
+    }
   }
 
   function lock(locked) {
@@ -293,58 +293,40 @@ export function createTraining({session, onPublication}) {
     for (const id of ["training-new", "training-refresh", "training-cancel"])
       $(id).disabled = locked;
     $("training-evaluate").disabled = $("training-publish").disabled = locked || pendingDownstream;
-    submitReady();
+    form.setBusy(locked);
   }
 
   async function action(work) {
     if (!opened || busy) return;
-    const stamp = selection, workspace = epoch;
+    const stamp = selection;
     lock(true);
     message();
     try { await work(stamp); }
     catch (error) { if (selected(stamp)) message(error.message, true); }
-    finally { if (current(workspace)) { lock(false); if (run) void refresh(selection); } }
+    finally { if (selected(stamp)) { lock(false); if (run) void refresh(selection); } }
   }
 
-  $("open-training").addEventListener("click", () => {
-    if (!isAdmin()) return;
-    opened = true;
-    epoch++;
-    offset = 0;
-    lock(false);
-    $("workspace").hidden = $("open-connections").hidden = $("open-training").hidden = true;
-    $("training").hidden = false;
-    const stamp = epoch;
-    void list(true).catch(error => reportIfCurrent(stamp, error));
+  function chooseFromHistory(id) {
+    if (id !== target) return navigate(runHash(id));
+    runsToggle.setAttribute("aria-expanded", "false");
+    $(id === "new" ? "training-config-title" : "training-detail-title").focus();
+  }
+  runsToggle.addEventListener("click", () => {
+    runsToggle.setAttribute("aria-expanded", String(runsToggle.getAttribute("aria-expanded") !== "true"));
   });
-  $("close-training").addEventListener("click", () => {
-    close();
-    $("workspace").hidden = !session.value;
-    $("open-connections").hidden = $("open-training").hidden = !isAdmin();
-  });
-  $("training-new").addEventListener("click", configure);
-  $("training-dataset").addEventListener("change", () => {
-    const stamp = selection;
-    void references(stamp).catch(error => { if (selected(stamp)) message(error.message, true); });
-  });
-  $("training-architecture").addEventListener("change", policy);
-  $("training-benchmark").addEventListener("input", submitReady);
-  $("training-form").addEventListener("submit", (event) => {
+  $("training-new").addEventListener("click", () => chooseFromHistory("new"));
+  $("training-form").addEventListener("submit", event => {
     event.preventDefault();
+    if ($("training-submit").disabled) return;
     void action(async stamp => {
-      const body = {
-        dataset_id: $("training-dataset").value, architecture_id: $("training-architecture").value,
-        labels_reference_set_id: $("training-labels").value, validation_reference_set_id: $("training-validation").value,
-        benchmark_selection_id: $("training-benchmark").value,
-        policy: readSettings("training-policy"), parameters: readSettings("training-parameters"),
-        training_runtime: readSettings("training-runtime", false),
-        inference_runtime: readSettings("training-inference", false),
-      };
-      const record = await post(api + "training-runs", body);
+      const record = await post(api + "training-runs", form.payload());
       if (!selected(stamp)) return;
       offset = 0;
-      select(record);
-      await list();
+      form.discard();
+      listed.set(record.run_id, record);
+      navigate(runHash(record.run_id), true);
+      const workspace = epoch;
+      void list().catch(error => reportIfCurrent(workspace, error));
     });
   });
   $("training-cancel").addEventListener("click", () => action(async stamp => {
@@ -377,9 +359,14 @@ export function createTraining({session, onPublication}) {
       offset = Math.max(0, offset + delta);
       const stamp = epoch;
       message();
-      void list(!run && $("training-config").hidden).catch(error => reportIfCurrent(stamp, error));
+      void list(target === null).catch(error => reportIfCurrent(stamp, error));
       if (!delta && run) void refresh(selection);
+      else if (!delta && target && target !== "new") {
+        const id = target;
+        target = null;
+        void show(id);
+      }
     });
 
-  return {activate() { reset(); $("open-training").hidden = !isAdmin(); }, reset};
+  return {close, reset, show};
 }

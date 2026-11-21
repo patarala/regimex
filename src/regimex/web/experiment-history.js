@@ -48,10 +48,15 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   const expand = button("quiet experiment-expand", "");
   const rename = button("quiet experiment-rename", "Rename");
   const remove = button("quiet delete-action experiment-delete", "Delete experiment");
+  const management = element("details", "experiment-management");
+  const manage = element("summary", "", "Manage");
+  const manageActions = element("div", "experiment-tools");
+  manageActions.append(rename, remove);
+  management.append(manage, manageActions);
   remove.addEventListener("click", () => {
     if (isActive()) return deleteExperiment(value.snapshot_id, title());
   });
-  tools.append(expand, rename, remove);
+  tools.append(expand, management);
   const editor = element("form", "experiment-name");
   editor.hidden = true;
   const label = element("label", "", "Experiment name");
@@ -98,12 +103,14 @@ export function createExperimentHistory({session, experiment, filters, isActive,
     value = nextValue;
     const analysis = value.latest_analysis;
     name.textContent = title();
+    manage.setAttribute("aria-label", "Manage " + title());
     instruments.textContent = value.display_name ? value.instrument_ids.join(", ") : "";
     model.textContent = analysis ? analysis.job.model?.model_version_id || "Model unavailable" : "No analyses";
     date.dateTime = analysis?.job.created_at || value.created_at;
     date.textContent = shortDate(date.dateTime);
     state.dataset.state = analysis?.job.state || "saved";
-    state.textContent = analysis ? analysisStateLabel(analysis.job.state) : "Saved";
+    state.hidden = !analysis;
+    state.textContent = analysis ? analysisStateLabel(analysis.job.state) : "";
     latest.dataset.analysisId = analysis?.analysis_id || "";
     latest.disabled = !analysis;
     latest.title = analysis ? `Open latest analysis · ${value.run_id}` : value.run_id;
@@ -242,6 +249,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   cancel.addEventListener("click", () => {
     editing++;
     editor.hidden = true;
+    rename.focus();
   });
   editor.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -261,6 +269,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
       const saved = await session.json(`/api/v1/experiments/${value.snapshot_id}/name`, {method: "PATCH", body});
       if (!active()) return;
       update({...value, display_name: saved.display_name, name_revision: saved.revision});
+      if (editor.contains(document.activeElement)) rename.focus();
       editor.hidden = true;
       await refresh().catch((error) => {
         if (active()) notice(error.message, true);

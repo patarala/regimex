@@ -1,13 +1,16 @@
-import {$, option} from "./ui.js";
+import {$, notice, option, setPreview} from "./ui.js";
 
 const COMPARISON_PAGE_SIZE = 20;
 
-export function createComparison({session, getSelection}) {
+export function createComparison({session, getSelection, rememberComparison}) {
   let comparisonGeneration = 0;
+  let restoreGeneration = 0;
+  let comparedId = null;
   let comparisonOffset = 0;
   let comparisonHasMore = false;
   let comparisonItems = [];
   function reset() {
+    restoreGeneration++;
     clearComparison();
     $("comparison-controls").hidden = true;
     $("comparison-controls").open = false;
@@ -22,8 +25,8 @@ export function createComparison({session, getSelection}) {
   }
 
   function clearComparison() {
-    $("comparison-preview").removeAttribute("src");
-    $("comparison-preview").hidden = true;
+    comparedId = null;
+    setPreview("comparison-preview");
     $("comparison-actions").hidden = true;
     $("download-comparison").removeAttribute("href");
   }
@@ -58,7 +61,9 @@ export function createComparison({session, getSelection}) {
         picker.append(option(item.analysis_id,
           `${item.job.model?.model_version_id || "Model unavailable"} · ${date} · ${item.analysis_id.slice(-8)}`));
       });
-      picker.value = "";
+      const soleTarget = offset === 0 && !comparisonHasMore && comparisonItems.length === 1;
+      picker.value = soleTarget ? comparisonItems[0].analysis_id : "";
+      $("compare").disabled = !soleTarget;
       $("comparison-status").textContent = comparisonItems.length ? "" : offset || comparisonHasMore
         ? "No other completed analyses on this page."
         : "No other completed analyses of this experiment yet. Run it again to compare results.";
@@ -81,19 +86,50 @@ export function createComparison({session, getSelection}) {
     const other = comparisonItems.find((item) => item.analysis_id === $("comparison-target").value);
     show(selection, other);
   }
-  function show(selection, other) {
+  function display(selection, other) {
     if (getSelection() !== selection || !selection?.metadata || !other
       || other.analysis_id === selection.id || other.snapshot_id !== selection.metadata.snapshot_id
       || selection.metadata.job.state !== "succeeded" || other.job.state !== "succeeded"
-      || !selection.metadata.result_available || !other.result_available) return;
+      || !selection.metadata.result_available || !other.result_available) return false;
     const path = `/api/v1/analyses/${selection.id}/comparison`;
     const query = `other=${encodeURIComponent(other.analysis_id)}`;
-    $("comparison-preview").src = `${path}/preview?${query}`;
-    $("comparison-preview").hidden = false;
+    setPreview("comparison-preview", `${path}/preview?${query}`);
     $("report-preview").hidden = true;
     $("download-comparison").href = `${path}?${query}`;
     $("download-comparison").download = `regimex-comparison-${selection.id}-${other.analysis_id}.html`;
     $("comparison-actions").hidden = false;
+    comparedId = other.analysis_id;
+    return true;
+  }
+
+  function show(selection, other) {
+    if (display(selection, other)) {
+      restoreGeneration++;
+      rememberComparison(other.analysis_id);
+    }
+  }
+
+  function showReport() {
+    clearComparison();
+    $("report-preview").hidden = !getSelection()?.metadata?.report_available;
+  }
+
+  async function restore(id, isCurrent) {
+    const generation = ++restoreGeneration;
+    const epoch = session.epoch;
+    const selection = getSelection();
+    const active = () => generation === restoreGeneration && epoch === session.epoch
+      && selection === getSelection() && isCurrent();
+    if (!active() || id === comparedId) return;
+    showReport();
+    if (!id || !selection?.metadata) return;
+    try {
+      const other = await session.json("/api/v1/analyses/" + encodeURIComponent(id));
+      if (active() && (other.analysis_id !== id || !display(selection, other)))
+        notice("Choose another completed analysis of this experiment to compare.", true);
+    } catch (error) {
+      if (active()) notice(error.message, true);
+    }
   }
   $("comparison-controls").addEventListener("toggle", () => {
     if ($("comparison-controls").open && !getSelection()?.comparisonLoaded) return comparisonPage();
@@ -108,8 +144,9 @@ export function createComparison({session, getSelection}) {
   $("comparison-refresh").addEventListener("click", () => comparisonPage());
   $("compare").addEventListener("click", compare);
   $("close-comparison").addEventListener("click", () => {
-    clearComparison();
-    $("report-preview").hidden = !getSelection()?.metadata?.report_available;
+    restoreGeneration++;
+    showReport();
+    rememberComparison(null);
   });
-  return {reset, show};
+  return {reset, show, restore, get comparedId() { return comparedId; }};
 }

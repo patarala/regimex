@@ -79,11 +79,15 @@ async function workspace(role = "admin") {
   const entry = load(path.join(root, "integrations.js"));
   await entry.link((specifier, parent) => load(path.resolve(path.dirname(parent.identifier), specifier)));
   await entry.evaluate();
-  const controller = entry.namespace.createIntegrations({session});
-  controller.activate();
+  const routes = [];
+  const controller = entry.namespace.createIntegrations({session, navigate(route) {
+    routes.push(route);
+    if (route) return controller.show(route.split("/")[1]);
+    controller.reset();
+  }});
+  controller.reset();
   async function open(index = 0) {
-    get("open-connections").fire("click");
-    await flush();
+    await controller.show();
     get("connection-list").children[index].children[0].fire("click");
     await flush();
   }
@@ -92,16 +96,17 @@ async function workspace(role = "admin") {
     get("connection-key-days").value = "30";
     get("connection-key-create").fire("submit");
   }
-  return {get, calls, copied, controller, session, open, issue, state, events};
+  return {get, calls, copied, controller, session, open, issue, state, events, routes};
 }
 
 test("ordinary users cannot open connection administration or send management requests", async () => {
   const page = await workspace("user");
-  assert.equal(page.get("open-connections").hidden, true);
-  page.get("open-connections").fire("click");
+  await page.controller.show();
+  await page.controller.show("one");
   page.issue();
   await flush();
   assert.equal(page.calls.length, 0);
+  assert.deepEqual(page.routes, []);
 });
 
 test("issued secret can be copied and is cleared when leaving connections", async () => {
@@ -113,9 +118,10 @@ test("issued secret can be copied and is cleared when leaving connections", asyn
   assert.equal(page.get("connection-secret").hidden, false);
   await page.get("connection-secret-copy").fire("click");
   assert.deepEqual(page.copied, ["rgx_once-only-secret"]);
-  page.get("close-connections").fire("click");
+  page.controller.reset();
   assert.equal(page.get("connection-secret-value").value, "");
   assert.equal(page.get("connections").hidden, true);
+  assert.deepEqual(page.routes, ["#connections/one"]);
 });
 
 test("delete permission is opt-in and resets after key creation and sign-out", async () => {
@@ -167,7 +173,7 @@ test("logout invalidates pending issuance and clears connection details", async 
   await flush();
   assert.equal(page.get("connection-secret-value").value, "");
   assert.equal(page.get("connection-detail").hidden, true);
-  assert.equal(page.get("open-connections").hidden, true);
+  assert.equal(page.get("connections").hidden, true);
 });
 
 test("pagehide clears the secret and empty permissions do not create a key", async () => {

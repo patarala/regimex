@@ -41,17 +41,17 @@ export function createDeletion({session, onApplied}) {
     $("deletion-status").textContent = "";
   }
 
-  function busy(value, state) {
-    value.busy = state;
-    $("deletion-confirm").disabled = state;
-    $("deletion-refresh").disabled = state;
-    $("deletion-cancel").disabled = state;
+  function setPending(value, operation = null) {
+    value.pending = operation;
+    $("deletion-confirm").disabled = Boolean(operation);
+    $("deletion-refresh").disabled = Boolean(operation);
+    $("deletion-cancel").disabled = operation === "delete";
   }
 
   function start(target) {
     close();
     const value = {target, epoch: session.epoch, plan: null, receipt: null,
-      busy: false, confirmed: false, uncertain: false};
+      pending: null, confirmed: false, uncertain: false};
     selection = value;
     $("deletion-title").textContent = target.kind === "experiment" ? "Delete experiment" : "Delete analysis";
     $("deletion-summary").textContent = target.title || target.id;
@@ -91,9 +91,9 @@ export function createDeletion({session, onApplied}) {
   }
 
   async function preview(value) {
-    if (!current(value) || value.busy || value.confirmed) return;
+    if (!current(value) || value.pending || value.confirmed) return;
     value.plan = null;
-    busy(value, true);
+    setPending(value, "preview");
     $("deletion-status").textContent = "Loading deletion preview…";
     $("deletion-warning").hidden = true;
     try {
@@ -101,11 +101,11 @@ export function createDeletion({session, onApplied}) {
       const plan = await session.json(`/api/v1/${path}/${value.target.id}/deletion-preview`, {method: "POST"});
       if (!current(value)) return;
       value.plan = plan;
-      busy(value, false);
+      setPending(value);
       renderPlan(value);
     } catch (error) {
       if (!current(value)) return;
-      busy(value, false);
+      setPending(value);
       $("deletion-confirm").disabled = true;
       $("deletion-refresh").hidden = false;
       $("deletion-status").textContent = error.message;
@@ -115,7 +115,7 @@ export function createDeletion({session, onApplied}) {
   function received(value, receipt) {
     value.receipt = receipt;
     value.uncertain = false;
-    busy(value, false);
+    setPending(value);
     onApplied(value.target, receipt);
     void load();
     if (receipt.state === "completed") {
@@ -137,14 +137,14 @@ export function createDeletion({session, onApplied}) {
   }
 
   async function check(value) {
-    busy(value, true);
+    setPending(value, "check");
     $("deletion-status").textContent = "Checking deletion status…";
     try {
       const receipt = await session.json(`${ROOT}/${value.plan.plan_id}`);
       if (current(value)) received(value, receipt);
     } catch (error) {
       if (!current(value)) return;
-      busy(value, false);
+      setPending(value);
       if (error.status === 404) {
         value.confirmed = value.uncertain = false;
         $("deletion-confirm").disabled = true;
@@ -159,7 +159,7 @@ export function createDeletion({session, onApplied}) {
 
   async function confirm() {
     const value = selection;
-    if (!value || !current(value) || value.busy || !value.plan || $("deletion-confirm").disabled) return;
+    if (!value || !current(value) || value.pending || !value.plan || $("deletion-confirm").disabled) return;
     if (value.uncertain) return check(value);
     if (!value.confirmed && value.plan.blockers?.length) return;
     if (!value.confirmed && Date.parse(value.plan.expires_at) <= Date.now()) {
@@ -169,7 +169,7 @@ export function createDeletion({session, onApplied}) {
       return;
     }
     value.confirmed = true;
-    busy(value, true);
+    setPending(value, "delete");
     $("deletion-status").textContent = "Deleting…";
     try {
       const receipt = await session.json(`${ROOT}/${value.plan.plan_id}`, {
@@ -178,7 +178,7 @@ export function createDeletion({session, onApplied}) {
       if (current(value)) received(value, receipt);
     } catch (error) {
       if (!current(value)) return;
-      busy(value, false);
+      setPending(value);
       value.uncertain = true;
       $("deletion-confirm").textContent = "Check deletion";
       $("deletion-refresh").hidden = true;
@@ -244,10 +244,13 @@ export function createDeletion({session, onApplied}) {
 
   $("deletion-confirm").addEventListener("click", confirm);
   $("deletion-refresh").addEventListener("click", () => selection && preview(selection));
-  $("deletion-cancel").addEventListener("click", () => { if (!selection?.busy) close(); });
+  function dismiss() {
+    if (selection?.pending !== "delete") close();
+  }
+  $("deletion-cancel").addEventListener("click", dismiss);
   dialog.addEventListener("cancel", (event) => {
     event.preventDefault();
-    if (!selection?.busy) close();
+    dismiss();
   });
   $("pending-deletions-refresh").addEventListener("click", () => { void load(0); });
   $("storage-refresh").addEventListener("click", () => { void load(0); });

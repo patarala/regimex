@@ -75,7 +75,8 @@ class AuthRepository:
             assert count is not None
             if cast(int, count[0]) >= maximum_sessions:
                 raise CapacityExceeded(
-                    "This credential has reached its active browser-session limit."
+                    "This token has reached its browser session limit. "
+                    "Sign out in another browser or wait for an existing session to expire."
                 )
             record = SessionRecord(
                 session_id=uuid4(),

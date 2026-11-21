@@ -21,3 +21,15 @@ export function option(value, label) {
   item.textContent = label;
   return item;
 }
+
+// A navigation inside a mounted iframe would create a browser history entry of its own.
+export function setPreview(id, path = null) {
+  const frame = $(id);
+  frame.hidden = !path;
+  if (frame.getAttribute("src") === path) return;
+  const parent = frame.parentNode, next = frame.nextSibling;
+  if (parent) frame.remove();
+  if (path) frame.setAttribute("src", path);
+  else frame.removeAttribute("src");
+  if (parent) parent.insertBefore(frame, next);
+}

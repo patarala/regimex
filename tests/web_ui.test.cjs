@@ -30,6 +30,7 @@ class Element {
   replaceChildren(...children) { this.children = children; }
   removeAttribute(name) { delete this[name]; }
   setAttribute(name, value) { this[name] = value; }
+  getAttribute(name) { return this[name] ?? null; }
   focus() {}
   showModal() { this.open = true; }
   close() { this.open = false; }
@@ -84,7 +85,21 @@ async function workspace(count = 45, {href = "http://localhost/", holdHistory = 
   const timers = new Map();
   const location = {href};
   const window = new Element();
-  const history = {replaceState: (_state, _title, url) => { location.href = String(url); }};
+  const entries = [href];
+  let entry = 0;
+  const history = {
+    replaceState(_state, _title, url) { entries[entry] = location.href = String(url); },
+    pushState(_state, _title, url) {
+      entries.splice(++entry, entries.length, String(url));
+      location.href = String(url);
+    },
+    async go(delta) {
+      if (entry + delta < 0 || entry + delta >= entries.length) return;
+      entry += delta;
+      location.href = entries[entry];
+      await window.emit("popstate");
+    },
+  };
   const state = {
     holdHistory, holdModels: false, holdStorage: false, holdDeletions: false, holdSession: false, activeModelId: "tcn-1",
     now: Date.parse("2026-01-01T00:00:30Z"), names: new Map(),
@@ -230,6 +245,9 @@ test("deletion keeps quota charged while cleanup is pending and retries the revi
   ui.state.holdStorage = true;
   void ui.get("deletion-confirm").click();
   const apply = ui.pending(`/api/v1/deletions/${plan.plan_id}`);
+  assert.equal(ui.get("deletion-cancel").disabled, true);
+  await ui.get("deletion-dialog").emit("cancel", {preventDefault() {}});
+  assert.equal(ui.get("deletion-dialog").open, true);
   assert.equal(apply.options.method, "POST");
   assert.deepEqual(JSON.parse(apply.options.body), {sha256: plan.sha256});
   assert.equal(apply.options.headers["X-CSRF-Token"], "test-csrf");
@@ -292,6 +310,9 @@ test("late deletion previews cannot replace another target or survive sign-out",
   await flush();
   void byClass(ui.get("history-list").children[0], "experiment-delete").click();
   const stale = ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`);
+  assert.equal(ui.get("deletion-cancel").disabled, false);
+  await ui.get("deletion-cancel").click();
+  assert.equal(ui.get("deletion-dialog").open, false);
   void byClass(ui.get("history-list").children[1], "experiment-delete").click();
   const latest = ui.pending(`/api/v1/experiments/${id(1001)}/deletion-preview`);
   latest.reply(deletionPlan("experiment", id(1001)));
@@ -922,6 +943,65 @@ test("comparisons page only completed matching snapshots and clear when selectio
   void ui.select(1);
   assert.equal(ui.get("comparison-preview").src, undefined);
   assert.equal(ui.get("comparison-actions").hidden, true);
+});
+
+test("a pair of completed analyses takes one click to compare and survives Back and Forward", async () => {
+  const ui = await workspace(2);
+  await flush();
+  for (const item of ui.items) {
+    item.job.state = "succeeded";
+    item.result_available = true;
+    item.snapshot_id = id(1000);
+  }
+  void ui.select(0);
+  const first = {...metadata("first-job", "succeeded"), analysis_id: id(1), instrument_ids: ["BTC/USD"], step_count: 12};
+  const second = {...first, analysis_id: id(2)};
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(first);
+  await flush();
+  const reportUrl = ui.location.href;
+  ui.get("comparison-controls").open = true;
+  await ui.get("comparison-controls").emit("toggle");
+  assert.equal(ui.get("comparison-target").value, id(2));
+  assert.equal(ui.get("compare").disabled, false);
+  await ui.get("compare").click();
+  const comparisonUrl = ui.location.href;
+  assert.notEqual(comparisonUrl, reportUrl);
+  assert.equal(ui.get("comparison-preview").hidden, false);
+
+  await ui.window.history.go(-1);
+  assert.equal(ui.location.href, reportUrl);
+  assert.equal(ui.get("report-preview").hidden, false);
+  assert.equal(ui.get("comparison-preview").hidden, true);
+  const forward = ui.window.history.go(1);
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(2)}`).reply(second);
+  await forward;
+  assert.equal(ui.location.href, comparisonUrl);
+  assert.equal(ui.get("comparison-preview").src, `/api/v1/analyses/${id(1)}/comparison/preview?other=${id(2)}`);
+  assert.equal(ui.get("report-preview").hidden, true);
+  await ui.get("close-comparison").click();
+  assert.equal(ui.location.href, reportUrl);
+  const returning = ui.window.history.go(-1);
+  await flush();
+  const stale = ui.pending(`/api/v1/analyses/${id(2)}`);
+  await ui.window.history.go(1);
+  stale.reply(second);
+  await returning;
+  assert.equal(ui.get("comparison-preview").hidden, true);
+  assert.equal(ui.get("report-preview").hidden, false);
+});
+
+test("a comparison link to a different experiment keeps the original report visible", async () => {
+  const ui = await workspace(1, {href: `http://localhost/?analysis=${id(1)}&compare=${id(2)}`});
+  await flush();
+  const first = {...metadata("first-job", "succeeded"), analysis_id: id(1), instrument_ids: ["BTC/USD"], step_count: 12};
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(first);
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(2)}`).reply({...first, analysis_id: id(2), snapshot_id: id(2000)});
+  await flush();
+  assert.equal(ui.get("report-preview").hidden, false);
+  assert.equal(ui.get("comparison-preview").hidden, true);
+  assert.match(ui.get("notice").textContent, /completed analysis of this experiment/);
 });
 
 test("late comparison lists cannot expose candidates for an earlier selection", async () => {

@@ -5,6 +5,14 @@ the JSON export of a completed experiment. The [Docker Compose guide](deployment
 uses `https://localhost:8443`. The [source setup](#start-locally) below
 serves `http://127.0.0.1:8000`.
 
+| What you want to do | Where to start |
+| --- | --- |
+| Analyze one export or a batch | **Analyses → New analysis** |
+| Find a result, rerun a model, or compare two runs | **Analyses → Experiments** |
+| Remove a result or a saved experiment | [Delete saved work](#delete-saved-work) |
+| Train, evaluate, or publish a model | [Training](#train-a-model) (administrator) |
+| Connect a simulator and manage its service keys | [Connections](access.md#manage-connections-in-the-browser) (administrator) |
+
 ## Analyze an experiment
 
 1. Paste your token into **Access token** and select **Sign in**. The
@@ -14,7 +22,7 @@ serves `http://127.0.0.1:8000`.
    and choose `var/run.json`.
 3. Check the run and instruments, select a published model, then choose
    **Analyze**. The analysis keeps that model version.
-4. When the job finishes, read the preview or select **Download HTML** for
+4. When the job finishes, read the preview or select **Download report** for
    an offline copy. **Download JSON** saves the predictions and statistics.
 
 To analyze several exports with the same model, select or drop the files together.
@@ -26,10 +34,11 @@ on a failed file to run it again using its saved snapshot and original model.
 Once the batch finishes, **Retry failed** retries all failed jobs together.
 Accepted analyses stay in **Experiments** when you close the batch.
 
-You can sign out and return to **Experiments** later. A session lasts 30 minutes
-by default. Select an experiment to open its latest matching analysis, or
-expand the analysis count to pick a particular run. Search by name, instrument,
-run, model or analysis ID. **Rename** changes the display name in your workspace.
+Use the browser’s Back and Forward buttons to return to an analysis or comparison.
+Bookmark its URL to reopen it after signing in with the same account. A session
+lasts 30 minutes by default. Select an experiment to open its latest matching
+analysis, or expand the analysis count to pick a particular run. Search by name, instrument,
+run, model or analysis ID. Choose **Manage → Rename** to change the display name.
 
 ## Read a report
 
@@ -87,23 +96,26 @@ running `admin` worker. If this is your first training run, use the API to
 create a development dataset with training and validation partitions, generate
 a reference set for each, and register the dataset as development history.
 Reserve a separate final dataset with sealed test references, then start
-selection on that reservation. Keep its benchmark ID for the form.
+selection on that reservation. The form lists the benchmarks available to your account.
 [Data preparation](api.md#1-create-observations-and-references) ·
 [Benchmark reservation](api.md#2-reserve-final-data-before-selection)
 
-1. Choose **New run**. Select the development dataset, its training labels and
-   validation references. New training runs use the current analysis profile
-   (`direction-32/2.2`). Enter the **Selection benchmark ID**.
-2. Choose **baseline** or **tcn**. Under **Training settings**, you can edit
-   the architecture parameters, training policy and optional CPU runtime
-   overrides as JSON. Use the training runtime to set a time or memory budget
-   within your server's limits. Select **Start
-   training** to queue the run on CPU. You can close the page and return later.
-3. Select the run to see its stage and attempt, or use **Cancel training** while
-   it is queued or running. After it succeeds, check the selected validation
-   interval macro-F1. The baseline plots this score against regularization.
-   The TCN plots loss and validation scores by epoch or optimizer update.
-   Use **Training seed** to switch between seeds when a run used several.
+1. Choose **New run**. Select a development dataset. The form shows its
+   compatible training labels, validation references and selection benchmarks.
+   If data is missing, use the setup links beside the fields.
+2. Choose **Logistic baseline** or **Temporal convolutional network (TCN)**.
+   **Training settings** lets you edit architecture parameters, the training
+   policy and CPU runtime limits. Choose **Start training** to queue the run.
+   You can bookmark the run or leave and return while the worker trains it.
+   If you leave a form before submitting, browser Back restores the draft in the same tab.
+3. Select a run from the list, or open **Run history** on a phone. You can
+   cancel a run while it is queued or running.
+   The page checks active jobs about every 2.5 seconds. When training succeeds,
+   the charts appear automatically. The baseline plots validation interval
+   macro-F1 against regularization. The TCN plots loss and validation scores
+   by epoch or optimizer update. **Chart seed** switches the displayed curves.
+   The score above the charts always describes the saved model. Open **Metric
+   values** to read individual measurements.
 4. Choose **Evaluate candidate** to score its saved weights on the same
    validation references. Open **Evaluation JSON** for the full metrics.
    To make this model the default for new analyses, choose **Publish candidate**
@@ -116,9 +128,10 @@ API. [Final evaluation](api.md#4-freeze-and-evaluate-final-data)
 
 ## Delete saved work
 
-Use **Delete analysis** under **Details** to remove one result, or **Delete
-experiment** in history to remove the export and its analyses. The preview
-lists the affected resources and any jobs or datasets that block deletion.
+Use **Delete analysis** under **Details** to remove one result. In the
+experiment list, choose **Manage → Delete experiment** to remove the export
+and its analyses. The preview lists the affected resources and any jobs or
+datasets that block deletion.
 Download anything you want to keep before confirming **Delete**.
 
 Files awaiting cleanup still count toward your quota. If removal was

@@ -12,9 +12,12 @@
     <header class="masthead">
       <a href="/" class="brand" aria-label="Regimex home">Regimex</a>
       <div id="account" hidden>
+        <nav class="workspace-nav" aria-label="Workspace">
+          <a id="open-analyses" href="/">Analyses</a>
+          <a id="open-training" href="#training" hidden>Training</a>
+          <a id="open-connections" href="#connections" hidden>Connections</a>
+        </nav>
         <span id="owner"></span>
-        <button id="open-training" type="button" class="quiet" hidden>Training</button>
-        <button id="open-connections" type="button" class="quiet" hidden>Connections</button>
         <button id="logout" type="button" class="quiet">Sign out</button>
       </div>
     </header>
@@ -23,18 +26,19 @@
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <section id="login-panel" class="panel login" aria-labelledby="login-title" hidden>
         <h1 id="login-title">Sign in</h1>
-        <p>Enter the access token provided by your administrator.</p>
         <form id="login-form">
           <label for="token">Access token</label>
           <input
             id="token"
             type="password"
+            aria-describedby="token-hint"
             autocomplete="off"
             autocapitalize="none"
             spellcheck="false"
             required
             maxlength="1024"
           />
+          <p id="token-hint" class="hint">Use the token from your administrator.</p>
           <button id="login-submit" type="submit">Sign in</button>
         </form>
       </section>
@@ -45,7 +49,7 @@
             <h2 id="upload-title">New analysis</h2>
             <label for="export-file" id="drop-zone" class="drop-zone">
               <strong>Choose JSON files</strong>
-              <span>or drop completed experiments here</span>
+              <span>or drop experiment exports here</span>
               <input
                 id="export-file"
                 type="file"
@@ -61,7 +65,7 @@
             </div>
             <div class="model-picker">
               <label for="upload-model">Model</label>
-              <select id="upload-model" disabled></select>
+              <select id="upload-model" aria-describedby="model-status" disabled></select>
               <div class="picker-pages">
                 <button id="models-previous" type="button" class="quiet" hidden>Previous models</button>
                 <button id="models-next" type="button" class="quiet" hidden>More models</button>
@@ -110,7 +114,7 @@
             hidden
           >
             <div class="section-heading">
-              <h2 id="analysis-title">Analysis</h2>
+              <h2 id="analysis-title" tabindex="-1">Analysis</h2>
               <span id="job-state" class="job-state"></span>
             </div>
             <div
@@ -140,7 +144,7 @@
             <div id="result" hidden>
               <dl id="result-summary" class="summary"></dl>
               <div class="actions downloads">
-                <a id="download-report" class="button" hidden>Download HTML</a>
+                <a id="download-report" class="button" hidden>Download report</a>
                 <button id="download-json" type="button" class="quiet">Download JSON</button>
               </div>
               <details id="comparison-controls" class="comparison-controls" hidden>
@@ -212,35 +216,44 @@
         </div>
       </div>
       <section id="training" aria-labelledby="training-title" hidden>
-        <div class="section-heading">
-          <h1 id="training-title">Model training</h1>
-          <button id="close-training" type="button" class="quiet">Back to analyses</button>
+        <div class="section-heading training-page-heading">
+          <h1 id="training-title" tabindex="-1">Model training</h1>
         </div>
         <p id="training-notice" class="notice" role="status" hidden></p>
         <div class="training-layout">
-          <section class="panel" aria-labelledby="training-runs-title">
-            <div class="section-heading"><h2 id="training-runs-title">Runs</h2>
-              <button id="training-refresh" type="button" class="quiet">Refresh</button></div>
-            <button id="training-new" type="button">New run</button>
-            <p id="training-empty" class="hint" hidden>No training runs yet.</p>
-            <ul id="training-runs" class="training-runs"></ul>
-            <nav class="history-pages" aria-label="Training runs">
-              <button id="training-prev" type="button" class="quiet" hidden>Newer</button>
-              <button id="training-next" type="button" class="quiet" hidden>Older</button>
-            </nav>
+          <section class="panel training-runs-panel" aria-labelledby="training-runs-title">
+            <div class="section-heading training-runs-heading">
+              <h2 id="training-runs-title">
+                <span>Runs</span>
+                <button id="training-runs-toggle" class="quiet" type="button" aria-controls="training-history" aria-expanded="true">Run history</button>
+              </h2>
+              <button id="training-new" type="button">New run</button>
+            </div>
+            <div id="training-history">
+              <p id="training-empty" class="hint" hidden>No training runs yet.</p>
+              <ul id="training-runs" class="training-runs"></ul>
+              <nav class="history-pages" aria-label="Training runs">
+                <button id="training-prev" type="button" class="quiet" hidden>Newer</button>
+                <button id="training-next" type="button" class="quiet" hidden>Older</button>
+                <button id="training-refresh" type="button" class="quiet">Refresh</button>
+              </nav>
+            </div>
           </section>
           <section id="training-config" class="panel" aria-labelledby="training-config-title" hidden>
-            <h2 id="training-config-title">New training run</h2>
+            <h2 id="training-config-title" tabindex="-1">New training run</h2>
             <form id="training-form" class="training-form">
-              <label>Development dataset<select id="training-dataset" required></select></label>
-              <label>Training labels<select id="training-labels" required></select></label>
-              <label>Validation references<select id="training-validation" required></select></label>
-              <label>Selection benchmark ID<input id="training-benchmark" required maxlength="128" /></label>
-              <p class="hint">Use a benchmark with selection already started. <a href="/docs" target="_blank" rel="noopener">Prepare data and reservations in the API</a>.</p>
-              <label>Architecture<select id="training-architecture" required></select></label>
-              <details><summary>Training settings</summary>
-                <label>Backend parameters (JSON)<textarea id="training-parameters" rows="3" required spellcheck="false">{}</textarea></label>
-                <label>Training policy (JSON)<textarea id="training-policy" rows="7" required spellcheck="false"></textarea></label>
+              <div class="training-form-grid">
+                <label class="training-wide">Development dataset<select id="training-dataset" required></select></label>
+                <label>Training labels<select id="training-labels" required></select></label>
+                <label>Validation references<select id="training-validation" required></select></label>
+                <label>Selection benchmark<select id="training-benchmark" required></select></label>
+                <label>Architecture<select id="training-architecture" required></select></label>
+              </div>
+              <div id="training-prerequisite" class="notice" role="status" hidden></div>
+              <details id="training-form-settings">
+                <summary>Training settings</summary>
+                <label>Backend parameters (JSON)<textarea id="training-parameters" rows="3" spellcheck="false">{}</textarea></label>
+                <label>Training policy (JSON)<textarea id="training-policy" rows="7" spellcheck="false"></textarea></label>
                 <label>Training runtime overrides (JSON)<textarea id="training-runtime" rows="2" spellcheck="false" placeholder='{"threads": 2, "time_budget_seconds": 600}'></textarea></label>
                 <label>Inference runtime overrides (JSON)<textarea id="training-inference" rows="2" spellcheck="false" placeholder='{"threads": 2, "max_batch_size": 8}'></textarea></label>
               </details>
@@ -248,34 +261,41 @@
             </form>
           </section>
           <section id="training-detail" class="panel" aria-labelledby="training-detail-title" hidden>
-            <div class="section-heading"><h2 id="training-detail-title">Run</h2><span id="training-state" class="job-state"></span></div>
-            <dl id="training-facts" class="training-facts"></dl>
-            <details><summary>Run settings</summary><pre id="training-settings"></pre></details>
-            <p id="training-stage" class="hint" role="status"></p>
+            <div class="section-heading training-run-heading">
+              <h2 id="training-detail-title" tabindex="-1">Run</h2>
+              <span id="training-state" class="job-state"></span>
+            </div>
+            <p id="training-created" class="hint"></p>
+            <p id="training-sync" class="notice" role="status" hidden></p>
+            <p id="training-stage" class="hint" role="status" hidden></p>
             <button id="training-cancel" type="button" class="quiet" hidden>Cancel training</button>
             <section id="training-metrics" class="training-section" aria-labelledby="training-metrics-title" hidden>
               <h3 id="training-metrics-title">Training metrics</h3>
               <p id="training-score"></p>
-              <label id="training-seed-label" hidden>Training seed <select id="training-seed"></select></label>
+              <label id="training-seed-label" hidden>Chart seed <select id="training-seed"></select></label>
               <div id="training-charts"></div>
               <a id="training-metric-data" download>Download metric data</a>
             </section>
             <section id="training-downstream" class="training-section" aria-labelledby="training-actions-title" hidden>
               <h3 id="training-actions-title">Validation and publication</h3>
               <ul id="training-actions" class="training-actions"></ul>
+              <p id="training-publication" class="hint"></p>
               <div class="actions">
                 <button id="training-evaluate" type="button" class="quiet">Evaluate candidate</button>
                 <button id="training-publish" type="button" hidden>Publish candidate</button>
               </div>
-              <p id="training-publication" class="hint"></p>
             </section>
+            <details id="training-run-details" class="training-run-details">
+              <summary>Run details and settings</summary>
+              <dl id="training-facts" class="training-facts"></dl>
+              <pre id="training-settings"></pre>
+            </details>
           </section>
         </div>
       </section>
       <section id="connections" aria-labelledby="connections-title" hidden>
         <div class="section-heading">
-          <h1 id="connections-title">Connections</h1>
-          <button id="close-connections" type="button" class="quiet">Back to analyses</button>
+          <h1 id="connections-title" tabindex="-1">Connections</h1>
         </div>
         <p id="connection-notice" class="notice" role="status" aria-live="polite" hidden></p>
         <div class="connections-layout">
@@ -305,7 +325,7 @@
           </section>
           <section id="connection-detail" class="panel" aria-labelledby="connection-title" hidden>
             <div class="section-heading">
-              <h2 id="connection-title"></h2>
+              <h2 id="connection-title" tabindex="-1"></h2>
               <span id="connection-state" class="job-state"></span>
             </div>
             <p id="connection-identity" class="identity"></p>

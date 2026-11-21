@@ -1,4 +1,4 @@
-import {$, analysisStateLabel, notice} from "./ui.js";
+import {$, analysisStateLabel, notice, setPreview} from "./ui.js";
 import {createQueueStatus} from "./queue-status.js";
 import {createBatch, readExport, requestAnalysis} from "./uploads.js";
 
@@ -21,7 +21,7 @@ const failureActions = {
 };
 
 export function createAnalysis({session, models, history, comparison, onStorageChange,
-  onSelectionChange, deleteAnalysis}) {
+  onSelectionChange, rememberAnalysis, deleteAnalysis}) {
   let exportText = null;
   let snapshot = null;
   let current = null;
@@ -35,8 +35,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     refreshHistory: () => { void history.load(0); onStorageChange(); }});
 
   function clearReport() {
-    $("report-preview").removeAttribute("src");
-    $("report-preview").hidden = true;
+    setPreview("report-preview");
     $("download-report").hidden = true;
     $("download-report").removeAttribute("href");
     comparison.reset();
@@ -191,7 +190,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     }
   }
 
-  async function openAnalysis(id) {
+  async function openAnalysis(id, {restore = false} = {}) {
     onSelectionChange();
     $("delete-analysis").hidden = true;
     clearTimeout(timer);
@@ -214,10 +213,10 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     $("job-detail").textContent = "Loading the selected analysis.";
     $("progress").hidden = false;
     notice();
-    const url = new URL(location.href);
-    url.searchParams.set("analysis", id);
-    window.history.replaceState(null, "", url);
-    await poll(selection);
+    if (!restore) rememberAnalysis(id);
+    selection.loading = poll(selection);
+    await selection.loading;
+    selection.loading = null;
     return selection;
   }
 
@@ -241,6 +240,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
         `${id} · Model ${job.model?.model_version_id || "pending"}` +
         (value.run_id ? ` · Run ${value.run_id}` : "");
       $("job-state").textContent = analysisStateLabel(job.state);
+      $("job-state").dataset.state = job.state;
       const pending = ["queued", "running", "cancel_requested"].includes(job.state);
       $("delete-analysis").hidden = pending;
       $("progress").hidden = !pending;
@@ -319,8 +319,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       $("download-report").href = `/api/v1/analyses/${id}/report`;
       $("download-report").download = `regimex-analysis-${id}.html`;
       $("download-report").hidden = false;
-      $("report-preview").src = `/api/v1/analyses/${id}/report/preview`;
-      $("report-preview").hidden = false;
+      setPreview("report-preview", `/api/v1/analyses/${id}/report/preview`);
     }
     $("comparison-controls").hidden = !metadata.snapshot_id;
   }
@@ -382,27 +381,29 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     if (busy || !current?.metadata || !["succeeded", "failed", "cancelled"].includes(current.metadata.job.state)) return;
     return deleteAnalysis(current.id, $("analysis-title").textContent);
   });
+  function clearSelection() {
+    clearTimeout(timer);
+    clearReport();
+    clearCancellation();
+    clearFailure();
+    queue.reset();
+    current = result = retryAction = null;
+    $("analysis-panel").hidden = true;
+    $("delete-analysis").hidden = true;
+    $("result-summary").replaceChildren();
+    $("analysis-identity").textContent = "";
+    models.updateActions();
+    history.markSelected();
+  }
+
   function forgetDeleted(target) {
     batch.forgetDeleted(target);
     if (target.kind === "experiment" && snapshot?.snapshot_id === target.id) snapshot = null;
     const affected = current && (target.kind === "analysis" ? current.id === target.id
       : current.metadata?.snapshot_id === target.id);
     if (affected) {
-      clearTimeout(timer);
-      clearReport();
-      clearCancellation();
-      clearFailure();
-      queue.reset();
-      current = result = retryAction = null;
-      $("analysis-panel").hidden = true;
-      $("delete-analysis").hidden = true;
-      $("result-summary").replaceChildren();
-      $("analysis-identity").textContent = "";
-      const url = new URL(location.href);
-      url.searchParams.delete("analysis");
-      window.history.replaceState(null, "", url);
-      models.updateActions();
-      history.markSelected();
+      clearSelection();
+      rememberAnalysis(null);
     } else if (current) {
       comparison.reset();
       current.comparisonLoaded = false;
@@ -410,7 +411,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       $("report-preview").hidden = !current.metadata?.report_available;
     }
   }
-  return {reset, open: openAnalysis, forgetDeleted, get current() { return current; },
+  return {reset, open: openAnalysis, clearSelection, forgetDeleted, get current() { return current; },
     get busy() { return busy; }, get uploadReady() { return Boolean(exportText) || batch.ready; },
     get batchLocked() { return batch.locked; }};
 }

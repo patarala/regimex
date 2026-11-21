@@ -30,7 +30,9 @@ export function createModels({session, getSelection, getBusy, getUploadReady, ge
     if (selected && selected !== "active" && !choices.some(([id]) => id === selected))
       choices.unshift([selected, selected]);
     if (activeModelId) choices.unshift(["active", `Active model · ${activeModelId}`]);
-    select.replaceChildren(option("", "Choose a published model"));
+    const placeholder = choices.length ? "Choose a published model"
+      : modelOffset ? "No models on this page" : "No published models";
+    select.replaceChildren(option("", placeholder));
     choices.forEach(([id, label]) => select.append(option(id, label)));
     select.value = choices.some(([id]) => id === selected)
       ? selected : activeModelId ? "active" : "";
@@ -39,8 +41,9 @@ export function createModels({session, getSelection, getBusy, getUploadReady, ge
   function updateActions() {
     $("classify").disabled = getBusy() || !session.value || !getUploadReady() || !modelsReady || !$("upload-model").value;
     $("export-file").disabled = getBusy() || getBatchLocked();
-    $("upload-model").disabled = getBusy() || getBatchLocked() || modelsLoading || !modelsReady;
-    $("rerun-model").disabled = getBusy() || modelsLoading || !modelsReady;
+    const unavailable = getBusy() || modelsLoading || !modelsReady;
+    $("upload-model").disabled = unavailable || getBatchLocked() || $("upload-model").children.length < 2;
+    $("rerun-model").disabled = unavailable || $("rerun-model").children.length < 2;
     const saved = getSelection()?.metadata;
     const terminal = saved && ["succeeded", "failed", "cancelled"].includes(saved.job.state);
     $("rerun-controls").hidden = !terminal || !saved.snapshot_id;
@@ -56,8 +59,16 @@ export function createModels({session, getSelection, getBusy, getUploadReady, ge
     $("models-refresh").disabled = getBusy() || modelsLoading;
   }
 
-  function modelStatus(message) {
-    $("model-status").textContent = $("rerun-model-status").textContent = message;
+  function modelStatus(message, linkToTraining = false) {
+    for (const id of ["model-status", "rerun-model-status"]) {
+      $(id).textContent = message;
+      if (linkToTraining) {
+        const link = document.createElement("a");
+        link.href = "#training";
+        link.textContent = "Open Training";
+        $(id).append(link);
+      }
+    }
   }
 
   async function loadModels(offset = 0) {
@@ -76,9 +87,11 @@ export function createModels({session, getSelection, getBusy, getUploadReady, ge
       modelsReady = true;
       fillModelSelect("upload-model");
       fillModelSelect("rerun-model", $("rerun-model").value || getSelection()?.metadata?.job.model?.model_version_id);
-      modelStatus(models.length || activeModelId ? "" : offset
-        ? "No more models. Return to the previous page."
-        : "No published models are available. Ask your administrator to publish a model.");
+      const empty = !models.length && !activeModelId;
+      const admin = session.value.principal.role === "admin";
+      modelStatus(!empty ? "" : offset ? "Return to the previous page for more models."
+        : admin ? "Publish a model to start an analysis. " : "Ask your administrator to publish a model.",
+        empty && !offset && admin);
     } catch (error) {
       if (workspace === session.epoch && generation === modelGeneration) modelStatus(error.message);
     } finally {

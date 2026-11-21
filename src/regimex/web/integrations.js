@@ -22,8 +22,9 @@ function date(value, fallback = "Never") {
   return value ? new Date(value).toLocaleString() : fallback;
 }
 
-export function createIntegrations({session}) {
+export function createIntegrations({session, navigate}) {
   let opened = false;
+  let selectedId = null;
   let selection = null;
   let generation = 0;
   let mutation = 0;
@@ -70,6 +71,7 @@ export function createIntegrations({session}) {
 
   function reset() {
     opened = false;
+    selectedId = null;
     selection = null;
     generation++;
     mutation++;
@@ -77,9 +79,9 @@ export function createIntegrations({session}) {
     clearSecret();
     clearStorage("connection-storage");
     message();
-    $("open-connections").hidden = true;
     $("connections").hidden = true;
     $("connection-detail").hidden = true;
+    $("connection-create-details").open = $("connection-key-details").open = false;
     for (const id of ["connection-list", "connection-keys", "connection-events"])
       $(id).replaceChildren();
     for (const id of ["connection-name", "connection-new-name", "connection-new-owner",
@@ -90,11 +92,6 @@ export function createIntegrations({session}) {
       page.offset = page.count = 0;
       page.request++;
     }
-  }
-
-  function activate() {
-    reset();
-    $("open-connections").hidden = session.value?.principal.role !== "admin";
   }
 
   function renderSelection() {
@@ -131,9 +128,9 @@ export function createIntegrations({session}) {
       const row = element("li", "");
       const button = element("button", "", "quiet");
       button.type = "button";
-      button.setAttribute("aria-current", String(item.integration_id === selection?.integration_id));
+      button.setAttribute("aria-current", String(item.integration_id === selectedId));
       button.append(element("span", item.display_name), element("span", item.enabled ? "Active" : "Paused", "hint"));
-      button.addEventListener("click", () => runRead(() => select(item.integration_id)));
+      button.addEventListener("click", () => navigate("#connections/" + encodeURIComponent(item.integration_id)));
       row.append(button);
       return row;
     }));
@@ -196,22 +193,14 @@ export function createIntegrations({session}) {
     controls();
   }
 
-  async function select(id) {
-    generation++;
-    clearSecret();
-    clearStorage("connection-storage");
-    message();
-    selection = null;
-    $("connection-detail").hidden = true;
-    $("connection-keys").replaceChildren();
-    $("connection-events").replaceChildren();
-    pages.keys.offset = pages.events.offset = 0;
+  async function loadDetails(id, focus) {
     const stamp = mark();
-    const result = await session.json(`${ROOT}/${id}`);
+    const result = await session.json(`${ROOT}/${encodeURIComponent(id)}`);
     if (!current(stamp)) return;
     selection = result;
     renderSelection();
-    await Promise.all([loadKeys(), loadEvents(), loadList(), loadStorage()]);
+    if (focus && document.activeElement === $("connections-title")) $("connection-title").focus();
+    await Promise.all([loadKeys(), loadEvents(), loadStorage()]);
   }
 
   async function loadStorage() {
@@ -255,28 +244,30 @@ export function createIntegrations({session}) {
     }
   }
 
-  $("open-connections").addEventListener("click", () => {
+  async function show(id = null) {
     if (session.value?.principal.role !== "admin") return;
-    opened = true;
-    generation++;
-    clearSecret();
-    $("workspace").hidden = true;
-    $("open-training").hidden = true;
-    $("connections").hidden = false;
-    void runRead(loadList);
-  });
-  $("close-connections").addEventListener("click", () => {
+    const offset = pages.connections.offset;
     reset();
-    $("open-connections").hidden = session.value?.principal.role !== "admin";
-    $("workspace").hidden = !session.value;
-    $("open-training").hidden = session.value?.principal.role !== "admin";
-  });
+    pages.connections.offset = offset;
+    opened = true;
+    selectedId = id;
+    $("connections").hidden = false;
+    $("connections-empty").hidden = true;
+    $("connections-title").focus();
+    await Promise.all([runRead(loadList), id && runRead(() => loadDetails(id, true))]);
+  }
+
   $("connections-refresh").addEventListener("click", () => {
     clearSecret();
     void runRead(loadList);
   });
   $("connection-refresh").addEventListener("click", () => {
-    if (selection) void runRead(() => select(selection.integration_id));
+    if (!selection || busy) return;
+    generation++;
+    clearSecret();
+    clearStorage("connection-storage");
+    message();
+    void Promise.all([runRead(loadList), runRead(() => loadDetails(selection.integration_id, false))]);
   });
 
   $("connection-create").addEventListener("submit", (event) => {
@@ -292,7 +283,7 @@ export function createIntegrations({session}) {
       for (const id of ["connection-new-name", "connection-new-owner", "connection-new-source"])
         $(id).value = "";
       pages.connections.offset = 0;
-      await runRead(() => select(result.integration_id));
+      navigate("#connections/" + encodeURIComponent(result.integration_id));
     });
   });
 
@@ -378,5 +369,5 @@ export function createIntegrations({session}) {
     generation++;
     clearSecret();
   });
-  return {activate, reset};
+  return {reset, show};
 }

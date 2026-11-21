@@ -20,6 +20,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     records = new Map();
     historyPendingOffset = null;
     $("history-search").value = $("history-state").value = "";
+    $("history-filters").hidden = false;
     $("history-clear").hidden = true;
     $("history-loading").hidden = true;
     $("history-error").hidden = $("history-empty").hidden = true;
@@ -51,9 +52,10 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
       historyHasMore = data.items.length > HISTORY_PAGE_SIZE;
       $("history-pages").hidden = offset === 0 && !historyHasMore;
       $("history-empty").hidden = items.length > 0;
+      $("history-filters").hidden = !items.length && !offset && !historyQuery && !historyState;
       $("history-empty").textContent = offset > 0
         ? "No experiments on this page. Return to the previous page or refresh."
-        : historyQuery || historyState ? "No experiments match these filters." : "No experiments yet.";
+        : historyQuery || historyState ? "No experiments match these filters." : "Uploaded experiments will appear here.";
       $("history-range").textContent = items.length ? `${offset + 1}–${offset + items.length}` : "";
       historyItems = items;
       renderHistory();
