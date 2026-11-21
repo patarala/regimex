@@ -1,33 +1,39 @@
-"""Mutable experiment names and grouped history, separate from immutable exports."""
+"""Editable display names and grouped experiment history."""
 
 import unicodedata
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, field_validator
+from pydantic import AfterValidator, AwareDatetime, Field, TypeAdapter
 
 from regimex.contracts import MAX_STEPS, Identifier, StrictModel
 from regimex.service_contracts import AnalysisSummary
 
-DisplayName = Annotated[str, Field(min_length=1, max_length=120)]
+
+def _readable_name(value: str) -> str:
+    if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value):
+        raise ValueError("Names cannot contain control characters.")
+    if not (name := value.strip()):
+        raise ValueError("Use null to restore the default name.")
+    return unicodedata.normalize("NFC", name)
 
 
-class ExperimentNameUpdate(StrictModel):
+# NFC can expand combining characters, so check the length after normalization.
+DisplayName = Annotated[str, AfterValidator(_readable_name), Field(min_length=1, max_length=120)]
+_DISPLAY_NAME = TypeAdapter(DisplayName)
+
+
+def validate_display_name(value: str | None) -> str | None:
+    return None if value is None else _DISPLAY_NAME.validate_python(value, strict=True)
+
+
+class DisplayNameUpdate(StrictModel):
     display_name: DisplayName | None
     expected_revision: Annotated[int, Field(ge=0, le=2**63 - 2)]
 
-    @field_validator("display_name", mode="before")
-    @classmethod
-    def readable_name(cls, value: object) -> object:
-        if not isinstance(value, str):
-            return value
-        if any(unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value):
-            raise ValueError("Experiment names cannot contain control characters.")
-        if not (name := value.strip()):
-            raise ValueError("Use null to restore the default experiment name.")
-        # Normalize before Field's length check: NFC can expand some combining
-        # characters, so validating the original length alone is insufficient.
-        return unicodedata.normalize("NFC", name)
+
+class ExperimentNameUpdate(DisplayNameUpdate):
+    """An edit to a snapshot's name in experiment history."""
 
 
 class ExperimentName(StrictModel):

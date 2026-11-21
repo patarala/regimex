@@ -24,11 +24,14 @@ from regimex.admin_contracts import (
     ReferenceGenerationSpec,
     ReferenceSetRecord,
     RequestDigest,
+    TrainingRunName,
     TrainingSpec,
+    admin_request_hash,
 )
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.data_catalog import validate_reference_membership
 from regimex.directions import DIRECTION_POLICY
+from regimex.history_contracts import DisplayNameUpdate, validate_display_name
 from regimex.infrastructure.database import DatabaseRepository, _read_operation
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
 from regimex.operations import Operation, ResolvedModel, succeed
@@ -49,19 +52,23 @@ _SPEC = RootModel[AdminSpec]
 _JSON = TypeAdapter(dict[str, JsonValue])
 Connection = psycopg.Connection[tuple[object, ...]]
 _RUN_SELECT = (
-    "SELECT r.operation_id,r.request,r.output,o.document FROM regimex_admin_runs r "
-    "JOIN regimex_operations o ON r.operation_id=o.operation_id"
+    "SELECT r.operation_id,r.request,r.output,o.document,t.display_name,"
+    "COALESCE(t.name_revision,0) FROM regimex_admin_runs r "
+    "JOIN regimex_operations o ON r.operation_id=o.operation_id "
+    "LEFT JOIN regimex_training_runs t ON t.operation_id=r.operation_id"
 )
 
 
 def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
-    run_id, request, output, document = row
+    run_id, request, output, document, display_name, name_revision = row
     operation = _read_operation(document)
     result = AdminRunRecord(
         run_id=cast(UUID, run_id),
         operation=operation,
         spec=_SPEC.model_validate_json(json_bytes(request)).root,
         output=None if output is None else _JSON.validate_python(output, strict=True),
+        display_name=cast(str | None, display_name),
+        name_revision=cast(int, name_revision),
     )
     if (
         result.output is not None
@@ -530,6 +537,32 @@ class AdminRepository:
         self._owner(principal, record.operation.owner_id)
         return record
 
+    def rename_training_run(
+        self, principal: Principal, run_id: UUID, update: DisplayNameUpdate
+    ) -> TrainingRunName:
+        self.database._admin(principal)
+        update = DisplayNameUpdate.model_validate_json(update.model_dump_json())
+        with self.database.connection() as connection:
+            row = connection.execute(
+                "UPDATE regimex_training_runs t SET display_name=%s,name_revision=name_revision+1 "
+                "FROM regimex_operations o WHERE t.operation_id=%s "
+                "AND o.operation_id=t.operation_id AND o.owner_id=%s AND t.name_revision=%s "
+                "RETURNING t.name_revision",
+                (update.display_name, run_id, principal.owner_id, update.expected_revision),
+            ).fetchone()
+            if row is None:
+                owned = connection.execute(
+                    "SELECT 1 FROM regimex_operations WHERE operation_id=%s "
+                    "AND owner_id=%s AND kind='training'",
+                    (run_id, principal.owner_id),
+                ).fetchone()
+                if owned is None:
+                    raise NotFound()
+                raise Conflict("The training run name changed. Refresh it before saving again.")
+            return TrainingRunName(
+                run_id=run_id, display_name=update.display_name, revision=cast(int, row[0])
+            )
+
     def find_replay(
         self,
         principal: Principal,
@@ -678,14 +711,17 @@ class AdminRepository:
         idempotency_key: str,
         request_sha256: RequestDigest | None = None,
         max_pending: int = 8,
+        display_name: str | None = None,
     ) -> AdminRunRecord:
         self.database._admin(principal)
+        display_name = validate_display_name(display_name)
+        if display_name is not None and not isinstance(spec, TrainingSpec):
+            raise ValueError("Only training runs can be named.")
         spec = _SPEC.model_validate_json(json_bytes(spec.model_dump(mode="json"))).root
         self._bounded(spec.model_dump(mode="json"))
         request = IntakeRequest(
             idempotency_key=idempotency_key,
-            request_sha256=request_sha256
-            or hashlib.sha256(json_bytes(spec.model_dump(mode="json"))).hexdigest(),
+            request_sha256=request_sha256 or admin_request_hash(spec, display_name),
         )
         if max_pending < 1:
             raise ValueError("pending quota must be positive")
@@ -738,12 +774,16 @@ class AdminRepository:
                 "INSERT INTO regimex_admin_runs (operation_id,kind,request) VALUES (%s,%s,%s)",
                 (run_id, spec.kind, Json(spec.model_dump(mode="json"))),
             )
-            self._reserve_request(connection, operation, spec)
+            self._reserve_request(connection, operation, spec, display_name)
             self.database._enqueue(connection, operation)
-            return AdminRunRecord(run_id=run_id, operation=operation, spec=spec)
+            return AdminRunRecord(
+                run_id=run_id, operation=operation, spec=spec, display_name=display_name
+            )
 
     @staticmethod
-    def _reserve_request(connection: Connection, operation: Operation, spec: AdminSpec) -> None:
+    def _reserve_request(
+        connection: Connection, operation: Operation, spec: AdminSpec, display_name: str | None
+    ) -> None:
         if isinstance(spec, GenerationSpec):
             row = connection.execute(
                 "INSERT INTO regimex_generation_targets (dataset_id,operation_id) VALUES (%s,%s) "
@@ -759,14 +799,16 @@ class AdminRepository:
         elif isinstance(spec, TrainingSpec):
             row = connection.execute(
                 "INSERT INTO regimex_training_runs (operation_id,dataset_id,"
-                "labels_reference_set_id,validation_reference_set_id,model_version_id) "
-                "VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING operation_id",
+                "labels_reference_set_id,validation_reference_set_id,model_version_id,"
+                "display_name) VALUES (%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT DO NOTHING RETURNING operation_id",
                 (
                     operation.operation_id,
                     spec.dataset_id,
                     spec.labels_reference_set_id,
                     spec.validation_reference_set_id,
                     spec.model_version_id,
+                    display_name,
                 ),
             ).fetchone()
         elif isinstance(spec, EvaluationSpec):
@@ -815,7 +857,7 @@ class AdminRepository:
             (Json(output), run.run_id),
         )
         self.database._save(connection, completed)
-        return AdminRunRecord(run_id=run.run_id, operation=completed, spec=run.spec, output=output)
+        return run.model_copy(update={"operation": completed, "output": output})
 
     def complete_generation(
         self,

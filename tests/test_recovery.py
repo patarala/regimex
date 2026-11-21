@@ -310,22 +310,27 @@ def test_restore_object_larger_than_compose_tmpfs(
     assert (restored.size_bytes, restored.sha256) == (size, weights.sha256)
 
 
+@pytest.mark.parametrize("revision", ["0007_resource_deletion", "0008_analysis_metadata"])
 def test_previous_schema_backup_can_be_restored_then_migrated(
     minimal: MinimalBackup,
     databases: DatabaseFactory,
     tools: PostgresTools,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    revision: str,
 ) -> None:
-    # Recreate the schema before the two derived history-search fields were added.
     with minimal.source.connection() as connection:
-        connection.execute("ALTER TABLE regimex_snapshots DROP COLUMN identifiers_search")
-        connection.execute("ALTER TABLE regimex_analyses DROP COLUMN model_version_search")
-        connection.execute("ALTER TABLE regimex_analyses DROP COLUMN retry_of")
-        connection.execute("UPDATE alembic_version SET version_num='0007_resource_deletion'")
+        connection.execute(
+            "ALTER TABLE regimex_training_runs DROP COLUMN display_name, DROP COLUMN name_revision"
+        )
+        if revision == "0007_resource_deletion":
+            connection.execute("ALTER TABLE regimex_snapshots DROP COLUMN identifiers_search")
+            connection.execute("ALTER TABLE regimex_analyses DROP COLUMN model_version_search")
+            connection.execute("ALTER TABLE regimex_analyses DROP COLUMN retry_of")
+        connection.execute("UPDATE alembic_version SET version_num=%s", (revision,))
     directory = tmp_path / "previous-backup"
     with monkeypatch.context() as patch:
-        patch.setattr(recovery, "RECOVERY_REVISION", "0007_resource_deletion")
+        patch.setattr(recovery, "RECOVERY_REVISION", revision)
         saved = recovery.backup_service(
             SecretStr(minimal.source._dsn),
             minimal.source.schema,

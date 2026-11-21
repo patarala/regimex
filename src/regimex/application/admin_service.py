@@ -33,7 +33,9 @@ from regimex.admin_contracts import (
     ReferenceSetRecord,
     RequestDigest,
     TrainingMetrics,
+    TrainingRunName,
     TrainingSpec,
+    admin_request_hash,
 )
 from regimex.application.admin_results import AdminResultCommitter
 from regimex.application.attempt_supervision import AttemptSupervisor
@@ -71,6 +73,7 @@ from regimex.directions import (
     DirectionAnnotations,
 )
 from regimex.exports import ExportV2
+from regimex.history_contracts import DisplayNameUpdate, validate_display_name
 from regimex.infrastructure.intake_repository import IntakeRequest
 from regimex.infrastructure.object_store import (
     ObjectCapacityError,
@@ -167,10 +170,11 @@ class AdminService:
         *,
         idempotency_key: str,
         request_sha256: RequestDigest | None = None,
+        display_name: str | None = None,
         _final_grant: FinalEvaluationGrant | None = None,
     ) -> AdminRunRecord:
         self._admin(principal)
-        checksum = request_sha256 or content_hash(spec.model_dump(mode="json"))
+        checksum = request_sha256 or admin_request_hash(spec, display_name)
         previous = self.repository.find_replay(principal, spec.kind, idempotency_key, checksum)
         if previous is not None:
             return previous
@@ -198,6 +202,7 @@ class AdminService:
             idempotency_key=idempotency_key,
             request_sha256=checksum,
             max_pending=self.settings.max_admin_pending_per_owner,
+            display_name=display_name,
         )
 
     def _check_training(self, principal: Principal, spec: TrainingSpec) -> None:
@@ -319,9 +324,14 @@ class AdminService:
         *,
         idempotency_key: str,
         request_sha256: RequestDigest | None = None,
+        display_name: str | None = None,
     ) -> AdminRunRecord:
         return self._submit(
-            principal, spec, idempotency_key=idempotency_key, request_sha256=request_sha256
+            principal,
+            spec,
+            idempotency_key=idempotency_key,
+            request_sha256=request_sha256,
+            display_name=validate_display_name(display_name),
         )
 
     def submit_evaluation(
@@ -386,6 +396,11 @@ class AdminService:
 
     def get_run(self, principal: Principal, run_id: UUID) -> AdminRunRecord:
         return self.repository.get_run(principal, run_id)
+
+    def rename_training_run(
+        self, principal: Principal, run_id: UUID, update: DisplayNameUpdate
+    ) -> TrainingRunName:
+        return self.repository.rename_training_run(principal, run_id, update)
 
     def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics:
         run = self.get_run(principal, run_id)

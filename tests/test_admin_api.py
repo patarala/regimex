@@ -89,6 +89,15 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
     }
     request = TrainingRunRequest.model_validate_json(json_bytes(body))
     original = request.model_dump(mode="json")
+    assert "display_name" not in original
+    unnamed = TrainingRunRequest.model_validate_json(json_bytes({**body, "display_name": None}))
+    assert RequestFingerprint.for_profile_request(
+        unnamed
+    ) == RequestFingerprint.for_profile_request(request)
+    named = TrainingRunRequest.model_validate_json(json_bytes({**body, "display_name": "Trial 1"}))
+    assert RequestFingerprint.for_profile_request(named).sha256 == content_hash(
+        {**original, "display_name": "Trial 1"}
+    )
     previous = tuple(
         content_hash({**original, "analysis_profile_id": f"direction-32/{version}"})
         for version in ("2.1", "2.0")
@@ -756,16 +765,33 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         "benchmark_selection_id": benchmark_id,
     }
     training_headers = context.headers
+    if tcn:
+        training["display_name"] = "  Short windows  "
     response = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert response.status_code == 202, response.text
     run = AdminRunView.model_validate_json(response.content)
     assert run.training is not None and run.training.dataset_id == dataset_id
+    assert (run.display_name, run.name_revision) == ("Short windows" if tcn else None, 0)
     run_path = f"/api/v1/training-runs/{run.run_id}"
     assert context.client.get(run_path + "/metrics", headers=headers).status_code == 409
     completed = context.service.run_admin(run.run_id)
     assert completed is not None
     assert completed.operation.state == "succeeded", completed.operation.model_dump_json()
     assert completed.output is not None
+    renamed = context.client.patch(
+        run_path + "/name",
+        json={"display_name": "Published candidate", "expected_revision": 0},
+        headers=headers,
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json() == {
+        "run_id": str(run.run_id),
+        "display_name": "Published candidate",
+        "revision": 1,
+    }
+    detail = context.client.get(run_path, headers=headers).json()
+    assert detail["display_name"] == "Published candidate" and detail["name_revision"] == 1
+    assert detail["training"] == run.training.model_dump(mode="json")
     model_id = completed.output["model_version_id"]
     assert isinstance(model_id, str)
     metrics = context.client.get(run_path + "/metrics", headers=headers)
@@ -841,6 +867,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     )
     replay = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert replay.status_code == 202 and replay.json()["run_id"] == str(run.run_id)
+    assert replay.json()["display_name"] == "Published candidate"
     unopened = context.client.post(
         "/api/v1/benchmarks/evaluations",
         params=benchmark_query,

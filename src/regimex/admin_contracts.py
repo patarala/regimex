@@ -8,6 +8,7 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
 from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup, content_hash
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
+from regimex.history_contracts import DisplayName
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.market_config import MarketConfig
 from regimex.model_registry import (
@@ -253,11 +254,26 @@ AdminSpec = Annotated[
 AdminKind = Literal["generation", "reference", "training", "evaluation", "publication"]
 
 
+def admin_request_hash(spec: AdminSpec, display_name: str | None) -> str:
+    request = spec.model_dump(mode="json")
+    if display_name is not None:
+        request["display_name"] = display_name
+    return content_hash(request)
+
+
+class TrainingRunName(StrictModel):
+    run_id: UUID
+    display_name: DisplayName | None
+    revision: Annotated[int, Field(ge=0)]
+
+
 class AdminRunRecord(StrictModel):
     run_id: UUID
     operation: Operation
     spec: AdminSpec
     output: dict[str, JsonValue] | None = None
+    display_name: DisplayName | None = None
+    name_revision: Annotated[int, Field(ge=0)] = 0
 
     @model_validator(mode="after")
     def same_operation(self) -> Self:

@@ -54,6 +54,7 @@ from regimex.directions import (
     summarize_interval,
 )
 from regimex.exports import ExportPayloadV2, seal_export
+from regimex.history_contracts import DisplayNameUpdate
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.model_registry import InferenceRuntime, TrainingPolicy, TrainingRuntime
 from regimex.operations import Operation, OperationFailure
@@ -911,6 +912,54 @@ def test_training_rejects_partition_misuse_and_reserves_candidate_identity(
     with pytest.raises(Conflict, match="reserved"):
         repository.submit(principal(), spec, idempotency_key="duplicate-target")
     assert repository.get_training_run_for_model(principal(), spec.model_version_id) == run
+
+
+def test_training_name_is_owner_scoped_and_uses_compare_and_swap(
+    repository: AdminRepository,
+) -> None:
+    _, spec = ready_training(repository)
+    run = repository.submit(
+        principal(), spec, idempotency_key="train", display_name="  Cafe\u0301  "
+    )
+    assert (run.display_name, run.name_revision) == ("Café", 0)
+    first = DisplayNameUpdate(display_name="Candidate", expected_revision=0)
+    with pytest.raises(Forbidden):
+        repository.rename_training_run(principal(admin=False), run.run_id, first)
+    with pytest.raises(NotFound):
+        repository.rename_training_run(principal("other-admin"), run.run_id, first)
+    other = repository.submit(
+        principal(),
+        GenerationSpec(
+            dataset_id="other", plan=RawGenerationPlan(seed=7, experiment_count=3, step_count=64)
+        ),
+        idempotency_key="generation",
+    )
+    with pytest.raises(NotFound):
+        repository.rename_training_run(principal(), other.run_id, first)
+
+    def rename(name: str) -> str | None:
+        try:
+            saved = repository.rename_training_run(
+                principal(), run.run_id, DisplayNameUpdate(display_name=name, expected_revision=0)
+            )
+        except Conflict:
+            return None
+        assert saved.revision == 1
+        return saved.display_name
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(rename, ("Short windows", "Long windows")))
+    assert results.count(None) == 1
+    winner = next(name for name in results if name is not None)
+    replay = repository.submit(principal(), spec, idempotency_key="train", display_name="Café")
+    assert replay == run.model_copy(update={"display_name": winner, "name_revision": 1})
+    assert repository.list_runs(principal(), kind="training") == (replay,)
+    with pytest.raises(Conflict, match="idempotency"):
+        repository.submit(principal(), spec, idempotency_key="train", display_name=winner)
+    cleared = repository.rename_training_run(
+        principal(), run.run_id, DisplayNameUpdate(display_name=None, expected_revision=1)
+    )
+    assert (cleared.display_name, cleared.revision) == (None, 2)
 
 
 def test_internal_training_without_benchmark_is_denied_by_transaction_guard(

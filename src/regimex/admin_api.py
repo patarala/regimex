@@ -29,6 +29,7 @@ from regimex.admin_contracts import (
     RequestFingerprint,
     SplitPolicy,
     TrainingMetrics,
+    TrainingRunName,
     TrainingSpec,
 )
 from regimex.api import OperationView, _json_dependency, _operation, _request_body
@@ -44,6 +45,7 @@ from regimex.directions import (
     AnalysisConfig,
     DirectionAnnotations,
 )
+from regimex.history_contracts import DisplayName, DisplayNameUpdate
 from regimex.model_registry import (
     ArchitectureId,
     InferenceRuntime,
@@ -55,6 +57,10 @@ from regimex.storage import json_bytes
 
 
 class AdminAPIService(Protocol):
+    def rename_training_run(
+        self, principal: Principal, run_id: UUID, update: DisplayNameUpdate
+    ) -> TrainingRunName: ...
+
     def training_actions(
         self, principal: Principal, run_id: UUID, *, limit: int, offset: int
     ) -> tuple[AdminRunRecord, ...]: ...
@@ -122,6 +128,7 @@ class AdminAPIService(Protocol):
         *,
         idempotency_key: str,
         request_sha256: RequestDigest | None = None,
+        display_name: str | None = None,
     ) -> AdminRunRecord: ...
 
     def submit_evaluation(
@@ -246,6 +253,8 @@ class ReferenceRequest(
 
 
 class TrainingRunRequest(StrictModel):
+    # Omitted and null names retain the request digest used by existing receipts.
+    display_name: DisplayName | None = Field(default=None, exclude_if=lambda value: value is None)
     dataset_id: Identifier
     labels_reference_set_id: Identifier
     validation_reference_set_id: Identifier
@@ -276,6 +285,8 @@ class AdminRunView(StrictModel):
     output: dict[str, JsonValue] | None
     polling_url: str
     training: TrainingSpec | None = None
+    display_name: DisplayName | None = None
+    name_revision: Annotated[int, Field(ge=0)] = 0
 
 
 class AdminRunPage(StrictModel):
@@ -341,6 +352,8 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         run_id=record.run_id,
         job=_operation(record.operation),
         training=record.spec if isinstance(record.spec, TrainingSpec) else None,
+        display_name=record.display_name,
+        name_revision=record.name_revision,
         output=None
         if record.output is None
         else {name: value for name, value in record.output.items() if name in allowed},
@@ -392,12 +405,14 @@ def install_admin_routes(
     DatasetBody = Annotated[DatasetRequest, Depends(_json_dependency(DatasetRequest))]
     ReferenceBody = Annotated[ReferenceRequest, Depends(_json_dependency(ReferenceRequest))]
     TrainingBody = Annotated[TrainingRunRequest, Depends(_json_dependency(TrainingRunRequest))]
+    NameBody = Annotated[DisplayNameUpdate, Depends(_json_dependency(DisplayNameUpdate))]
     EvaluationBody = Annotated[EvaluationRequest, Depends(_json_dependency(EvaluationRequest))]
     PublicationBody = Annotated[PublicationRequest, Depends(_json_dependency(PublicationRequest))]
     app.state.request_models += (
         DatasetRequest,
         ReferenceRequest,
         TrainingRunRequest,
+        DisplayNameUpdate,
         EvaluationRequest,
         PublicationRequest,
     )
@@ -548,13 +563,13 @@ def install_admin_routes(
         record = service.submit_training(
             identity,
             TrainingSpec(
-                **intake.model_dump(exclude={"benchmark_selection_id"}),
+                **intake.model_dump(exclude={"display_name"}),
                 model_version_id=f"model-{uuid4().hex}",
                 build_id=__version__,
-                benchmark_selection_id=intake.benchmark_selection_id,
             ),
             idempotency_key=idempotency_key,
             request_sha256=RequestFingerprint.for_profile_request(intake),
+            display_name=intake.display_name,
         )
         response.headers["Location"] = f"/api/v1/training-runs/{record.run_id}"
         return _run(record)
@@ -601,6 +616,12 @@ def install_admin_routes(
     @app.get("/api/v1/training-runs/{run_id}")
     def get_training(run_id: UUID, identity: Identity) -> AdminRunView:
         return checked_run(identity, run_id, "training")
+
+    @app.patch(
+        "/api/v1/training-runs/{run_id}/name", openapi_extra=_request_body(DisplayNameUpdate)
+    )
+    def rename_training_run(run_id: UUID, identity: Identity, edit: NameBody) -> TrainingRunName:
+        return service.rename_training_run(identity, run_id, edit)
 
     @app.get("/api/v1/training-runs/{run_id}/metrics")
     def training_metrics(run_id: UUID, identity: Identity) -> TrainingMetrics:

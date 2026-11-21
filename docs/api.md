@@ -252,6 +252,7 @@ in this baseline request with your own:
 
 ```json
 {
+  "display_name": "EUR/USD quiet sessions",
   "dataset_id": "DEVELOPMENT_DATASET_ID",
   "labels_reference_set_id": "TRAIN_REFERENCE_ID",
   "validation_reference_set_id": "VALIDATION_REFERENCE_ID",
@@ -295,10 +296,17 @@ run status and the choices available to the signed-in administrator:
 | `GET /datasets?development_only=true&limit=100&offset=0` | Registered development datasets owned by this account |
 | `GET /training-options/benchmarks?dataset_id=ID` | Eligible open selection reservations for this dataset, returned as `benchmark_ids` |
 | `GET /training-runs?limit=20&offset=0` | Newest training runs first |
-| `GET /training-runs/{id}` | Submitted settings, model version ID, job stage, attempts and failure reason |
+| `GET /training-runs/{id}` | Run name and revision, submitted settings, model version ID, job stage, attempts and failure reason |
+| `PATCH /training-runs/{id}/name` | Change the run name using the current revision |
 | `POST /jobs/{id}/cancel` | Request cancellation of a queued or running training job |
 | `GET /training-runs/{id}/metrics` | Selected seed, validation interval macro-F1 and the history saved by the backend. Returns `409` until the run succeeds. |
 | `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model |
+
+The optional `display_name` accepts up to 120 Unicode characters after trimming
+and NFC normalization. To rename a run later, send
+`{"display_name":"EUR/USD quiet sessions","expected_revision":0}` to its name
+endpoint, using the `name_revision` from the run. Use `null` to clear the name.
+On a revision conflict (`409`), read the run again before retrying.
 
 After the worker saves the candidate, reloads it and verifies its predictions:
 
