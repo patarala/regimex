@@ -42,6 +42,7 @@ _ASSETS = {
     "training-name.js": "text/javascript",
     "training-policy.js": "text/javascript",
     "training-progress.js": "text/javascript",
+    "training-size.js": "text/javascript",
     "storage.js": "text/javascript",
     "deletion.js": "text/javascript",
 }

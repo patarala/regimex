@@ -1,6 +1,35 @@
 {
   "$defs": {
     "JsonValue": {},
+    "ModelSize": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "trainable_parameters": {
+          "exclusiveMinimum": 0,
+          "title": "Trainable Parameters",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "name",
+        "parameters",
+        "trainable_parameters"
+      ],
+      "title": "ModelSize",
+      "type": "object"
+    },
     "TrainingBudget": {
       "enum": [
         "epochs",
@@ -172,6 +201,14 @@
         "type": "string"
       },
       "title": "Required Observation Fields",
+      "type": "array"
+    },
+    "sizes": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/ModelSize"
+      },
+      "title": "Sizes",
       "type": "array"
     },
     "supported_devices": {

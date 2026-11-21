@@ -10,7 +10,7 @@ export function createTrainingProgress(session, metrics) {
     notice.hidden = true;
   }
 
-  async function poll(path, attempt) {
+  async function poll(path, attempt, policy) {
     if (!current || current.attempt !== attempt) {
       stop();
       metrics.clear();
@@ -42,7 +42,7 @@ export function createTrainingProgress(session, metrics) {
         changed = true;
         if (!page.has_more) break;
         if (firstPage) {
-          metrics.show(state.history);
+          metrics.show(state.history, null, policy);
           changed = false;
         }
       } while (state === current);
@@ -51,7 +51,7 @@ export function createTrainingProgress(session, metrics) {
     } finally {
       clearTimeout(timeout);
       state.request = null;
-      if (changed && state === current) metrics.show(state.history);
+      if (changed && state === current) metrics.show(state.history, null, policy);
     }
   }
   return {stop, poll};

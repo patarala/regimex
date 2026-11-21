@@ -103,7 +103,7 @@ selection on that reservation. The form lists the benchmarks available to your a
 1. Choose **New run**. You can name the run after its data or the change you
    are testing, for example `EUR/USD quiet sessions`. Select a development
    dataset. The form shows its compatible training labels, validation
-   references and selection benchmarks.
+   labels and reserved benchmarks.
    If data is missing, use the setup links beside the fields.
 2. Choose an architecture. The form fills in its defaults. Choose **Start
    training** to use them, or open **Training policy** to adjust the run.
@@ -112,7 +112,12 @@ selection on that reservation. The form lists the benchmarks available to your a
 
    The **Logistic baseline** uses one seed and compares regularization settings.
    For the **Temporal convolutional network (TCN)**, each seed trains a separate
-   model. Under **Training budget**, choose **Epochs** to limit passes over the
+   model. **Model size** shows each preset's channel count and number of trainable
+   parameters. For a custom layout, edit **Model configuration (JSON)** under
+   **Advanced settings**. The run history also shows the parameter count beside
+   the architecture. [TCN architecture and measurements](tcn.md)
+
+   Under **Training budget**, choose **Epochs** to limit passes over the
    training data, or **Optimizer updates** to give every seed a fixed number of
    weight updates. For a fixed budget, enter **Updates per seed**. Leave
    **Validation checkpoints** blank to spread up to ten checks across each repeat,
@@ -137,9 +142,11 @@ selection on that reservation. The form lists the benchmarks available to your a
    The baseline chart shows a validation score for each regularization setting.
    The TCN records training loss at every epoch or optimizer update. With an
    epoch budget, it scores validation interval macro-F1 at epoch 1, at the
-   chosen interval and at the final scheduled epoch if reached. **Patience**
-   counts consecutive validation checks without improvement. With an update
-   budget, validation scores appear at the chosen checkpoints.
+   chosen interval and at the final scheduled epoch if reached. **Checks
+   without improvement** sets how many consecutive validation scores can tie
+   or fall below the repeat's best score before it stops. With an update
+   budget, validation scores appear at the chosen checkpoints. The charts show
+   why the selected repeat ended and at which epoch or update.
 
    For a TCN with several repeats, the charts follow the repeat being trained.
    Choose a **Training repeat** to keep its curves on screen. Each seed sets
@@ -159,6 +166,25 @@ You can train and compare several candidates under one reservation. The
 training screen keeps the final test references sealed. Once you have chosen the
 model for the final evaluation, freeze it and open the benchmark through the
 API. [Final evaluation](api.md#4-freeze-and-evaluate-final-data)
+
+### Why these defaults?
+
+The built-in training policy gives each run a repeatable starting point on
+CPU. The exact values are configuration choices. Published scores describe the
+data, settings and budget used for each evaluated model. [Policy definitions](../src/regimex/model_registry.py) · [Evaluation settings and results](quality.md)
+
+| TCN setting | Default | What the choice does |
+| --- | --- | --- |
+| Random seeds | 11, 23, 47 | Trains three times with different initial weights and training orders. Reusing these integers makes comparisons repeatable. |
+| Maximum epochs | 30 | Caps passes over the training data for each seed. Early stopping can save unused passes. |
+| Epochs between validation checks | 2 | Scores at epoch 1, every even epoch and the final epoch if reached. Scoring less often leaves more time for weight updates. |
+| Checks without improvement | 5 | Allows four consecutive checks without a new best score. The fifth ends the repeat. For example, if epoch 4 gives the best score, five ties at epochs 6 through 14 stop it at epoch 14. |
+| Batch size | 16 | Processes up to 16 instrument sequences together. Decrease the batch size if long sequences exceed available memory. |
+| Learning rate and weight decay | 0.001 and 0.0001 | Sets the AdamW step size and applies a small shrinkage to the weights at each update. Compare changes on the same validation set. |
+
+The logistic baseline uses a deterministic solver with one recorded seed, 11.
+It compares inverse regularization strengths of 0.1, 1 and 10 on the same
+validation data and saves the fit with the highest interval macro-F1.
 
 ## Delete saved work
 

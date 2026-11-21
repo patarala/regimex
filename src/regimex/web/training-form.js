@@ -1,6 +1,7 @@
-import {$, option} from "./ui.js";
+import {$, addFieldHelp, option} from "./ui.js";
 import {parseTrainingJSON, trainingJSONBody} from "./training-json.js";
 import {createTrainingPolicy, policyDraft} from "./training-policy.js";
+import {createSizePicker} from "./training-size.js";
 
 const selectionFields = {
   "training-dataset": "dataset_id", "training-architecture": "architecture_id",
@@ -59,6 +60,7 @@ export function createTrainingForm({session, eachPage}) {
   const jsonField = $("training-json");
   const architectureDrafts = new Map();
   const policy = createTrainingPolicy($("training-policy"));
+  const sizePicker = createSizePicker();
   const hint = $("training-prerequisite");
   function feedback(message = "", ...actions) {
     hint.replaceChildren();
@@ -98,6 +100,7 @@ export function createTrainingForm({session, eachPage}) {
     const saved = architectureDrafts.get(currentArchitecture);
     policy.select(architecture, saved?.policy);
     $("training-parameters").value = saved?.parameters ?? "{}";
+    sizePicker.selectArchitecture(architecture);
     $("training-parameters").removeAttribute("aria-invalid");
   }
   const dependent = ["training-labels", "training-validation", "training-benchmark"];
@@ -156,6 +159,10 @@ export function createTrainingForm({session, eachPage}) {
     if (valid()) { loading = false; updateSubmit(); }
   }
   async function open() {
+    for (const label of $("training-fields").querySelectorAll("label[data-help]")) {
+      addFieldHelp(label, label.control, label.dataset.help);
+      delete label.dataset.help;
+    }
     const stamp = ++generation, valid = () => generation === stamp;
     if ($("training-config").hidden) {
       $("training-name").value = draft?.["training-name"] || "";
@@ -215,6 +222,7 @@ export function createTrainingForm({session, eachPage}) {
     showEditor(null);
     currentArchitecture = null;
     policy.select(null);
+    sizePicker.selectArchitecture(null);
     $("training-name").value = "";
     $("training-config").hidden = true;
     $("training-form-settings").open = false;
@@ -289,6 +297,7 @@ export function createTrainingForm({session, eachPage}) {
       policy.select(architecture, imported);
       $("training-name").value = request.display_name ?? "";
       $("training-parameters").value = JSON.stringify(request.parameters, null, 2);
+      sizePicker.selectArchitecture(architecture);
       for (const [id, value] of [["training-runtime", request.training_runtime], ["training-inference", request.inference_runtime]])
         $(id).value = value === undefined ? "" : JSON.stringify(value, null, 2);
       analysisProfile = request.analysis_profile_id;

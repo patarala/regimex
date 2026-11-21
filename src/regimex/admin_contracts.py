@@ -284,12 +284,19 @@ class AdminRunRecord(StrictModel):
         return self
 
 
+class RepeatOutcome(StrictModel):
+    seed: Seed
+    step: Annotated[int, Field(ge=1)]
+    reason: Literal["early_stopping", "epoch_limit", "update_limit"]
+
+
 class TrainingMetrics(StrictModel):
     model_version_id: Identifier
     selected_seed: Seed
     validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
     history: JsonValue
     history_note: str | None = None
+    repeat_outcomes: tuple[RepeatOutcome, ...] = ()
 
 
 MAX_PROGRESS_BATCH = 512
@@ -315,11 +322,17 @@ class TemporalProgress(StrictModel):
 class EpochProgress(TemporalProgress):
     series: ClassVar[HistorySeries] = "epochs"
     epoch: Annotated[int, Field(ge=1, le=1000)]
+    stop_reason: Literal["early_stopping", "epoch_limit"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class UpdateProgress(TemporalProgress):
     series: ClassVar[HistorySeries] = "updates"
     update: Annotated[int, Field(ge=1, le=32_000)]
+    stop_reason: Literal["update_limit"] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 type ProgressPoint = CandidateProgress | EpochProgress | UpdateProgress

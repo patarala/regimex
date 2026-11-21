@@ -63,6 +63,7 @@ _CHART_FIELDS = {
     "regularization",
     "seed",
     "training_loss",
+    "stop_reason",
     "validation_segment_macro_f1",
 }
 Connection = psycopg.Connection[tuple[object, ...]]
@@ -1050,7 +1051,14 @@ class AdminRepository:
                 },
             )
 
-    def complete_training(self, run_id: UUID, token: UUID, model: ModelRecord) -> AdminRunRecord:
+    def complete_training(
+        self,
+        run_id: UUID,
+        token: UUID,
+        model: ModelRecord,
+        *,
+        trainable_parameters: int | None = None,
+    ) -> AdminRunRecord:
         with self._active_run(run_id, token, "training") as (connection, run):
             assert isinstance(run.spec, TrainingSpec)
             if (model.model_version_id, model.architecture_id, model.inference_runtime) != (
@@ -1077,6 +1085,11 @@ class AdminRepository:
                     "model_version_id": model.model_version_id,
                     "bundle_sha256": model.bundle_sha256,
                     "quality_status": model.quality_status,
+                    **(
+                        {"trainable_parameters": trainable_parameters}
+                        if trainable_parameters is not None
+                        else {}
+                    ),
                 },
             )
 

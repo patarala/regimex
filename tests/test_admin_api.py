@@ -771,6 +771,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert response.status_code == 202, response.text
     run = AdminRunView.model_validate_json(response.content)
     assert run.training is not None and run.training.dataset_id == dataset_id
+    assert run.trainable_parameters == (363 if tcn else 867)
     assert (run.display_name, run.name_revision) == ("Short windows" if tcn else None, 0)
     run_path = f"/api/v1/training-runs/{run.run_id}"
     progress = context.client.get(run_path + "/progress", headers=headers)
@@ -781,6 +782,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert completed is not None
     assert completed.operation.state == "succeeded", completed.operation.model_dump_json()
     assert completed.output is not None
+    assert completed.output["trainable_parameters"] == run.trainable_parameters
     renamed = context.client.patch(
         run_path + "/name",
         json={"display_name": "Published candidate", "expected_revision": 0},
@@ -802,6 +804,9 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert metrics.json()["model_version_id"] == model_id
     assert 0 <= metrics.json()["validation_segment_macro_f1"] <= 1
     assert metrics.json()["history"]["epochs" if tcn else "candidates"]
+    assert metrics.json()["repeat_outcomes"] == (
+        [{"seed": 11, "step": 1, "reason": "epoch_limit"}] if tcn else []
+    )
     user_headers = {"Authorization": f"Bearer {context.user_token}"}
     for part in ("metrics", "progress", "actions"):
         assert context.client.get(run_path + "/" + part, headers=user_headers).status_code == 403

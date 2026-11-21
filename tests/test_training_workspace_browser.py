@@ -249,14 +249,14 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         page.get_by_role("button", name="New run", exact=True).press("Enter")
         expect(page.get_by_label("Training labels")).to_have_value("training-labels")
         expect(page.get_by_label("Training labels").locator("option")).to_have_count(1)
-        expect(page.get_by_label("Validation references")).to_have_value("validation-labels")
-        expect(page.get_by_label("Validation references").locator("option")).to_have_count(1)
+        expect(page.get_by_label("Validation labels")).to_have_value("validation-labels")
+        expect(page.get_by_label("Validation labels").locator("option")).to_have_count(1)
         expect(page.get_by_label("Development dataset").locator("option")).to_have_count(1)
         expect(page.get_by_label("Architecture").locator("option")).to_have_text(
             ["Temporal convolutional network (TCN)", "Logistic baseline", "worker-verified"]
         )
         start = page.get_by_role("button", name="Start training")
-        expect(page.get_by_label("Selection benchmark")).to_have_value("selection-v1")
+        expect(page.get_by_label("Reserved benchmark")).to_have_value("selection-v1")
         expect(start).to_be_enabled()
         expected_intake = SPEC.copy()
         title = "TCN · development"
@@ -265,7 +265,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
             page.get_by_label("Run name (optional)").fill(title)
             expected_intake["display_name"] = title
             page.get_by_text("Advanced settings", exact=True).click()
-            runtime = page.get_by_label("Training runtime overrides")
+            runtime = page.get_by_label("Training resources")
             runtime.fill("[]")
             start.press("Enter")
             expect(runtime).to_be_focused()
@@ -369,6 +369,42 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         page.close()
 
 
+def test_training_help_works_with_touch_and_keyboard(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page(viewport={"width": 320, "height": 800}, has_touch=True)
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/#training/new")
+        help_button = page.get_by_role("button", name="Help for Reserved benchmark")
+        note = page.get_by_text("Its test labels stay sealed", exact=False)
+        expect(note).to_be_hidden()
+        help_button.tap()
+        expect(note).to_be_visible()
+        expect(help_button).to_have_attribute("aria-expanded", "true")
+        help_button.tap()
+        expect(note).to_be_hidden()
+
+        page.get_by_text("Training policy", exact=True).press("Enter")
+        field = page.get_by_label("Checks without improvement", exact=True)
+        help_button = page.get_by_role("button", name="Help for Checks without improvement")
+        before = field.input_value()
+        help_button.press("Space")
+        description = page.locator("#" + str(field.get_attribute("aria-describedby")))
+        expect(description).to_contain_text("validation interval macro-F1")
+        expect(description).to_be_visible()
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        help_button.press("Tab")
+        expect(field).to_be_focused()
+        field.press("Escape")
+        expect(description).to_be_hidden()
+        expect(help_button).to_be_focused()
+        expect(field).to_have_value(before)
+        assert not api.posts
+    finally:
+        page.close()
+
+
 def test_epoch_policy_uses_catalog_defaults_and_focuses_the_invalid_field(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
@@ -380,9 +416,9 @@ def test_epoch_policy_uses_catalog_defaults_and_focuses_the_invalid_field(browse
         policy.press("Enter")
         budget = page.get_by_label("Training budget")
         expect(budget).to_have_value("epochs")
-        epochs = page.get_by_label("Epochs", exact=True)
+        epochs = page.get_by_label("Maximum epochs", exact=True)
         expect(epochs).to_have_value("2")
-        seeds = page.get_by_label("Seeds", exact=True)
+        seeds = page.get_by_label("Random seeds", exact=True)
         assert [int(value) for value in seeds.input_value().split(",")] == POLICY["seeds"]
         epochs.fill("12")
         seeds.fill("5, 7")
@@ -399,8 +435,8 @@ def test_epoch_policy_uses_catalog_defaults_and_focuses_the_invalid_field(browse
         batch_size.fill("8")
         page.get_by_label("Learning rate").fill("0.01")
         page.get_by_label("Weight decay").fill("0")
-        page.get_by_label("Validate every (epochs)").fill("3")
-        page.get_by_label("Patience (validation checks)").fill("2")
+        page.get_by_label("Epochs between validation checks").fill("3")
+        page.get_by_label("Checks without improvement").fill("2")
         start.press("Enter")
         expect(page.get_by_role("heading", name="TCN · development")).to_be_visible()
         assert api.posts[0][1]["policy"] == {
@@ -427,7 +463,11 @@ def test_update_budget_submits_only_update_settings(browser: Any, custom: bool) 
         page.goto(ORIGIN + "/#training/new")
         page.get_by_text("Training policy", exact=True).press("Enter")
         page.get_by_label("Training budget").select_option("updates")
-        for label in ("Epochs", "Patience (validation checks)", "Validate every (epochs)"):
+        for label in (
+            "Maximum epochs",
+            "Checks without improvement",
+            "Epochs between validation checks",
+        ):
             expect(page.get_by_label(label, exact=True)).to_be_hidden()
         page.get_by_label("Updates per seed").fill("3")
         checkpoints = page.get_by_label("Validation checkpoints")
@@ -481,7 +521,7 @@ def test_pasting_a_policy_preserves_the_rest_of_the_run(browser: Any, submit_in_
             expect(page.get_by_label("Training budget")).to_have_value("updates")
             expect(page.get_by_label("Updates per seed")).to_have_value("6")
             expect(page.get_by_label("Learning rate")).to_have_value("0.025")
-            expect(page.get_by_label("Seeds", exact=True)).to_have_value("4")
+            expect(page.get_by_label("Random seeds", exact=True)).to_have_value("4")
         start.click()
         expect(page.get_by_role("heading", name="Checkpoint run")).to_be_visible()
         assert api.posts[0][1] == {**SPEC, "display_name": "Checkpoint run", "policy": policy}
@@ -541,8 +581,8 @@ def test_run_json_returns_to_the_form_with_the_selected_dataset_and_references(
         expect(editor).to_be_hidden()
         expect(page.get_by_label("Development dataset")).to_have_value("prices")
         expect(page.get_by_label("Training labels")).to_have_value("prices-train")
-        expect(page.get_by_label("Validation references")).to_have_value("prices-validation")
-        expect(page.get_by_label("Selection benchmark")).to_have_value("prices-selection")
+        expect(page.get_by_label("Validation labels")).to_have_value("prices-validation")
+        expect(page.get_by_label("Reserved benchmark")).to_have_value("prices-selection")
         expect(page.get_by_label("Architecture")).to_have_value("baseline")
         edit.click()
         assert json.loads(editor.input_value()) == request
@@ -1003,6 +1043,57 @@ def test_metrics_appear_when_training_finishes_and_seed_changes_stay_local(brows
         page.close()
 
 
+def test_training_repeat_explains_early_stopping_live_and_after_completion(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["training"]["policy"] = {**POLICY, "epochs": 3, "patience": 1, "validation_interval": 1}
+    api.run["job"].update(state="running", stage="training", attempt=1)
+    first = {"seed": 11, "epoch": 1, "training_loss": 0.4, "validation_segment_macro_f1": 0.6}
+    api.progress_rows = [first]
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        ending = page.locator("#training-repeat-end")
+        expect(page.get_by_role("img", name="Training loss by epoch")).to_be_visible()
+        expect(ending).to_be_hidden()
+        api.progress_rows.append({**first, "epoch": 2, "stop_reason": "early_stopping"})
+        refresh = page.get_by_role("button", name="Refresh", exact=True)
+        refresh.click()
+        expect(ending).to_contain_text("Stopped early at epoch 2 of 3")
+        expect(ending).to_contain_text("Interval macro-F1 did not improve for 1 validation check.")
+        expect(page.locator("#training-state")).to_have_text("Running")
+
+        # Published TCN histories omit live-only messages, including existing bundles.
+        api.metrics["history"] = {
+            "epochs": [
+                first,
+                {**first, "epoch": 2},
+                *[
+                    {
+                        **first,
+                        "seed": 23,
+                        "epoch": epoch,
+                        "validation_segment_macro_f1": 0.6 + 0.02 * epoch,
+                    }
+                    for epoch in range(1, 4)
+                ],
+            ]
+        }
+        api.metrics["repeat_outcomes"] = [
+            {"seed": 11, "step": 2, "reason": "early_stopping"},
+            {"seed": 23, "step": 3, "reason": "epoch_limit"},
+        ]
+        api.run["job"]["state"] = "succeeded"
+        refresh.click()
+        expect(page.locator("#training-state")).to_have_text("Complete")
+        expect(ending).to_have_text("Completed all 3 epochs.")
+        page.get_by_label("Training repeat").select_option("11")
+        expect(ending).to_contain_text("Stopped early at epoch 2 of 3")
+    finally:
+        page.close()
+
+
 def test_live_updates_preserve_the_selected_repeat_and_open_table(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
@@ -1132,7 +1223,7 @@ def test_benchmark_options_follow_the_selected_development_dataset(browser: Any)
         page.get_by_role("link", name="Training", exact=True).click()
         page.get_by_role("button", name="New run", exact=True).click()
         dataset = page.get_by_label("Development dataset")
-        benchmark = page.get_by_label("Selection benchmark")
+        benchmark = page.get_by_label("Reserved benchmark")
         start = page.get_by_role("button", name="Start training")
         expect(benchmark).to_have_value("selection-v1")
         expect(start).to_be_enabled()
@@ -1292,13 +1383,13 @@ def test_policy_drafts_survive_architecture_changes_and_browser_navigation(brows
         expect(new_run).to_be_visible()
         page.get_by_text("Training policy", exact=True).click()
         page.get_by_text("Advanced settings", exact=True).click()
-        parameters = page.get_by_label("Backend parameters (JSON)")
+        parameters = page.get_by_label("Model configuration (JSON)")
         parameters.fill('{"channels": 8}')
         architecture = page.get_by_label("Architecture")
-        epochs = page.get_by_label("Epochs", exact=True)
+        epochs = page.get_by_label("Maximum epochs", exact=True)
         epochs.fill("8")
         architecture.select_option("baseline")
-        seed = page.get_by_label("Seed", exact=True)
+        seed = page.get_by_label("Random seed", exact=True)
         expect(seed).to_have_value("11")
         expect(parameters).to_have_value("{}")
         for label in (
@@ -1306,9 +1397,9 @@ def test_policy_drafts_survive_architecture_changes_and_browser_navigation(brows
             "Batch size",
             "Learning rate",
             "Weight decay",
-            "Epochs",
-            "Validate every (epochs)",
-            "Patience (validation checks)",
+            "Maximum epochs",
+            "Epochs between validation checks",
+            "Checks without improvement",
         ):
             expect(page.get_by_label(label, exact=True)).to_be_hidden()
         seed.fill("19")
@@ -1318,7 +1409,7 @@ def test_policy_drafts_survive_architecture_changes_and_browser_navigation(brows
         expect(epochs).to_have_value("8")
         architecture.select_option("baseline")
         expect(seed).to_have_value("19")
-        runtime = page.get_by_label("Training runtime overrides")
+        runtime = page.get_by_label("Training resources")
         runtime.fill('{"threads": 2}')
         name = page.get_by_label("Run name (optional)")
         name.fill("Weekend baseline")
@@ -1404,5 +1495,47 @@ def test_opening_training_preserves_report_and_comparison_history(browser: Any) 
         expect(page).to_have_url(comparison_url)
         page.reload()
         expect(comparison).to_be_visible()
+    finally:
+        page.close()
+
+
+def test_model_size_presets_edit_the_layout_and_identify_saved_runs(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run.update(trainable_parameters=135555)
+    api.runs.append(api.run)
+    page = browser.new_page(viewport={"width": 320, "height": 800})
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/#training/{RUN_ID}")
+        expect(page.locator("#training-detail-title")).to_contain_text("TCN · 135,555 parameters")
+        page.get_by_role("button", name="New run", exact=True).click()
+        size = page.locator("#training-size")
+        expect(size.locator("option:checked")).to_have_text("32 channels · 35,011 parameters")
+        size.select_option(label="16 channels · 9,315 parameters")
+        page.get_by_role("button", name="Edit JSON").click()
+        editor = page.locator("#training-json")
+        imported = json.loads(editor.input_value())
+        assert imported["parameters"] == {"channels": 16}
+        imported["parameters"].update(dropout=0.24, dilations=[1, 4], side_slopes=True)
+        editor.fill(json.dumps(imported))
+        page.get_by_role("button", name="Use form").click()
+        expect(size.locator("option:checked")).to_have_text("Custom size (JSON)")
+        size.select_option(label="64 channels · 135,555 parameters")
+        page.get_by_role("button", name="Edit JSON").click()
+        assert json.loads(editor.input_value())["parameters"] == {"channels": 64, "dropout": 0.24}
+        page.get_by_role("button", name="Use form").click()
+        page.locator("#training-architecture").select_option("baseline")
+        expect(size).to_be_hidden()
+        page.locator("#training-architecture").select_option("tcn")
+        expect(size.locator("option:checked")).to_have_text("64 channels · 135,555 parameters")
+        size.select_option(label="Custom size (JSON)")
+        configuration = page.locator("#training-parameters")
+        expect(configuration).to_be_focused()
+        configuration.fill('{"dropout":0.0,"smoothing":0.10000000000000001}')
+        size.select_option(label="48 channels · 77,091 parameters")
+        updated = configuration.input_value()
+        assert '"dropout": 0.0' in updated and '"smoothing": 0.10000000000000001' in updated
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     finally:
         page.close()

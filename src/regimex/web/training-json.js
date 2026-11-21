@@ -54,6 +54,18 @@ function taggedTokens(text) {
     token.startsWith('"') ? '"s' + token.slice(1) : '"n' + token + '"');
 }
 
+export function setParameterOverrides(text, overrides) {
+  // Editing a preset must preserve the numeric literals of unrelated model settings.
+  const parameters = JSON.parse(taggedTokens(text.trim() || "{}"));
+  if (!isObject(parameters)) throw new Error("Model configuration must be a JSON object.");
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined) delete parameters["s" + key];
+    else parameters["s" + key] = JSON.parse(taggedTokens(JSON.stringify(value)));
+  }
+  return JSON.stringify(parameters, null, 2).replace(stringsAndNumbers, token =>
+    token.startsWith('"n') ? token.slice(2, -1) : '"' + token.slice(2));
+}
+
 function checkFormNumbers(value, preserveNumberType) {
   if (value && typeof value === "object") {
     for (const child of Object.values(value)) checkFormNumbers(child, preserveNumberType);

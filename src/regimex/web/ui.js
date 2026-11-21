@@ -32,6 +32,37 @@ export function option(value, label) {
   return item;
 }
 
+export function addFieldHelp(label, field, text) {
+  const heading = element("div", "", "field-heading");
+  const note = element("p", text, "field-help");
+  note.id = field.id + "-help";
+  note.hidden = true;
+  const button = element("button", "", "field-help-toggle");
+  button.type = "button";
+  button.setAttribute("aria-controls", note.id);
+  button.setAttribute("aria-expanded", "false");
+  const icon = element("span", "?");
+  icon.setAttribute("aria-hidden", "true");
+  button.append(icon, element("span", "Help for " + label.textContent, "visually-hidden"));
+  label.replaceWith(heading);
+  heading.append(label, button);
+  field.after(note);
+  field.setAttribute("aria-describedby", note.id);
+
+  function setOpen(open) {
+    note.hidden = !open;
+    button.setAttribute("aria-expanded", String(open));
+  }
+  button.addEventListener("click", () => setOpen(note.hidden));
+  heading.parentElement.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !note.hidden) {
+      setOpen(false);
+      button.focus();
+      event.stopPropagation();
+    }
+  });
+}
+
 // A navigation inside a mounted iframe would create a browser history entry of its own.
 export function setPreview(id, path = null) {
   const frame = $(id);

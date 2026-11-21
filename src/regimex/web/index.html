@@ -249,10 +249,26 @@
                 <div class="training-form-grid">
                   <label class="training-wide">Run name <span class="field-optional">(optional)</span><input id="training-name" type="text" dir="auto" autocomplete="off"></label>
                   <label class="training-wide">Development dataset<select id="training-dataset" required></select></label>
-                  <label>Training labels<select id="training-labels" required></select></label>
-                  <label>Validation references<select id="training-validation" required></select></label>
-                  <label>Selection benchmark<select id="training-benchmark" required></select></label>
-                  <label>Architecture<select id="training-architecture" required></select></label>
+                  <div>
+                    <label for="training-labels" data-help="The model learns from these direction labels on the training partition.">Training labels</label>
+                    <select id="training-labels" required></select>
+                  </div>
+                  <div>
+                    <label for="training-validation" data-help="The trainer compares predicted intervals with these labels to select the best model settings.">Validation labels</label>
+                    <select id="training-validation" required></select>
+                  </div>
+                  <div>
+                    <label for="training-benchmark" data-help="Links this run to a separate dataset reserved for the final evaluation. Its test labels stay sealed during model selection.">Reserved benchmark</label>
+                    <select id="training-benchmark" required></select>
+                  </div>
+                  <div>
+                    <label for="training-architecture" data-help="Choose the model family. The logistic baseline fits a linear classifier. The TCN learns patterns across time with convolutions.">Architecture</label>
+                    <select id="training-architecture" required></select>
+                  </div>
+                </div>
+                <div id="training-size-field" hidden>
+                  <label for="training-size" data-help="The TCN presets vary the hidden channel count and use 50 input features and eight dilated blocks. Other settings, including dropout, carry over. Edit a custom layout under Advanced settings.">Model size</label>
+                  <select id="training-size"></select>
                 </div>
                 <details id="training-form-settings">
                   <summary>Training policy</summary>
@@ -260,9 +276,18 @@
                 </details>
                 <details id="training-advanced-settings">
                   <summary>Advanced settings</summary>
-                  <label>Backend parameters (JSON)<textarea id="training-parameters" rows="3" spellcheck="false">{}</textarea></label>
-                  <label>Training runtime overrides (JSON)<textarea id="training-runtime" rows="2" spellcheck="false" placeholder='{"threads": 2, "time_budget_seconds": 600}'></textarea></label>
-                  <label>Inference runtime overrides (JSON)<textarea id="training-inference" rows="2" spellcheck="false" placeholder='{"threads": 2, "max_batch_size": 8}'></textarea></label>
+                  <div>
+                    <label for="training-parameters" data-help="Set options specific to the architecture, such as TCN dropout or baseline regularization candidates. Omitted settings use the architecture defaults.">Model configuration (JSON)</label>
+                    <textarea id="training-parameters" rows="3" spellcheck="false">{}</textarea>
+                  </div>
+                  <div>
+                    <label for="training-runtime" data-help="Set CPU threads, memory or a time limit for this training run. Leave blank to use the service defaults.">Training resources (JSON)</label>
+                    <textarea id="training-runtime" rows="2" spellcheck="false" placeholder='{"threads": 2, "time_budget_seconds": 600}'></textarea>
+                  </div>
+                  <div>
+                    <label for="training-inference" data-help="Set CPU threads, batch size or model cache size for predictions from the trained model. Leave blank to use the service defaults.">Inference resources (JSON)</label>
+                    <textarea id="training-inference" rows="2" spellcheck="false" placeholder='{"threads": 2, "max_batch_size": 8}'></textarea>
+                  </div>
                 </details>
               </fieldset>
               <div id="training-json-panel" hidden>
@@ -301,6 +326,7 @@
               <h3 id="training-metrics-title">Training metrics</h3>
               <p id="training-score"></p>
               <label id="training-seed-label" hidden>Training repeat <select id="training-seed"></select></label>
+              <p id="training-repeat-end" class="hint" role="status" hidden></p>
               <div id="training-charts"></div>
               <a id="training-metric-data" download hidden>Download metric data</a>
             </section>

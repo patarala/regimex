@@ -19,6 +19,7 @@ from typing import Annotated, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError, model_validator
 
+from regimex.backends import baseline_layout, tcn_layout
 from regimex.contracts import MAX_STEPS, Seed, StrictModel
 
 ENTRY_POINT_GROUP = "regimex.models"
@@ -94,16 +95,7 @@ class TCNParameters(StrictModel):
     channels: Annotated[int, Field(ge=4, le=256)] = 32
     dilations: Annotated[
         tuple[Annotated[int, Field(ge=1, le=MAX_STEPS)], ...], Field(min_length=1, max_length=32)
-    ] = (
-        1,
-        2,
-        4,
-        8,
-        16,
-        32,
-        64,
-        128,
-    )
+    ] = tcn_layout.DEFAULT_DILATIONS
     dropout: Annotated[float, Field(ge=0, lt=1)] = 0.15
     smoothing: Annotated[float, Field(ge=0)] = 0.05
     interval_weight_power: Annotated[float, Field(ge=0, le=1)] = 0.0
@@ -113,6 +105,25 @@ class TCNParameters(StrictModel):
         if len(set(self.dilations)) != len(self.dilations):
             raise ValueError("TCN dilations must be unique")
         return self
+
+
+def configured_parameter_count(
+    architecture_id: str, parameters: dict[str, JsonValue]
+) -> int | None:
+    """Count the coefficients or trainable tensors of a known training layout."""
+    try:
+        if architecture_id == "tcn":
+            return tcn_layout.trainable_parameter_count(
+                TCNParameters.model_validate_json(json.dumps(parameters))
+            )
+        if architecture_id == "baseline":
+            return baseline_layout.trainable_parameter_count(
+                LogisticParameters.model_validate_json(json.dumps(parameters))
+            )
+    except ValidationError:
+        # Historical runs may describe parameters from a different backend version.
+        return None
+    return None
 
 
 class TrainingPolicy(StrictModel):
@@ -201,6 +212,12 @@ def read_inference_runtime(path: Path) -> InferenceRuntime:
         raise ValueError(f"Invalid inference runtime ({field}): {error['msg']}") from None
 
 
+class ModelSize(StrictModel):
+    name: Annotated[str, Field(min_length=1)]
+    parameters: dict[str, JsonValue]
+    trainable_parameters: Annotated[int, Field(gt=0)]
+
+
 class ArchitectureInfo(StrictModel):
     """Serializable installed metadata; worker availability may still be unknown."""
 
@@ -209,6 +226,7 @@ class ArchitectureInfo(StrictModel):
     implementation_version: Version
     interface_version: Literal["1.0"]
     parameter_schema: dict[str, JsonValue]
+    sizes: tuple[ModelSize, ...] = ()
     default_training_policy: TrainingPolicy
     supported_optimizers: tuple[Optimizer, ...]
     supported_training_budgets: tuple[TrainingBudget, ...] = ("epochs",)
@@ -236,6 +254,7 @@ class ArchitectureDescriptor(StrictModel):
     implementation_version: Version
     interface_version: Literal["1.0"] = INTERFACE_VERSION
     parameters_model: type[StrictModel] = Field(exclude=True)
+    sizes: tuple[ModelSize, ...] = ()
     default_training_policy: TrainingPolicy
     supported_optimizers: Annotated[tuple[Optimizer, ...], Field(min_length=1)]
     supported_training_budgets: Annotated[tuple[TrainingBudget, ...], Field(min_length=1)] = (
@@ -261,6 +280,8 @@ class ArchitectureDescriptor(StrictModel):
             )
         # Generate the schema during discovery, before serving an incomplete catalog.
         self.parameters_model.model_json_schema()
+        for size in self.sizes:
+            self.validate_parameters(size.parameters)
         for values in (
             self.supported_optimizers,
             self.supported_training_budgets,
@@ -311,6 +332,7 @@ class ArchitectureDescriptor(StrictModel):
             implementation_version=self.implementation_version,
             interface_version=self.interface_version,
             parameter_schema=self.parameters_model.model_json_schema(),
+            sizes=self.sizes,
             default_training_policy=self.default_training_policy,
             supported_optimizers=self.supported_optimizers,
             supported_training_budgets=self.supported_training_budgets,
@@ -492,10 +514,23 @@ def baseline_descriptor() -> ArchitectureDescriptor:
 
 def tcn_descriptor() -> ArchitectureDescriptor:
     """Discover the real CPU TCN backend without importing its scientific runtime."""
+    sizes = []
+    for width in (16, 32, 48, 64):
+        parameters = TCNParameters(channels=width)
+        sizes.append(
+            ModelSize(
+                name=f"{width} channels",
+                parameters=parameters.model_dump(
+                    mode="json", include={"channels", "dilations", "side_slopes"}
+                ),
+                trainable_parameters=tcn_layout.trainable_parameter_count(parameters),
+            )
+        )
     return ArchitectureDescriptor(
         architecture_id="tcn",
         implementation_version="0.2.0",
         parameters_model=TCNParameters,
+        sizes=tuple(sizes),
         default_training_policy=TrainingPolicy(optimizer="adamw"),
         supported_optimizers=("adamw",),
         supported_training_budgets=("epochs", "updates"),

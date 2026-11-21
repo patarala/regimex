@@ -1102,6 +1102,9 @@ iframe {
   padding: 0;
   border: 0;
 }
+#training-size-field {
+  margin-top: 14px;
+}
 #training-json-panel {
   margin-bottom: 20px;
 }
@@ -1142,12 +1145,50 @@ iframe {
 .training-form details {
   margin-bottom: 20px;
 }
-#training-advanced-settings label,
+#training-advanced-settings > div,
 #training-policy {
   margin-top: 16px;
 }
-#training-policy .hint {
-  margin: 4px 0 0;
+.field-heading {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.field-help-toggle {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+}
+.field-help-toggle > [aria-hidden] {
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 11px;
+  line-height: 1;
+}
+.field-help-toggle:where(:enabled):hover,
+.field-help-toggle[aria-expanded="true"] {
+  background: var(--hover);
+  color: var(--ink);
+}
+.field-help {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 .training-form summary,
 .training-run-details summary,
@@ -1392,6 +1433,10 @@ iframe {
   }
 }
 @media (max-width: 540px) {
+  #training-size {
+    padding-inline: 8px;
+    font-size: 14px;
+  }
   .training-values .evaluation-directions :is(th, td) {
     padding-inline: 3px;
     font-size: 12px;

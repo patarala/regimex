@@ -5,6 +5,7 @@ import {createTrainingProgress} from "./training-progress.js";
 import {architectureName, createTrainingForm, datasetName} from "./training-form.js";
 import {trainingRequestKey} from "./training-json.js";
 import {createRunNameEditor} from "./training-name.js";
+import {parameterCountLabel} from "./training-size.js";
 
 const api = "/api/v1/";
 const pageSize = 12;
@@ -12,7 +13,9 @@ const inProgress = (job) => ["queued", "running", "cancel_requested"].includes(j
 const route = (id) => api + "training-runs/" + encodeURIComponent(id);
 
 function runContext(row) {
-  return architectureName(row.training.architecture_id, true) + " · " + datasetName(row.training.dataset_id);
+  return [architectureName(row.training.architecture_id, true),
+    row.trainable_parameters && parameterCountLabel(row.trainable_parameters),
+    datasetName(row.training.dataset_id)].filter(Boolean).join(" · ");
 }
 
 // A polling response can have been read before a rename in this or another tab.
@@ -269,7 +272,7 @@ export function createTraining({session, navigate, onPublication}) {
       let waiting = inProgress(run.job);
       if (["running", "cancel_requested"].includes(run.job.state)) {
         // A slow history page must not delay cancellation or completion updates.
-        void progress.poll(route(run.run_id) + "/progress", run.job.attempt);
+        void progress.poll(route(run.run_id) + "/progress", run.job.attempt, run.training.policy);
       } else {
         progress.stop();
         if (run.job.state !== "succeeded") metrics.clear();
@@ -278,7 +281,7 @@ export function createTraining({session, navigate, onPublication}) {
         if (!metricsLoaded) {
           const result = await session.json(route(run.run_id) + "/metrics");
           if (!valid()) return;
-          metrics.show(result.history, result);
+          metrics.show(result.history, result, run.training.policy);
           $("training-metric-data").href = route(run.run_id) + "/metrics";
           $("training-metric-data").download = "training-" + run.run_id + "-metrics.json";
           $("training-metric-data").hidden = false;

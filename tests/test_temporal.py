@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import pytest
+from pydantic import JsonValue
 
 np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
@@ -196,18 +197,30 @@ def test_tcn_reproduces_selected_validation_checkpoint() -> None:
     )
     parameters = TCNParameters(channels=4)
     policy = TrainingPolicy(
-        optimizer="adamw", seeds=(11,), batch_size=3, epochs=3, validation_interval=1
+        optimizer="adamw", seeds=(11, 23), batch_size=3, epochs=5, validation_interval=2, patience=2
     )
     runtime = TrainingRuntime(threads=4)
     observed = []
+    progress: list[dict[str, JsonValue]] = []
 
     def scorer(probabilities: DoubleArray) -> float:
         observed.append(probabilities.copy())
-        return 1 / len(observed)
+        # The first seed plateaus. The second improves, then exhausts patience on its final epoch.
+        return [1.0, 1.0, 0.7, 0.2, 0.4, 0.4, 0.3][len(observed) - 1]
 
     first, history, seed = fit_tcn(
-        data, targets, data, parameters=parameters, policy=policy, runtime=runtime, scorer=scorer
+        data,
+        targets,
+        data,
+        parameters=parameters,
+        policy=policy,
+        runtime=runtime,
+        scorer=scorer,
+        on_history=progress.append,
     )
+    assert [
+        (row["seed"], row["epoch"], row["stop_reason"]) for row in progress if "stop_reason" in row
+    ] == [(11, 4, "early_stopping"), (23, 5, "epoch_limit")]
     np.testing.assert_array_equal(predict_tcn(first, data), observed[0])
     observed.clear()
     second, repeated_history, repeated_seed = fit_tcn(

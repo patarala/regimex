@@ -7,27 +7,14 @@ from sys import float_info
 import numpy as np
 from numpy.typing import NDArray
 
+from regimex.backends.baseline_layout import FEATURE_NAMES as FEATURE_NAMES
+from regimex.backends.baseline_layout import FEATURE_VERSION as FEATURE_VERSION
+from regimex.backends.baseline_layout import NUMERIC_NAMES as NUMERIC_NAMES
 from regimex.contracts import Observation
 
 FloatArray = NDArray[np.float32]
 DoubleArray = NDArray[np.float64]
 IntArray = NDArray[np.int64]
-FEATURE_VERSION = "3.0"
-NUMERIC_NAMES = (
-    "relative_log_price",
-    "log_return",
-    "log_trade_count",
-    "log_trade_volume",
-    "log_buy_count",
-    "log_buy_volume",
-    "log_sell_count",
-    "log_sell_volume",
-    "count_imbalance",
-    "volume_imbalance",
-    "relative_spread",
-    "absolute_return",
-)
-FEATURE_NAMES = (*NUMERIC_NAMES, *(f"{name}_missing" for name in NUMERIC_NAMES))
 
 
 def _imbalance(buy: float | None, sell: float | None) -> float:

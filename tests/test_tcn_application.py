@@ -66,6 +66,12 @@ def test_tcn_uses_unchanged_shared_training_and_decoded_selection(tmp_path: Path
         data, intake, root, registry=registry(), worker_id="test-tcn", on_history=history.append
     )
     saved = json.loads((root / "history.json").read_bytes())["epochs"]
+    endings = [
+        (row["seed"], row["epoch"], row.pop("stop_reason"))
+        for row in history
+        if "stop_reason" in row
+    ]
+    assert endings == [(11, 3, "epoch_limit"), (23, 3, "epoch_limit")]
     assert history == [{k: v for k, v in row.items() if v is not None} for row in saved]
     assert [row["seed"] for row in history] == [11] * 3 + [23] * 3
     assert all(("validation_segment_macro_f1" in row) == (row["epoch"] != 2) for row in history)

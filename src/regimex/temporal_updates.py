@@ -130,7 +130,10 @@ def fit_tcn_updates(
                         }
                 history.append(entry)
                 if on_history is not None:
-                    on_history(entry.copy())
+                    measurement = entry.copy()
+                    if update == policy.updates:
+                        measurement["stop_reason"] = "update_limit"
+                    on_history(measurement)
                 if update == policy.updates:
                     break
             if update == before_pass:

@@ -53,6 +53,7 @@ from regimex.model_registry import (
     InferenceRuntime,
     TrainingPolicySpec,
     TrainingRuntime,
+    configured_parameter_count,
 )
 from regimex.service_contracts import NotFound, Principal
 from regimex.storage import json_bytes
@@ -291,6 +292,7 @@ class AdminRunView(StrictModel):
     output: dict[str, JsonValue] | None
     polling_url: str
     training: TrainingSpec | None = None
+    trainable_parameters: int | None = None
     display_name: DisplayName | None = None
     name_revision: Annotated[int, Field(ge=0)] = 0
 
@@ -354,10 +356,20 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         "evaluation_run_id",
         "published_model_version_id",
     }
+    training = record.spec if isinstance(record.spec, TrainingSpec) else None
+    saved_count = (record.output or {}).get("trainable_parameters")
+    count = None
+    if training:
+        count = (
+            saved_count
+            if type(saved_count) is int
+            else configured_parameter_count(training.architecture_id, training.parameters)
+        )
     return AdminRunView(
         run_id=record.run_id,
         job=_operation(record.operation),
-        training=record.spec if isinstance(record.spec, TrainingSpec) else None,
+        training=training,
+        trainable_parameters=count,
         display_name=record.display_name,
         name_revision=record.name_revision,
         output=None

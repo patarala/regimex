@@ -188,15 +188,26 @@ function chartSeries(history, selected) {
   return series;
 }
 
+function repeatEnding(reason, step, policy) {
+  if (reason === "early_stopping") {
+    const checks = policy.patience === 1 ? "1 validation check" : policy.patience + " consecutive validation checks";
+    return `Stopped early at epoch ${step} of ${policy.epochs}. Interval macro-F1 did not improve for ${checks}.`;
+  }
+  if (reason === "epoch_limit") return step === 1 ? "Completed the scheduled epoch." : `Completed all ${step} epochs.`;
+  if (reason === "update_limit") return step === 1 ? "Completed the scheduled optimizer update." : `Completed all ${step} optimizer updates.`;
+  return "";
+}
+
 export function createTrainingMetrics() {
   const section = $("training-metrics"), charts = $("training-charts"), seed = $("training-seed");
   const score = $("training-score"), seedLabel = $("training-seed-label");
+  const ending = $("training-repeat-end");
   const figures = new Map();
   let chosenSeed = "", drawn = null;
 
   function clear() {
     section.hidden = true;
-    seedLabel.hidden = score.hidden = true;
+    ending.hidden = seedLabel.hidden = score.hidden = true;
     score.replaceChildren();
     chosenSeed = "";
     drawn = null;
@@ -206,7 +217,7 @@ export function createTrainingMetrics() {
     seed.onchange = null;
   }
 
-  function show(historyData, result = null) {
+  function show(historyData, result, policy) {
     const history = histories.find(schema => Array.isArray(historyData?.[schema.rows]));
     const rows = history && historyData[history.rows];
     const records = rows?.filter(row => row && Number.isFinite(row[history.field]));
@@ -220,7 +231,7 @@ export function createTrainingMetrics() {
     if (!records?.length) {
       figures.clear();
       charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
-      seedLabel.hidden = true;
+      ending.hidden = seedLabel.hidden = true;
       return;
     }
     const seeds = [...new Set(records.map(row => row.seed).filter(Number.isInteger))];
@@ -244,6 +255,11 @@ export function createTrainingMetrics() {
       const resetPage = drawn?.seed !== seed.value;
       drawn = {rows, seed: seed.value, count: selected.length};
       selected.sort((a, b) => a[history.field] - b[history.field]);
+      const last = selected.at(-1);
+      const outcome = result?.repeat_outcomes?.find(item => item.seed === last.seed && item.step === last[history.field]);
+      const summary = repeatEnding(outcome?.reason ?? last.stop_reason, last[history.field], policy);
+      if (ending.textContent !== summary) ending.textContent = summary;
+      ending.hidden = !summary;
       const axis = horizontalAxis(history, selected);
       const series = chartSeries(history, selected);
       for (const [key, view] of figures) {

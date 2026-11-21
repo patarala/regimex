@@ -12,6 +12,18 @@ from pydantic import JsonValue
 from torch import Tensor, nn
 from torch.nn import functional as functional
 
+from regimex.backends.tcn_layout import (
+    CONTEXT_SIZES as CONTEXT_SIZES,
+)
+from regimex.backends.tcn_layout import (
+    DEFAULT_DILATIONS,
+    SIDE_WINDOW_SIZES,
+)
+from regimex.backends.tcn_layout import TEMPORAL_NAMES as TEMPORAL_NAMES
+from regimex.backends.tcn_layout import TEMPORAL_NUMERIC_NAMES as TEMPORAL_NUMERIC_NAMES
+from regimex.backends.tcn_layout import (
+    feature_names as feature_names,
+)
 from regimex.directions import DIRECTION_NAMES
 from regimex.features import FEATURE_NAMES, DoubleArray, FloatArray, IntArray
 from regimex.model_contracts import HistoryCallback
@@ -27,36 +39,7 @@ Scorer = Callable[[DoubleArray], float]
 
 logger = logging.getLogger(__name__)
 TEMPORAL_VERSION = "1.0"
-CONTEXT_SIZES = (32, 64, 128, 256, 512)
-DEFAULT_DILATIONS = (1, 2, 4, 8, 16, 32, 64, 128)
 SELECTION_BATCH_SIZE: Literal[16] = 16
-TEMPORAL_NUMERIC_NAMES = (
-    "relative_log_price_asinh",
-    "log_return_asinh",
-    "absolute_log_return_asinh",
-    "sequence_standardized_log_price",
-    "sequence_log_price_scale",
-    *(
-        f"context_{size}_{statistic}"
-        for size in CONTEXT_SIZES
-        for statistic in ("slope_change_asinh", "linear_fit", "endpoint_change_asinh", "coverage")
-    ),
-)
-SIDE_WINDOW_SIZES = (16, 32)
-SIDE_SLOPE_NAMES = tuple(
-    f"{side}_{size}_slope_change_asinh" for size in SIDE_WINDOW_SIZES for side in ("past", "future")
-)
-TEMPORAL_NAMES = (
-    *TEMPORAL_NUMERIC_NAMES,
-    *(f"{name}_missing" for name in TEMPORAL_NUMERIC_NAMES),
-)
-
-
-def feature_names(side_slopes: bool) -> tuple[str, ...]:
-    if not side_slopes:
-        return TEMPORAL_NAMES
-    numeric = TEMPORAL_NUMERIC_NAMES + SIDE_SLOPE_NAMES
-    return (*numeric, *(f"{name}_missing" for name in numeric))
 
 
 def _context_prefix(price: DoubleArray) -> DoubleArray:
@@ -466,7 +449,12 @@ def fit_tcn(
                     stale += 1
             history.append(entry)
             if on_history is not None:
-                on_history(entry.copy())
+                measurement = entry.copy()
+                if epoch == policy.epochs:
+                    measurement["stop_reason"] = "epoch_limit"
+                elif stale >= policy.patience:
+                    measurement["stop_reason"] = "early_stopping"
+                on_history(measurement)
             if stale >= policy.patience:
                 break
     assert best_state is not None

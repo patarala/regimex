@@ -15,6 +15,7 @@ import torch
 from pydantic import Field, JsonValue, RootModel
 from torch import Tensor, nn
 
+from regimex.backends.tcn_layout import state_shapes, trainable_parameter_count
 from regimex.backends.tcn_update_records import (
     UpdateHistoryRecord,
     UpdateValidationRecord,
@@ -172,28 +173,8 @@ def _feature_version(parameters: TCNParameters) -> str:
     return SIDE_SLOPE_FEATURE_VERSION if parameters.side_slopes else FEATURE_VERSION
 
 
-def _state_shapes(parameters: TCNParameters) -> dict[str, tuple[int, ...]]:
-    hidden = parameters.channels
-    shapes = {
-        "input.weight": (hidden, len(feature_names(parameters.side_slopes)), 1),
-        "input.bias": (hidden,),
-        "head.weight": (len(DIRECTION_NAMES), hidden, 1),
-        "head.bias": (len(DIRECTION_NAMES),),
-    }
-    for index in range(len(parameters.dilations)):
-        shapes.update(
-            {
-                f"blocks.{index}.conv.weight": (hidden, hidden, 3),
-                f"blocks.{index}.conv.bias": (hidden,),
-                f"blocks.{index}.mix.weight": (hidden, hidden, 1),
-                f"blocks.{index}.mix.bias": (hidden,),
-            }
-        )
-    return shapes
-
-
 def _state_bytes(parameters: TCNParameters) -> int:
-    return sum(int(np.prod(shape)) * 4 for shape in _state_shapes(parameters).values())
+    return 4 * trainable_parameter_count(parameters)
 
 
 def _activation_bytes(parameters: TCNParameters, batch_size: int, step_count: int) -> int:
@@ -222,7 +203,7 @@ def _freeze(array: DoubleArray, width: int, *, positive: bool = False) -> Double
 
 
 def _validate_state(state: object, parameters: TCNParameters) -> dict[str, Tensor]:
-    shapes = _state_shapes(parameters)
+    shapes = state_shapes(parameters)
     if not isinstance(state, dict) or state.keys() != shapes.keys():
         raise ValueError("TCN state dictionary members differ from its architecture")
     result: dict[str, Tensor] = {}
@@ -372,7 +353,7 @@ def _read_preprocessing(path: Path, width: int) -> TemporalPreprocessor:
 
 def _read_state(path: Path, parameters: TCNParameters) -> dict[str, Tensor]:
     expected_bytes = _state_bytes(parameters)
-    tensor_count = len(_state_shapes(parameters))
+    tensor_count = len(state_shapes(parameters))
     # Torch's restricted loader still needs resource limits. Only its plain,
     # uncompressed state-dictionary ZIP format is accepted by this codec.
     try:

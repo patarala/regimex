@@ -33,6 +33,7 @@ from regimex.directions import DirectionAnnotations
 from regimex.exports import ExportV2
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.model_bundles import verify_model_bundle
+from regimex.model_registry import configured_parameter_count
 from regimex.service_contracts import ModelRecord, Principal, SnapshotRecord
 from regimex.storage import digest, json_bytes
 
@@ -287,7 +288,12 @@ class AdminResultCommitter:
             created_at=datetime.now(UTC),
         )
         self.heartbeat()
-        return self.repository.complete_training(self.run.run_id, self._token, model)
+        return self.repository.complete_training(
+            self.run.run_id,
+            self._token,
+            model,
+            trainable_parameters=configured_parameter_count(spec.architecture_id, spec.parameters),
+        )
 
     def _evaluation(self, spec: EvaluationSpec, result: dict[str, JsonValue]) -> AdminRunRecord:
         model = self.analysis_service.repository.get_model(spec.model_version_id)

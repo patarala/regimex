@@ -19,12 +19,19 @@ torch = pytest.importorskip("torch")
 from torch import nn
 
 from regimex.backends.tcn import TCNBackend, TCNPredictor
+from regimex.backends.tcn_layout import feature_names, trainable_parameter_count
 from regimex.directions import AnalysisConfig
 from regimex.exports import ExportInstrument, ExportObservation, InstrumentUnits, ModelTimeGrid
 from regimex.features import compute_features
 from regimex.model_bundles import ModelBundle, ReferenceIdentity, TrainingEvidence
 from regimex.model_contracts import BundleProvenance, FitResult, ObservationInputs, TrainingInputs
-from regimex.model_registry import InferenceRuntime, TCNParameters, TrainingPolicy, TrainingRuntime
+from regimex.model_registry import (
+    InferenceRuntime,
+    TCNParameters,
+    TrainingPolicy,
+    TrainingRuntime,
+    tcn_descriptor,
+)
 from regimex.prediction_inputs import (
     PredictionInputs,
     PredictionSequenceInfo,
@@ -33,11 +40,34 @@ from regimex.prediction_inputs import (
 from regimex.resource_limits import ResourceBudgetExceeded
 from regimex.storage import digest, json_bytes, write_json
 from regimex.temporal import (
+    TCNClassifier,
     TemporalPreprocessor,
     fit_tcn,
     predict_tcn,
     temporal_features,
 )
+
+
+def test_catalog_sizes_match_trainable_tensors() -> None:
+    descriptor = tcn_descriptor()
+    for size in descriptor.describe().sizes:
+        settings = cast(TCNParameters, descriptor.validate_parameters(size.parameters))
+        model = TCNClassifier(
+            len(feature_names(settings.side_slopes)),
+            settings.channels,
+            settings.dropout,
+            settings.dilations,
+        )
+        assert size.trainable_parameters == sum(
+            p.numel() for p in model.parameters() if p.requires_grad
+        )
+    custom = TCNParameters(channels=7, side_slopes=True, dilations=(1, 3, 5))
+    model = TCNClassifier(
+        len(feature_names(True)), custom.channels, custom.dropout, custom.dilations
+    )
+    assert trainable_parameter_count(custom) == sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
 
 
 def inputs(prefix: str, lengths: tuple[int, ...] = (24, 32, 28)) -> ObservationInputs:

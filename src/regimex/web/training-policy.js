@@ -1,4 +1,4 @@
-import {element, option} from "./ui.js";
+import {addFieldHelp, element, option} from "./ui.js";
 
 const maxSeed = 2 ** 32 - 1;
 const maxUpdates = 32000;
@@ -7,9 +7,9 @@ const optimizerNames = {lbfgs: "L-BFGS", adamw: "AdamW"};
 // A pasted API policy may omit fields. Their schema defaults can differ from the
 // architecture's suggested values for a new run.
 const numbers = {
-  epochs: {title: "Epochs", min: 1, max: 1000, fallback: 30},
-  validation_interval: {title: "Validate every (epochs)", min: 1, fallback: 2},
-  patience: {title: "Patience (validation checks)", min: 1, fallback: 5},
+  epochs: {title: "Maximum epochs", min: 1, max: 1000, fallback: 30},
+  validation_interval: {title: "Epochs between validation checks", min: 1, fallback: 2},
+  patience: {title: "Checks without improvement", min: 1, fallback: 5},
   updates: {title: "Updates per seed", min: 1, max: maxUpdates},
   batch_size: {title: "Batch size", min: 1, max: 128, fallback: 16},
   learning_rate: {title: "Learning rate", min: 0, step: "any", fallback: 0.001},
@@ -18,6 +18,18 @@ const numbers = {
 const commonNumbers = ["batch_size", "learning_rate", "weight_decay"];
 const epochNumbers = ["epochs", "validation_interval", "patience"];
 const selectionMetric = "validation_segment_macro_f1";
+const help = {
+  budget: "An epoch is one pass over the training data. A fixed update budget gives each repeat the same number of weight updates.",
+  epochs: "Maximum number of passes over the training data per repeat. Early stopping can finish a repeat sooner.",
+  validation_interval: "How often to score direction intervals on the validation labels, in epochs.",
+  patience: "Stop this repeat after this many consecutive checks without a new best validation interval macro-F1. An improvement resets the count.",
+  updates: "Number of optimizer steps in each repeat. Only batches that update the weights count.",
+  validation_updates: "Leave blank for up to 10 evenly spaced checks. To choose your own, enter update numbers separated by commas and end with the final update.",
+  batch_size: "Maximum number of instrument sequences grouped into one training batch. Larger batches use more memory.",
+  learning_rate: "Controls the size of each weight update. Lower values change the weights more gradually.",
+  weight_decay: "Shrinks weights at each optimizer step. Larger values shrink them more. Set to zero to turn it off.",
+  seeds: "Enter one integer per repeat, separated by commas. Use the same seeds when comparing settings.",
+};
 
 class PolicyError extends Error {
   constructor(field, message) {
@@ -125,22 +137,20 @@ export function createTrainingPolicy(container) {
     return saved;
   }
 
-  function add(key, title, field, hint = "") {
+  function add(key, title, field) {
     field.id = "training-policy-" + key;
     field.value = values[key] ?? "";
     fields.set(key, field);
     const wrapper = element("div"), label = element("label", title);
     label.htmlFor = field.id;
-    label.append(field);
-    wrapper.append(label);
-    if (hint) {
-      wrapper.className = "training-wide";
-      const note = element("p", hint, "hint");
-      note.id = field.id + "-hint";
-      field.setAttribute("aria-describedby", note.id);
-      wrapper.append(note);
-    }
+    wrapper.append(label, field);
     container.append(wrapper);
+    let hint = help[key];
+    if (key === "seeds" && architecture.architecture_id === "baseline")
+      hint = "The logistic baseline records one seed and fits once for each regularization setting.";
+    if (key === "validation_interval" && architecture.architecture_id === "tcn")
+      hint = "With a value of 2, the TCN scores validation intervals at epochs 1, 2, 4, 6 and so on. It also scores the final epoch if reached.";
+    if (hint) addFieldHelp(label, field, hint);
     return field;
   }
 
@@ -165,7 +175,7 @@ export function createTrainingPolicy(container) {
     fields.clear();
     if (!architecture) return;
     if (architecture.architecture_id === "baseline") {
-      number("seeds", {title: "Seed", min: 0, max: maxSeed});
+      number("seeds", {title: "Random seed", min: 0, max: maxSeed});
       return;
     }
     const optimizers = architecture.supported_optimizers || [values.optimizer];
@@ -183,8 +193,7 @@ export function createTrainingPolicy(container) {
       number("updates");
       const input = element("input");
       input.placeholder = "Automatic";
-      add("validation_updates", "Validation checkpoints", input,
-        "Leave blank for up to 10 evenly spaced checks, or enter update numbers separated by commas, ending with the final update.");
+      add("validation_updates", "Validation checkpoints", input);
     } else {
       for (const key of epochNumbers) number(key);
       if (optimizers.length > 1) choice("optimizer", "Optimizer", optimizers, optimizerNames);
@@ -192,8 +201,7 @@ export function createTrainingPolicy(container) {
     for (const key of commonNumbers) number(key);
     const seeds = element("input");
     seeds.required = true;
-    seeds.placeholder = "11, 23, 47";
-    add("seeds", "Seeds", seeds);
+    add("seeds", "Random seeds", seeds);
   }
 
   function select(next, draft = null) {
