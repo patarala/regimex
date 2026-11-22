@@ -53,3 +53,46 @@ def test_nested_populations_and_fixed_update_contrasts(monkeypatch: pytest.Monke
     assert standard.batch_size == longer.batch_size
     assert longer.updates == 2 * standard.updates
     assert longer.validation_updates == tuple(2 * step for step in standard.validation_updates)
+
+
+def test_history_reports_actual_rows_and_keeps_the_first_best_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pytest.importorskip("torch")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    comparison = importlib.import_module("compare_training_populations")
+    policy = comparison.FixedUpdatePolicy(
+        seeds=(23,), updates=3, validation_updates=(1, 3), batch_size=2
+    )
+    rows = [
+        {
+            "seed": 23,
+            "update": update,
+            "pass_index": update,
+            "batch_in_pass": 1,
+            "training_loss": 1.0,
+            "trained_sequences": 2,
+            "real_rows": 6,
+            "padding_rows": 2,
+            "eligible_rows": 5,
+            "validation_segment_macro_f1": 0.75 if update in (1, 3) else None,
+        }
+        for update in (1, 2, 3)
+    ]
+    path = tmp_path / "history.json"
+    path.write_bytes(comparison.json_bytes({"updates": rows}))
+    assert comparison.per_seed_history(path, policy) == [
+        {
+            "seed": 23,
+            "update": 1,
+            "interval_macro_f1": 0.75,
+            "optimizer_updates": 3,
+            "trained_sequences": 6,
+            "real_rows": 18,
+            "padding_rows": 6,
+            "eligible_rows": 15,
+        }
+    ]
+    path.write_bytes(comparison.json_bytes({"updates": rows[:-1]}))
+    with pytest.raises(ValueError, match="Recorded optimizer updates"):
+        comparison.per_seed_history(path, policy)
