@@ -1,7 +1,9 @@
 """Bundled standalone upload page; authentication stays at the API boundary."""
 
 import hashlib
+import re
 from importlib.resources import files
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
@@ -21,35 +23,8 @@ _HEADERS = {
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cache-Control": "no-store",
 }
-_ASSETS = {
-    "app.css": "text/css",
-    "app.js": "text/javascript",
-    "theme.js": "text/javascript",
-    "session.js": "text/javascript",
-    "history.js": "text/javascript",
-    "experiment-history.js": "text/javascript",
-    "models.js": "text/javascript",
-    "analysis.js": "text/javascript",
-    "uploads.js": "text/javascript",
-    "comparison.js": "text/javascript",
-    "queue-status.js": "text/javascript",
-    "ui.js": "text/javascript",
-    "integrations.js": "text/javascript",
-    "training.js": "text/javascript",
-    "training-comparison.js": "text/javascript",
-    "training-archive.js": "text/javascript",
-    "training-evaluation.js": "text/javascript",
-    "training-form.js": "text/javascript",
-    "training-json.js": "text/javascript",
-    "training-metrics.js": "text/javascript",
-    "training-name.js": "text/javascript",
-    "training-policy.js": "text/javascript",
-    "training-preparation.js": "text/javascript",
-    "training-progress.js": "text/javascript",
-    "training-size.js": "text/javascript",
-    "storage.js": "text/javascript",
-    "deletion.js": "text/javascript",
-}
+_ASSET_NAME = re.compile(r"[a-z][a-z0-9_-]*\.(js|css)")
+_MEDIA_TYPES = {"js": "text/javascript", "css": "text/css"}
 
 
 def install_web_routes(app: FastAPI) -> None:
@@ -89,12 +64,19 @@ def install_web_routes(app: FastAPI) -> None:
 
     @app.get("/assets/{name}", include_in_schema=False)
     def asset(name: str) -> Response:
-        media_type = _ASSETS.get(name)
-        if media_type is None:
+        match = _ASSET_NAME.fullmatch(name)
+        if match is None:
             raise HTTPException(404, "Asset was not found.")
-        body = files("regimex.web").joinpath(name).read_bytes()
+        resource = files("regimex.web").joinpath(name)
+        if not resource.is_file() or (isinstance(resource, Path) and resource.is_symlink()):
+            raise HTTPException(404, "Asset was not found.")
+        try:
+            body = resource.read_bytes()
+        except FileNotFoundError, IsADirectoryError:
+            # A release may replace the file between lookup and read.
+            raise HTTPException(404, "Asset was not found.") from None
         return Response(
             body,
-            media_type=media_type,
+            media_type=_MEDIA_TYPES[match[1]],
             headers={**_HEADERS, "ETag": f'"{hashlib.sha256(body).hexdigest()}"'},
         )

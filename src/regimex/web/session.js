@@ -22,7 +22,9 @@ function requestError(data) {
 export function createSession({onActivate, onReset}) {
   let value = null;
   let epoch = 0;
+  let restoreTimer;
   function reset() {
+    clearTimeout(restoreTimer);
     epoch++;
     value = null;
     $("token").value = "";
@@ -82,6 +84,7 @@ export function createSession({onActivate, onReset}) {
   }
 
   async function activate(next) {
+    clearTimeout(restoreTimer);
     epoch++;
     value = next;
     $("token").value = "";
@@ -121,16 +124,26 @@ export function createSession({onActivate, onReset}) {
     window.history.replaceState(null, "", new URL("/", location.href));
     notice();
   });
-  async function start() {
+  async function start(retryDelay = 1000) {
+    clearTimeout(restoreTimer);
     const workspace = epoch;
     let next;
     try {
       next = await json("/api/v1/session");
     } catch (error) {
       if (workspace !== epoch) return;
+      if (canRetryRead(error)) {
+        $("login-panel").hidden = true;
+        notice("Reconnecting to the service…");
+        restoreTimer = setTimeout(() => void start(Math.min(30000, retryDelay * 2)), retryDelay);
+        return;
+      }
       reset();
-      if (error.status !== 401) notice(error.message, true);
+      if (error.status === 401) notice();
+      else notice(error.message, true);
       return;
+    } finally {
+      $("workspace-startup")?.setAttribute("hidden", "");
     }
     await activate(next);
   }

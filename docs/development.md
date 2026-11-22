@@ -17,6 +17,13 @@ Optional integrations report skips when their dependencies or services are
 unavailable. The [architecture guide](architecture.md#where-to-find-the-code)
 maps each part of the service to its source files.
 
+When [running from source](usage.md#start-locally), edit the workspace HTML,
+JavaScript or CSS under `src/regimex/web/` and reload the browser. The API
+reads these files on request, including newly added top-level modules. Changes
+to Python handlers take effect when you restart the API process. In a packaged
+Compose deployment, use the [component update procedure](deployment.md#update-individual-components)
+to deploy the corresponding image.
+
 ## Checks by change
 
 | Change | What to run |

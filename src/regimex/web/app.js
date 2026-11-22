@@ -10,13 +10,9 @@ import {createDeletion} from "./deletion.js";
 import {createTraining} from "./training.js";
 
 const session = createSession({
-  onActivate: async () => {
-    void storage.load();
-    void deletion.load();
-    void models.load();
-    await Promise.all([history.load(), restoreLocation()]);
-  },
+  onActivate: restoreLocation,
   onReset: () => {
+    analysesOpened = false;
     screen = null;
     lastLocation = null;
     $("open-analyses").href = "/";
@@ -61,7 +57,7 @@ const integrations = createIntegrations({session, navigate});
 const training = createTraining({session, navigate, deletion, onPublication: () => models.load()});
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
-let screen = null, lastLocation = null;
+let screen = null, lastLocation = null, analysesOpened = false;
 
 function navigate(path, replace = false) {
   const url = new URL(path, location.href);
@@ -171,8 +167,20 @@ async function restoreLocation() {
     const pair = ["left", "right"].map(key => url.searchParams.get(key)).filter(id => uuid.test(id));
     return training.show(id, ["archived", "all"].includes(view) ? view : "active", pair);
   }
+  let initialHistory;
+  if (!analysesOpened) {
+    analysesOpened = true;
+    void storage.load();
+    void deletion.load();
+    void models.load();
+    initialHistory = history.load();
+  }
   $("open-analyses").href = url.href;
   if (previous && previous !== section) $("open-analyses").focus();
+  await Promise.all([initialHistory, restoreAnalysis(url, resumed)]);
+}
+
+async function restoreAnalysis(url, resumed) {
   const analysisId = url.searchParams.get("analysis");
   if (analysisId && uuid.test(analysisId)) {
     if (analysis.current?.id !== analysisId) return analysis.open(analysisId, {restore: true});
