@@ -67,6 +67,54 @@ price at every step. Their frequencies and trade-offs can differ on exchange
 data. The comparison supports keeping the current default while testing ways
 to recognize short pauses without splitting noisy flat periods.
 
+## Looking for a pause inside an existing trend
+
+A second offline annotator revisits each growth or decline interval long
+enough for two flanks and a pause. It compares a straight line with a
+continuous fit consisting of a slope, a flat section and another slope.
+The central section must be substantially flatter than both flanks. Both
+outer segments must independently qualify as trends in the original
+direction. The method can add one pause per original trend and leaves the
+availability boundaries in place. At the 32-step scale it checks pause
+widths of 32, 40, 48 and 56 steps.
+
+We chose the detection thresholds on the original 288 diagnostic paths.
+Confirmation compared the frozen rule, the current annotator and the
+lower split penalty on two fresh suites. The first repeated the original
+six shapes with new random draws (384 paths). The second used 512 paths of
+224 or 320 steps with variable break positions, heavier-tailed noise and
+two tick sizes. Its controls included a trend that slows down but continues
+moving and a pause followed by a reversal. Scores use the latent path as
+the reference. Both suites record a trade and a price at every step.
+
+| Suite | Method | Interval macro-F1 | Short pauses matched | False trends on flat paths or level shifts | False sideways on trends or reversals |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Original shapes, new draws | Current rule | 0.7573 | 54/128 | 4 | 20 |
+| | Lower split penalty | 0.7949 | 76/128 | 13 | 45 |
+| | Second pass | 0.8916 | 96/128 | 4 | 23 |
+| Different lengths, shapes and noise | Current rule | 0.8802 | 129/192 | 8 | 17 |
+| | Lower split penalty | 0.8656 | 140/192 | 19 | 30 |
+| | Second pass | 0.9164 | 157/192 | 8 | 21 |
+
+The second pass gained 0.1343 interval F1 on the first suite (paired 95%
+interval +0.1014 to +0.1685) and 0.0362 on the second (+0.0201 to +0.0534).
+Intervals use 2,000 paired draws of whole paths within shape. Most of the
+gain came from same-direction trends interrupted by a 32-step pause. On
+the second suite the method recovered 52/64 such pauses, up from 32/64.
+All four additional false sideways intervals on trends in that suite came
+from slowdowns. Pause matches before reversals stayed at 50/64.
+
+On 192 exchange-generated training experiments the second pass inserted 51
+short sideways intervals across 36 experiments. It relabeled 2,008 of
+139,825 classified steps (1.44%) and preserved every unavailable interval.
+After rounding observed prices to a two-tick grid, all 51 insertions still
+matched a sideways interval, 47 with identical endpoints. Fifty still
+counted as new against the current rule on the rounded paths. These are
+measurements of stability on the exchange data, where the true directions
+are unknown. The candidate has a separate offline policy identifier.
+The [training target comparison](pause-supervision.md) measures what a TCN
+learns from the additional intervals.
+
 ## Reproduce
 
 Use `direction-32/2.2` on the locked synthetic corpus with 96 training and 30
@@ -89,4 +137,16 @@ new file for their scores.
 ```sh
 uv run --locked --extra ml python scripts/check_annotation_penalties.py \
   var/verification/annotation-penalties.json
+```
+
+To reproduce the two independent pause checks, use a new directory for the
+reservation, the candidate digest and the resulting per-path interval counts.
+The exchange audit uses only the training partition of the
+[mixed 192-experiment dataset](training-populations.md#reproduce).
+
+```sh
+uv run --locked --extra ml python scripts/confirm_trend_pauses.py reserve var/trend-pauses
+uv run --locked --extra ml python scripts/confirm_trend_pauses.py freeze var/trend-pauses
+uv run --locked --extra ml python scripts/confirm_trend_pauses.py score var/trend-pauses
+uv run --locked --extra ml python scripts/audit_pause_refinement.py var/populations/development/mixed-192 var/trend-pauses/exchange.json
 ```

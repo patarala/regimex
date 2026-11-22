@@ -70,7 +70,9 @@ count. This increases the number of reference sideways intervals under 64
 steps from 25 to 57 at the same number of instrument steps and optimizer
 updates. The rule reads training labels only. An independent
 [audit of the labels](label-stability.md) checks how readily the reference
-rule itself can detect a short pause.
+rule itself can detect a short pause. A separate [training target
+comparison](pause-supervision.md) keeps all 192 mixed training experiments
+and changes their automatic reference intervals.
 
 All configurations use batches of eight instrument sequences and seeds 11, 23
 and 47. Each seed has three validation checkpoints. The configuration with
@@ -124,3 +126,60 @@ uv run --locked --extra ml python scripts/confirm_training_populations.py score 
 digest. Each `fitted/<recipe>/bundle/` contains weights and preprocessing in
 the native TCN format. `confirmation/results.json` contains per-experiment
 counts, scores by length and paired differences between recipes.
+
+## Choosing a model on different experiment lengths
+
+We took the six fitted bundles above and ranked them using two new validation
+panels. Both have 48 experiments and 72 instrument series. They share 16
+experiments of 256 steps and 16 of 512 steps. The short panel adds eight more
+of each length. The balanced panel adds 16 experiments of 1,024 steps. Every
+length stratum has equal numbers of one- and two-instrument experiments.
+The panels contain 27,648 and 43,008 instrument steps respectively.
+
+Each panel selects the single bundle with the highest pooled interval
+macro-F1. This measures how the choice among existing bundles changes with
+the validation mix. We also registered a fixed ensemble of the short 96,
+short 192 and mixed 192 models. It averages their probabilities at each step
+and decodes the resulting sequence once. This uses three forward passes.
+The ensemble is evaluated separately from the choice between the six
+individual bundles.
+
+The confirmation contains 144 other experiments, 48 per length. Each
+validation choice was frozen before opening their references. The short
+panel chose mixed 96 with validation interval F1 of 0.7185. The balanced
+panel chose mixed 192 with 0.6299. Absolute scores from these panels
+describe different mixes of experiments.
+
+| Selection | Model | Holdout interval F1 | At 1,024 steps | Point F1 | Short sideways matched | Sideways precision |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Original validation | Short 96 | 0.6042 | 0.4554 | 0.8721 | 4/62 | 70.1% |
+| New short panel | Mixed 96 | 0.6072 | 0.4594 | 0.8622 | 5/62 | 55.8% |
+| New balanced panel | Mixed 192 | 0.6212 | 0.4788 | 0.8710 | 8/62 | 60.4% |
+| Fixed ensemble | Mean of three TCNs | 0.6285 | 0.4989 | 0.8853 | 4/62 | 66.4% |
+
+The balanced panel's choice gained 0.0140 interval F1 over the short
+panel's choice (paired 95% interval −0.0108 to +0.0400). One pair of panels
+gives limited evidence about the validation design. The ensemble gained
+0.0243 over the historical choice (+0.0040 to +0.0469) and 0.0435 on
+1,024-step runs (+0.0055 to +0.0857). Each matched four short sideways
+references. The ensemble produced 41 false sideways predictions of any
+length versus 32 for the single model. Intervals are pointwise and conditional on
+the frozen models.
+
+On 12 validation experiments (18 instrument series and 10,752 steps), median
+CPU prediction and decoding time was 0.726 seconds for the single model and
+1.438 seconds for the ensemble (1.98×). Both used two threads and batches of
+up to eight sequences. Each method had one warm-up followed by eight timed
+runs in alternating order. The timer covers prediction from in-memory
+observations through decoded intervals. Bundle loading, export I/O and
+HTTP handling add separate costs.
+
+To reproduce, use the same exposure-index file as in the source training
+comparison.
+
+```sh
+uv run --locked --extra ml python scripts/compare_selection_panels.py reserve var/selection --source var/populations --exposure-index var/prior.json
+uv run --locked --extra ml python scripts/compare_selection_panels.py select var/selection --source var/populations
+uv run --locked --extra ml python scripts/compare_selection_panels.py score var/selection --source var/populations
+uv run --locked --extra ml python scripts/time_selection_ensemble.py var/selection --source var/populations
+```
