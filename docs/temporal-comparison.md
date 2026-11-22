@@ -40,10 +40,10 @@ All references were generated automatically.
 | 1,024 | 0.2983 | 0.4771 | 0.5351 | 0.4449 | 0.4517 |
 
 Each length contributed 40 experiments. At 1,024 steps every configuration
-scored below its performance at 256 and 512 steps. Including long experiments
-in a future training split would test whether the length mix contributes to
-the gap. These 120 experiments are now exposed. Further model selection needs
-another reserved population.
+scored below its performance at 256 and 512 steps. The
+[training population comparison](training-populations.md) tests the effect
+of including 1,024-step runs in training on a fresh holdout. These 120
+experiments count as exposed for subsequent model selection.
 
 ## What changed between candidates
 

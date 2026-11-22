@@ -12,7 +12,11 @@ with a reference direction. For both metrics, macro-F1 gives equal weight to all
 three directions and assigns zero to an undefined class F1. The pooled scores
 use counts across all experiments.
 
-For profile `direction-32/2.2`, see the [comparison of temporal classifiers](temporal-comparison.md), including short sideways intervals and generalization to longer experiments.
+For profile `direction-32/2.2`, the [architecture comparison](temporal-comparison.md)
+tests different temporal classifiers. The [training population comparison](training-populations.md)
+holds the architecture fixed and varies the data and optimizer budget. The
+[annotation checks](label-stability.md) test the reference rule against changes
+in observed prices and against noisy paths with known pauses.
 
 ## Baseline and TCN on direction-32/2.1
 
