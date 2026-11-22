@@ -20,7 +20,7 @@ from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterva
 from regimex.exports import ExportObservation, ExportV2
 from regimex.observation_availability import known_no_executions
 
-REPORT_VERSION = "6.3"
+REPORT_VERSION = "6.4"
 OBSERVABLE_FIELDS = tuple(
     name for name in Observation.model_fields if name not in {"step", "instrument_id"}
 )

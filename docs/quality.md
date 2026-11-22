@@ -17,6 +17,8 @@ tests different temporal classifiers. The [training population comparison](train
 holds the architecture fixed and varies the data and optimizer budget. The
 [annotation checks](label-stability.md) test the reference rule against changes
 in observed prices and against noisy paths with known pauses.
+The [pause overlay comparison](pause-precision.md) measures how often the
+report highlights a genuine price pause or a continuing trend.
 
 ## Baseline and TCN on direction-32/2.1
 

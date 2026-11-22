@@ -6,9 +6,12 @@ several such pauses. A sideways interval is a separate classification made by
 the model. The pause overlay reads the model's existing intervals and leaves
 their labels and boundaries intact.
 
-## Results on new paths
+For reports generated with the current renderer, see the
+[flat versus slow price comparison](pause-precision.md).
 
-The report setting found **480 of 512 pauses (93.8%)**. It also marked **127
+## Initial overlay results
+
+The setting used in renderer 3.6 found **480 of 512 pauses (93.8%)**. It also marked **127
 intervals in 131,072 steps of continuous slowdowns**, or 0.969 per 1,000 steps.
 That exceeded the 0.5 development budget. An apparent plateau can therefore
 be a continuing slow trend, especially at coarse price resolution. The overlay
@@ -19,7 +22,7 @@ is an opt-in aid for inspecting the chart.
 | Historical single, published gain 4 | 126 | 126 | 90 | 1.038 (136 marks) |
 | Execution-aware single, gain 16 | 97 | 109 | 75 | 0.526 (69 marks) |
 | Multiple, relative slope only, gain 24 | 75 | 211 | 142 | 0.504 (66 marks) |
-| Multiple, absolute drift limit, gain 4, noise multiplier 0.5 (report) | 124 | 356 | 239 | 0.969 (127 marks) |
+| Multiple, absolute drift limit, gain 4, noise multiplier 0.5 (renderer 3.6) | 124 | 356 | 239 | 0.969 (127 marks) |
 | Same absolute rule, known tick supplied | 127 | 365 | 247 | 1.198 (157 marks) |
 
 The absolute rule recovered all three pauses on 103/128 three-pause paths.
@@ -43,7 +46,7 @@ Its order book does not generate the controlled price paths.
 | Dense | 32,516 / 32,768 (99.2%) | 244 / 256 | 63 / 65,536 steps |
 | Sparse | 11,966 / 32,768 (36.5%) | 236 / 256 | 64 / 65,536 steps |
 
-## How the overlay works
+## How the initial overlay works
 
 Within a growth or decline interval, a window has a candidate plateau in the
 middle and a trend on each side. With the default 32-step scale, the plateau

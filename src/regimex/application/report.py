@@ -64,18 +64,12 @@ def report_trend_pauses(
     rows: Sequence[Observation], intervals: Sequence[DirectionInterval], analysis: AnalysisConfig
 ) -> list[dict[str, object]]:
     # Report generation can load NumPy. Validating or downloading a saved result cannot require it.
-    from regimex.trend_pauses import find_trend_pauses
+    from regimex.pause_shape_confirmation import confirm_pauses
+    from regimex.trend_pauses import scan_trend_pauses
 
-    # Thresholds are calibrated for exports without a declared exchange tick.
-    pauses = find_trend_pauses(
-        rows,
-        intervals,
-        analysis,
-        gain_multiplier=4.0,
-        absolute_multiplier=0.5,
-        absolute_limit=True,
-        multiple=True,
-    )
+    scan = scan_trend_pauses(rows, intervals, analysis)
+    # Compare the flat center with continued movement at one sixth of the outer slope.
+    pauses = confirm_pauses(scan, "shape-6")
     return [
         {
             "start": pause.start,

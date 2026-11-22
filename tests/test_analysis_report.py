@@ -224,7 +224,7 @@ def test_report_is_offline_escaped_and_preserves_original_zero_and_missing_value
     rendered = render_analysis_report(export, result, result_sha256=digest(result))
     document = rendered.html.decode()
     assert len(rendered.html) <= MAX_REPORT_BYTES
-    assert rendered.renderer_version == "analysis-html/3.6"
+    assert rendered.renderer_version == "analysis-html/3.7"
     assert '<footer class="provenance"' in document
     assert "Reading the plots" not in document and '<pre id="provenance"' not in document
     assert "whole requested completed snapshot" in document
@@ -299,6 +299,25 @@ def test_pause_overlay_matches_cli_and_keeps_the_saved_result(tmp_path: Path) ->
     samples = json.loads((folder / "examples.json").read_bytes())
     assert [sample["trend_pauses"] for sample in samples] == [first, second]
     assert json.loads((folder / "results.json").read_bytes()) == [original]
+
+
+def test_overlay_rejects_a_continuing_slope_with_a_flat_looking_center() -> None:
+    np = pytest.importorskip("numpy")
+    from test_segmentation import experiment
+
+    from regimex.application.report import report_trend_pauses
+    from regimex.segmentation import _interval
+    from regimex.trend_pauses import scan_trend_pauses
+
+    steps = np.arange(256)
+    # Price keeps rising at 8.5% of the outer slope for steps [96, 128).
+    progress = steps - (1 - 0.085) * np.clip(steps - 96, 0, 31)
+    rows = experiment((100 * np.exp(0.00018 * progress)).tolist()).observations
+    intervals = (_interval(rows, 0, len(rows), Direction.GROWTH, "observed"),)
+    profile = AnalysisConfig()
+    previous = scan_trend_pauses(rows, intervals, profile).select(absolute_multiplier=0.5)
+    assert [(pause.start, pause.stop) for pause in previous] == [(96, 128)]
+    assert report_trend_pauses(rows, intervals, profile) == []
 
 
 @pytest.mark.parametrize("change", ["digest", "snapshot", "runtime", "statistics"])

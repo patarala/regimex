@@ -76,7 +76,7 @@ expand the list of pauses and select a step range to zoom in. The overlay is
 off by default. These highlights are derived from execution prices within the
 model's intervals. The saved predictions still contain the three directions
 and their original boundaries. A very slow trend can also produce a highlight.
-See [how well the overlay distinguishes pauses from slowdowns](trend-pause-detection.md).
+See [how well the overlay distinguishes pauses from slowdowns](pause-precision.md).
 
 A direction applies from the start step up to, but excluding, the stop step.
 `no_trades` marks a period without executions and `insufficient_data` marks a period with
