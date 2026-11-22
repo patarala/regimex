@@ -12,7 +12,7 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function readRequest(text, base) {
+export function readTrainingRequest(text, base) {
   let input;
   try { input = JSON.parse(text); }
   catch { throw new Error("Enter valid JSON for the run configuration or training policy."); }
@@ -21,7 +21,7 @@ function readRequest(text, base) {
   // The API accepts fixed-update policies that omit the default budget and optimizer.
   const standalone = !Object.keys(input).some(key => requestFields.has(key)) &&
     ["optimizer", "budget", "updates", "validation_updates"].some(key => Object.hasOwn(input, key));
-  const request = standalone ? {...base, policy: input} : input;
+  const request = standalone ? {...JSON.parse(base), policy: input} : input;
   for (const key of Object.keys(request))
     if (!requestFields.has(key)) throw new Error("Unknown run configuration field: " + key + ".");
   for (const key of identifiers)
@@ -36,7 +36,10 @@ function readRequest(text, base) {
     throw new Error("Provide a nonempty string for analysis_profile_id.");
   if (request.display_name != null && typeof request.display_name !== "string")
     throw new Error("Provide a string or null for display_name.");
-  return {request, standalone};
+  if (!standalone) return {request, body: text};
+  const tagged = JSON.parse(taggedTokens(base));
+  tagged.spolicy = JSON.parse(taggedTokens(text));
+  return {request, body: formatTagged(tagged)};
 }
 
 function decimalValue(token) {
@@ -54,6 +57,18 @@ function taggedTokens(text) {
     token.startsWith('"') ? '"s' + token.slice(1) : '"n' + token + '"');
 }
 
+function formatTagged(value) {
+  return JSON.stringify(value, null, 2).replace(stringsAndNumbers, token =>
+    token.startsWith('"n') ? token.slice(2, -1) : '"' + token.slice(2));
+}
+
+export function trainingFieldsBody(fields, settings) {
+  const tagged = JSON.parse(taggedTokens(JSON.stringify(fields)));
+  for (const [key, text] of Object.entries(settings))
+    if (text !== undefined) tagged["s" + key] = JSON.parse(taggedTokens(text));
+  return formatTagged(tagged);
+}
+
 export function setParameterOverrides(text, overrides) {
   // Editing a preset must preserve the numeric literals of unrelated model settings.
   const parameters = JSON.parse(taggedTokens(text.trim() || "{}"));
@@ -62,40 +77,28 @@ export function setParameterOverrides(text, overrides) {
     if (value === undefined) delete parameters["s" + key];
     else parameters["s" + key] = JSON.parse(taggedTokens(JSON.stringify(value)));
   }
-  return JSON.stringify(parameters, null, 2).replace(stringsAndNumbers, token =>
-    token.startsWith('"n') ? token.slice(2, -1) : '"' + token.slice(2));
+  return formatTagged(parameters);
 }
 
-function checkFormNumbers(value, preserveNumberType) {
+function checkPolicyNumbers(value) {
   if (value && typeof value === "object") {
-    for (const child of Object.values(value)) checkFormNumbers(child, preserveNumberType);
+    for (const child of Object.values(value)) checkPolicyNumbers(child);
     return;
   }
   if (typeof value !== "string" || !value.startsWith("n")) return;
   const literal = value.slice(1), number = Number(literal), formatted = String(number);
   if (!Number.isFinite(number) || decimalValue(literal) !== decimalValue(formatted))
     throw new Error("A number would change precision in the form. Use Start training from the JSON editor to keep it exact.");
-  if (preserveNumberType && /[.Ee]/.test(literal) !== /[.Ee]/.test(formatted))
-    throw new Error("A number in parameters would change between an integer and a float in the form. Use Start training from the JSON editor to keep its type.");
 }
 
 export function parseTrainingJSON(text, base) {
-  const {request} = readRequest(text, base);
-  // Plugin parameters preserve the JSON number type. Runtime and policy fields have a declared type.
-  for (const [key, value] of Object.entries(JSON.parse(taggedTokens(text))))
-    checkFormNumbers(value, key === "sparameters");
-  return request;
-}
-
-export function trainingJSONBody(text, base) {
-  const {request, standalone} = readRequest(text, base);
-  if (!standalone) return text;
-  // The browser may round plugin parameters or policy numbers when serializing parsed JSON.
-  const fields = Object.entries(request)
-    .filter(([key, value]) => key !== "policy" && value !== undefined)
-    .map(([key, value]) => JSON.stringify(key) + ":" + JSON.stringify(value));
-  fields.push('"policy":' + text);
-  return "{" + fields.join(",") + "}";
+  const {request, body} = readTrainingRequest(text, base);
+  const tagged = JSON.parse(taggedTokens(body));
+  checkPolicyNumbers(tagged.spolicy);
+  const settings = Object.fromEntries(["parameters", "training_runtime", "inference_runtime", "policy"]
+    .filter(key => Object.hasOwn(tagged, "s" + key))
+    .map(key => [key, formatTagged(tagged["s" + key])]));
+  return {request, settings, body};
 }
 
 export function trainingRequestKey(body) {

@@ -1,6 +1,6 @@
 import {$, addFieldHelp, option} from "./ui.js";
-import {parseTrainingJSON, trainingJSONBody} from "./training-json.js";
-import {createTrainingPolicy, policyDraft} from "./training-policy.js";
+import {parseTrainingJSON, readTrainingRequest, trainingFieldsBody} from "./training-json.js";
+import {createTrainingPolicy, policyDraft, validateTrainingLimits} from "./training-policy.js";
 import {createSizePicker} from "./training-size.js";
 
 const selectionFields = {
@@ -37,12 +37,12 @@ function choices(id, items, empty) {
   select.disabled = !items.length;
 }
 
-function readSettings(id, optional = false) {
+function readSettings(id) {
   const field = $(id), input = field.value.trim();
-  if (!input && optional) return undefined;
+  if (!input) return undefined;
   try {
     const value = JSON.parse(input);
-    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    if (value && typeof value === "object" && !Array.isArray(value)) return input;
   } catch {
     // Use the same field-level message for malformed JSON and the wrong JSON type.
   }
@@ -55,7 +55,7 @@ function readSettings(id, optional = false) {
 export function createTrainingForm({session, eachPage}) {
   let generation = 0, busy = false, architectures = [], draft = null;
   let currentArchitecture = null;
-  let jsonBase = null, jsonOriginal = "", importedBody = null;
+  let jsonBase = null, importedBody = null;
   let converting = false, loading = false, analysisProfile;
   const jsonField = $("training-json");
   const architectureDrafts = new Map();
@@ -168,7 +168,7 @@ export function createTrainingForm({session, eachPage}) {
       $("training-name").value = draft?.["training-name"] || "";
       analysisProfile = draft?.analysisProfile;
       importedBody = draft?.importedBody;
-      if (draft?.jsonBase) showEditor(draft.jsonBase, draft.jsonOriginal, draft.jsonText);
+      if (draft?.jsonBase) showEditor(draft.jsonBase, draft.jsonText);
     }
     $("training-config").hidden = false;
     loading = true;
@@ -211,7 +211,7 @@ export function createTrainingForm({session, eachPage}) {
         draft.advancedExpanded = $("training-advanced-settings").open;
       }
       draft = {...draft, "training-name": $("training-name").value, analysisProfile,
-        importedBody, jsonBase, jsonOriginal, jsonText: jsonField.value};
+        importedBody, jsonBase, jsonText: jsonField.value};
     }
     generation++;
     architectures = [];
@@ -239,27 +239,32 @@ export function createTrainingForm({session, eachPage}) {
   $("training-policy").addEventListener("invalid", () => { $("training-form-settings").open = true; }, true);
   for (const id of ["training-parameters", ...runtimes])
     $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
-  function fieldPayload() {
+  function formJSON() {
     const name = $("training-name").value;
-    return {
+    const policyFields = currentArchitecture ? policy.payload() : undefined;
+    const originalPolicy = importedBody?.architecture === currentArchitecture &&
+      importedBody?.policyFields === JSON.stringify(policyFields) ? importedBody?.policyText : undefined;
+    return trainingFieldsBody({
       display_name: name.trim() ? name : undefined,
       ...Object.fromEntries(selectors.map(id => [selectionFields[id], $(id).value])),
-      policy: currentArchitecture ? policy.payload() : undefined,
-      parameters: readSettings("training-parameters", true) ?? {}, training_runtime: readSettings("training-runtime", true),
-      inference_runtime: readSettings("training-inference", true),
+      policy: policyFields,
       analysis_profile_id: analysisProfile,
-    };
+    }, {
+      policy: originalPolicy,
+      parameters: readSettings("training-parameters") ?? "{}",
+      training_runtime: readSettings("training-runtime"),
+      inference_runtime: readSettings("training-inference"),
+    });
   }
-  function showEditor(base, original = "", text = original) {
+  function showEditor(base, text = base ?? "") {
     jsonBase = base;
-    jsonOriginal = original;
     $("training-fields").hidden = Boolean(base);
     $("training-fields").disabled = Boolean(base);
     $("training-json-panel").hidden = !base;
     $("training-edit-mode").textContent = base ? "Use form" : "Edit JSON";
     jsonField.value = text;
     jsonField.removeAttribute("aria-invalid");
-    $("training-discard-json").hidden = text === original;
+    $("training-discard-json").hidden = !base || text === base;
     updateSubmit();
   }
   function markJsonError() {
@@ -267,12 +272,12 @@ export function createTrainingForm({session, eachPage}) {
     jsonField.focus();
   }
   async function useForm() {
-    if (jsonField.value === jsonOriginal) {
+    if (jsonField.value === jsonBase) {
       showEditor(null);
       $("training-name").focus();
       return;
     }
-    const request = parseTrainingJSON(jsonField.value, jsonBase);
+    const {request, settings, body} = parseTrainingJSON(jsonField.value, jsonBase);
     const architecture = architectures.find(row => row.architecture_id === request.architecture_id);
     if (!architecture) throw new Error("The selected architecture is unavailable in this workspace.");
     if (!Array.from($("training-dataset").options).some(item => item.value === request.dataset_id))
@@ -296,13 +301,15 @@ export function createTrainingForm({session, eachPage}) {
       currentArchitecture = request.architecture_id;
       policy.select(architecture, imported);
       $("training-name").value = request.display_name ?? "";
-      $("training-parameters").value = JSON.stringify(request.parameters, null, 2);
+      $("training-parameters").value = settings.parameters;
       sizePicker.selectArchitecture(architecture);
-      for (const [id, value] of [["training-runtime", request.training_runtime], ["training-inference", request.inference_runtime]])
-        $(id).value = value === undefined ? "" : JSON.stringify(value, null, 2);
+      $("training-runtime").value = settings.training_runtime ?? "";
+      $("training-inference").value = settings.inference_runtime ?? "";
       analysisProfile = request.analysis_profile_id;
-      // Keep sparse API requests intact when a retry goes through the form.
-      importedBody = {fields: JSON.stringify(fieldPayload()), text: trainingJSONBody(jsonField.value, jsonBase)};
+      // The structured controls fill in defaults. Keep a pasted policy sparse until it is edited.
+      importedBody = {architecture: currentArchitecture, policyFields: JSON.stringify(policy.payload()),
+        policyText: settings.policy, text: body};
+      importedBody.fields = formJSON();
       showEditor(null);
       $("training-name").focus();
     } catch (error) {
@@ -317,8 +324,7 @@ export function createTrainingForm({session, eachPage}) {
       if (jsonBase) await useForm();
       else {
         const body = fieldsBody();
-        if (typeof body === "string") showEditor(JSON.parse(body), body);
-        else showEditor(body, JSON.stringify(body, null, 2));
+        showEditor(body);
         jsonField.focus();
       }
     } catch (error) {
@@ -328,7 +334,7 @@ export function createTrainingForm({session, eachPage}) {
   });
   jsonField.addEventListener("input", () => {
     jsonField.removeAttribute("aria-invalid");
-    $("training-discard-json").hidden = jsonField.value === jsonOriginal;
+    $("training-discard-json").hidden = jsonField.value === jsonBase;
     feedback();
   });
   $("training-discard-json").addEventListener("click", () => {
@@ -337,13 +343,20 @@ export function createTrainingForm({session, eachPage}) {
     $("training-name").focus();
   });
   function fieldsBody() {
-    const fields = fieldPayload();
-    return importedBody?.fields === JSON.stringify(fields) ? importedBody.text : fields;
+    const fields = formJSON();
+    return importedBody?.fields === fields ? importedBody.text : fields;
   }
   function payload() {
     if (!jsonBase) return fieldsBody();
-    try { return trainingJSONBody(jsonField.value, jsonBase); }
-    catch (error) { markJsonError(); throw error; }
+    try {
+      const {request, body} = readTrainingRequest(jsonField.value, jsonBase);
+      const architecture = architectures.find(row => row.architecture_id === request.architecture_id);
+      if (architecture) validateTrainingLimits(architecture, request.policy);
+      return body;
+    } catch (error) {
+      markJsonError();
+      throw error;
+    }
   }
   return {
     open, close, payload,

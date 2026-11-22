@@ -94,6 +94,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   let offset = 0, timer = null, busy = false, pollRevision = 0;
   let run = null, evaluation = null, activeModel, metricsLoaded = false;
   let pendingDownstream = false, retryDelay = 2500, target = null;
+  let draftRevision = 0, submittingDraft = null, acceptedDraftRun = null;
+  let draftRequests = new Map();
   let view = "active", listedView = null, listedOffset = 0, renderedRows = null;
   let listed = new Map();
   const form = createTrainingForm({session, eachPage});
@@ -169,7 +171,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   function reset() {
     close();
-    form.discard();
+    submittingDraft = acceptedDraftRun = null;
+    discardDraft();
     pending.clear();
     $("open-training").hidden = true;
   }
@@ -274,12 +277,13 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   // A network error can arrive after the server committed. Reuse that exact request's key.
-  async function post(path, body) {
+  async function post(path, body, requests = pending) {
     const request = JSON.stringify([path, trainingRequestKey(body)]);
-    const key = pending.get(request) || crypto.randomUUID();
-    pending.set(request, key);
+    const key = requests.get(request) || crypto.randomUUID();
+    requests.set(request, key);
     const result = await session.json(path, {method: "POST", body, headers: {"Idempotency-Key": key}});
-    if (pending.get(request) === key) pending.delete(request);
+    // A draft can be edited while its request is in flight, then restored to the same settings.
+    if (requests === pending && requests.get(request) === key) requests.delete(request);
     return result;
   }
 
@@ -493,6 +497,11 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   async function show(id = null, filter = "active") {
     if (!isAdmin()) return;
+    if (id === "new" && acceptedDraftRun) {
+      const accepted = acceptedDraftRun;
+      acceptedDraftRun = null;
+      return navigate(runPath(accepted, filter), true);
+    }
     const entering = !opened;
     const viewChanged = filter !== view;
     const filterFocused = document.activeElement === $("training-history-view");
@@ -556,7 +565,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       $(id).disabled = locked;
     $("training-evaluate").disabled = $("training-publish").disabled =
       $("training-delete-weights").disabled = locked || pendingDownstream;
-    form.setBusy(locked);
+    form.setBusy(locked || submittingDraft === draftRevision);
   }
 
   async function action(work) {
@@ -580,15 +589,49 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   $("training-history-view").addEventListener("change", event => {
     void navigate(runPath(target, event.target.value));
   });
-  $("training-new").addEventListener("click", () => chooseFromHistory("new"));
+  function discardDraft() {
+    draftRequests = new Map();
+    draftRevision++;
+    form.discard();
+  }
+  $("training-new").addEventListener("click", () => {
+    if (target !== "new" && submittingDraft === draftRevision) discardDraft();
+    acceptedDraftRun = null;
+    chooseFromHistory("new");
+  });
+  function draftEdited() {
+    draftRevision++;
+    form.setBusy(busy);
+  }
+  $("training-form").addEventListener("input", draftEdited);
+  $("training-form").addEventListener("change", draftEdited);
   $("training-form").addEventListener("submit", event => {
     event.preventDefault();
     if ($("training-submit").disabled) return;
-    void action(async stamp => {
-      const record = await post(api + "training-runs", form.payload());
-      if (!selected(stamp)) return;
+    void action(async () => {
+      const body = form.payload(), revision = draftRevision;
+      submittingDraft = revision;
+      let record;
+      try {
+        record = await post(api + "training-runs", body, draftRequests);
+      } finally {
+        if (submittingDraft === revision) {
+          submittingDraft = null;
+          form.setBusy(busy);
+        }
+      }
+      if (revision !== draftRevision) {
+        if (opened) void list();
+        return;
+      }
+      discardDraft();
+      if (!opened || target !== "new") {
+        // Back to the submitted form should open the accepted run. A new draft starts separately.
+        acceptedDraftRun = record.run_id;
+        if (opened) void list();
+        return;
+      }
       offset = 0;
-      form.discard();
       listed.set(record.run_id, record);
       navigate(runPath(record.run_id, "active"), true);
       void list();

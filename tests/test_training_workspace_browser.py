@@ -846,11 +846,131 @@ def test_run_json_returns_to_the_form_with_the_selected_dataset_and_references(
         request["training_runtime"] = {"memory_budget_bytes": 9007199254740993}
         editor.fill(json.dumps(request))
         use_form.click()
-        expect(page.locator("#training-prerequisite")).to_contain_text("precision")
-        expect(editor).to_be_focused()
+        expect(editor).to_be_hidden()
+        assert (
+            json.loads(page.locator("#training-runtime").input_value())
+            == request["training_runtime"]
+        )
         start.click()
         expect(page.get_by_role("heading", name="Price sensitivity")).to_be_visible()
         assert api.posts[0][1] == request
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("edit_json", [False, True], ids=["form", "policy-paste"])
+def test_advanced_json_preserves_numeric_literals(browser: Any, edit_json: bool) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/training/new")
+        page.locator("#training-advanced-settings > summary").click()
+        page.locator("#training-parameters").fill('{"plugin":[8.0,"8.0",1e-7,-0.0]}')
+        page.locator("#training-runtime").fill('{"memory_budget_bytes":9007199254740993}')
+        page.locator("#training-inference").fill('{"model_cache_budget_bytes":9007199254740995}')
+        if edit_json:
+            page.get_by_role("button", name="Edit JSON").click()
+            editor = page.get_by_label("Run configuration (JSON)")
+            assert "9007199254740993" in editor.input_value()
+            editor.fill(json.dumps(POLICY))
+            page.get_by_role("button", name="Use form").click()
+            expect(editor).to_be_hidden()
+            assert "8.0" in page.locator("#training-parameters").input_value()
+            page.get_by_label("Run name (optional)").fill("Edited after import")
+        with page.expect_request(
+            lambda r: r.method == "POST" and r.url.endswith("/training-runs")
+        ) as request:
+            page.get_by_role("button", name="Start training").click()
+        raw = request.value.post_data
+        assert raw is not None
+        assert all(
+            token in raw
+            for token in ("8.0", "1e-7", "-0.0", "9007199254740993", "9007199254740995")
+        )
+        parameters = json.loads(raw)["parameters"]["plugin"]
+        assert isinstance(parameters[0], float) and parameters[1] == "8.0"
+        expect(page.locator("#training-detail")).to_be_visible()
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize(
+    "return_before_ack", [False, True], ids=["submitted-draft", "edited-draft"]
+)
+def test_training_acknowledgement_after_navigation(browser: Any, return_before_ack: bool) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    held: list[Any] = []
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(ORIGIN + "/api/v1/training-runs", lambda route: held.append(route))
+    try:
+        url = ORIGIN + "/training/new"
+        page.goto(url)
+        name = page.get_by_label("Run name (optional)")
+        name.fill("Submitted draft")
+        with page.expect_request(lambda r: r.method == "POST"):
+            page.get_by_role("button", name="Start training").click()
+        page.locator("#open-analyses").click()
+        expect(page).to_have_url(ORIGIN + "/")
+        if return_before_ack:
+            page.go_back()
+            expect(name).to_have_value("Submitted draft")
+            name.fill("Next draft")
+        with page.expect_response(lambda r: r.request.method == "POST"):
+            api.post(held.pop(), "training-runs")
+        assert len(api.posts) == 1
+        if return_before_ack:
+            expect(page.locator("#training-runs")).to_contain_text("Submitted draft")
+            expect(page).to_have_url(url)
+            expect(name).to_have_value("Next draft")
+            # Reverting that edit still refers to the accepted submission.
+            name.fill("Submitted draft")
+            with page.expect_request(lambda r: r.method == "POST"):
+                page.get_by_role("button", name="Start training").click()
+            api.post(held.pop(), "training-runs")
+            assert api.posts[0] == api.posts[1]
+            expect(page).to_have_url(ORIGIN + "/training/" + RUN_ID)
+        else:
+            page.go_back()
+            expect(page).to_have_url(ORIGIN + "/training/" + RUN_ID)
+            expect(page.get_by_role("heading", name="Submitted draft")).to_be_visible()
+            page.get_by_role("button", name="New run").click()
+            expect(name).to_have_value("")
+    finally:
+        page.close()
+
+
+def test_explicit_new_run_can_use_the_same_settings_as_a_pending_submission(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    held: list[Any] = []
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(ORIGIN + "/api/v1/training-runs", lambda route: held.append(route))
+    try:
+        url = ORIGIN + "/training/new"
+        page.goto(url)
+        start = page.get_by_role("button", name="Start training")
+        with page.expect_request(lambda r: r.method == "POST"):
+            start.click()
+        page.locator("#open-analyses").click()
+        page.locator("#open-training").click()
+        page.get_by_role("button", name="New run").click()
+        with page.expect_request(lambda r: r.method == "POST"):
+            start.click()
+        first, second = held
+        assert first.request.post_data == second.request.post_data
+        assert first.request.headers["idempotency-key"] != second.request.headers["idempotency-key"]
+        with page.expect_response(lambda r: r.request.method == "POST"):
+            api.post(first, "training-runs")
+        expect(page.locator("#training-runs li")).to_have_count(1)
+        expect(page).to_have_url(url)
+        expect(start).to_be_disabled()
+        api.post(second, "training-runs")
+        expect(page).to_have_url(ORIGIN + "/training/" + RUN_ID)
     finally:
         page.close()
 
