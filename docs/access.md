@@ -50,6 +50,10 @@ Pause the connection to block all its keys. Resuming restores access for valid
 keys. Revocation and pausing leave saved results and already accepted jobs in
 place. Requests authorized before the change may finish.
 
+If another administrator edits the same connection, the page shows the saved
+name and status and keeps the name you typed. Choose **Save name** to apply
+your edit or **Use saved name** to discard it.
+
 ## Operator commands
 
 The administrator token file must be owned by the current user and inaccessible

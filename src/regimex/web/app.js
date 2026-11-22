@@ -45,6 +45,7 @@ const storage = createStorage({session});
 const analysis = createAnalysis({session, models, history, comparison,
   onStorageChange: () => { void storage.load(); },
   onSelectionChange: () => deletion.close(),
+  onResultReady: () => restoreComparison(new URL(location.href)),
   rememberAnalysis,
   deleteAnalysis: (id, title) => deletion.open("analysis", id, title)});
 const deletion = createDeletion({session, onApplied: (target, receipt) => {
@@ -118,6 +119,14 @@ function rememberComparison(id, replace = false) {
   saveReportLocation(url, replace);
 }
 
+function restoreComparison(url) {
+  const active = () => session.value && screen === "analyses" && location.href === url.href &&
+    analysis.current?.id === url.searchParams.get("analysis");
+  const other = url.searchParams.get("compare");
+  const id = other && uuid.test(other) ? other : null;
+  if (active() && comparison.comparedId !== id) return comparison.restore(id, active);
+}
+
 async function restoreLocation() {
   let url = restoreBookmark(new URL(location.href));
   if (!session.value || lastLocation === url.href) return;
@@ -146,6 +155,7 @@ async function restoreLocation() {
     if (previous === "connections") integrations.reset();
   }
   screen = section;
+  const resumed = analysis.setVisible(section === "analyses" && !document.hidden, url.searchParams.get("analysis"));
   document.title = {analyses: "Regimex — Market analysis", training: "Model training · Regimex",
     connections: "Connections · Regimex"}[section];
   $("workspace").hidden = section !== "analyses";
@@ -164,13 +174,10 @@ async function restoreLocation() {
   if (previous && previous !== section) $("open-analyses").focus();
   const analysisId = url.searchParams.get("analysis");
   if (analysisId && uuid.test(analysisId)) {
-    if (analysis.current?.id !== analysisId) await analysis.open(analysisId, {restore: true});
+    if (analysis.current?.id !== analysisId) return analysis.open(analysisId, {restore: true});
+    if (resumed) await resumed;
     else if (analysis.current.loading) await analysis.current.loading;
-    const active = () => session.value && screen === "analyses" && location.href === url.href;
-    const other = url.searchParams.get("compare");
-    const comparedId = other && uuid.test(other) ? other : null;
-    if (active() && comparison.comparedId !== comparedId)
-      await comparison.restore(comparedId, active);
+    if (analysis.current?.metadata) await restoreComparison(url);
   } else if (analysis.current?.id) {
     deletion.close();
     analysis.clearSelection();
@@ -186,5 +193,8 @@ window.addEventListener("click", event => {
 });
 window.addEventListener("popstate", restoreLocation);
 window.addEventListener("hashchange", restoreLocation);
+document.addEventListener("visibilitychange", () => {
+  void analysis.setVisible(screen === "analyses" && !document.hidden);
+});
 restoreBookmark(new URL(location.href));
 void session.start();

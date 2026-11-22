@@ -90,3 +90,54 @@ def test_set_up_saved_experiment_and_open_its_result(browser: Any, width: int) -
         expect(title).to_be_in_viewport()
     finally:
         page.close()
+
+
+def test_status_resumes_after_leaving_analyses_during_a_temporary_error(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    analysis_id = str(UUID(int=41))
+    path = f"/api/v1/analyses/{analysis_id}"
+    attempts: list[str] = []
+    state = "running"
+
+    def status(route: Any) -> None:
+        attempts.append(route.request.method)
+        if len(attempts) == 1:
+            route.fulfill(status=503, json={"error": {"message": "Service restarting."}})
+            return
+        route.fulfill(
+            json={
+                "analysis_id": analysis_id,
+                "instrument_ids": ["BTC/USD"],
+                "step_count": 12,
+                "job": {
+                    "state": state,
+                    "stage": "predicting",
+                    "operation_id": analysis_id,
+                    "model": {"model_version_id": PREVIOUS},
+                },
+                "result_available": state == "succeeded",
+                "report_available": False,
+            }
+        )
+
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", TrainingAPI().dispatch)
+    page.route(ORIGIN + path, status)
+    try:
+        page.clock.install()
+        page.goto(f"{ORIGIN}/?analysis={analysis_id}")
+        expect(page.locator("#job-guidance")).to_contain_text("Retrying automatically")
+        page.get_by_role("link", name="Training", exact=True).click()
+        expect(page.get_by_role("heading", name="Model training")).to_be_visible()
+        reads = len(attempts)
+        page.clock.fast_forward(60_000)
+        assert len(attempts) == reads
+        page.go_back()
+        expect(page.locator("#job-state")).to_have_text("Running")
+        expect(page.locator("#job-guidance")).to_be_hidden()
+        state = "succeeded"
+        page.clock.fast_forward(1500)
+        expect(page.get_by_role("button", name="Download JSON")).to_be_visible()
+        assert set(attempts) == {"GET"}
+    finally:
+        page.close()

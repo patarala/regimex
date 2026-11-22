@@ -34,6 +34,7 @@ class Element {
   focus() {}
   showModal() { this.open = true; }
   close() { this.open = false; }
+  reset() {}
   contains(node) { return this === node || this.children.some((child) => child.contains(node)); }
   addEventListener(name, handler) {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
@@ -133,11 +134,11 @@ async function workspace(count = 45, {href = "http://localhost/", holdHistory = 
   let timerId = 0;
   let requestId = 0;
   const context = {
-    document: {getElementById: get, createElement: () => new Element()},
-    window: Object.assign(window, {history}), location, URL, URLSearchParams, console,
+    document: Object.assign(new Element(), {getElementById: get, createElement: () => new Element()}),
+    window: Object.assign(window, {history}), location, URL, URLSearchParams, AbortController, console,
     Date: class extends Date { static now() { return state.now; } },
     crypto: {randomUUID: () => `request-key-${++requestId}`},
-    setTimeout: (callback) => { timers.set(++timerId, callback); return timerId; },
+    setTimeout: (callback, delay) => { callback.delay = delay; timers.set(++timerId, callback); return timerId; },
     clearTimeout: (number) => timers.delete(number),
     fetch: (url, options) => {
       let resolve;
@@ -177,7 +178,7 @@ async function workspace(count = 45, {href = "http://localhost/", holdHistory = 
   };
   await loadWorkspace(context);
   return {
-    get, calls, state, location, window, timers, items, models, groups,
+    get, calls, state, location, window, document: context.document, timers, items, models, groups,
     select: (index) => get("history-list").children[index].children[0].click(),
     pending: (url) => {
       const call = calls.find((item) => item.url === url && !item.settled);
@@ -491,7 +492,7 @@ test("selection clears cancellation before loading and after a load failure", as
   await flush();
   await ui.get("cancel").emit("click");
   assert.equal(ui.calls.filter((call) => call.url.endsWith("/cancel")).length, 0);
-  assert.equal(ui.get("job-guidance").textContent, "Load failed");
+  assert.match(ui.get("job-guidance").textContent, /Load failed.*Retrying automatically/);
   assert.equal(ui.get("job-guidance").hidden, false);
   assert.equal(ui.get("job-detail").textContent, "");
   void ui.get("retry").click();
@@ -499,6 +500,63 @@ test("selection clears cancellation before loading and after a load failure", as
   await flush();
   assert.equal(ui.get("job-guidance").hidden, true);
   assert.equal(ui.get("retry").hidden, true);
+});
+
+test("status reads back off until the next successful response and stop on a permanent error", async () => {
+  const ui = await workspace(1);
+  await flush();
+  void ui.select(0);
+  const path = `/api/v1/analyses/${id(1)}`;
+  for (const delay of [1500, 3000, 6000, 12000, 24000, 30000, 30000]) {
+    ui.pending(path).reply({error: {message: "Try later"}}, 503);
+    await flush();
+    const [timer] = ui.timers.values();
+    assert.equal(timer.delay, delay);
+    void timer();
+  }
+  ui.pending(path).reply(metadata("job-A"));
+  await flush();
+  assert.equal(ui.get("job-guidance").hidden, true);
+  assert.equal(ui.get("retry").hidden, true);
+  const [running] = ui.timers.values();
+  assert.equal(running.delay, 1500);
+  void running();
+  ui.pending(path).reply({error: {message: "Too many requests"}}, 429);
+  await flush();
+  const [recovery] = ui.timers.values();
+  assert.equal(recovery.delay, 1500);
+  void recovery();
+  ui.pending(path).reply({error: {message: "Analysis not found"}}, 404);
+  await flush();
+  assert.equal(ui.timers.size, 0);
+  assert.equal(ui.get("job-guidance").textContent, "Analysis not found");
+  assert.ok(ui.calls.every(call => call.options.method === "GET"));
+});
+
+test("hiding the document suspends status reads and ignores an earlier response on return", async () => {
+  const ui = await workspace(1);
+  await flush();
+  void ui.select(0);
+  const path = `/api/v1/analyses/${id(1)}`;
+  const first = ui.pending(path);
+  ui.document.hidden = true;
+  await ui.document.emit("visibilitychange");
+  assert.equal(first.options.signal.aborted, true);
+  ui.document.hidden = false;
+  await ui.document.emit("visibilitychange");
+  const reads = ui.calls.filter(call => call.url === path);
+  assert.equal(reads.length, 2);
+  reads[1].reply(metadata("job-A", "cancelled"));
+  await flush();
+  first.reply(metadata("job-A", "running"));
+  await flush();
+  assert.equal(ui.get("job-state").textContent, "Cancelled");
+  assert.equal(ui.timers.size, 0);
+  ui.document.hidden = true;
+  await ui.document.emit("visibilitychange");
+  ui.document.hidden = false;
+  await ui.document.emit("visibilitychange");
+  assert.equal(ui.calls.filter(call => call.url === path).length, 2);
 });
 
 test("late cancellation responses cannot change another analysis or its actions", async () => {
@@ -1628,6 +1686,44 @@ async function acceptBatchFile(ui, number) {
   await flush();
   return call;
 }
+
+test("a batch recovers from failed status reads and submits remaining work while the tab is hidden", async () => {
+  const ui = await workspace(1);
+  await flush();
+  await startBatch(ui, [batchFile("a.json"), batchFile("b.json"), batchFile("c.json")]);
+  await acceptBatchFile(ui, 1);
+  await acceptBatchFile(ui, 2);
+  const path = n => `/api/v1/analyses/${id(n)}`;
+  ui.pending(path(1)).reply({error: {message: "Unavailable."}}, 503);
+  await flush();
+  ui.pending(path(2)).reply(metadata(id(2)));
+  await flush();
+  const rows = ui.get("batch-files").children;
+  assert.match(rows[0].children[1].textContent, /Retrying automatically/);
+  assert.equal(ui.get("batch-resume").hidden, true);
+  ui.document.hidden = true;
+  await ui.document.emit("visibilitychange");
+  void ui.timers.values().next().value();
+  await flush();
+  ui.pending(path(1)).reply(metadata(id(1), "succeeded"));
+  await flush();
+  ui.pending(path(2)).reply(metadata(id(2)));
+  await flush();
+  void ui.timers.values().next().value();
+  await flush();
+  await acceptBatchFile(ui, 3);
+  assert.equal(ui.timers.size, 0);
+  assert.equal(ui.calls.some(call => !call.settled && call.url === path(3)), false);
+  ui.document.hidden = false;
+  await ui.document.emit("visibilitychange");
+  await flush();
+  ui.pending(path(2)).reply(metadata(id(2), "succeeded"));
+  await flush();
+  ui.pending(path(3)).reply(metadata(id(3), "succeeded"));
+  await flush();
+  assert.match(ui.get("batch-status").textContent, /3 of 3 finished/);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/analyses").length, 3);
+});
 
 test("batch bounds active jobs, keeps the selected model and retries only failed analyses", async () => {
   const ui = await workspace();

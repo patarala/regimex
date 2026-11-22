@@ -375,6 +375,10 @@ p {
 .connection-name-form button {
   margin: 0;
 }
+#connection-edit-status {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .connection-scopes {
   display: flex;
   flex-wrap: wrap;

@@ -46,6 +46,12 @@ export function createIntegrations({session, navigate}) {
     $("connection-notice").classList.toggle("error", error);
   }
 
+  function editStatus(text = "") {
+    $("connection-edit-status").textContent = text;
+    $("connection-edit-status").hidden = !text;
+    $("connection-use-saved-name").hidden = !text || $("connection-name").value === selection?.display_name;
+  }
+
   function clearSecret() {
     $("connection-secret-value").value = "";
     $("connection-secret-value").type = "password";
@@ -88,6 +94,7 @@ export function createIntegrations({session, navigate}) {
     clearSecret();
     clearStorage("connection-storage");
     message();
+    editStatus();
     $("connections").hidden = true;
     $("connection-detail").hidden = true;
     for (const id of ["connection-create-details", "connection-key-details", "connection-setup"]) $(id).open = false;
@@ -108,11 +115,17 @@ export function createIntegrations({session, navigate}) {
     }
   }
 
-  function renderSelection() {
-    $("connection-detail").hidden = !selection;
-    if (!selection) return;
+  function renderSelection(next, {nameSaved = false} = {}) {
+    const name = $("connection-name");
+    const hasDraft = selection && name.value !== selection.display_name;
+    const renamed = selection && selection.display_name !== next.display_name;
+    selection = next;
+    $("connection-detail").hidden = false;
     $("connection-title").textContent = selection.display_name;
-    $("connection-name").value = selection.display_name;
+    if (!hasDraft || nameSaved) name.value = selection.display_name;
+    if (name.value === selection.display_name) editStatus();
+    else if (renamed)
+      editStatus(`The saved name is now “${selection.display_name}”. Review your entry before saving.`);
     $("connection-state").textContent = selection.enabled ? "Active" : "Paused";
     $("connection-owner").textContent = selection.owner_id;
     $("connection-source").textContent = selection.source_namespace;
@@ -215,10 +228,7 @@ export function createIntegrations({session, navigate}) {
     controls();
     message("Loading connection…");
     try {
-      const result = await session.json(`${ROOT}/${encodeURIComponent(id)}`);
-      if (!current(stamp)) return;
-      selection = result;
-      renderSelection();
+      if (!await readSelection(id, stamp)) return;
       message();
       if (focus && document.activeElement === $("connections-title")) $("connection-title").focus();
     } catch (error) {
@@ -231,6 +241,13 @@ export function createIntegrations({session, navigate}) {
       }
     }
     await Promise.all([loadPage("keys"), loadPage("events"), loadStorage()]);
+  }
+
+  async function readSelection(id, stamp) {
+    const saved = await session.json(`${ROOT}/${encodeURIComponent(id)}`);
+    if (!current(stamp)) return false;
+    renderSelection(saved);
+    return true;
   }
 
   async function loadStorage() {
@@ -308,18 +325,49 @@ export function createIntegrations({session, navigate}) {
   });
 
   async function update(fields, stamp) {
-    const result = await session.json(`${ROOT}/${selection.integration_id}`, {
-      method: "PATCH", body: {expected_revision: selection.revision, ...fields},
-    });
+    const id = selection.integration_id;
+    let result;
+    try {
+      result = await session.json(`${ROOT}/${id}`, {
+        method: "PATCH", body: {expected_revision: selection.revision, ...fields},
+      });
+    } catch (error) {
+      if (!current(stamp) || error.status !== 409) throw error;
+      clearSecret();
+      try {
+        if (!await readSelection(id, stamp)) return;
+      } catch (readError) {
+        if (current(stamp)) {
+          editStatus();
+          message(`The connection changed. Use Refresh connection to see the saved settings. ${readError.message}`, true);
+        }
+        return;
+      }
+      const saved = `The connection changed. “${selection.display_name}” is ${selection.enabled ? "active" : "paused"}.`;
+      let action = "";
+      if (fields.display_name !== undefined && fields.display_name !== selection.display_name)
+        action = " Review your entry and choose Save name to apply it.";
+      else if (fields.enabled !== undefined && fields.enabled !== selection.enabled)
+        action = ` Choose ${fields.enabled ? "Resume" : "Pause"} connection again to confirm.`;
+      editStatus(saved + action);
+      void Promise.all([loadPage("connections"), loadPage("keys"), loadPage("events", 0)]);
+      return;
+    }
     if (!current(stamp)) return;
-    selection = result;
     clearSecret();
-    renderSelection();
+    editStatus();
+    renderSelection(result, {nameSaved: fields.display_name !== undefined});
     await Promise.all([loadPage("connections"), loadPage("keys"), loadPage("events", 0)]);
   }
   $("connection-edit").addEventListener("submit", (event) => {
     event.preventDefault();
     if (selection) void write((stamp) => update({display_name: $("connection-name").value.trim()}, stamp));
+  });
+  $("connection-use-saved-name").addEventListener("click", () => {
+    if (!selection || busy || detailLoading) return;
+    $("connection-name").value = selection.display_name;
+    editStatus();
+    $("connection-name").focus();
   });
   $("connection-toggle").addEventListener("click", () => {
     if (!selection) return;

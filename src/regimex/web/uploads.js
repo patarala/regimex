@@ -1,4 +1,5 @@
 import {$, analysisStateLabel} from "./ui.js";
+import {canRetryRead} from "./session.js";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 const ACTIVE_LIMIT = 2;
@@ -58,8 +59,28 @@ function fileRow(file, openAnalysis, retryFailed) {
 export function createBatch({session, openAnalysis, updateActions, refreshHistory}) {
   let current = null;
   let timer = null;
+  let read = null;
+  let visible = true;
+
+  function needsPolling(batch) {
+    // While files still await submission, the batch needs to see when a slot is free.
+    return visible || ((!batch.paused || batch.resumeAfterCompletion) &&
+      batch.rows.some(row => row.phase === "pending"));
+  }
+  function setVisible(next) {
+    if (visible === next) return;
+    visible = next;
+    if (!current?.model) return;
+    if (!needsPolling(current)) {
+      clearTimeout(timer);
+      read?.abort();
+    } else if (next && !current.processing) {
+      void advance(current);
+    }
+  }
 
   function clear() {
+    read?.abort();
     current = null;
     clearTimeout(timer);
     $("batch-panel").hidden = true;
@@ -71,7 +92,7 @@ export function createBatch({session, openAnalysis, updateActions, refreshHistor
   }
   function choose(files) {
     current = {rows: files.map(file => fileRow(file, openAnalysis, retryFailed)), model: null, workspace: session.epoch,
-      paused: "", processing: false, resumeAfterCompletion: false};
+      paused: "", processing: false, resumeAfterCompletion: false, readDelay: 0};
     $("batch-panel").hidden = false;
     $("classify").textContent = `Analyze ${files.length} files`;
     render(current);
@@ -145,9 +166,14 @@ export function createBatch({session, openAnalysis, updateActions, refreshHistor
   }
   async function pollAccepted(batch) {
     let changed = false;
+    let unavailable = false;
     for (const row of batch.rows.filter(row => row.phase === "active")) {
+      if (current !== batch || !needsPolling(batch)) return changed;
+      const controller = new AbortController();
+      read = controller;
       try {
-        const {job} = await session.json(`/api/v1/analyses/${row.analysisId}`);
+        const {job} = await session.json(`/api/v1/analyses/${row.analysisId}`, {signal: controller.signal});
+        if (controller.signal.aborted) return changed;
         if (current !== batch || row.phase !== "active") continue;
         row.detail.textContent = job.failure?.message
           ? `${analysisStateLabel(job.state)} · ${job.failure.message}` : analysisStateLabel(job.state);
@@ -160,21 +186,24 @@ export function createBatch({session, openAnalysis, updateActions, refreshHistor
           }
         }
       } catch (error) {
-        if (current !== batch) return changed;
+        if (current !== batch || controller.signal.aborted) return changed;
         row.detail.textContent = error.message;
-        if ([403, 404].includes(error.status)) {
+        if (canRetryRead(error)) {
+          row.detail.textContent += " Retrying automatically…";
+          unavailable = true;
+        } else {
           row.phase = "unavailable";
           row.open.hidden = true;
-        } else {
-          pause(batch, error);
-          break;
         }
+      } finally {
+        if (read === controller) read = null;
       }
     }
+    batch.readDelay = unavailable ? Math.min(Math.max(POLL_MS, batch.readDelay * 2), 30000) : 0;
     return changed;
   }
   async function advance(batch) {
-    if (current !== batch || batch.processing) return;
+    if (current !== batch || batch.processing || !needsPolling(batch)) return;
     clearTimeout(timer);
     batch.processing = true;
     const submitted = !batch.paused && await submitPending(batch);
@@ -189,9 +218,10 @@ export function createBatch({session, openAnalysis, updateActions, refreshHistor
     if (submitted || completed) refreshHistory();
     const active = batch.rows.filter(row => row.phase === "active").length;
     const pending = batch.rows.some(row => row.phase === "pending");
-    if (batch.paused && !(batch.resumeAfterCompletion && active)) return;
-    if (active || pending)
-      timer = setTimeout(() => advance(batch), !batch.paused && pending && active < ACTIVE_LIMIT ? 0 : POLL_MS);
+    if (!needsPolling(batch)) return;
+    const canSubmit = !batch.paused && pending && active < ACTIVE_LIMIT;
+    if (active || canSubmit)
+      timer = setTimeout(() => advance(batch), canSubmit ? 0 : batch.readDelay || POLL_MS);
   }
   function start(model) {
     if (!current || current.model || !model) return;
@@ -239,7 +269,7 @@ export function createBatch({session, openAnalysis, updateActions, refreshHistor
     }
     render(current);
   }
-  return {choose, clear, forgetDeleted, start, get selected() { return Boolean(current); },
+  return {choose, clear, forgetDeleted, setVisible, start, get selected() { return Boolean(current); },
     get ready() { return Boolean(current && !current.model); },
     get locked() { return Boolean(current?.model); }};
 }

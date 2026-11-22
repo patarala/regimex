@@ -102,3 +102,82 @@ def test_keyboard_key_handoff_and_backend_setup(browser: Any, width: int) -> Non
         assert len(dialogs) == 1 and key_id in dialogs[0]
     finally:
         page.close()
+
+
+def test_concurrent_edits_keep_the_name_and_require_a_fresh_decision(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    connection_id = str(UUID(int=84))
+    api = "/api/v1/admin/integrations"
+    detail = f"{api}/{connection_id}"
+    connection: dict[str, Any] = {
+        "integration_id": connection_id,
+        "display_name": "Simulator",
+        "source_namespace": "market",
+        "owner_id": "desk",
+        "revision": 0,
+        "enabled": True,
+    }
+    requests: list[dict[str, Any]] = []
+
+    def dispatch(route: Any) -> None:
+        path = urlsplit(route.request.url).path
+        if route.request.method == "PATCH":
+            assert path == detail
+            assert route.request.headers["x-csrf-token"] == "test"
+            fields = route.request.post_data_json
+            requests.append(fields.copy())
+            if fields.pop("expected_revision") != connection["revision"]:
+                route.fulfill(status=409, json={"error": {"message": "Stale revision."}})
+                return
+            connection.update(fields)
+            connection["revision"] += 1
+        responses = {
+            api: {"items": [connection]},
+            detail: connection,
+            detail + "/keys": {"items": []},
+            detail + "/events": {"items": []},
+            detail + "/storage": {"used_bytes": 0, "reserved_bytes": 0, "limit_bytes": 1024},
+        }
+        route.fulfill(json=responses[path])
+
+    context = browser.new_context()
+    context.route(ORIGIN + "/**", TrainingAPI().dispatch)
+    context.route(ORIGIN + api + "**", dispatch)
+    first, second = context.new_page(), context.new_page()
+    try:
+        for page in (first, second):
+            page.goto(f"{ORIGIN}/connections/{connection_id}")
+            expect(page.get_by_role("textbox", name="Name", exact=True)).to_have_value("Simulator")
+        draft = second.get_by_role("textbox", name="Name", exact=True)
+        draft.fill("Closing session")
+        first.get_by_role("textbox", name="Name", exact=True).fill("Opening session")
+        first.get_by_role("button", name="Save name").click()
+        expect(first.get_by_role("heading", name="Opening session")).to_be_visible()
+        save = second.get_by_role("button", name="Save name")
+        save.click()
+        expect(second.locator("#connection-edit-status")).to_contain_text("Opening session")
+        expect(draft).to_have_value("Closing session")
+        expect(second.get_by_role("button", name="Use saved name")).to_be_visible()
+        second.get_by_role("button", name="Refresh connection").click()
+        expect(save).to_be_enabled()
+        expect(draft).to_have_value("Closing session")
+        assert [req["expected_revision"] for req in requests] == [0, 0]
+        save.click()
+        expect(second.get_by_role("heading", name="Closing session")).to_be_visible()
+        expect(second.locator("#connection-edit-status")).to_be_hidden()
+        first.get_by_role("textbox", name="Name", exact=True).fill("Unsent draft")
+        first.once("dialog", lambda dialog: dialog.accept())
+        pause = first.get_by_role("button", name="Pause connection")
+        pause.click()
+        expect(first.locator("#connection-edit-status")).to_contain_text("again to confirm")
+        assert connection["enabled"]
+        first.get_by_role("button", name="Use saved name").click()
+        expect(first.get_by_role("textbox", name="Name", exact=True)).to_have_value(
+            "Closing session"
+        )
+        first.once("dialog", lambda dialog: dialog.accept())
+        pause.click()
+        expect(first.get_by_role("button", name="Resume connection")).to_be_visible()
+        assert [req["expected_revision"] for req in requests] == [0, 0, 1, 1, 2]
+    finally:
+        context.close()

@@ -439,8 +439,10 @@
             </details>
             <form id="connection-edit" class="connection-form connection-name-form">
               <label for="connection-name">Name</label>
-              <input id="connection-name" maxlength="120" required />
+              <input id="connection-name" maxlength="120" aria-describedby="connection-edit-status" required />
               <button type="submit" class="quiet">Save name</button>
+              <p id="connection-edit-status" class="hint" role="status" hidden></p>
+              <button id="connection-use-saved-name" type="button" class="quiet" hidden>Use saved name</button>
             </form>
             <div class="actions">
               <button id="connection-toggle" type="button" class="quiet"></button>

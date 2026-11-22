@@ -1,5 +1,6 @@
 import {$, analysisStateLabel, notice, setPreview} from "./ui.js";
 import {createQueueStatus} from "./queue-status.js";
+import {canRetryRead} from "./session.js";
 import {createBatch, readExport, requestAnalysis} from "./uploads.js";
 
 const stages = {
@@ -19,20 +20,38 @@ const failureActions = {
   infrastructure_failure: "Try a new analysis once the service is available. Contact your administrator if this continues.",
   attempts_exhausted: "Ask your administrator to check worker availability before starting a new analysis.",
 };
+const POLL_MS = 1500;
 
 export function createAnalysis({session, models, history, comparison, onStorageChange,
-  onSelectionChange, rememberAnalysis, deleteAnalysis}) {
+  onSelectionChange, onResultReady, rememberAnalysis, deleteAnalysis}) {
   let exportText = null;
   let snapshot = null;
   let current = null;
   let result = null;
   let timer = null;
+  let read = null;
+  let visible = true;
   let retryAction = null;
   let busy = false;
   let fileEpoch = 0;
   const queue = createQueueStatus({session, getSelection: () => current});
   const batch = createBatch({session, openAnalysis, updateActions: models.updateActions,
     refreshHistory: () => { void history.load(); onStorageChange(); }});
+
+  function stopPolling() {
+    clearTimeout(timer);
+    read?.abort();
+    read = null;
+  }
+
+  function setVisible(next, id = current?.id) {
+    if (visible === next) return;
+    visible = next;
+    batch.setVisible(next);
+    if (!visible) stopPolling();
+    else if (current?.id && current.id === id && current.follow && !current.cancelling)
+      return poll(current);
+  }
 
   function clearReport() {
     setPreview("report-preview");
@@ -43,7 +62,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   function reset() {
     onSelectionChange();
     fileEpoch++;
-    clearTimeout(timer);
+    stopPolling();
     clearReport();
     clearCancellation();
     clearFailure();
@@ -166,10 +185,10 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     onSelectionChange();
     $("delete-analysis").hidden = true;
     const workspace = session.epoch;
-    const selection = { id: null, request: 0, job: null, cancelling: false };
+    const selection = { id: null, job: null, cancelling: false };
     current = selection;
     result = null;
-    clearTimeout(timer);
+    stopPolling();
     clearCancellation();
     clearFailure();
     models.updateActions();
@@ -215,12 +234,12 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   async function openAnalysis(id, {restore = false, focus = !restore} = {}) {
     onSelectionChange();
     $("delete-analysis").hidden = true;
-    clearTimeout(timer);
+    stopPolling();
     clearReport();
     clearCancellation();
     clearFailure();
     // Object identity also rejects an old response after selecting A, B, then A again.
-    const selection = { id, request: 0, job: null, cancelling: false };
+    const selection = { id, job: null, cancelling: false, follow: true, retryDelay: POLL_MS };
     current = selection;
     $("rerun-model").value = "";
     models.updateActions();
@@ -244,13 +263,15 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   }
 
   async function poll(selection) {
-    if (current !== selection || !session.value) return;
-    clearTimeout(timer);
-    const requestNumber = ++selection.request;
+    if (current !== selection || !session.value || !visible) return;
+    stopPolling();
+    const controller = new AbortController();
+    read = controller;
+    selection.follow = true;
     const id = selection.id;
-    const active = () => current === selection && requestNumber === selection.request;
+    const active = () => current === selection && !controller.signal.aborted;
     try {
-      const value = await session.json(`/api/v1/analyses/${id}`);
+      const value = await session.json(`/api/v1/analyses/${id}`, {signal: controller.signal});
       if (!active()) return;
       const job = value.job;
       if (!selection.metadata && models.ready)
@@ -297,26 +318,40 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       selection.state = job.state;
       history.update({...value, analysis_id: id}, stateChanged);
       if (stateChanged && !pending) onStorageChange();
-      if (pending) timer = setTimeout(() => poll(selection), 1500);
-      if (job.state === "succeeded" && value.result_available)
-        await showResult(selection, value, active);
+      if (job.state === "succeeded" && value.result_available) {
+        await showResult(selection, value, active, controller.signal);
+        if (!active()) return;
+        await onResultReady();
+        if (!active()) return;
+      }
+      selection.retryDelay = POLL_MS;
+      selection.follow = pending;
+      retry(null);
+      if (pending) timer = setTimeout(() => poll(selection), POLL_MS);
     } catch (error) {
       if (!active()) return;
       $("progress").hidden = true;
       if (!selection.metadata) $("job-detail").textContent = "";
-      $("job-guidance").textContent = error.message;
+      selection.follow = canRetryRead(error);
+      $("job-guidance").textContent = error.message + (selection.follow ? " Retrying automatically…" : "");
       $("job-guidance").hidden = false;
       retry(() => poll(selection));
+      if (selection.follow) {
+        timer = setTimeout(() => poll(selection), selection.retryDelay);
+        selection.retryDelay = Math.min(selection.retryDelay * 2, 30000);
+      }
+    } finally {
+      if (read === controller) read = null;
     }
   }
 
-  async function showResult(selection, metadata, active) {
+  async function showResult(selection, metadata, active, signal) {
     const id = selection.id;
     let instruments = metadata.instrument_ids;
     let steps = metadata.step_count;
     if (!instruments?.length || steps == null) {
       // Snapshots created before grid summaries were stored only carry this in the result.
-      const data = await session.json(`/api/v1/analyses/${id}/result`);
+      const data = await session.json(`/api/v1/analyses/${id}/result`, {signal});
       if (!active()) return;
       instruments = data.instruments.map((item) => item.instrument_id);
       steps = data.time_grid.step_count;
@@ -379,8 +414,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     if (!selection?.job || selection.cancelling || !session.value) return;
     const job = selection.job;
     selection.cancelling = true;
-    selection.request++;
-    clearTimeout(timer);
+    stopPolling();
     $("cancel").disabled = true;
     try {
       await session.json(`/api/v1/jobs/${job}/cancel`, { method: "POST" });
@@ -388,7 +422,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     } catch (error) {
       if (current === selection) {
         notice(error.message, true);
-        timer = setTimeout(() => poll(selection), 1500);
+        if (visible) timer = setTimeout(() => poll(selection), POLL_MS);
       }
     } finally {
       selection.cancelling = false;
@@ -407,7 +441,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     return deleteAnalysis(current.id, $("analysis-title").textContent);
   });
   function clearSelection() {
-    clearTimeout(timer);
+    stopPolling();
     clearReport();
     clearCancellation();
     clearFailure();
@@ -435,7 +469,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       rememberAnalysis(null);
     } else if (target.kind === "analysis") comparison.forgetAnalysis(target.id);
   }
-  return {reset, open: openAnalysis, chooseExperiment, clearSelection, forgetDeleted, get current() { return current; },
+  return {reset, open: openAnalysis, chooseExperiment, setVisible, clearSelection, forgetDeleted, get current() { return current; },
     get busy() { return busy; }, get uploadReady() { return Boolean(exportText || snapshot) || batch.ready; },
     get batchLocked() { return batch.locked; }};
 }

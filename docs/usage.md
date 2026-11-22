@@ -27,6 +27,8 @@ your device by default and resumes following it when you switch back to its them
    **Analyze**. The analysis keeps that model version.
 4. When the job finishes, read the preview or select **Download report** for
    an offline copy. **Download JSON** saves the predictions and statistics.
+   You can leave while the worker runs. Returning to the analysis refreshes
+   its status. Temporary connection errors are retried automatically.
 
 To analyze several exports with the same model, select or drop the files together.
 Select **Analyze files** (the button includes the count). Keep the batch open while
@@ -380,6 +382,6 @@ retain saved work.
 | Export rejected | Check the field named in the error. A completed version 2.1 export may have up to two instruments, 4,096 steps and a file size of 16 MiB. |
 | No active model | Register and activate a bundle, or publish an evaluated candidate. |
 | Analysis stays queued | Check the worker status beside the job. In Compose, run `docker compose --profile ops run --rm ops service doctor`. From source, run `uv run --locked --all-extras regimex service doctor` with the worker environment loaded. |
-| Request interrupted | **Retry request** resumes the original submission or status check. |
+| Submission interrupted | Choose **Retry request** to confirm or resume the original submission. |
 | Analysis failed | Read the reason beside the status. **Details** includes the failure code and analysis ID. After resolving the cause, use **Run again** to create a new analysis. |
 | Storage full | Check the reserved space and **Pending deletions**. Remove unused experiments or ask the administrator to raise the quota. |

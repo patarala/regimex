@@ -1,5 +1,9 @@
 import {$, notice} from "./ui.js";
 
+export function canRetryRead(error) {
+  return !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
+}
+
 function requestError(data) {
   const error = data?.error;
   const message = error?.message || "The request could not be completed.";
