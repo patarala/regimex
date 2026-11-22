@@ -315,16 +315,33 @@ p {
 }
 .connection-list button {
   width: 100%;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
   border-color: transparent;
   text-align: left;
   overflow-wrap: anywhere;
 }
-.connection-list .hint {
+.connection-list small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+.connection-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 16px;
+}
+.connection-facts dt {
+  color: var(--muted);
+}
+.connection-facts dd {
   margin: 0;
-  flex-shrink: 0;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.connections-layout .hint.error {
+  color: var(--danger);
 }
 .connection-create,
 .connection-section {
@@ -386,6 +403,7 @@ p {
 .connection-secret {
   padding: 16px;
   margin-top: 16px;
+  overflow-wrap: anywhere;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -393,6 +411,13 @@ p {
 .connection-secret input {
   margin: 8px 0;
   font-family: monospace;
+}
+#connection-keys-status,
+#connection-copy-status:not(:empty) {
+  margin: 12px 0 0;
+}
+#connection-copy-status:empty {
+  margin: 0;
 }
 @media (max-width: 860px) {
   .connections-layout {

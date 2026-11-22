@@ -13,9 +13,13 @@ Sign in with a Regimex administrator credential and select **Connections**.
 
 1. Create a connection with a display name, integration account and source namespace.
    Use an account dedicated to the backend.
-2. Open the connection and issue a named key. Choose its capabilities and lifetime.
+2. Select the platform by its account and export source. Open **Backend setup**
+   to check its identifiers and verification URL. Issue a named key with the
+   capabilities and lifetime the backend needs.
 3. Copy the secret while it is displayed and store it in the simulator backend's
-   private credential configuration. The secret is shown only once.
+   private credential configuration. If clipboard access is unavailable, **Show
+   key** selects the text for manual copying. **Done** clears it. You can
+   retrieve the secret only during this handoff.
 4. Inspect the key's expiry, last authentication and revocation in the key list.
    The access history records connection and key changes.
 
@@ -38,7 +42,8 @@ deletion. Integration credentials cannot train models, publish a model, manage
 connections or sign in to the browser.
 
 To rotate a key, issue its replacement on the same connection, update the backend
-and verify a request before revoking the old key. If the issuance response was
+and send a GET request to the verification URL with the new key. Check the
+returned source and scopes before revoking the old key by ID. If the issuance response was
 lost, identify the new key in the list and revoke it before issuing another.
 
 Pause the connection to block all its keys. Resuming restores access for valid

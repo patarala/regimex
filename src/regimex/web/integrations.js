@@ -20,13 +20,25 @@ export function createIntegrations({session, navigate}) {
   let selectedId = null;
   let selection = null;
   let generation = 0;
+  let storageRequest = 0;
   let mutation = 0;
   let busy = false;
+  let detailLoading = false;
   const pages = {
-    connections: {offset: 0, count: 0, request: 0},
-    keys: {offset: 0, count: 0, request: 0},
-    events: {offset: 0, count: 0, request: 0},
+    connections: {
+      prefix: "connections", list: "connection-list", label: "connections", empty: "No connections yet.",
+      url: () => ROOT, render: renderConnection,
+    },
+    keys: {
+      prefix: "connection-keys", list: "connection-keys", label: "service keys", empty: "No service keys.",
+      url: () => `${ROOT}/${selection.integration_id}/keys`, render: renderKey,
+    },
+    events: {
+      prefix: "connection-events", list: "connection-events", label: "access changes", empty: "No access changes.",
+      url: () => `${ROOT}/${selection.integration_id}/events`, render: renderEvent,
+    },
   };
+  for (const page of Object.values(pages)) page.request = page.offset = 0;
 
   function message(text = "", error = false) {
     $("connection-notice").textContent = text;
@@ -36,6 +48,11 @@ export function createIntegrations({session, navigate}) {
 
   function clearSecret() {
     $("connection-secret-value").value = "";
+    $("connection-secret-value").type = "password";
+    $("connection-secret-reveal").textContent = "Show key";
+    $("connection-secret-label").textContent = "New service key";
+    $("connection-issued-id").textContent = "";
+    $("connection-copy-status").textContent = "";
     $("connection-secret").hidden = true;
   }
 
@@ -50,16 +67,15 @@ export function createIntegrations({session, navigate}) {
 
   function controls() {
     for (const form of ["connection-create", "connection-edit", "connection-key-create"]) {
-      for (const input of $(form).querySelectorAll("input, button")) input.disabled = busy;
+      for (const input of $(form).querySelectorAll("input, button")) input.disabled = busy || detailLoading;
     }
-    $("connection-toggle").disabled = busy || !selection;
-    for (const [name, page] of Object.entries(pages)) {
-      const prefix = name === "connections" ? "connections" : `connection-${name}`;
-      $(`${prefix}-pages`).hidden = page.offset === 0 && page.count < PAGE_SIZE;
-      $(`${prefix}-previous`).disabled = busy || page.offset === 0;
-      $(`${prefix}-next`).disabled = busy || page.count < PAGE_SIZE;
+    $("connection-refresh").disabled = $("connection-toggle").disabled = busy || detailLoading || !selection;
+    for (const page of Object.values(pages)) {
+      $(`${page.prefix}-pages`).hidden = page.offset === 0 && !page.hasMore;
+      $(`${page.prefix}-previous`).disabled = busy || page.loading || page.offset === 0;
+      $(`${page.prefix}-next`).disabled = busy || page.loading || !page.hasMore;
     }
-    for (const button of $("connection-keys").querySelectorAll("button")) button.disabled = busy;
+    for (const button of $("connection-keys").querySelectorAll("button")) button.disabled = busy || detailLoading;
   }
 
   function reset() {
@@ -68,22 +84,27 @@ export function createIntegrations({session, navigate}) {
     selection = null;
     generation++;
     mutation++;
-    busy = false;
+    busy = detailLoading = false;
     clearSecret();
     clearStorage("connection-storage");
     message();
     $("connections").hidden = true;
     $("connection-detail").hidden = true;
-    $("connection-create-details").open = $("connection-key-details").open = false;
-    for (const id of ["connection-list", "connection-keys", "connection-events"])
-      $(id).replaceChildren();
+    for (const id of ["connection-create-details", "connection-key-details", "connection-setup"]) $(id).open = false;
+    for (const id of ["connection-owner", "connection-source", "connection-id", "connection-verify-url",
+      "connection-title", "connection-state"]) $(id).textContent = "";
     for (const id of ["connection-name", "connection-new-name", "connection-new-owner",
       "connection-new-source", "connection-key-name"]) $(id).value = "";
     $("connection-key-days").value = "30";
     for (const scope of scopes) $(`connection-scope-${scope}`).checked = scope !== "delete";
     for (const page of Object.values(pages)) {
-      page.offset = page.count = 0;
+      page.offset = 0;
+      page.hasMore = page.loading = false;
       page.request++;
+      $(page.list).replaceChildren();
+      $(page.list).setAttribute("aria-busy", "false");
+      $(`${page.prefix}-status`).hidden = true;
+      $(`${page.prefix}-range`).textContent = "";
     }
   }
 
@@ -93,42 +114,61 @@ export function createIntegrations({session, navigate}) {
     $("connection-title").textContent = selection.display_name;
     $("connection-name").value = selection.display_name;
     $("connection-state").textContent = selection.enabled ? "Active" : "Paused";
-    $("connection-identity").textContent =
-      `${selection.source_namespace} · ${selection.owner_id}`;
+    $("connection-owner").textContent = selection.owner_id;
+    $("connection-source").textContent = selection.source_namespace;
+    $("connection-id").textContent = selection.integration_id;
+    $("connection-verify-url").textContent = location.origin + "/api/v1/connection";
     $("connection-toggle").textContent = selection.enabled ? "Pause connection" : "Resume connection";
     $("connection-key-details").hidden = !selection.enabled;
+    $("connection-paused").hidden = selection.enabled;
   }
 
-  async function readPage(name, url) {
+  async function loadPage(name, offset = pages[name].offset) {
     const stamp = mark();
+    if (!current(stamp)) return;
     const page = pages[name];
     const request = ++page.request;
+    const active = () => current(stamp) && request === page.request;
+    const status = $(`${page.prefix}-status`);
+    page.loading = true;
+    $(page.list).setAttribute("aria-busy", "true");
+    status.classList.toggle("error", false);
+    status.textContent = `Loading ${page.label}…`;
+    status.hidden = false;
+    controls();
     try {
-      const result = await session.json(`${url}?limit=${PAGE_SIZE}&offset=${page.offset}`);
-      return current(stamp) && request === page.request ? result : null;
+      const data = await session.json(`${page.url()}?limit=${PAGE_SIZE + 1}&offset=${offset}`);
+      if (!active()) return;
+      const items = data.items.slice(0, PAGE_SIZE);
+      $(page.list).replaceChildren(...items.map(page.render));
+      page.offset = offset;
+      page.hasMore = data.items.length > PAGE_SIZE;
+      $(`${page.prefix}-range`).textContent = items.length ? `${offset + 1}–${offset + items.length}` : "";
+      status.textContent = offset ? `No ${page.label} on this page.` : page.empty;
+      status.hidden = items.length !== 0;
     } catch (error) {
-      if (current(stamp) && request === page.request) throw error;
-      return null;
+      if (!active()) return;
+      status.textContent = `Could not load ${page.label}. ${error.message}`;
+      status.classList.toggle("error", true);
+    } finally {
+      if (active()) {
+        page.loading = false;
+        $(page.list).setAttribute("aria-busy", "false");
+        controls();
+      }
     }
   }
 
-  async function loadList() {
-    const result = await readPage("connections", ROOT);
-    if (!result) return;
-    const page = pages.connections;
-    page.count = result.items.length;
-    $("connection-list").replaceChildren(...result.items.map((item) => {
-      const row = element("li", "");
-      const button = element("button", "", "quiet");
-      button.type = "button";
-      button.setAttribute("aria-current", String(item.integration_id === selectedId));
-      button.append(element("span", item.display_name), element("span", item.enabled ? "Active" : "Paused", "hint"));
-      button.addEventListener("click", () => navigate("/connections/" + encodeURIComponent(item.integration_id)));
-      row.append(button);
-      return row;
-    }));
-    $("connections-empty").hidden = result.items.length !== 0;
-    controls();
+  function renderConnection(item) {
+    const row = element("li", "");
+    const button = element("button", "", "quiet");
+    button.type = "button";
+    button.setAttribute("aria-current", String(item.integration_id === selectedId));
+    button.append(element("strong", item.display_name), element("span", item.enabled ? "Active" : "Paused", "hint"),
+      element("small", `${item.owner_id} / ${item.source_namespace}`));
+    button.addEventListener("click", () => navigate("/connections/" + encodeURIComponent(item.integration_id)));
+    row.append(button);
+    return row;
   }
 
   function renderKey(key) {
@@ -137,19 +177,19 @@ export function createIntegrations({session, navigate}) {
     if (key.revoked_at) state = "Revoked";
     else if (key.expires_at && Date.parse(key.expires_at) <= Date.now()) state = "Expired";
     row.append(element("strong", key.name), element("p", `${state} · ${key.scopes.join(", ")}`));
-    row.append(element("p", `Expires: ${date(key.expires_at, "No expiry")} · Last used: ${date(key.last_used_at)}`, "hint"));
-    row.append(element("p", key.token_id, "identity"));
+    row.append(element("p", `Created: ${date(key.created_at, "Unknown")} · Expires: ${date(key.expires_at, "No expiry")} · Last used: ${date(key.last_used_at)}`, "hint"));
+    row.append(element("p", `Key ID ${key.token_id}`, "identity"));
     if (!key.revoked_at) {
       const button = element("button", "Revoke", "quiet");
       button.type = "button";
       button.addEventListener("click", () => {
-        if (!window.confirm(`Revoke “${key.name}”? Requests using this key will be rejected.`)) return;
+        if (!window.confirm(`Revoke “${key.name}” (${key.token_id})? Requests using this key will be rejected.`)) return;
         void write(async (stamp) => {
           const id = selection.integration_id;
           await session.request(`${ROOT}/${id}/keys/${key.token_id}/revoke`, {method: "POST"});
           if (!current(stamp)) return;
           clearSecret();
-          await Promise.all([loadKeys(), loadEvents()]);
+          await Promise.all([loadPage("keys"), loadPage("events", 0)]);
           if (current(stamp)) message("Service key revoked.");
         });
       });
@@ -158,68 +198,55 @@ export function createIntegrations({session, navigate}) {
     return row;
   }
 
-  async function loadKeys() {
-    const result = await readPage("keys", `${ROOT}/${selection.integration_id}/keys`);
-    if (!result) return;
-    const page = pages.keys;
-    page.count = result.items.length;
-    $("connection-keys").replaceChildren(...result.items.map(renderKey));
-    $("connection-keys-empty").hidden = result.items.length !== 0;
-    controls();
-  }
-
-  async function loadEvents() {
-    const result = await readPage("events", `${ROOT}/${selection.integration_id}/events`);
-    if (!result) return;
-    const page = pages.events;
-    page.count = result.items.length;
-    $("connection-events").replaceChildren(...result.items.map((event) => {
-      const row = element("li", "");
-      row.append(element("strong", eventNames[event.action] || event.action));
-      if (event.action.startsWith("integration."))
-        row.append(element("p", `${event.display_name} · ${event.enabled ? "Active" : "Paused"}`));
-      row.append(element("p", `${date(event.created_at)} · ${event.actor_owner_id || "System"}`, "hint"));
-      if (event.target_token_id) row.append(element("p", event.target_token_id, "identity"));
-      return row;
-    }));
-    $("connection-events-empty").hidden = result.items.length !== 0;
-    controls();
+  function renderEvent(event) {
+    const row = element("li", "");
+    row.append(element("strong", eventNames[event.action] || event.action));
+    if (event.action.startsWith("integration."))
+      row.append(element("p", `${event.display_name} · ${event.enabled ? "Active" : "Paused"}`));
+    row.append(element("p", `${date(event.created_at)} · ${event.actor_owner_id || "System"}`, "hint"));
+    if (event.target_token_id) row.append(element("p", event.target_token_id, "identity"));
+    return row;
   }
 
   async function loadDetails(id, focus) {
+    if (detailLoading) return;
     const stamp = mark();
-    const result = await session.json(`${ROOT}/${encodeURIComponent(id)}`);
-    if (!current(stamp)) return;
-    selection = result;
-    renderSelection();
-    if (focus && document.activeElement === $("connections-title")) $("connection-title").focus();
-    await Promise.all([loadKeys(), loadEvents(), loadStorage()]);
+    detailLoading = true;
+    controls();
+    message("Loading connection…");
+    try {
+      const result = await session.json(`${ROOT}/${encodeURIComponent(id)}`);
+      if (!current(stamp)) return;
+      selection = result;
+      renderSelection();
+      message();
+      if (focus && document.activeElement === $("connections-title")) $("connection-title").focus();
+    } catch (error) {
+      if (current(stamp)) message(`Could not load this connection. ${error.message} Use Refresh to try again.`, true);
+      return;
+    } finally {
+      if (current(stamp)) {
+        detailLoading = false;
+        controls();
+      }
+    }
+    await Promise.all([loadPage("keys"), loadPage("events"), loadStorage()]);
   }
 
   async function loadStorage() {
     const stamp = mark();
     const id = selection.integration_id;
+    const request = ++storageRequest;
     try {
       const usage = await session.json(`${ROOT}/${id}/storage`);
-      if (current(stamp)) renderStorage("connection-storage", usage);
+      if (current(stamp) && request === storageRequest) renderStorage("connection-storage", usage);
     } catch {
-      if (current(stamp)) storageError("connection-storage");
-    }
-  }
-
-  async function runRead(action) {
-    let stamp = mark();
-    try {
-      const result = action();
-      stamp = mark();
-      await result;
-    } catch (error) {
-      if (current(stamp)) message(error.message, true);
+      if (current(stamp) && request === storageRequest) storageError("connection-storage");
     }
   }
 
   async function write(action) {
-    if (busy || !opened || session.value?.principal.role !== "admin") return;
+    if (busy || detailLoading || !opened || session.value?.principal.role !== "admin") return;
     const task = ++mutation;
     const stamp = mark();
     busy = true;
@@ -245,22 +272,22 @@ export function createIntegrations({session, navigate}) {
     opened = true;
     selectedId = id;
     $("connections").hidden = false;
-    $("connections-empty").hidden = true;
     $("connections-title").focus();
-    await Promise.all([runRead(loadList), id && runRead(() => loadDetails(id, true))]);
+    await Promise.all([loadPage("connections"), id && loadDetails(id, true)]);
   }
 
   $("connections-refresh").addEventListener("click", () => {
     clearSecret();
-    void runRead(loadList);
+    void loadPage("connections");
+    if (selectedId && !selection) void loadDetails(selectedId, false);
   });
   $("connection-refresh").addEventListener("click", () => {
-    if (!selection || busy) return;
-    generation++;
+    if (!selection || busy || detailLoading) return;
+    storageRequest++;
     clearSecret();
     clearStorage("connection-storage");
     message();
-    void Promise.all([runRead(loadList), runRead(() => loadDetails(selection.integration_id, false))]);
+    void Promise.all([loadPage("connections"), loadDetails(selection.integration_id, false)]);
   });
 
   $("connection-create").addEventListener("submit", (event) => {
@@ -288,7 +315,7 @@ export function createIntegrations({session, navigate}) {
     selection = result;
     clearSecret();
     renderSelection();
-    await Promise.all([loadList(), loadKeys(), loadEvents()]);
+    await Promise.all([loadPage("connections"), loadPage("keys"), loadPage("events", 0)]);
   }
   $("connection-edit").addEventListener("submit", (event) => {
     event.preventDefault();
@@ -302,7 +329,7 @@ export function createIntegrations({session, navigate}) {
 
   $("connection-key-create").addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!selection) return;
+    if (!selection?.enabled) return;
     const selectedScopes = scopes.filter((scope) => $(`connection-scope-${scope}`).checked);
     if (!selectedScopes.length) {
       message("Choose at least one permission.", true);
@@ -321,40 +348,61 @@ export function createIntegrations({session, navigate}) {
         throw error;
       }
       if (!current(stamp)) return;
+      $("connection-secret-label").textContent = `New service key · ${issued.key.name}`;
+      $("connection-issued-id").textContent = `Key ID ${issued.key.token_id}`;
       $("connection-secret-value").value = issued.token;
       $("connection-secret").hidden = false;
       $("connection-key-details").open = false;
       $("connection-key-name").value = "";
       $("connection-scope-delete").checked = false;
-      pages.keys.offset = pages.events.offset = 0;
-      await Promise.all([loadKeys(), loadEvents()]);
+      $("connection-secret-copy").focus();
+      await Promise.all([loadPage("keys", 0), loadPage("events", 0)]);
     });
   });
-  $("connection-secret-clear").addEventListener("click", clearSecret);
+  $("connection-secret-clear").addEventListener("click", () => {
+    clearSecret();
+    $("connection-key-summary").focus();
+  });
+  $("connection-secret-reveal").addEventListener("click", () => {
+    const input = $("connection-secret-value");
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    $("connection-secret-reveal").textContent = show ? "Hide key" : "Show key";
+    $("connection-copy-status").textContent = "";
+    if (show) {
+      input.focus();
+      input.select();
+    }
+  });
   $("connection-secret-copy").addEventListener("click", async () => {
     const stamp = mark();
     const token = $("connection-secret-value").value;
     if (!token) return;
     try {
       await navigator.clipboard.writeText(token);
-      if (current(stamp)) message("Key copied.");
+      if (current(stamp) && $("connection-secret-value").value === token)
+        $("connection-copy-status").textContent = "Key copied.";
     } catch {
-      if (current(stamp)) {
-        $("connection-secret-value").focus();
-        $("connection-secret-value").select();
-        message("Clipboard access is unavailable. Copy the selected key with your keyboard.");
+      if (current(stamp) && $("connection-secret-value").value === token) {
+        const input = $("connection-secret-value");
+        if (input.type === "text") {
+          input.focus();
+          input.select();
+        }
+        $("connection-copy-status").textContent = input.type === "password"
+          ? "Clipboard unavailable. Choose Show key, then copy the selected text."
+          : "Clipboard unavailable. Copy the selected text.";
       }
     }
   });
 
-  for (const [name, load] of Object.entries({connections: loadList, keys: loadKeys, events: loadEvents})) {
-    const prefix = name === "connections" ? "connections" : `connection-${name}`;
+  for (const [name, page] of Object.entries(pages)) {
     for (const [direction, change] of [["previous", -PAGE_SIZE], ["next", PAGE_SIZE]]) {
-      $(`${prefix}-${direction}`).addEventListener("click", () => {
-        if (busy || (name !== "connections" && !selection)) return;
+      const button = $(`${page.prefix}-${direction}`);
+      button.addEventListener("click", () => {
+        if (button.disabled || (name !== "connections" && !selection)) return;
         clearSecret();
-        pages[name].offset = Math.max(0, pages[name].offset + change);
-        void runRead(load);
+        void loadPage(name, page.offset + change);
       });
     }
   }

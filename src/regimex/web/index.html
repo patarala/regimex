@@ -396,10 +396,11 @@
               <h2 id="connection-list-title">Platforms</h2>
               <button id="connections-refresh" type="button" class="quiet">Refresh</button>
             </div>
-            <p id="connections-empty" class="hint" hidden>No connections yet.</p>
+            <p id="connections-status" class="hint" role="status" hidden></p>
             <ul id="connection-list" class="connection-list"></ul>
             <nav id="connections-pages" class="history-pages" aria-label="Connection pages" hidden>
               <button id="connections-previous" type="button" class="quiet" disabled>Previous</button>
+              <span id="connections-range"></span>
               <button id="connections-next" type="button" class="quiet" disabled>Next</button>
             </nav>
             <details id="connection-create-details" class="connection-create">
@@ -420,7 +421,16 @@
               <h2 id="connection-title" tabindex="-1"></h2>
               <span id="connection-state" class="job-state"></span>
             </div>
-            <p id="connection-identity" class="identity"></p>
+            <details id="connection-setup">
+              <summary>Backend setup</summary>
+              <dl class="connection-facts">
+                <dt>Integration account</dt><dd id="connection-owner"></dd>
+                <dt>Export source ID</dt><dd id="connection-source"></dd>
+                <dt>Connection ID</dt><dd id="connection-id"></dd>
+                <dt>Verification URL</dt><dd id="connection-verify-url"></dd>
+              </dl>
+              <p class="hint">Send a GET request from the backend to the verification URL with the service key as a bearer token. Check the returned source and permissions before switching keys.</p>
+            </details>
             <form id="connection-edit" class="connection-form connection-name-form">
               <label for="connection-name">Name</label>
               <input id="connection-name" maxlength="120" required />
@@ -439,14 +449,9 @@
             </div>
             <div class="connection-section">
               <h2>Service keys</h2>
-              <p id="connection-keys-empty" class="hint" hidden>No service keys.</p>
-              <ul id="connection-keys" class="connection-records"></ul>
-              <nav id="connection-keys-pages" class="history-pages" aria-label="Service key pages" hidden>
-                <button id="connection-keys-previous" type="button" class="quiet" disabled>Previous</button>
-                <button id="connection-keys-next" type="button" class="quiet" disabled>Next</button>
-              </nav>
+              <p id="connection-paused" class="hint" hidden>Resume this connection to create or use service keys.</p>
               <details id="connection-key-details">
-                <summary>Create service key</summary>
+                <summary id="connection-key-summary">Create service key</summary>
                 <form id="connection-key-create" class="connection-form">
                   <label for="connection-key-name">Key name</label>
                   <input id="connection-key-name" maxlength="120" required />
@@ -463,21 +468,32 @@
                 </form>
               </details>
               <div id="connection-secret" class="connection-secret" hidden>
-                <label for="connection-secret-value">New service key</label>
+                <label id="connection-secret-label" for="connection-secret-value">New service key</label>
+                <p id="connection-issued-id" class="identity"></p>
                 <input id="connection-secret-value" type="password" readonly autocomplete="off" spellcheck="false" />
                 <p class="hint">Save this key on the platform backend. It is shown only once.</p>
                 <div class="actions">
                   <button id="connection-secret-copy" type="button">Copy key</button>
+                  <button id="connection-secret-reveal" type="button" class="quiet">Show key</button>
                   <button id="connection-secret-clear" type="button" class="quiet">Done</button>
                 </div>
+                <p id="connection-copy-status" class="hint" role="status"></p>
               </div>
+              <p id="connection-keys-status" class="hint" role="status" hidden></p>
+              <ul id="connection-keys" class="connection-records"></ul>
+              <nav id="connection-keys-pages" class="history-pages" aria-label="Service key pages" hidden>
+                <button id="connection-keys-previous" type="button" class="quiet" disabled>Previous</button>
+                <span id="connection-keys-range"></span>
+                <button id="connection-keys-next" type="button" class="quiet" disabled>Next</button>
+              </nav>
             </div>
             <div class="connection-section">
               <h2>Access changes</h2>
-              <p id="connection-events-empty" class="hint" hidden>No access changes.</p>
+              <p id="connection-events-status" class="hint" role="status" hidden></p>
               <ul id="connection-events" class="connection-records"></ul>
               <nav id="connection-events-pages" class="history-pages" aria-label="Access change pages" hidden>
                 <button id="connection-events-previous" type="button" class="quiet" disabled>Newer</button>
+                <span id="connection-events-range"></span>
                 <button id="connection-events-next" type="button" class="quiet" disabled>Older</button>
               </nav>
             </div>

@@ -41,7 +41,10 @@ async function workspace(role = "admin") {
   const calls = [];
   const copied = [];
   const events = new Map();
-  const state = {delayIssue: false, delayStorage: false};
+  const state = {
+    connections: [connection("one"), connection("two")], delayList: false, delayIssue: false,
+    delayStorage: false, denyCopy: false,
+  };
   const session = {
     epoch: 1, value: {principal: {role}},
     json(url, options = {}) {
@@ -49,15 +52,19 @@ async function workspace(role = "admin") {
         const call = {url, options, resolve, reject};
         calls.push(call);
         if (options.method === "POST" && url.endsWith("/keys")) {
-          if (!state.delayIssue) resolve({key: {token_id: "key-1"}, token: "rgx_once-only-secret"});
+          if (!state.delayIssue) resolve({key: {token_id: "key-1", name: options.body.name}, token: "rgx_once-only-secret"});
         } else if (url.includes("/keys?") || url.includes("/events?")) resolve({items: []});
         else if (url.endsWith("/storage")) {
           if (!state.delayStorage) resolve({used_bytes: 1024, reserved_bytes: 0,
             limit_bytes: 2 * 1024 ** 3, available_bytes: 2 * 1024 ** 3 - 1024});
         }
-        else if (url.includes("integrations?")) resolve({items: [connection("one"), connection("two")]});
-        else if (url.endsWith("/one")) resolve(connection("one"));
-        else if (url.endsWith("/two")) resolve(connection("two"));
+        else if (url.includes("integrations?")) {
+          const query = new URL(url, "https://regimex.test").searchParams;
+          const offset = Number(query.get("offset")), limit = Number(query.get("limit"));
+          if (!state.delayList) resolve({items: state.connections.slice(offset, offset + limit)});
+        } else if (state.connections.some(item => url.endsWith("/" + item.integration_id))) {
+          resolve(state.connections.find(item => url.endsWith("/" + item.integration_id)));
+        }
         else reject(new Error(`Unexpected request ${url}`));
       });
     },
@@ -66,7 +73,11 @@ async function workspace(role = "admin") {
   const context = vm.createContext({
     document: {getElementById: get, createElement: () => new Element()},
     window: {addEventListener: (name, callback) => events.set(name, callback), confirm: () => true},
-    navigator: {clipboard: {writeText: async (value) => { copied.push(value); }}},
+    location: {origin: "https://regimex.test"},
+    navigator: {clipboard: {writeText: async (value) => {
+      if (state.denyCopy) throw new Error("Clipboard disabled");
+      copied.push(value);
+    }}},
     Date, console,
   });
   const modules = new Map();
@@ -122,6 +133,77 @@ test("issued secret can be copied and is cleared when leaving connections", asyn
   assert.equal(page.get("connection-secret-value").value, "");
   assert.equal(page.get("connections").hidden, true);
   assert.deepEqual(page.routes, ["/connections/one"]);
+});
+
+test("duplicate connection names have distinct identities and public backend setup", async () => {
+  const page = await workspace();
+  page.state.connections[0].display_name = page.state.connections[1].display_name = "Simulator";
+  page.state.connections[1].source_namespace = "second-market";
+  page.state.connections[1].enabled = false;
+  await page.open(1);
+  assert.equal(page.get("connection-list").children[1].children[0].children[2].textContent, "platform / second-market");
+  assert.equal(page.get("connection-title").textContent, "Simulator");
+  assert.equal(page.get("connection-source").textContent, "second-market");
+  assert.equal(page.get("connection-owner").textContent, "platform");
+  assert.equal(page.get("connection-id").textContent, "two");
+  assert.equal(page.get("connection-verify-url").textContent, "https://regimex.test/api/v1/connection");
+  assert.equal(page.get("connection-paused").hidden, false);
+  assert.equal(page.get("connection-key-details").hidden, true);
+  page.issue();
+  assert.equal(page.calls.some(call => call.options.method === "POST"), false);
+});
+
+test("clipboard denial keeps the key masked until explicit reveal, and Done clears it", async () => {
+  const page = await workspace();
+  await page.open();
+  page.issue();
+  await flush();
+  assert.match(page.get("connection-secret-label").textContent, /Backend/);
+  page.state.denyCopy = true;
+  await page.get("connection-secret-copy").fire("click");
+  assert.match(page.get("connection-copy-status").textContent, /Choose Show key/);
+  assert.equal(page.get("connection-secret-value").type, "password");
+  page.get("connection-secret-reveal").fire("click");
+  assert.equal(page.get("connection-secret-value").type, "text");
+  page.get("connection-secret-clear").fire("click");
+  assert.equal(page.get("connection-secret-value").type, "password");
+  assert.equal(page.get("connection-secret-value").value, "");
+  assert.equal(page.get("connection-copy-status").textContent, "");
+});
+
+test("paging handles exact boundaries, retries the same offset, and ignores a stale page", async () => {
+  const page = await workspace();
+  page.state.connections = Array.from({length: 40}, (_, i) => connection(String(i)));
+  await page.controller.show();
+  const next = page.get("connections-next");
+  assert.equal(page.get("connection-list").children.length, 20);
+  assert.equal(page.get("connections-range").textContent, "1–20");
+  page.state.delayList = true;
+  next.fire("click");
+  const failed = page.calls.at(-1);
+  assert.match(failed.url, /limit=21&offset=20$/);
+  assert.equal(next.disabled, true);
+  next.fire("click");
+  assert.equal(page.calls.at(-1), failed);
+  failed.reject(new Error("Offline"));
+  await flush();
+  assert.equal(page.get("connections-range").textContent, "1–20");
+  assert.match(page.get("connections-status").textContent, /Offline/);
+  assert.equal(next.disabled, false);
+  next.fire("click");
+  const stale = page.calls.at(-1);
+  assert.equal(stale.url, failed.url);
+  page.state.delayList = false;
+  page.get("connections-refresh").fire("click");
+  await flush();
+  stale.resolve({items: []});
+  await flush();
+  assert.equal(page.get("connections-range").textContent, "1–20");
+  next.fire("click");
+  await flush();
+  assert.equal(page.get("connections-range").textContent, "21–40");
+  assert.equal(page.get("connections-status").hidden, true);
+  assert.equal(next.disabled, true);
 });
 
 test("delete permission is opt-in and resets after key creation and sign-out", async () => {
