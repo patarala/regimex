@@ -84,18 +84,28 @@ def doctor(
 
 @app.command("health")
 def health(
-    component: Annotated[Literal["ready", "models", "worker"], typer.Option()] = "ready",
+    component: Annotated[
+        Literal["ready", "models", "worker", "database"], typer.Option()
+    ] = "ready",
     queue: Annotated[Literal["analysis", "admin", "maintenance"] | None, typer.Option()] = None,
     port: Annotated[int | None, typer.Option(min=1, max=65535)] = None,
     ca_file: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
 ) -> None:
-    """Probe actual API TLS/readiness or this worker's exact database heartbeat."""
+    """Check the API, this worker's heartbeat, or the database schema for this release."""
 
     def action() -> None:
         from regimex.service_health import api_healthy, worker_healthy
 
         settings = ServiceSettings.from_env()
-        if component == "worker":
+        if component == "database":
+            if any(option is not None for option in (queue, port, ca_file)):
+                raise ValueError("Database health accepts no queue or HTTP settings")
+            from regimex.infrastructure.database import DatabaseRepository
+
+            healthy = DatabaseRepository(
+                settings.database_dsn.get_secret_value(), schema=settings.database_schema
+            ).readiness()
+        elif component == "worker":
             if queue is None or port is not None or ca_file is not None:
                 raise ValueError("Worker health requires a queue and accepts no HTTP settings")
             healthy = worker_healthy(settings, queue)

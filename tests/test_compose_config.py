@@ -2,6 +2,7 @@
 
 import json
 import os
+import runpy
 import shutil
 import subprocess
 from pathlib import Path
@@ -84,3 +85,18 @@ def test_effective_compose_storage(compose: list[str], s3: bool) -> None:
             assert mounts["/operator-output"] == "operator-output"
         else:
             assert "/operator-output" not in mounts
+
+
+def test_update_builders_match_compose_image_tags(compose: list[str]) -> None:
+    services = json.loads(
+        subprocess.check_output(
+            [*compose, "-f", "compose.yaml", "--profile", "service", "config", "--format", "json"],
+            cwd=ROOT,
+            env={k: v for k, v in os.environ.items() if not k.startswith(("REGIMEX_", "COMPOSE_"))},
+        )
+    )["services"]
+    builders = runpy.run_path(str(ROOT / "deploy/update_components.py"))["BUILDERS"]
+    assert set(builders) == {"api", "analysis-worker", "maintenance-worker", "admin-worker"}
+    for role, builder in builders.items():
+        assert services[builder]["build"]["target"] == ("api" if builder == "api" else "worker")
+        assert services[role]["image"] == services[builder]["image"]

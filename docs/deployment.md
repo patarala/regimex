@@ -300,7 +300,57 @@ isolated local child. Add `--json` for machine-readable output. A required faile
 or skipped check exits with status 1. The command does not change jobs or
 publication and does not test remote worker environments or prediction quality.
 
+### Update individual components
+
+For a change compatible with the running schema, queue payloads and saved data,
+open the new checkout with the deployment's Compose configuration. Keep the same
+project name (`COMPOSE_PROJECT_NAME` when set), secrets, image tag and environment.
+Give each installation on a shared engine its own `REGIMEX_IMAGE_TAG`.
+For S3, keep `COMPOSE_FILE=compose.yaml:compose.s3.yaml` and the provider settings.
+Run one update at a time.
+
+```sh
+# Web UI or HTTP handlers
+python3 deploy/update_components.py api
+
+# Training code
+python3 deploy/update_components.py admin-worker
+
+# Report format that requires a new reader
+# Backup and restore validate saved report metadata with the operator image.
+docker compose --profile ops build ops && python3 deploy/update_components.py api analysis-worker
+```
+
+Select any combination of `api`, `analysis-worker`, `admin-worker` and
+`maintenance-worker`. The helper builds each required image once and checks the
+installed schema, queue schema and restore state from the new image before
+replacing a container. It preserves the current replica count of each selected
+role, including workers scaled with `--scale`. PostgreSQL keeps serving traffic.
+Compose recreates roles whose image or configuration changed, and waits up to
+three minutes for health before moving on. Repeating the command with the same
+image and configuration keeps healthy containers running. The singleton API can briefly drop requests, and queued work can wait while
+its workers restart.
+
+The analysis worker publishes saved HTML reports. For a new report format, update
+the API and the backup/restore image before the writer. Training and maintenance
+workers can keep running through a renderer change. For changes shared by multiple
+queues, include each affected worker. A rebuilt image tag can be shared by several
+roles. Their existing containers keep their original image. A later unscoped
+`docker compose up` can bring those roles onto the rebuilt tag as well.
+For secret rotation that needs a new file mount, explicitly recreate each
+affected role as described in the [S3 profile](#s3-profile).
+
+On failure, inspect `docker compose --profile service ps --all` and
+`docker compose logs --tail 100 SERVICE` for the affected role. A failed build or
+schema probe leaves the current containers running. If a health check fails after
+replacement, earlier roles can already be on the new image. Correct the failure
+before continuing. Rolling back a reader requires that it can open every record
+the updated writer has already saved.
+
 ### Upgrade an existing deployment
+
+Use this coordinated procedure for schema migrations or incompatible changes to
+operation payloads and stored data.
 
 Block intake, drain pending jobs, stop all writers and take a
 [coordinated backup](storage.md#backup-and-restore) with the current release

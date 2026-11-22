@@ -226,3 +226,22 @@ def test_local_storage_check_reads_inventory_without_contacting_the_database(
     assert inventory["retained_versions"] == 1 and inventory["retained_payload_bytes"] == 3
     assert inventory["scope"] == "configuration_and_inventory"
     assert "deliberate-fixture" not in result.output
+
+
+@pytest.mark.parametrize("ready", [True, False])
+def test_database_health_checks_the_packaged_schema(
+    monkeypatch: pytest.MonkeyPatch, ready: bool
+) -> None:
+    pytest.importorskip("psycopg")
+    from regimex.infrastructure.database import DatabaseRepository
+
+    probe = Mock(return_value=ready)
+    monkeypatch.setattr(DatabaseRepository, "readiness", probe)
+    result = CliRunner().invoke(
+        app,
+        ["service", "health", "--component", "database"],
+        env={"REGIMEX_DATABASE_DSN": "dbname=offline_test"},
+    )
+    assert result.exit_code == (0 if ready else 1), result.output
+    assert json.loads(result.stdout)["status"] == ("healthy" if ready else "unhealthy")
+    probe.assert_called_once_with()
