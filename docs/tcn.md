@@ -33,6 +33,10 @@ bring the input width to 58. The package records the layout so inference
 rebuilds the features used in training. In a comparison on new simulations,
 this option recovered fewer short sideways intervals. [Measured results](interval-errors.md#past-and-future-price-slopes)
 
+A separate offline comparison tested a flat center window between two sloping
+flanks, both as a learned input and as a check on a decoded trend.
+[Short-pause comparison](pause-supervision.md#using-slope-contrasts-to-find-a-pause)
+
 ## From features to intervals
 
 ```mermaid
