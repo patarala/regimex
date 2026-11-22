@@ -1,6 +1,7 @@
 """Real ownership, concurrency and failure recovery for resource removal."""
 
 import hashlib
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -468,10 +469,10 @@ def test_snapshot_replay_is_serialized_with_confirmed_deletion(
     started, release = Event(), Event()
     stat = value.store.stat
 
-    def paused_stat(key: str) -> ObjectInfo:
+    def paused_stat(key: str, *, checkpoint: Callable[[], None] | None = None) -> ObjectInfo:
         started.set()
         assert release.wait(5)
-        return stat(key)
+        return stat(key, checkpoint=checkpoint)
 
     monkeypatch.setattr(value.store, "stat", paused_stat)
     with ThreadPoolExecutor(max_workers=2) as executor:
