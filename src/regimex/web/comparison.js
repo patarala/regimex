@@ -5,12 +5,13 @@ const COMPARISON_PAGE_SIZE = 20;
 export function createComparison({session, getSelection, rememberComparison}) {
   let comparisonGeneration = 0;
   let restoreGeneration = 0;
-  let comparedId = null;
+  let comparedId = null, restoringId = null;
   let comparisonOffset = 0;
   let comparisonHasMore = false;
   let comparisonItems = [];
   function reset() {
     restoreGeneration++;
+    restoringId = null;
     clearComparison();
     $("comparison-controls").hidden = true;
     $("comparison-controls").open = false;
@@ -105,6 +106,7 @@ export function createComparison({session, getSelection, rememberComparison}) {
   function show(selection, other) {
     if (display(selection, other)) {
       restoreGeneration++;
+      restoringId = null;
       rememberComparison(other.analysis_id);
     }
   }
@@ -114,8 +116,24 @@ export function createComparison({session, getSelection, rememberComparison}) {
     $("report-preview").hidden = !getSelection()?.metadata?.report_available;
   }
 
+  function forgetAnalysis(id) {
+    const selection = getSelection();
+    if (!selection?.metadata?.result_available) return;
+    if (id === comparedId || id === restoringId) {
+      restoreGeneration++;
+      restoringId = null;
+      showReport();
+      rememberComparison(null, true);
+    }
+    if (selection.comparisonLoaded && !comparisonItems.some(item => item.analysis_id === id)) return;
+    selection.comparisonLoaded = false;
+    comparisonGeneration++;
+    if ($("comparison-controls").open) void comparisonPage(comparisonOffset);
+  }
+
   async function restore(id, isCurrent) {
     const generation = ++restoreGeneration;
+    restoringId = null;
     const epoch = session.epoch;
     const selection = getSelection();
     const active = () => generation === restoreGeneration && epoch === session.epoch
@@ -123,12 +141,15 @@ export function createComparison({session, getSelection, rememberComparison}) {
     if (!active() || id === comparedId) return;
     showReport();
     if (!id || !selection?.metadata) return;
+    restoringId = id;
     try {
       const other = await session.json("/api/v1/analyses/" + encodeURIComponent(id));
       if (active() && (other.analysis_id !== id || !display(selection, other)))
         notice("Choose another completed analysis of this experiment to compare.", true);
     } catch (error) {
       if (active()) notice(error.message, true);
+    } finally {
+      if (generation === restoreGeneration) restoringId = null;
     }
   }
   $("comparison-controls").addEventListener("toggle", () => {
@@ -145,8 +166,9 @@ export function createComparison({session, getSelection, rememberComparison}) {
   $("compare").addEventListener("click", compare);
   $("close-comparison").addEventListener("click", () => {
     restoreGeneration++;
+    restoringId = null;
     showReport();
     rememberComparison(null);
   });
-  return {reset, show, restore, get comparedId() { return comparedId; }};
+  return {reset, show, restore, forgetAnalysis, get comparedId() { return comparedId; }};
 }

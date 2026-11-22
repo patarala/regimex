@@ -404,12 +404,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     if (affected) {
       clearSelection();
       rememberAnalysis(null);
-    } else if (current) {
-      comparison.reset();
-      current.comparisonLoaded = false;
-      $("comparison-controls").hidden = !current.metadata?.result_available;
-      $("report-preview").hidden = !current.metadata?.report_available;
-    }
+    } else if (target.kind === "analysis") comparison.forgetAnalysis(target.id);
   }
   return {reset, open: openAnalysis, clearSelection, forgetDeleted, get current() { return current; },
     get busy() { return busy; }, get uploadReady() { return Boolean(exportText) || batch.ready; },

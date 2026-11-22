@@ -991,6 +991,52 @@ test("a pair of completed analyses takes one click to compare and survives Back 
   assert.equal(ui.get("report-preview").hidden, false);
 });
 
+test("deletion keeps an unrelated comparison and removes a deleted target from its URL", async () => {
+  const ui = await workspace(3);
+  await flush();
+  for (const item of ui.items.slice(0, 2)) {
+    item.job.state = "succeeded";
+    item.result_available = true;
+    item.snapshot_id = id(1000);
+  }
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply({...metadata("first", "succeeded"), analysis_id: id(1)});
+  await flush();
+  const reportUrl = ui.location.href;
+  ui.get("comparison-controls").open = true;
+  await ui.get("comparison-controls").emit("toggle");
+  await ui.get("compare").click();
+  const comparisonUrl = ui.location.href;
+
+  const experiment = deletionPlan("experiment", id(1002));
+  void byClass(ui.get("history-list").children[2], "experiment-delete").click();
+  ui.pending(`/api/v1/experiments/${id(1002)}/deletion-preview`).reply(experiment);
+  await flush();
+  void ui.get("deletion-confirm").click();
+  ui.items.pop();
+  ui.pending(`/api/v1/deletions/${experiment.plan_id}`).reply(deletionReceipt(experiment));
+  await flush();
+  assert.equal(ui.location.href, comparisonUrl);
+  assert.equal(ui.get("comparison-preview").hidden, false);
+
+  // The other analysis was deleted in another tab. The receipt confirms its removal here.
+  const other = deletionPlan("analysis", id(2));
+  ui.items.pop();
+  ui.state.holdDeletions = true;
+  await ui.get("storage-refresh").click();
+  ui.pending("/api/v1/deletions?limit=21&offset=0").reply({items: [deletionReceipt(other, "pending")]});
+  await flush();
+  void ui.get("pending-deletion-list").children[0].children[0].click();
+  ui.pending(`/api/v1/deletions/${other.plan_id}`).reply(deletionReceipt(other));
+  await flush();
+  assert.equal(ui.location.href, reportUrl);
+  assert.equal(ui.get("comparison-preview").hidden, true);
+  assert.equal(ui.get("report-preview").hidden, false);
+  assert.equal(ui.get("compare").disabled, true);
+  await ui.window.history.go(-1);
+  assert.equal(ui.location.href, reportUrl);
+});
+
 test("a comparison link to a different experiment keeps the original report visible", async () => {
   const ui = await workspace(1, {href: `http://localhost/?analysis=${id(1)}&compare=${id(2)}`});
   await flush();

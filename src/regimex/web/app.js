@@ -109,12 +109,12 @@ function rememberAnalysis(id) {
   saveReportLocation(url, !id);
 }
 
-function rememberComparison(id) {
+function rememberComparison(id, replace = false) {
   if (screen !== "analyses") return;
   const url = new URL(location.href);
   if (id) url.searchParams.set("compare", id);
   else url.searchParams.delete("compare");
-  saveReportLocation(url, false);
+  saveReportLocation(url, replace);
 }
 
 async function restoreLocation() {
