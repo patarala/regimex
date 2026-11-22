@@ -12,6 +12,8 @@ with a reference direction. For both metrics, macro-F1 gives equal weight to all
 three directions and assigns zero to an undefined class F1. The pooled scores
 use counts across all experiments.
 
+For profile `direction-32/2.2`, see the [comparison of temporal classifiers](temporal-comparison.md), including short sideways intervals and generalization to longer experiments.
+
 ## Baseline and TCN on direction-32/2.1
 
 | Steps | Baseline interval F1 | TCN interval F1 | Baseline point F1 | TCN point F1 | Classifiable steps / all steps |

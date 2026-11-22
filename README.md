@@ -42,7 +42,7 @@ Both models feed the same interval decoder. On 72 held-out synthetic
 experiments with profile `direction-32/2.1`, interval macro-F1 against automatic
 labels was 0.408 for the baseline and 0.669 for the TCN. The quality guide
 also reports how closely the reference TCN placed interval boundaries.
-[Model quality](docs/quality.md)
+[Model quality](docs/quality.md) · [TCN and Transformer comparison on profile 2.2](docs/temporal-comparison.md)
 
 ## Guides
 

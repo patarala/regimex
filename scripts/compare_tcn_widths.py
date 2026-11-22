@@ -35,7 +35,10 @@ POPULATIONS = tuple(
 
 
 def generate(
-    output: Path, populations: tuple[GenerationSpec, ...], name: str, expected_digest: str
+    output: Path,
+    populations: tuple[GenerationSpec, ...],
+    name: str,
+    expected_digest: str | None = None,
 ) -> Corpus:
     members = []
     locations = {}
@@ -52,7 +55,7 @@ def generate(
     write(output / "dataset.json", dataset.model_dump(mode="json"))
     write(output / "locations.json", locations)
     write(output / "reservation.json", {"dataset_sha256": dataset.content_sha256})
-    return Corpus(output, expected_digest=expected_digest)
+    return Corpus(output, expected_digest=expected_digest or dataset.content_sha256)
 
 
 def best_checkpoints(model_dir: Path) -> list[dict[str, int | float]]:

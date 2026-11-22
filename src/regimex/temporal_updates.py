@@ -35,7 +35,41 @@ def fit_tcn_updates(
     check_budget: Callable[[], None] | None = None,
     on_history: HistoryCallback | None = None,
 ) -> tuple[TCNClassifier, list[dict[str, JsonValue]], int]:
-    """Fit each seed for the full budget; retain the first best scored checkpoint."""
+    def build(features: int) -> TCNClassifier:
+        return TCNClassifier(
+            features, parameters.channels, parameters.dropout, parameters.dilations
+        )
+
+    return fit_temporal_updates(
+        training,
+        targets,
+        validation,
+        build=build,
+        interval_weight_power=parameters.interval_weight_power,
+        smoothing=parameters.smoothing,
+        policy=policy,
+        runtime=runtime,
+        scorer=scorer,
+        check_budget=check_budget,
+        on_history=on_history,
+    )
+
+
+def fit_temporal_updates[Network: nn.Module](
+    training: PreparedPredictionInputs,
+    targets: IntArray,
+    validation: PreparedPredictionInputs,
+    *,
+    build: Callable[[int], Network],
+    interval_weight_power: float,
+    smoothing: float,
+    policy: FixedUpdatePolicy,
+    runtime: TrainingRuntime,
+    scorer: Scorer,
+    check_budget: Callable[[], None] | None = None,
+    on_history: HistoryCallback | None = None,
+) -> tuple[Network, list[dict[str, JsonValue]], int]:
+    """Use the same batches, loss and validation selection for each sequence classifier."""
     require_prepared_inputs(training)
     require_prepared_inputs(validation)
     FixedUpdatePolicy.model_validate(policy.model_dump())
@@ -53,7 +87,7 @@ def fit_tcn_updates(
     if (counts == 0).any():
         raise ValueError("TCN requires all three training directions")
     class_weights = torch.tensor(len(labels) / (3 * counts), dtype=torch.float32)
-    weights = _interval_weights(targets, training.offsets, parameters.interval_weight_power)
+    weights = _interval_weights(targets, training.offsets, interval_weight_power)
     weights *= _boundary_weights(targets, training.offsets)
     best_state: dict[str, Tensor] | None = None
     best_score, best_seed = -1.0, policy.seeds[0]
@@ -63,9 +97,7 @@ def fit_tcn_updates(
             check_budget()
         torch.manual_seed(seed)
         rng = np.random.Generator(np.random.PCG64(seed))
-        model = TCNClassifier(
-            training.values.shape[1], parameters.channels, parameters.dropout, parameters.dilations
-        )
+        model = build(training.values.shape[1])
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=policy.learning_rate, weight_decay=policy.weight_decay
         )
@@ -93,7 +125,7 @@ def fit_tcn_updates(
                     batch_targets,
                     class_weights,
                     sample_weights,
-                    parameters.smoothing,
+                    smoothing,
                 )
                 if not bool(torch.isfinite(loss)):
                     raise ValueError("nonfinite TCN training loss")
@@ -141,8 +173,6 @@ def fit_tcn_updates(
     if check_budget is not None:
         check_budget()
     assert best_state is not None
-    best = TCNClassifier(
-        training.values.shape[1], parameters.channels, parameters.dropout, parameters.dilations
-    )
+    best = build(training.values.shape[1])
     best.load_state_dict(best_state, strict=True)
     return best, history, best_seed

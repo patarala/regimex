@@ -238,7 +238,7 @@ def _prediction_batch(
 
 
 def predict_tcn(
-    model: TCNClassifier,
+    model: nn.Module,
     sequences: PreparedPredictionInputs,
     batch_size: int = SELECTION_BATCH_SIZE,
 ) -> DoubleArray:
