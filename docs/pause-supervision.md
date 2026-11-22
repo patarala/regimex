@@ -195,3 +195,7 @@ To compare predictions on your own simulation, replace `--comparison
 var/local-transfer` with `--export PATH` pointing to an experiment-v2 JSON
 file and choose a new output file. Each instrument gets its own price chart.
 Missing prices leave gaps and unavailable intervals have their own legend entries.
+
+The [report overlay comparison](trend-pause-detection.md) tests whether short
+pauses can be highlighted within the TCN's original trend intervals, including
+several pauses in one trend and periods with infrequent executions.
