@@ -107,6 +107,11 @@ can also remove a highlight. The saved direction probabilities and intervals
 come from the original model. Existing downloaded HTML retains the overlay of
 the renderer that produced it.
 
+A [follow-up comparison on noisy prices](pause-recovery.md#results) found a
+way to recover more pauses on straight trends. It also mistook more short
+pullbacks for pauses when the surrounding trend curved, so the report keeps
+the one-sixth slope check.
+
 ## Reproduce
 
 Run from the checkout with the locked scientific dependencies. Each output
