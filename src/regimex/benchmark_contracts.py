@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, Field
+from pydantic import AwareDatetime, Field, StringConstraints
 
 from regimex.benchmarks import (
     BenchmarkMember,
@@ -54,6 +54,25 @@ class RegistryState(StrictModel):
     registry: BenchmarkRegistry
     access_scope: Literal["service_reference_gate_only"] = "service_reference_gate_only"
     inventory_scope: Literal["attested_named_sources"] = "attested_named_sources"
+
+
+class TrainingPreparation(StrictModel):
+    dataset_id: Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
+    final_dataset_id: Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
+    final_reference_set_id: Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
+    expected_registry_revision: Annotated[int, Field(ge=-1)]
+    inventory_statement: Annotated[
+        str,
+        StringConstraints(
+            strip_whitespace=True, min_length=1, max_length=4096, pattern=r"^[^\x00]+$"
+        ),
+    ]
+
+
+class TrainingInventorySummary(StrictModel):
+    revision: Annotated[int, Field(ge=-1)]
+    dataset_count: Annotated[int, Field(ge=0)]
+    source_namespaces: tuple[Identifier, ...]
 
 
 class BenchmarkBinding(StrictModel):

@@ -26,6 +26,7 @@ from regimex.admin_contracts import (
     ReferenceSetRecord,
     TrainingSpec,
 )
+from regimex.benchmark_contracts import TrainingPreparation
 from regimex.benchmarks import (
     BenchmarkMember,
     DatasetHistory,
@@ -342,6 +343,57 @@ def reserved(service: BenchmarkService, tmp_path: Path) -> tuple[DatasetRecord, 
     )
     service.reserve(principal(), "fresh", final.dataset_id, f"{final.dataset_id}-test")
     return development, final
+
+
+def test_preparation_reviews_full_inventory_and_commits_all_changes_together(
+    service: BenchmarkService, tmp_path: Path
+) -> None:
+    owner = principal()
+    old, _ = reserved(service, tmp_path)
+    service.start_selection(owner, "fresh")
+    dev = dataset(service, tmp_path, "new-dev", 30, source_namespace="new-market")
+    final = dataset(service, tmp_path, "new-final", 50, source_namespace="new-final-market")
+    sealed = references(service, tmp_path, final, "test")
+    review = service.preparation_inventory(owner, dev.dataset_id, final.dataset_id)
+    assert review.dataset_count == 1
+    assert set(review.source_namespaces) == {"benchmark-fixtures", "new-market", "new-final-market"}
+    request = TrainingPreparation(
+        dataset_id=dev.dataset_id,
+        final_dataset_id=final.dataset_id,
+        final_reference_set_id=sealed.references.reference_set_id,
+        expected_registry_revision=review.revision,
+        inventory_statement="All fixture sources are registered.",
+    )
+    with pytest.raises(Forbidden):
+        service.prepare_selection(principal(role="user"), request)
+    with pytest.raises(NotFound):
+        service.preparation_inventory(principal("another"), dev.dataset_id, final.dataset_id)
+    missing_reference = request.model_copy(update={"final_reference_set_id": "absent"})
+    with pytest.raises(NotFound):
+        service.prepare_selection(owner, missing_reference)
+    assert service.get_registry(owner).revision == review.revision
+    assert service.admin_repository.list_datasets(owner, development_only=True) == (old,)
+
+    changed = service.attest(
+        owner, ("benchmark-fixtures", "elsewhere"), "External sources inventoried."
+    )
+    with pytest.raises(Conflict, match="changed"):
+        service.prepare_selection(owner, request)
+    assert service.get_registry(owner) == changed
+    review = service.preparation_inventory(owner, dev.dataset_id, final.dataset_id)
+    request = request.model_copy(update={"expected_registry_revision": review.revision})
+    prepared = service.prepare_selection(owner, request)
+    assert prepared.reservation.inventory_attestation.source_namespaces == review.source_namespaces
+    assert "elsewhere" in review.source_namespaces
+    assert service.prepare_selection(owner, request) == prepared
+    benchmark = prepared.binding.benchmark_id
+    assert "fresh" in service.selection_benchmarks(owner, old.dataset_id)
+    assert benchmark in service.selection_benchmarks(owner, dev.dataset_id)
+    assert prepared.reservation.opened_at is None
+    saved = model(service, tmp_path, dev)
+    service.freeze(owner, benchmark, saved.model_version_id)
+    with pytest.raises(Conflict, match="completed model selection"):
+        service.prepare_selection(owner, request)
 
 
 def test_metadata_lifecycle_never_reads_final_payload_and_blocks_selection_after_freeze(

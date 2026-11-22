@@ -18,6 +18,8 @@ from regimex.benchmark_contracts import (
     FinalEvaluationGrant,
     FrozenChoice,
     RegistryState,
+    TrainingInventorySummary,
+    TrainingPreparation,
     benchmark_member,
     dataset_identity_keys,
     require_selection_dataset,
@@ -35,7 +37,11 @@ from regimex.benchmarks import (
     register_history,
     reserve_benchmark,
 )
-from regimex.data_catalog import content_hash, validate_reference_membership
+from regimex.data_catalog import (
+    CURRENT_TRAINING_SEMANTICS,
+    content_hash,
+    validate_reference_membership,
+)
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.benchmark_repository import BenchmarkRepository, Connection, Transition
 from regimex.infrastructure.database import DatabaseRepository
@@ -124,51 +130,55 @@ class BenchmarkService:
             for key in _keys(DatasetRecord.model_validate_json(json_bytes(row[0])))
         }
 
-    def register_dataset_history(self, principal: Principal, dataset_id: str) -> RegistryState:
-        def transition(connection: Connection, state: RegistryState) -> BenchmarkRegistry:
-            dataset = self.admin_repository._dataset(connection, principal.owner_id, dataset_id)
-            existing = connection.execute(
-                "SELECT dataset_sha256 FROM regimex_benchmark_history_datasets "
-                "WHERE dataset_id=%s AND owner_id=%s",
-                (dataset_id, principal.owner_id),
-            ).fetchone()
-            if existing == (dataset.manifest.content_sha256,):
-                return state.registry
-            if _keys(dataset) & self._reserved_dataset_keys(connection):
-                raise Conflict("Development history overlaps a reserved benchmark dataset.")
-            history = DatasetHistory(
-                dataset_id=dataset_id,
-                dataset_sha256=dataset.manifest.content_sha256,
-                recorded_at=_event_time(state.registry),
-                memberships=tuple(
-                    PartitionMembership(partition=member.partition, member=benchmark_member(member))
-                    for member in dataset.manifest.members
-                ),
-            )
-            registry = register_history(state.registry, history)
-            # Append first so the immutable source-run binding can reference its
-            # exact journal revision. The enclosing transaction commits both.
-            updated = self.repository.append(connection, state, registry)
-            connection.execute(
-                "INSERT INTO regimex_benchmark_history_datasets "
-                "(dataset_id,owner_id,dataset_sha256,registered_revision) VALUES (%s,%s,%s,%s)",
-                (dataset_id, principal.owner_id, dataset.manifest.content_sha256, updated.revision),
-            )
-            return registry
+    def _record_dataset_history(
+        self,
+        connection: Connection,
+        state: RegistryState,
+        principal: Principal,
+        dataset: DatasetRecord,
+    ) -> RegistryState:
+        dataset_id = dataset.dataset_id
+        existing = connection.execute(
+            "SELECT dataset_sha256 FROM regimex_benchmark_history_datasets "
+            "WHERE dataset_id=%s AND owner_id=%s",
+            (dataset_id, principal.owner_id),
+        ).fetchone()
+        if existing == (dataset.manifest.content_sha256,):
+            return state
+        if _keys(dataset) & self._reserved_dataset_keys(connection):
+            raise Conflict("Development history overlaps a reserved benchmark dataset.")
+        history = DatasetHistory(
+            dataset_id=dataset_id,
+            dataset_sha256=dataset.manifest.content_sha256,
+            recorded_at=_event_time(state.registry),
+            memberships=tuple(
+                PartitionMembership(partition=member.partition, member=benchmark_member(member))
+                for member in dataset.manifest.members
+            ),
+        )
+        registry = register_history(state.registry, history)
+        # Append first so the immutable source-run binding can reference its
+        # exact journal revision. The enclosing transaction commits both.
+        updated = self.repository.append(connection, state, registry)
+        connection.execute(
+            "INSERT INTO regimex_benchmark_history_datasets "
+            "(dataset_id,owner_id,dataset_sha256,registered_revision) VALUES (%s,%s,%s,%s)",
+            (dataset_id, principal.owner_id, dataset.manifest.content_sha256, updated.revision),
+        )
+        return updated
 
-        # This transition appends alongside its binding. Avoid a second append by
-        # loading the now-current state after the callback's atomic insert.
+    def register_dataset_history(self, principal: Principal, dataset_id: str) -> RegistryState:
         self.database._admin(principal)
         with self.database.connection() as connection:
             self.repository.lock(connection)
             state = self.repository.load(connection)
+            dataset = self.admin_repository._dataset(connection, principal.owner_id, dataset_id)
             try:
-                transition(connection, state)
+                return self._record_dataset_history(connection, state, principal, dataset)
             except ServiceError:
                 raise
             except ValueError as exc:
                 raise Conflict(str(exc)) from exc
-            return self.repository.load(connection)
 
     def import_history(self, principal: Principal, history: DatasetHistory) -> RegistryState:
         history = DatasetHistory.model_validate_json(history.model_dump_json())
@@ -201,6 +211,79 @@ class BenchmarkService:
             ),
         )
 
+    def _reserve_dataset(
+        self,
+        connection: Connection,
+        state: RegistryState,
+        principal: Principal,
+        benchmark_id: str,
+        dataset: DatasetRecord,
+        reference_set_id: str,
+    ) -> BenchmarkRegistry:
+        dataset_id = dataset.dataset_id
+        require_selection_dataset(dataset.manifest)
+        references = self.admin_repository._reference(
+            connection, principal.owner_id, reference_set_id, allow_test=True
+        )
+        if references.dataset_id != dataset_id or references.references.partition != "test":
+            raise Forbidden(
+                "A benchmark requires the chosen dataset's complete test reference set."
+            )
+        validate_reference_membership(dataset.manifest, references.references)
+        if _keys(dataset) & self._reserved_dataset_keys(connection):
+            raise Conflict("A fresh benchmark dataset overlaps an earlier reserved dataset.")
+        # Check source-run overlap in addition to content fingerprints so
+        # partial exports from the same run cannot cross partitions.
+        for row in connection.execute(
+            "SELECT d.document FROM regimex_datasets d "
+            "JOIN regimex_benchmark_history_datasets h ON h.dataset_id=d.dataset_id"
+        ):
+            if _keys(dataset) & _keys(DatasetRecord.model_validate_json(json_bytes(row[0]))):
+                raise Conflict("The benchmark dataset overlaps a prior raw dataset partition.")
+        at = _event_time(state.registry)
+        reference = _reference(references)
+        # Check all of B against all historical partitions, even though only
+        # its test members become the final benchmark reservation.
+        reserve_benchmark(
+            state.registry,
+            benchmark_id=benchmark_id,
+            members=tuple(benchmark_member(member) for member in dataset.manifest.members),
+            reference=reference,
+            at=at,
+        )
+        registry = reserve_benchmark(
+            state.registry,
+            benchmark_id=benchmark_id,
+            members=tuple(
+                benchmark_member(member)
+                for member in dataset.manifest.members
+                if member.partition == "test"
+            ),
+            reference=reference,
+            at=at,
+        )
+        binding = BenchmarkBinding(
+            owner_id=principal.owner_id,
+            benchmark_id=benchmark_id,
+            dataset_id=dataset_id,
+            dataset_sha256=dataset.manifest.content_sha256,
+            reference_set_id=reference_set_id,
+            reference_sha256=references.references.content_sha256,
+        )
+        connection.execute(
+            "INSERT INTO regimex_benchmark_bindings "
+            "(benchmark_id,owner_id,dataset_id,reference_set_id,document) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (
+                benchmark_id,
+                principal.owner_id,
+                dataset_id,
+                reference_set_id,
+                Jsonb(binding.model_dump()),
+            ),
+        )
+        return registry
+
     def reserve(
         self,
         principal: Principal,
@@ -210,71 +293,130 @@ class BenchmarkService:
     ) -> BenchmarkView:
         def transition(connection: Connection, state: RegistryState) -> BenchmarkRegistry:
             dataset = self.admin_repository._dataset(connection, principal.owner_id, dataset_id)
-            require_selection_dataset(dataset.manifest)
-            references = self.admin_repository._reference(
-                connection, principal.owner_id, reference_set_id, allow_test=True
+            return self._reserve_dataset(
+                connection, state, principal, benchmark_id, dataset, reference_set_id
             )
-            if references.dataset_id != dataset_id or references.references.partition != "test":
-                raise Forbidden(
-                    "A benchmark requires the chosen dataset's complete test reference set."
-                )
-            validate_reference_membership(dataset.manifest, references.references)
-            if _keys(dataset) & self._reserved_dataset_keys(connection):
-                raise Conflict("A fresh benchmark dataset overlaps an earlier reserved dataset.")
-            # Check source-run overlap in addition to content fingerprints so
-            # partial exports from the same run cannot cross partitions.
-            for row in connection.execute(
-                "SELECT d.document FROM regimex_datasets d "
-                "JOIN regimex_benchmark_history_datasets h ON h.dataset_id=d.dataset_id"
-            ):
-                if _keys(dataset) & _keys(DatasetRecord.model_validate_json(json_bytes(row[0]))):
-                    raise Conflict("The benchmark dataset overlaps a prior raw dataset partition.")
-            at = _event_time(state.registry)
-            reference = _reference(references)
-            # Check all of B against all historical partitions, even though only
-            # its test members become the final benchmark reservation.
-            reserve_benchmark(
-                state.registry,
-                benchmark_id=benchmark_id,
-                members=tuple(benchmark_member(member) for member in dataset.manifest.members),
-                reference=reference,
-                at=at,
-            )
-            registry = reserve_benchmark(
-                state.registry,
-                benchmark_id=benchmark_id,
-                members=tuple(
-                    benchmark_member(member)
-                    for member in dataset.manifest.members
-                    if member.partition == "test"
-                ),
-                reference=reference,
-                at=at,
-            )
-            binding = BenchmarkBinding(
-                owner_id=principal.owner_id,
-                benchmark_id=benchmark_id,
-                dataset_id=dataset_id,
-                dataset_sha256=dataset.manifest.content_sha256,
-                reference_set_id=reference_set_id,
-                reference_sha256=references.references.content_sha256,
-            )
-            connection.execute(
-                "INSERT INTO regimex_benchmark_bindings "
-                "(benchmark_id,owner_id,dataset_id,reference_set_id,document) "
-                "VALUES (%s,%s,%s,%s,%s)",
-                (
-                    benchmark_id,
-                    principal.owner_id,
-                    dataset_id,
-                    reference_set_id,
-                    Jsonb(binding.model_dump()),
-                ),
-            )
-            return registry
 
         self._change(principal, transition)
         return self.get_benchmark(principal, benchmark_id)
+
+    @staticmethod
+    def _preparation_sources(
+        registry: BenchmarkRegistry, development: DatasetRecord, final: DatasetRecord
+    ) -> tuple[str, ...]:
+        # A new attestation must retain the full scope of older reservations and freezes.
+        attestations = [registry.history_attestation]
+        for previous in registry.benchmarks:
+            attestations.append(previous.inventory_attestation)
+            if previous.freeze:
+                attestations.append(previous.freeze.inventory_attestation)
+        sources = {
+            name
+            for attestation in attestations
+            if attestation
+            for name in attestation.source_namespaces
+        }
+        sources.update(
+            row.member.source_namespace for item in registry.history for row in item.memberships
+        )
+        for dataset in (development, final):
+            sources.update(member.source_namespace for member in dataset.manifest.members)
+        return tuple(sorted(sources))
+
+    def preparation_inventory(
+        self, principal: Principal, dataset_id: str, final_dataset_id: str
+    ) -> TrainingInventorySummary:
+        self.database._admin(principal)
+        with self.database.connection() as connection:
+            state = self.repository.load(connection)
+            development = self.admin_repository._dataset(connection, principal.owner_id, dataset_id)
+            final = self.admin_repository._dataset(connection, principal.owner_id, final_dataset_id)
+            return TrainingInventorySummary(
+                revision=state.revision,
+                dataset_count=len(state.registry.history),
+                source_namespaces=self._preparation_sources(state.registry, development, final),
+            )
+
+    def prepare_selection(
+        self, principal: Principal, request: TrainingPreparation
+    ) -> BenchmarkView:
+        """Expose development data and reserve final data as one confirmed transition."""
+        self.database._admin(principal)
+        with self.database.connection() as connection:
+            self.repository.lock(connection)
+            state = self.repository.load(connection)
+            benchmark_id = (
+                "selection-"
+                + content_hash(
+                    [
+                        principal.owner_id,
+                        request.dataset_id,
+                        request.final_dataset_id,
+                        request.final_reference_set_id,
+                    ]
+                )[:32]
+            )
+            prior = next(
+                (b for b in state.registry.benchmarks if b.benchmark_id == benchmark_id), None
+            )
+            if prior is not None:
+                view = self.repository.view(connection, state, principal.owner_id, benchmark_id)
+                if (
+                    view.binding.dataset_id != request.final_dataset_id
+                    or view.binding.reference_set_id != request.final_reference_set_id
+                    or not any(
+                        item.dataset_id == request.dataset_id
+                        for item in state.registry.history[: prior.history_count]
+                    )
+                    or prior.selection_started_at is None
+                ):
+                    raise Conflict("This benchmark already belongs to another preparation.")
+                if prior.freeze is not None or prior.opened_at is not None:
+                    raise Conflict("This benchmark has completed model selection.")
+                self.repository.require_inventory_scope(state, view)
+                if prior.reference.semantics != CURRENT_TRAINING_SEMANTICS:
+                    raise Conflict("This benchmark uses an earlier training profile.")
+                return view
+            if state.revision != request.expected_registry_revision:
+                raise Conflict(
+                    "The benchmark inventory changed. Review it again before confirming."
+                )
+            development = self.admin_repository._dataset(
+                connection, principal.owner_id, request.dataset_id
+            )
+            final = self.admin_repository._dataset(
+                connection, principal.owner_id, request.final_dataset_id
+            )
+            require_selection_dataset(development.manifest)
+            sources = self._preparation_sources(state.registry, development, final)
+            try:
+                state = self._record_dataset_history(connection, state, principal, development)
+                attested = attest_history(
+                    state.registry,
+                    source_namespaces=sources,
+                    attested_by=principal.owner_id,
+                    statement=request.inventory_statement,
+                    at=_event_time(state.registry),
+                )
+                state = self.repository.append(connection, state, attested)
+                reserved = self._reserve_dataset(
+                    connection,
+                    state,
+                    principal,
+                    benchmark_id,
+                    final,
+                    request.final_reference_set_id,
+                )
+                if reserved.benchmarks[-1].reference.semantics != CURRENT_TRAINING_SEMANTICS:
+                    raise Conflict("Final references must use the current training profile.")
+                state = self.repository.append(connection, state, reserved)
+                started = record_selection_started(reserved, benchmark_id, at=_event_time(reserved))
+                state = self.repository.append(connection, state, started)
+                return self.repository.view(connection, state, principal.owner_id, benchmark_id)
+            except ServiceError:
+                raise
+            except ValueError as exc:
+                raise Conflict(str(exc)) from exc
 
     def start_selection(self, principal: Principal, benchmark_id: str) -> BenchmarkView:
         def transition(connection: Connection, state: RegistryState) -> BenchmarkRegistry:

@@ -278,6 +278,31 @@
               <h2 id="training-config-title" tabindex="-1">New training run</h2>
               <button id="training-edit-mode" type="button" class="quiet" aria-controls="training-fields training-json-panel">Edit JSON</button>
             </div>
+            <details id="data-preparation" class="training-run-details">
+              <summary>Prepare training data</summary>
+              <form id="data-preparation-form" class="training-form">
+                <fieldset id="preparation-size">
+                  <legend>Generate two independent datasets</legend>
+                  <div class="training-form-grid">
+                    <label>Development experiments<input id="preparation-development" type="number" min="3" max="1000" value="48" required></label>
+                    <label>Final dataset experiments<input id="preparation-final" type="number" min="3" max="1000" value="24" required></label>
+                    <label>Steps per experiment<input id="preparation-steps" type="number" min="64" max="4096" value="256" required></label>
+                  </div>
+                  <p class="hint" id="preparation-counts"></p>
+                </fieldset>
+                <p id="preparation-status" role="status"></p>
+                <div id="preparation-review" hidden>
+                  <p id="preparation-inventory"></p>
+                  <details><summary id="preparation-source-count">Source namespaces</summary><p id="preparation-datasets"></p><pre id="preparation-sources"></pre></details>
+                  <label><input id="preparation-attest" type="checkbox"> I confirm that all known prior uses of data from these sources are registered.</label>
+                  <a href="/api/v1/benchmarks/registry" target="_blank" rel="noopener">View inventory (JSON)</a>
+                </div>
+                <div class="actions">
+                  <button id="preparation-action" type="submit">Generate datasets</button>
+                  <button id="preparation-forget" type="button" class="quiet" hidden>Dismiss setup</button>
+                </div>
+              </form>
+            </details>
             <form id="training-form" class="training-form">
               <fieldset id="training-fields" aria-label="Training configuration">
                 <div class="training-form-grid">

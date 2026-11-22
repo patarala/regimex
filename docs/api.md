@@ -253,6 +253,18 @@ runs and reservations in the registry. Include known external exposures and
 renew the attestation when history changes. If you use human final references,
 import them through `POST /benchmarks/reference-sets` before reservation.
 
+The training screen uses two administrative routes to register a generated
+development dataset and reserve a separate final dataset together.
+`GET /training-options/inventory?dataset_id=DEV&final_dataset_id=FINAL`
+returns the registry revision, registered dataset count and complete source
+scope for review. After the administrator confirms the inventory, send
+`dataset_id`, `final_dataset_id`, `final_reference_set_id`,
+`expected_registry_revision` and their `inventory_statement` to
+`POST /training-options/selection`. The response contains the open
+`benchmark_id`. If the registry changed since review, the request returns
+`409`. Repeating a successful request for the same datasets and references
+recovers the existing reservation while selection remains open.
+
 ### 3. Train and publish
 
 After starting selection on the reservation, use the [browser training
@@ -309,7 +321,7 @@ run status and the choices available to the signed-in administrator:
 | Request | Result |
 | --- | --- |
 | `GET /datasets?development_only=true&limit=100&offset=0` | Registered development datasets owned by this account |
-| `GET /training-options/benchmarks?dataset_id=ID` | Eligible open selection reservations for this dataset, returned as `benchmark_ids` |
+| `GET /training-options/benchmarks?dataset_id=ID` | Eligible open reservations in `benchmark_ids` and the `analysis_profile_id` accepted for new training |
 | `GET /training-runs?archive=active&limit=20&offset=0` | Newest training runs first. Choose `active` for unarchived runs, `archived` for the archive, or `all` (the API default). |
 | `PATCH /training-runs/archive` | Archive or restore up to 100 completed runs in one request. |
 | `GET /training-runs/{id}` | Run name and revision, submitted settings, model version ID, job stage, attempts, timing, input row counts and failure reason |

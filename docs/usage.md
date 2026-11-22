@@ -99,11 +99,21 @@ both versions must have been published or activated.
 ## Train a model
 
 Sign in with an administrator token and open **Training** at `/training`. The
-service needs a running `admin` worker. If this is your first training run, use
-the API to create a development dataset with training and validation partitions, generate
-a reference set for each, and register the dataset as development history.
-Reserve a separate final dataset with sealed test references, then start
-selection on that reservation. The form lists the benchmarks available to your account.
+service needs a running `admin` worker. For your first run, choose **New run →
+Prepare training data**, set the experiment counts and length, then select
+**Generate datasets**. The worker generates two independent datasets and
+creates automatic labels. The form shows how many experiments enter training,
+validation and the sealed final test partition.
+
+When the labels are ready, review the service-wide inventory and the listed
+source namespaces. If known prior data use is missing, register it before
+confirming. Choose **Reserve benchmark**, then **Use prepared data** to fill
+the training form. Training starts when you choose **Start training**.
+To resume after leaving or refreshing the page, reopen **New run** in the
+same browser and account and choose **Continue preparation**. Queued jobs
+continue on the server while the page is closed.
+
+To use imported snapshots or externally prepared data, use the API.
 [Data preparation](api.md#1-create-observations-and-references) ·
 [Benchmark reservation](api.md#2-reserve-final-data-before-selection)
 

@@ -1295,6 +1295,35 @@ iframe {
 #training-size-field {
   margin-top: 14px;
 }
+#data-preparation {
+  margin: 12px 0 20px;
+}
+#preparation-size {
+  min-width: 0;
+  margin: 16px 0;
+  padding: 0;
+  border: 0;
+}
+#preparation-size legend {
+  margin-bottom: 10px;
+}
+#preparation-review label {
+  font-weight: 400;
+}
+#preparation-review input {
+  display: inline-block;
+  margin: 0 4px 0 0;
+}
+#preparation-review {
+  margin-bottom: 14px;
+  overflow-wrap: anywhere;
+}
+#preparation-sources {
+  max-height: 12rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 #training-json-panel {
   margin-bottom: 20px;
 }

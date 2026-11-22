@@ -2,6 +2,7 @@ import {$, addFieldHelp, option} from "./ui.js";
 import {parseTrainingJSON, readTrainingRequest, trainingFieldsBody} from "./training-json.js";
 import {createTrainingPolicy, policyDraft, validateTrainingLimits} from "./training-policy.js";
 import {createSizePicker} from "./training-size.js";
+import {createDataPreparation} from "./training-preparation.js";
 
 const selectionFields = {
   "training-dataset": "dataset_id", "training-architecture": "architecture_id",
@@ -61,6 +62,7 @@ export function createTrainingForm({session, eachPage}) {
   const architectureDrafts = new Map();
   const policy = createTrainingPolicy($("training-policy"));
   const sizePicker = createSizePicker();
+  const preparation = createDataPreparation({session, onUse: usePreparedData});
   const hint = $("training-prerequisite");
   function feedback(message = "", ...actions) {
     hint.replaceChildren();
@@ -134,9 +136,7 @@ export function createTrainingForm({session, eachPage}) {
     for (const key of dependent) choices(key, [], id ? "Loading…" : "Choose a dataset first");
     updateSubmit();
     if (!id) {
-      feedback("Register a development dataset to start training.",
-        ["Create dataset", "create_dataset_api_v1_datasets_post"],
-        ["Register dataset", "register_dataset_api_v1_benchmarks_history_datasets_post"]);
+      feedback("Choose Prepare training data to generate your first development dataset.");
       return;
     }
     try {
@@ -158,6 +158,34 @@ export function createTrainingForm({session, eachPage}) {
     }
     if (valid()) { loading = false; updateSubmit(); }
   }
+  async function usePreparedData(outputs, benchmark) {
+    if (jsonBase) throw new Error("Switch to the form to select the prepared data.");
+    const stamp = ++generation, valid = () => generation === stamp;
+    const [dataset, options] = await Promise.all([
+      session.json(api + "datasets/" + encodeURIComponent(outputs.development)),
+      datasetOptions(outputs.development, valid),
+    ]);
+    if (!valid() || jsonBase) return false;
+    const selected = {"training-labels": outputs.train, "training-validation": outputs.validation,
+      "training-benchmark": benchmark};
+    if (dependent.some(id => !options[id].some(([value]) => value === selected[id])))
+      throw new Error("The prepared references or benchmark are no longer available for training.");
+    const picker = $("training-dataset");
+    if (!Array.from(picker.options).some(row => row.value === dataset.dataset_id)) {
+      if (picker.disabled) picker.replaceChildren();
+      picker.add(option(dataset.dataset_id, datasetName(dataset.dataset_id) + " · " +
+        dataset.partitions.train + " training · " + dataset.partitions.validation + " validation"));
+    }
+    picker.disabled = false;
+    picker.value = dataset.dataset_id;
+    setDatasetOptions(options);
+    for (const id of dependent) $(id).value = selected[id];
+    loading = false;
+    feedback();
+    updateSubmit();
+    picker.dispatchEvent(new Event("input", {bubbles: true}));
+    return true;
+  }
   async function open() {
     for (const label of $("training-fields").querySelectorAll("label[data-help]")) {
       addFieldHelp(label, label.control, label.dataset.help);
@@ -171,6 +199,7 @@ export function createTrainingForm({session, eachPage}) {
       if (draft?.jsonBase) showEditor(draft.jsonBase, draft.jsonText);
     }
     $("training-config").hidden = false;
+    preparation.open();
     loading = true;
     feedback();
     for (const id of selectors) choices(id, [], "Loading…");
@@ -200,6 +229,7 @@ export function createTrainingForm({session, eachPage}) {
     }
   }
   function close(remember = true) {
+    preparation.close();
     if (!remember) {
       draft = null;
       architectureDrafts.clear();

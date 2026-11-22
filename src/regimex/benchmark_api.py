@@ -18,7 +18,12 @@ from regimex.admin_contracts import (
     RequestFingerprint,
 )
 from regimex.api import _json_dependency, _request_body
-from regimex.benchmark_contracts import BenchmarkView, RegistryState
+from regimex.benchmark_contracts import (
+    BenchmarkView,
+    RegistryState,
+    TrainingInventorySummary,
+    TrainingPreparation,
+)
 from regimex.benchmarks import DatasetHistory
 from regimex.contracts import Identifier, StrictModel
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
@@ -30,6 +35,14 @@ class BenchmarkAPIService(Protocol):
     def get_registry(self, principal: Principal) -> RegistryState: ...
 
     def selection_benchmarks(self, principal: Principal, dataset_id: str) -> tuple[str, ...]: ...
+
+    def preparation_inventory(
+        self, principal: Principal, dataset_id: str, final_dataset_id: str
+    ) -> TrainingInventorySummary: ...
+
+    def prepare_selection(
+        self, principal: Principal, request: TrainingPreparation
+    ) -> BenchmarkView: ...
 
     def get_benchmark(self, principal: Principal, benchmark_id: str) -> BenchmarkView: ...
 
@@ -80,6 +93,11 @@ class DatasetHistoryRequest(StrictModel):
 
 class SelectionBenchmarks(StrictModel):
     benchmark_ids: tuple[Identifier, ...]
+    analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
+
+
+class PreparedSelection(StrictModel):
+    benchmark_id: Identifier
 
 
 class FinalReferenceRequest(StrictModel):
@@ -132,6 +150,7 @@ def install_benchmark_routes(
     HistoryBody = Annotated[DatasetHistory, Depends(_json_dependency(DatasetHistory))]
     InventoryBody = Annotated[InventoryRequest, Depends(_json_dependency(InventoryRequest))]
     ReserveBody = Annotated[BenchmarkRequest, Depends(_json_dependency(BenchmarkRequest))]
+    PreparationBody = Annotated[TrainingPreparation, Depends(_json_dependency(TrainingPreparation))]
     ModelBody = Annotated[FrozenModelRequest, Depends(_json_dependency(FrozenModelRequest))]
     ReferenceBody = Annotated[
         FinalReferenceRequest, Depends(_json_dependency(FinalReferenceRequest))
@@ -141,6 +160,7 @@ def install_benchmark_routes(
         DatasetHistory,
         InventoryRequest,
         BenchmarkRequest,
+        TrainingPreparation,
         FrozenModelRequest,
         FinalReferenceRequest,
     )
@@ -154,6 +174,19 @@ def install_benchmark_routes(
         identity: Identity, dataset_id: RegistryIdentifier
     ) -> SelectionBenchmarks:
         return SelectionBenchmarks(benchmark_ids=service.selection_benchmarks(identity, dataset_id))
+
+    @app.get("/api/v1/training-options/inventory")
+    def inventory_summary(
+        identity: Identity, dataset_id: RegistryIdentifier, final_dataset_id: RegistryIdentifier
+    ) -> TrainingInventorySummary:
+        return service.preparation_inventory(identity, dataset_id, final_dataset_id)
+
+    @app.post(
+        "/api/v1/training-options/selection", openapi_extra=_request_body(TrainingPreparation)
+    )
+    def prepare_selection(identity: Identity, intake: PreparationBody) -> PreparedSelection:
+        view = service.prepare_selection(identity, intake)
+        return PreparedSelection(benchmark_id=view.binding.benchmark_id)
 
     @app.post(
         "/api/v1/benchmarks/reference-sets",
