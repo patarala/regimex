@@ -7,11 +7,36 @@ import {architectureName, createTrainingForm, datasetName, shortId} from "./trai
 import {trainingRequestKey} from "./training-json.js";
 import {createRunNameEditor} from "./training-name.js";
 import {parameterCountLabel} from "./training-size.js";
+import {queuedStageLabel} from "./queue-status.js";
 
 const api = "/api/v1/";
 const pageSize = 12;
 const inProgress = (job) => ["queued", "running", "cancel_requested"].includes(job.state);
 const route = (id) => api + "training-runs/" + encodeURIComponent(id);
+
+function duration(seconds) {
+  if (seconds > 0 && seconds < 1) return "<1 s";
+  const whole = Math.floor(seconds);
+  if (whole < 60) return whole + " s";
+  const minutes = Math.floor(whole / 60);
+  if (minutes < 60) return minutes + " min " + whole % 60 + " s";
+  return Math.floor(minutes / 60) + " h " + minutes % 60 + " min";
+}
+
+function setText(node, value) {
+  if (node.textContent !== value) node.textContent = value;
+}
+
+function showTiming(statistics) {
+  $("training-timing").hidden = !statistics;
+  if (!statistics) return;
+  for (const [id, seconds] of [["training-elapsed", statistics.elapsed_seconds],
+    ["training-queued", statistics.queued_seconds], ["training-running", statistics.running_seconds]]) {
+    const value = $(id);
+    value.parentElement.hidden = seconds == null;
+    if (seconds != null) setText(value, duration(seconds));
+  }
+}
 
 function runContext(row) {
   return [architectureName(row.training.architecture_id, true),
@@ -94,6 +119,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   let offset = 0, timer = null, busy = false, pollRevision = 0;
   let run = null, evaluation = null, activeModel, metricsLoaded = false;
   let pendingDownstream = false, retryDelay = 2500, target = null;
+  let renderedFacts = null;
   let draftRevision = 0, submittingDraft = null, acceptedDraftRun = null;
   let draftRequests = new Map();
   let view = "active", listedView = null, listedOffset = 0, renderedRows = null;
@@ -131,6 +157,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     names.close();
     retryDelay = 2500;
     $("training-sync").hidden = true;
+    $("training-metric-error").hidden = true;
     $("training-delete-weights").hidden = true;
     $("training-run-details").open = false;
     markCurrent(null);
@@ -149,6 +176,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-metric-data").removeAttribute("download");
     $("training-metric-data").hidden = true;
     $("training-facts").replaceChildren();
+    renderedFacts = null;
+    showTiming(null);
     $("training-actions").replaceChildren();
   }
 
@@ -301,10 +330,15 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   function showTitle() {
     const context = runContext(run);
-    $("training-detail-title").textContent = run.display_name || context;
-    const created = element("time", "Created " + shortDate(run.job.created_at));
-    created.dateTime = run.job.created_at;
-    $("training-created").replaceChildren(run.display_name ? context : "", created);
+    setText($("training-detail-title"), run.display_name || context);
+    const caption = $("training-created");
+    const prefix = run.display_name ? context : "";
+    const date = "Created " + shortDate(run.job.created_at);
+    if (caption.lastElementChild?.dateTime !== run.job.created_at || caption.textContent !== prefix + date) {
+      const created = element("time", date);
+      created.dateTime = run.job.created_at;
+      caption.replaceChildren(prefix, created);
+    }
     $("training-archived").hidden = !run.archived_at;
     archive.showRun(run);
   }
@@ -371,27 +405,37 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   function facts() {
     const spec = run.training;
+    const stats = run.statistics;
     showTitle();
     if (run.weights_deletion_id) showRemovedWeights();
-    $("training-state").textContent = analysisStateLabel(run.job.state);
+    setText($("training-state"), analysisStateLabel(run.job.state));
     $("training-state").dataset.state = run.job.state;
+    showTiming(stats);
     const entries = [["Run", run.run_id], ["Dataset", spec.dataset_id], ["Selection benchmark", spec.benchmark_selection_id],
       ["Model version", spec.model_version_id]];
+    if (run.job.attempt > 0) entries.push(["Attempts", String(run.job.attempt)]);
+    if (stats?.fit_seconds != null) entries.push(["Model fit time", duration(stats.fit_seconds)]);
+    if (stats?.train_rows != null) entries.push(["Training rows", stats.train_rows.toLocaleString()]);
+    if (stats?.validation_rows != null) entries.push(["Validation rows", stats.validation_rows.toLocaleString()]);
     if (run.archived_at) entries.push(["Archived", shortDate(run.archived_at)]);
-    $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [element("dt", key), element("dd", value || "—")]));
-    $("training-settings").textContent = JSON.stringify({parameters: spec.parameters, policy: spec.policy,
+    const content = JSON.stringify(entries);
+    if (content !== renderedFacts) {
+      $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [element("dt", key), element("dd", value || "—")]));
+      renderedFacts = content;
+    }
+    setText($("training-settings"), JSON.stringify({parameters: spec.parameters, policy: spec.policy,
       training_runtime: spec.training_runtime, inference_runtime: spec.inference_runtime,
       analysis_profile_id: spec.analysis_profile_id, labels_reference_set_id: spec.labels_reference_set_id,
-      validation_reference_set_id: spec.validation_reference_set_id}, null, 2);
+      validation_reference_set_id: spec.validation_reference_set_id}, null, 2));
     const stages = {
-      queued: "Waiting for a worker.", loading: "Loading training data.",
+      starting: "Preparing training.", loading: "Loading training data.",
       "administrative-computation": "Training the model.", committing: "Saving the model and metrics.",
-      retry_wait: "Waiting to retry.",
     };
     let status = run.job.failure?.message || "";
     if (run.job.state === "cancel_requested") status = "Cancellation requested.";
-    else if (inProgress(run.job)) {
-      status = stages[run.job.stage] || (run.job.state === "queued" ? stages.queued : "Training the model.");
+    else if (run.job.state === "queued") status = queuedStageLabel(run.job.stage, "Waiting for a worker") + ".";
+    else if (run.job.state === "running") {
+      status = stages[run.job.stage] || "Training the model.";
       if (run.job.attempt > 1) status += " Attempt " + run.job.attempt + " of " + run.job.max_attempts + ".";
     }
     if ($("training-stage").textContent !== status) $("training-stage").textContent = status;
@@ -442,6 +486,18 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     return pendingDownstream;
   }
 
+  async function completedMetrics(valid) {
+    if (metricsLoaded) return;
+    const result = await session.json(route(run.run_id) + "/metrics");
+    if (!valid()) return;
+    metrics.show(result.history, result, run.training.policy);
+    $("training-metric-data").href = route(run.run_id) + "/metrics";
+    $("training-metric-data").download = "training-" + run.run_id + "-metrics.json";
+    $("training-metric-data").hidden = false;
+    $("training-metric-error").hidden = true;
+    metricsLoaded = true;
+  }
+
   async function refresh(stamp, fetchRun = true) {
     if (!selected(stamp) || !run || busy) return;
     clearTimeout(timer);
@@ -466,16 +522,16 @@ export function createTraining({session, navigate, deletion, onPublication}) {
         if (run.job.state !== "succeeded") metrics.clear();
       }
       if (run.job.state === "succeeded") {
-        if (!metricsLoaded) {
-          const result = await session.json(route(run.run_id) + "/metrics");
-          if (!valid()) return;
-          metrics.show(result.history, result, run.training.policy);
-          $("training-metric-data").href = route(run.run_id) + "/metrics";
-          $("training-metric-data").download = "training-" + run.run_id + "-metrics.json";
-          $("training-metric-data").hidden = false;
-          metricsLoaded = true;
+        const [charts, actions] = await Promise.allSettled([completedMetrics(valid), downstream(valid)]);
+        if (!valid()) return;
+        if (actions.status === "rejected") throw actions.reason;
+        waiting = actions.value;
+        if (charts.status === "rejected") {
+          const error = charts.reason;
+          if (!error.status || error.status === 429 || error.status >= 500) throw error;
+          setText($("training-metric-error"), "Could not load training metrics. " + error.message);
+          $("training-metric-error").hidden = false;
         }
-        waiting = await downstream(valid);
       }
       if (!valid()) return;
       $("training-sync").hidden = true;

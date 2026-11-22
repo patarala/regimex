@@ -1253,7 +1253,9 @@ class DatabaseRepository:
             for row in rows:
                 operation = _read_operation(row[0])
                 token = uuid4()
-                operation = start_attempt(operation, token, self._now(operation))
+                # A lost delivery consumes an attempt without any time in a worker.
+                recovered_at = self._now(operation)
+                operation = start_attempt(operation, token, recovered_at)
                 operation = fail(
                     operation,
                     token,
@@ -1262,7 +1264,7 @@ class DatabaseRepository:
                         message="The queue delivery ended before the operation could be claimed.",
                         retryable=True,
                     ),
-                    self._now(operation),
+                    recovered_at,
                 )
                 self._save(connection, operation)
                 if operation.state == "queued":

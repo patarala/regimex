@@ -1406,6 +1406,21 @@ iframe {
 #training-prerequisite {
   margin: 14px 0 0;
 }
+.training-timing {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 14px 0;
+}
+.training-timing dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+.training-timing dd {
+  margin: 2px 0 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .training-facts {
   display: grid;
   grid-template-columns: minmax(min-content, max-content) minmax(0, 1fr);

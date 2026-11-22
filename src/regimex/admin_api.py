@@ -2,6 +2,7 @@
 
 import hashlib
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Annotated, Literal, Protocol, Self
 from uuid import UUID, uuid4
 
@@ -61,6 +62,7 @@ from regimex.model_registry import (
 )
 from regimex.service_contracts import NotFound, Principal
 from regimex.storage import json_bytes
+from regimex.training_statistics import TrainingRunStatistics
 
 
 class AdminAPIService(Protocol):
@@ -323,6 +325,9 @@ class AdminRunView(StrictModel):
     polling_url: str
     training: TrainingSpec | None = None
     trainable_parameters: int | None = None
+    statistics: TrainingRunStatistics | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     display_name: DisplayName | None = None
     name_revision: Annotated[int, Field(ge=0)] = 0
 
@@ -412,6 +417,11 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         job=_operation(record.operation),
         training=training,
         trainable_parameters=count,
+        statistics=TrainingRunStatistics.from_operation(
+            record.operation, record.output, now=datetime.now(UTC)
+        )
+        if training
+        else None,
         display_name=record.display_name,
         name_revision=record.name_revision,
         output=None

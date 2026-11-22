@@ -57,6 +57,7 @@ from regimex.service_contracts import (
     UnsupportedContract,
 )
 from regimex.storage import json_bytes
+from regimex.training_statistics import TrainingFitStatistics
 
 _SPEC = RootModel[AdminSpec]
 _POINT = RootModel[ProgressPoint]
@@ -1156,6 +1157,7 @@ class AdminRepository:
         *,
         metrics: TrainingMetrics,
         trainable_parameters: int | None = None,
+        fit_statistics: TrainingFitStatistics | None = None,
     ) -> AdminRunRecord:
         with self._active_run(run_id, token, "training") as (connection, run):
             assert isinstance(run.spec, TrainingSpec)
@@ -1186,6 +1188,11 @@ class AdminRepository:
                     "model_version_id": model.model_version_id,
                     "bundle_sha256": model.bundle_sha256,
                     "quality_status": model.quality_status,
+                    **(
+                        {"fit_statistics": fit_statistics.model_dump(mode="json")}
+                        if fit_statistics is not None
+                        else {}
+                    ),
                     **(
                         {"trainable_parameters": trainable_parameters}
                         if trainable_parameters is not None

@@ -356,7 +356,13 @@
             </form>
             <p id="training-sync" class="notice" role="status" hidden></p>
             <p id="training-stage" class="hint" role="status" hidden></p>
+            <dl id="training-timing" class="training-timing" aria-label="Run timing" hidden>
+              <div><dt>Elapsed</dt><dd id="training-elapsed"></dd></div>
+              <div><dt>In queue</dt><dd id="training-queued"></dd></div>
+              <div><dt>With worker</dt><dd id="training-running"></dd></div>
+            </dl>
             <p id="training-progress-notice" class="hint" role="status" hidden>Could not update the charts. Retrying…</p>
+            <p id="training-metric-error" class="notice" role="status" hidden></p>
             <button id="training-cancel" type="button" class="quiet" hidden>Cancel training</button>
             <section id="training-metrics" class="training-section" aria-labelledby="training-metrics-title" hidden>
               <h3 id="training-metrics-title">Training metrics</h3>

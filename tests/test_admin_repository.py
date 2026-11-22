@@ -1085,6 +1085,18 @@ def test_training_progress_pages_are_attempt_scoped_and_released(
         )
 
 
+def test_lost_training_deliveries_count_as_queue_time(repository: AdminRepository) -> None:
+    _, spec = ready_training(repository)
+    run = repository.submit(principal(), spec, idempotency_key="lost-deliveries")
+    for _ in range(run.operation.max_attempts):
+        with repository.database.connection() as connection:
+            connection.execute("UPDATE procrastinate_jobs SET status='failed'")
+        (operation,) = repository.database.recover_queued_deliveries()
+        assert operation.queued_duration == operation.updated_at - operation.created_at
+    failed = repository.get_run(principal(), run.run_id).operation
+    assert failed.state == "failed" and failed.attempt == failed.max_attempts
+
+
 def test_archive_keeps_terminal_runs_accessible_and_filters_before_pagination(
     repository: AdminRepository,
 ) -> None:

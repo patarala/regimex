@@ -891,6 +891,9 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert response.status_code == 202, response.text
     run = AdminRunView.model_validate_json(response.content)
     assert run.training is not None and run.training.dataset_id == dataset_id
+    assert run.statistics is not None and run.statistics.running_seconds == 0
+    assert run.statistics.queued_seconds == run.statistics.elapsed_seconds
+    assert run.statistics.fit_seconds is None
     assert run.training.policy.seeds == (11,)
     assert run.trainable_parameters == (363 if tcn else 867)
     assert (run.display_name, run.name_revision) == ("Short windows" if tcn else None, 0)
@@ -921,6 +924,14 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     detail = context.client.get(run_path, headers=headers).json()
     assert detail["display_name"] == "Published candidate" and detail["name_revision"] == 1
     assert detail["training"] == run.training.model_dump(mode="json")
+    stats = detail["statistics"]
+    assert stats["as_of"] == detail["job"]["updated_at"]
+    assert stats["elapsed_seconds"] == pytest.approx(
+        stats["queued_seconds"] + stats["running_seconds"]
+    )
+    assert 0 < stats["fit_seconds"] <= stats["running_seconds"]
+    assert (stats["train_rows"], stats["validation_rows"]) == (192, 192)
+    assert "attempt_token" not in detail["job"] and "fit_statistics" not in detail["output"]
     model_id = completed.output["model_version_id"]
     assert isinstance(model_id, str)
     metrics = context.client.get(run_path + "/metrics", headers=headers)
@@ -982,6 +993,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert archived.status_code == 204 and not archived.content
     saved_run = context.client.get(run_path, headers=headers).json()
     assert saved_run["archived_at"] is not None and saved_run["output"] == detail["output"]
+    assert saved_run["statistics"] == stats
     for query, expected in (
         ("", [saved_run]),
         ("?archive=archived", [saved_run]),

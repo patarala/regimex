@@ -172,6 +172,19 @@
       "title": "Owner Id",
       "type": "string"
     },
+    "queued_duration": {
+      "anyOf": [
+        {
+          "format": "duration",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Queued Duration"
+    },
     "request_sha256": {
       "pattern": "^[0-9a-f]{64}$",
       "title": "Request Sha256",

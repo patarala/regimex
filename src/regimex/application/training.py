@@ -6,6 +6,7 @@ limits belong to the persistent service boundary.
 """
 
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
@@ -51,6 +52,7 @@ from regimex.operations import Sha256
 from regimex.prediction_inputs import PredictionSequenceInfo
 from regimex.segmentation import DECODER_VERSION, decode
 from regimex.storage import output_directory
+from regimex.training_statistics import TrainingFitStatistics
 
 
 class TrainingRequest(StrictModel):
@@ -75,6 +77,7 @@ class CandidateTrainingResult(StrictModel):
     quality_status: Literal["validation_only"] = "validation_only"
     training_runtime: TrainingRuntime
     verification_runtime: InferenceRuntime
+    fit_statistics: TrainingFitStatistics
 
 
 def _available_fields(item: LabeledSnapshot) -> set[str]:
@@ -287,8 +290,10 @@ def train_candidate(
         data.analysis_profile,
         data.validation_references.kind,
     )
+    training_inputs = TrainingInputs(training, targets, on_history=on_history)
+    fit_started = time.perf_counter()
     fitted = backend.fit(
-        TrainingInputs(training, targets, on_history=on_history),
+        training_inputs,
         validation,
         parameters=parameters,
         policy=request.policy,
@@ -296,6 +301,7 @@ def train_candidate(
         runtime=request.training_runtime,
         evaluator=evaluator,
     )
+    fit_seconds = time.perf_counter() - fit_started
     _validate_predictor(
         fitted.predictor, request, descriptor.implementation_version, data.analysis_profile
     )
@@ -369,4 +375,9 @@ def train_candidate(
         validation_segment_macro_f1=verified_score,
         training_runtime=request.training_runtime,
         verification_runtime=request.verification_runtime,
+        fit_statistics=TrainingFitStatistics(
+            fit_seconds=fit_seconds,
+            train_rows=training.row_count,
+            validation_rows=validation.row_count,
+        ),
     )

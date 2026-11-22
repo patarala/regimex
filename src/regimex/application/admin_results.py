@@ -298,6 +298,7 @@ class AdminResultCommitter:
             self._token,
             model,
             metrics=metrics,
+            fit_statistics=candidate.fit_statistics,
             trainable_parameters=configured_parameter_count(spec.architecture_id, spec.parameters),
         )
 

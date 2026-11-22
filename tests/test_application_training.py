@@ -209,6 +209,8 @@ def test_training_uses_generic_registry_shared_selection_and_independent_referen
         )
     assert result.dataset_sha256 == dataset.content_sha256
     assert result.quality_status == "validation_only"
+    assert result.fit_statistics.fit_seconds > 0
+    assert (result.fit_statistics.train_rows, result.fit_statistics.validation_rows) == (192, 192)
     bundle = verify_model_bundle(
         tmp_path / "candidate",
         manifest_sha256=result.manifest_sha256,

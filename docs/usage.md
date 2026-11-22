@@ -153,6 +153,15 @@ selection on that reservation. The form lists the benchmarks available to your a
    **Values** under a chart to read individual measurements. If the worker
    retries training, the charts start again with the new attempt.
 
+   **Elapsed** runs from submission until the job finishes. **In queue** includes
+   waits between attempts. **With worker** covers the time each attempt was
+   assigned, including data loading, fitting and saving. If a worker stops
+   responding, its time ends when the service recovers the job. Older runs
+   show the breakdown only when their timing was recorded. For newly completed
+   models, **Run details and settings** also shows how long the successful fit took and how many
+   training and validation rows it received. Each row is one instrument at
+   one time step on the original grid.
+
    Hover or tap inside a chart to read the nearest measurement. With the chart
    cursor focused, use the arrow keys to move between measurements. Each curve
    marks its most recent measurement. The validation curve also marks the

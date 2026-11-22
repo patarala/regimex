@@ -1,6 +1,6 @@
 """Operation state transitions; persistence must serialize them with a row lock or CAS."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Annotated, Literal, Self
 from uuid import UUID
 
@@ -65,6 +65,9 @@ class Operation(StrictModel):
     created_at: AwareDatetime
     updated_at: AwareDatetime
     heartbeat_at: AwareDatetime | None = None
+    # Settled queue time at the last claim or queued cancellation. Older attempts
+    # did not record this, so their queue/worker breakdown stays unknown.
+    queued_duration: timedelta | None = Field(default=None, exclude_if=lambda value: value is None)
     result_sha256: Sha256 | None = None
     failure: OperationFailure | None = None
 
@@ -72,6 +75,11 @@ class Operation(StrictModel):
     def consistent_state(self) -> Self:
         if self.updated_at < self.created_at:
             raise ValueError("operation timestamps must be ordered")
+        if self.queued_duration is not None and (
+            self.kind != "training"
+            or not timedelta(0) <= self.queued_duration <= self.updated_at - self.created_at
+        ):
+            raise ValueError("queued duration must be within the training run's elapsed time")
         if self.attempt > self.max_attempts:
             raise ValueError("operation exceeds its attempt budget")
         if (
@@ -116,6 +124,14 @@ class Operation(StrictModel):
             raise ValueError("a successful or failed operation requires a recorded attempt")
         return self
 
+    def training_queue_time(self, as_of: datetime) -> timedelta | None:
+        if self.attempt == 0:
+            end = as_of if self.state == "queued" else self.updated_at
+            return end - self.created_at
+        if self.state == "queued" and self.queued_duration is not None:
+            return self.queued_duration + (as_of - self.updated_at)
+        return self.queued_duration
+
 
 def _validate_time(operation: Operation, now: datetime) -> None:
     if now.tzinfo is None or now.utcoffset() is None or now < operation.updated_at:
@@ -124,6 +140,8 @@ def _validate_time(operation: Operation, now: datetime) -> None:
 
 def _change(operation: Operation, now: datetime, **changes: object) -> Operation:
     _validate_time(operation, now)
+    if operation.kind == "training" and operation.state == "queued":
+        changes["queued_duration"] = operation.training_queue_time(now)
     return Operation.model_validate({**operation.model_dump(), **changes, "updated_at": now})
 
 

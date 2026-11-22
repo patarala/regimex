@@ -18,6 +18,7 @@ from regimex.operations import (
     start_attempt,
     succeed,
 )
+from regimex.training_statistics import TrainingRunStatistics
 
 NOW = datetime(2026, 10, 21, tzinfo=UTC)
 
@@ -230,3 +231,59 @@ def test_recovery_rejects_naive_or_reversed_clock_before_comparing_cutoffs() -> 
         recover_stale(running, NOW, NOW - timedelta(seconds=1))
     with pytest.raises(ValueError, match="cutoff must be aware"):
         recover_stale(running, NOW.replace(tzinfo=None), NOW)
+
+
+def test_training_statistics_settle_queue_intervals_and_freeze_at_completion() -> None:
+    def at(seconds: int) -> datetime:
+        return NOW + timedelta(seconds=seconds)
+
+    def durations(job: Operation, seconds: int) -> tuple[float, float | None, float | None]:
+        snapshot = TrainingRunStatistics.from_operation(job, None, now=at(seconds))
+        return snapshot.elapsed_seconds, snapshot.queued_seconds, snapshot.running_seconds
+
+    job = queued(kind="training", model=None)
+    assert durations(job, 2) == (2, 2, 0)
+    assert durations(request_cancel(job, at(2)), 100) == (2, 2, 0)
+    token = uuid4()
+    job = start_attempt(job, token, at(3))
+    job = heartbeat(job, token, "fitting", at(5))
+    assert durations(job, 7) == (7, 3, 4)
+    job = recover_stale(job, at(5), at(9))
+    assert durations(job, 12) == (12, 6, 6)
+    assert durations(request_cancel(job, at(14)), 100) == (14, 8, 6)
+
+    token = uuid4()
+    job = start_attempt(job, token, at(15))
+    assert job.attempt == 2
+    cancelled = request_cancel(job, at(18))
+    assert durations(cancelled, 19) == (19, 9, 10)
+    assert durations(acknowledge_cancel(cancelled, token, at(20)), 100) == (20, 9, 11)
+    job = succeed(job, token, "a" * 64, at(21))
+    job = Operation.model_validate_json(job.model_dump_json())
+    assert durations(job, 100) == (21, 9, 12)
+
+
+def test_training_statistics_preserve_unknown_timing_from_older_attempts() -> None:
+    first = uuid4()
+    running = start_attempt(queued(kind="training", model=None), first, NOW)
+    old = Operation.model_validate_json(running.model_dump_json(exclude={"queued_duration"}))
+    retry = fail(
+        old,
+        first,
+        OperationFailure(code="source_failure", message="Timeout", retryable=True),
+        NOW + timedelta(seconds=10),
+    )
+    second = uuid4()
+    retry = start_attempt(retry, second, NOW + timedelta(seconds=40))
+    terminal = fail(
+        retry,
+        second,
+        OperationFailure(code="invalid_data", message="Bad input"),
+        NOW + timedelta(seconds=45),
+    )
+    snapshot = TrainingRunStatistics.from_operation(terminal, None, now=NOW + timedelta(days=1))
+    assert snapshot.as_of == terminal.updated_at
+    assert snapshot.elapsed_seconds == 45
+    assert snapshot.queued_seconds is None and snapshot.running_seconds is None
+    assert snapshot.fit_seconds is None and snapshot.train_rows is None
+    assert snapshot.validation_rows is None

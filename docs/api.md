@@ -312,7 +312,7 @@ run status and the choices available to the signed-in administrator:
 | `GET /training-options/benchmarks?dataset_id=ID` | Eligible open selection reservations for this dataset, returned as `benchmark_ids` |
 | `GET /training-runs?archive=active&limit=20&offset=0` | Newest training runs first. Choose `active` for unarchived runs, `archived` for the archive, or `all` (the API default). |
 | `PATCH /training-runs/archive` | Archive or restore up to 100 completed runs in one request. |
-| `GET /training-runs/{id}` | Run name and revision, submitted settings, model version ID, job stage, attempts and failure reason |
+| `GET /training-runs/{id}` | Run name and revision, submitted settings, model version ID, job stage, attempts, timing, input row counts and failure reason |
 | `PATCH /training-runs/{id}/name` | Change the run name using the current revision |
 | `POST /jobs/{id}/cancel` | Request cancellation of a queued or running training job |
 | `GET /training-runs/{id}/progress` | New chart samples from the current training attempt |
@@ -325,6 +325,23 @@ identify a distinct run owned by the administrator. If any run is still
 queued, running or cancelling, the entire request returns `409`.
 The list and detail responses include `archived_at`, which is null for a
 current run. Archiving keeps the run URL, weights and publication status.
+
+Training list and detail responses include a `statistics` object. All
+durations are wall-clock seconds. For active jobs, the values are current as
+of `statistics.as_of`. For terminal jobs, that timestamp is the completion,
+failure or cancellation time. `job.attempt` counts attempts consumed so far.
+
+| Statistics field | Meaning |
+| --- | --- |
+| `elapsed_seconds` | Time since intake, including queue waits and all attempts. |
+| `queued_seconds` | Total time waiting for the first claim and for claims after retries. |
+| `running_seconds` | Total time spent in running or cancellation-requested states, including worker I/O. For a lost worker, this interval ends when the service recovers the attempt. |
+| `fit_seconds` | Time inside the backend's fit call on the successful attempt, including its validation passes. |
+| `train_rows`, `validation_rows` | Input rows for each partition on the successful fit. Each instrument contributes one row per grid step, including steps with missing observations. |
+
+Runs that had already started before timing was recorded return `null` for
+the queue and running breakdown. Fit time and row counts are `null` until
+a successful fit records them. Archived runs retain the same measurements.
 
 To follow a running fit, request `/progress`, then pass the returned `attempt`
 and `cursor` as `?attempt=ATTEMPT&after=CURSOR` on the next request. Each page

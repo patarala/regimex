@@ -7,6 +7,10 @@ const queuedStages = {
   recovery_pending: "Waiting to restart after a worker interruption",
 };
 
+export function queuedStageLabel(stage, fallback) {
+  return queuedStages[stage] || fallback;
+}
+
 export function createQueueStatus({session, getSelection}) {
   let queueStatus = null;
   let queueCheckedAt = -Infinity;
@@ -29,7 +33,7 @@ export function createQueueStatus({session, getSelection}) {
     if (getSelection() !== selection || selection?.metadata?.job.state !== "queued") return;
     const job = selection.metadata.job;
     const duration = queueWait(job);
-    const waiting = queuedStages[job.stage] || "Waiting to start";
+    const waiting = queuedStageLabel(job.stage, "Waiting to start");
     $("job-detail").textContent = `${waiting}${duration ? ` · ${duration}` : ""}. `
       + (queueStatus?.message || "Checking worker availability…");
   }
