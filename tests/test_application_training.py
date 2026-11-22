@@ -341,3 +341,23 @@ def test_evaluator_scores_the_shared_decoded_intervals() -> None:
     flat = np.full((192, 3), 0.001, dtype=np.float64)
     flat[:, 0] = 0.998
     assert evaluator(cast(DoubleArray, flat)) < 1.0
+
+
+@pytest.mark.parametrize("inactive", [False, True])
+def test_checkpoint_score_matches_pooled_report_without_boundary_diagnostics(
+    inactive: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data, _ = prepared_data(inactive_validation=inactive)
+    snapshots = (*data.train, *data.validation)
+    inputs = observation_inputs(snapshots)
+    evaluator = SharedSelectionEvaluator(
+        inputs, tuple(item.annotations.intervals for item in snapshots), PROFILE, "human"
+    )
+    flat = np.zeros((inputs.row_count, 3), dtype=np.float64)
+    flat[:, 0] = 1
+    expected = evaluator.evaluate(flat)["segment_macro_f1"]
+    monkeypatch.setattr(
+        "regimex.evaluation._typed_boundary_counts",
+        lambda *_: pytest.fail("unused boundary diagnostics"),
+    )
+    assert evaluator(flat) == expected

@@ -179,6 +179,17 @@ def _segment_counts(
     return result
 
 
+def segment_macro_f1(
+    references: tuple[tuple[DirectionInterval, ...], ...],
+    predictions: tuple[tuple[DirectionInterval, ...], ...],
+) -> float:
+    """Score complete decoded sequences using the pooled counts from the full report."""
+    counts = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
+    for reference, predicted in zip(references, predictions, strict=True):
+        counts += _segment_counts(reference, predicted)
+    return cast(float, _metrics(counts)["macro_f1"])
+
+
 def _boundaries(intervals: tuple[DirectionInterval, ...]) -> list[int]:
     return [
         right.start

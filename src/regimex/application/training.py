@@ -8,7 +8,7 @@ limits belong to the persistent service boundary.
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import Annotated, Literal
 
 import numpy as np
 from pydantic import Field, JsonValue
@@ -22,7 +22,13 @@ from regimex.data_catalog import (
     content_hash,
 )
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval
-from regimex.evaluation import dense_labels, probabilities_valid, report
+from regimex.evaluation import (
+    dense_labels,
+    probabilities_valid,
+    report,
+    segment_macro_f1,
+    validate_interval_grid,
+)
 from regimex.features import DoubleArray, IntArray
 from regimex.model_bundles import TrainingEvidence, verify_model_bundle
 from regimex.model_contracts import (
@@ -153,9 +159,15 @@ class SharedSelectionEvaluator:
     analysis: AnalysisConfig
     reference_kind: Literal["automatic", "human"]
 
-    def evaluate(
-        self, probabilities: DoubleArray, *, bootstrap_repetitions: int = 0
-    ) -> dict[str, JsonValue]:
+    def __post_init__(self) -> None:
+        if self.reference_kind not in {"automatic", "human"}:
+            raise ValueError("unknown reference kind")
+        for info, intervals in zip(self.inputs.info, self.references, strict=True):
+            validate_interval_grid(intervals, info.instrument_id, info.step_count)
+
+    def _decode(
+        self, probabilities: DoubleArray
+    ) -> tuple[IntArray, tuple[tuple[DirectionInterval, ...], ...]]:
         if not isinstance(probabilities, np.ndarray) or probabilities.dtype != np.float64:
             raise ValueError("backend probabilities must be a float64 array")
         probabilities_valid(probabilities, self.inputs.row_count)
@@ -177,6 +189,12 @@ class SharedSelectionEvaluator:
                 strict=True,
             )
         )
+        return offsets, predicted
+
+    def evaluate(
+        self, probabilities: DoubleArray, *, bootstrap_repetitions: int = 0
+    ) -> dict[str, JsonValue]:
+        offsets, predicted = self._decode(probabilities)
         labels = np.concatenate(
             [
                 dense_labels(intervals, item.step_count)
@@ -191,7 +209,10 @@ class SharedSelectionEvaluator:
         )
 
     def __call__(self, probabilities: DoubleArray) -> float:
-        return cast(float, self.evaluate(probabilities)["segment_macro_f1"])
+        _, predicted = self._decode(probabilities)
+        for info, intervals in zip(self.inputs.info, predicted, strict=True):
+            validate_interval_grid(intervals, info.instrument_id, info.step_count)
+        return segment_macro_f1(self.references, predicted)
 
 
 def _validate_predictor(
