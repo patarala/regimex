@@ -24,11 +24,18 @@
       <label>Instrument <select id="instrument"></select></label>
       <button id="reset" type="button">Reset zoom</button>
       <label><input id="quotes" type="checkbox" checked> Historical quotes</label>
+      <label><input id="trend-pauses" type="checkbox" aria-controls="price pause-details pause-empty"
+        title="Highlight brief stretches of nearly flat execution prices within a predicted rise or decline."> Pauses within trends</label>
       <button id="download" type="button">Download JSON</button>
     </div>
     <p id="units" class="muted"></p>
     <p id="plot-error" role="alert" hidden></p>
     <div id="price" class="plot" aria-label="Execution price and historical quotes"></div>
+    <details id="pause-details" hidden>
+      <summary id="pause-count"></summary>
+      <ul id="pause-list"></ul>
+    </details>
+    <p id="pause-empty" class="muted" role="status" hidden>No price pauses detected for this instrument.</p>
     <div id="timeline" class="plot timeline" aria-label="Direction intervals"></div>
     <div id="activity" class="plot" aria-label="Execution and accepted order counts"></div>
     <div id="volume" class="plot" aria-label="Execution and accepted order volumes"></div>

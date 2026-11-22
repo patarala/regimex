@@ -68,6 +68,7 @@
     return item;
   }
   if (predicted) {
+    $("pause-control").hidden = false;
     const summary = report.summary;
     $("eyebrow").textContent = "Regimex / Snapshot analysis";
     $("purpose").textContent = "Model predictions";
@@ -137,11 +138,14 @@
   let panelCount = 4;
   let current;
   let renderGeneration = 0;
-  function zoom(interval) {
+  function zoomRange(interval) {
     const update = {};
     for (let i = 0; i < panelCount; i++)
       update["xaxis" + (i ? i + 1 : "") + ".range"] = [interval.start - 0.5, interval.stop - 0.5];
     Plotly.relayout("explorer", update);
+  }
+  function zoom(interval) {
+    zoomRange(interval);
     const stats = interval.statistics;
     $("focus-summary").hidden = false;
     $("focus-summary").textContent =
@@ -159,6 +163,13 @@
       " · active steps " +
       pct(stats.trade_active_fraction) +
       "%";
+  }
+  function updatePauseList() {
+    const enabled = $("trend-pauses").checked;
+    renderTrendPauseList(enabled ? current.trend_pauses : [], enabled, current.instrument_id, (pause) => {
+      zoomRange(pause);
+      $("focus-summary").hidden = true;
+    });
   }
   function renderDetails(steps, intervals, paired) {
     const classified = intervals.reduce(
@@ -243,11 +254,14 @@
       $("intervals").append(row);
     });
   }
-  async function render(generation, visibleRange, themeOnly) {
+  async function render(generation, visibleRange, preserveDetails) {
     current = samples[Number($("sample").value)];
     const observations = current.observations;
     const steps = current.steps;
     const intervals = current.intervals;
+    const showPauses = predicted && $("trend-pauses").checked;
+    const pauses = showPauses ? current.trend_pauses : [];
+    const overlay = trendPauseOverlay(pauses, steps.length, (step) => step - 0.5, colors.sideways);
     const group = experiments.get(current.experiment_id);
     const paired = predicted && group.length > 1;
     const compact = $("explorer").clientWidth < 600;
@@ -270,7 +284,10 @@
           [0.02, 0.19],
         ];
     const domains = paired ? panelDomains.map((domain) => domain.map((value) => value * 0.86)) : panelDomains;
-    if (!themeOnly) renderDetails(steps, intervals, paired);
+    if (!preserveDetails) {
+      renderDetails(steps, intervals, paired);
+      if (predicted) updatePauseList();
+    }
     const traces = [];
     function line(name, values, panel, color, extras = {}) {
       const suffix = panel ? String(panel + 1) : "";
@@ -293,7 +310,10 @@
         ...extras,
       });
     }
-    line("Last transaction price", observations.last_price, 0, colors.price);
+    line("Last transaction price", observations.last_price, 0, colors.price, overlay.notes ? {
+      text: overlay.notes,
+      hovertemplate: "Step %{x}<br>%{y:.6g}%{text}<extra>Last transaction price</extra>",
+    } : {});
     line("Best bid", observations.best_bid, 0, colors.growth, {
       line: { color: colors.growth, dash: "dot", width: 0.8 },
       visible: $("quotes").checked,
@@ -357,7 +377,7 @@
     });
     const layout = {
       height: (missingFields.length ? 1150 : 940) + (paired ? 120 : 0),
-      uirevision: themeOnly ? $("explorer").layout?.uirevision : generation,
+      uirevision: preserveDetails ? $("explorer").layout?.uirevision : generation,
       margin: { l: compact ? 85 : 140, r: compact ? 10 : 25, t: 30, b: 60 },
       paper_bgcolor: colors.paper, plot_bgcolor: colors.plot,
       modebar: {color: colors.no_trades, activecolor: colors.ink, bgcolor: colors.paper},
@@ -390,6 +410,7 @@
         layer: "below",
       })),
     };
+    layout.shapes.push(...overlay.shapes);
     [
       "Price (quote / base)",
       "Log return (%)",
@@ -481,12 +502,12 @@
       });
     }
   }
-  function update(keepZoom = false, themeOnly = false) {
+  function update(keepZoom = false, preserveDetails = false) {
     const visibleRange = keepZoom ? $("explorer").layout?.xaxis.range : null;
     const generation = ++renderGeneration;
     $("render-error").hidden = true;
     $("explorer").hidden = false;
-    render(generation, visibleRange, themeOnly).catch((error) => {
+    render(generation, visibleRange, preserveDetails).catch((error) => {
       // A late failure from a previous selection cannot hide the current view.
       if (generation !== renderGeneration) return;
       $("render-error").textContent = "Could not display this selection: " + error.message;
@@ -508,6 +529,10 @@
   };
   $("reset").onclick = () => update();
   $("quotes").onchange = () => update(true);
+  $("trend-pauses").onchange = () => {
+    updatePauseList();
+    update(true, true);
+  };
   watchReportTheme(() => {
     setColors();
     update(true, true);

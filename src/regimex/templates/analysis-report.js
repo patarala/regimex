@@ -24,6 +24,7 @@
 
   const selector = $("instrument");
   const quotes = $("quotes");
+  const pauseToggle = $("trend-pauses");
   const nodes = ["price", "timeline", "activity", "volume", "coverage", "probability"].map($);
   const axis = reportTimeAxis(grid, data.last_bin_fraction);
   delete data.last_bin_fraction;
@@ -74,15 +75,33 @@
     responsive: true, displaylogo: false, scrollZoom: false,
     modeBarButtonsToRemove: ["toImage", "sendDataToCloud", "select2d", "lasso2d", "autoScale2d"],
   };
-  function trace(rows, field, name, color, dash = "solid") {
+  function trace(rows, field, name, color, dash = "solid", hoverNotes) {
     const state = { last_price: "price_state", best_bid: "bid_state", best_ask: "ask_state" }[field];
     return {
       type: "scatter", mode: "lines+markers", marker: { size: 2 }, name,
       x: rows.map(sampleTime), y: rows.map((row) => row[field]), connectgaps: false,
       line: { color, width: 1.7, dash },
       customdata: state ? rows.map((row) => row[state]) : undefined,
-      hovertemplate: "%{x}<br>%{y}" + (state ? "<br>%{customdata}" : "") + "<extra>" + name + "</extra>",
+      text: hoverNotes,
+      hovertemplate: "%{x}<br>%{y}" + (state ? "<br>%{customdata}" : "") +
+        (hoverNotes ? "%{text}" : "") + "<extra>" + name + "</extra>",
     };
+  }
+
+  function priceChart(colors, instrument, rows) {
+    const pauses = pauseToggle.checked ? data.report.trend_pauses[selector.selectedIndex] : [];
+    const unit = plotLabel(instrument.quote_asset) + " / " + plotLabel(instrument.base_asset);
+    const settings = layout(colors, "Execution price and historical quotes", unit, 290);
+    const {shapes, notes} = trendPauseOverlay(pauses, rows.length, coordinate, colors.sideways);
+    settings.shapes = shapes;
+    renderTrendPauseList(pauses, pauseToggle.checked, instrument.instrument_id,
+      (pause) => selectInterval(instrument.instrument_id, pause.start, pause.stop));
+    const traces = [trace(rows, "last_price", "Last price", colors.price, "solid", notes)];
+    if (quotes.checked) traces.push(
+      trace(rows, "best_bid", "Best bid", colors.growth, "dot"),
+      trace(rows, "best_ask", "Best ask", colors.decline, "dash"),
+    );
+    return [$("price"), traces, settings];
   }
   function unavailable(colors, rows, fields) {
     return fields.map((field) => {
@@ -109,20 +128,14 @@
 
   async function draw(current) {
     const colors = reportPlotColors();
-    const instrument = input.instruments.find((item) => item.instrument_id === selector.value);
-    const sequence = result.sequences.find((item) => item.instrument_id === selector.value);
-    const rows = input.observations.filter((row) => row.instrument_id === selector.value);
-    const priceUnit = plotLabel(instrument.quote_asset) + " / " + plotLabel(instrument.base_asset);
+    const instrument = input.instruments[selector.selectedIndex];
+    const sequence = sequences[selector.selectedIndex];
+    const rows = selectedRows();
     const volumeUnit = plotLabel(instrument.base_asset);
     $("units").textContent =
       "Time: " + grid.unit + " · bin width: " + grid.bin_width + " · price: " +
       instrument.quote_asset + " / " + instrument.base_asset + " · volume: " +
       instrument.base_asset + " · history [" + grid.origin + ", " + grid.completed_horizon + ")";
-    const price = [trace(rows, "last_price", "Last price", colors.price)];
-    if (quotes.checked) price.push(
-      trace(rows, "best_bid", "Best bid", colors.growth, "dot"),
-      trace(rows, "best_ask", "Best ask", colors.decline, "dash"),
-    );
     const lanes = instrumentLanes(sequences, selector.value, colors, coordinate, timeUnit);
     const timeline = layout(colors, "Predicted directions", "", paired ? 192 : 160);
     timeline.barmode = "overlay";
@@ -155,7 +168,7 @@
     const probability = layout(colors, "Model probabilities", "Probability", 290);
     probability.yaxis.range = [0, 1];
     const definitions = [
-      [$("price"), price, layout(colors, "Execution price and historical quotes", priceUnit, 290)],
+      priceChart(colors, instrument, rows),
       [$("timeline"), lanes.traces, timeline],
       [$("activity"), count, layout(colors, "Executions and accepted orders", "Count per bin", 290)],
       [$("volume"), volume, layout(colors, "Execution and accepted order volumes", volumeUnit + " per bin", 290)],
@@ -204,9 +217,18 @@
     $("plot-error").hidden = true;
     draw(current).catch((error) => { if (current === generation) failed(error); });
   }
+  function selectedRows() {
+    return input.observations.filter((row) => row.instrument_id === selector.value);
+  }
+  function refreshPrice() {
+    const instrument = input.instruments[selector.selectedIndex];
+    const [node, traces, settings] = priceChart(reportPlotColors(), instrument, selectedRows());
+    Plotly.react(node, traces, settings, config).catch(failed);
+  }
   watchReportTheme(refresh);
   selector.addEventListener("change", refresh);
-  quotes.addEventListener("change", refresh);
+  quotes.addEventListener("change", refreshPrice);
+  pauseToggle.addEventListener("change", refreshPrice);
   function setRange(range) {
     visibleRange = [...range];
     synchronizing = true;

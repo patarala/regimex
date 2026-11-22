@@ -16,8 +16,13 @@ from regimex.model_registry import InferenceRuntime
 from regimex.operations import ResolvedModel
 
 
-def prediction_for(export: ExportV2, *, direction: Direction = Direction.GROWTH) -> AnalysisResult:
-    analysis = AnalysisConfig(min_duration=4)
+def prediction_for(
+    export: ExportV2,
+    *,
+    direction: Direction = Direction.GROWTH,
+    analysis: AnalysisConfig | None = None,
+) -> AnalysisResult:
+    analysis = analysis or AnalysisConfig(min_duration=4)
     runtime = InferenceRuntime()
     probabilities = {
         Direction.SIDEWAYS: (0.9, 0.05, 0.05),

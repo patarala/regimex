@@ -16,11 +16,11 @@ from regimex.data_catalog import (
     content_hash,
     create_snapshot_member,
 )
-from regimex.directions import DIRECTION_NAMES
+from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval
 from regimex.exports import ExportObservation, ExportV2
 from regimex.observation_availability import known_no_executions
 
-REPORT_VERSION = "6.2"
+REPORT_VERSION = "6.3"
 OBSERVABLE_FIELDS = tuple(
     name for name in Observation.model_fields if name not in {"step", "instrument_id"}
 )
@@ -39,8 +39,8 @@ class Series:
     imbalance: tuple[float | None, ...]
     time_grid: dict[str, JsonValue]
     source: dict[str, JsonValue]
-    analysis_config: dict[str, JsonValue]
-    direction_intervals: tuple[dict[str, JsonValue], ...]
+    analysis_config: AnalysisConfig
+    direction_intervals: tuple[DirectionInterval, ...]
     prediction: dict[str, JsonValue]
 
     def payload(self) -> dict[str, object]:
@@ -52,7 +52,7 @@ class Series:
             "quote_asset": self.quote_asset,
             "source": self.source,
             "time_grid": self.time_grid,
-            "analysis_config": self.analysis_config,
+            "analysis_config": self.analysis_config.model_dump(mode="json"),
             "steps": [row.step for row in self.rows],
             "observations": {
                 field: [getattr(row, field) for row in self.rows] for field in OBSERVABLE_FIELDS
@@ -61,7 +61,9 @@ class Series:
                 field: [getattr(row, field) for row in self.rows]
                 for field in ("price_state", "bid_state", "ask_state")
             },
-            "intervals": self.direction_intervals,
+            "intervals": [
+                interval.model_dump(mode="json") for interval in self.direction_intervals
+            ],
             "prediction": self.prediction,
         }
 
@@ -129,10 +131,8 @@ def observed_series(
                 imbalance=imbalance,
                 time_grid=export.time_grid.model_dump(mode="json"),
                 source=export.source.model_dump(mode="json"),
-                analysis_config=prediction.analysis.model_dump(mode="json"),
-                direction_intervals=tuple(
-                    interval.model_dump(mode="json") for interval in intervals
-                ),
+                analysis_config=prediction.analysis,
+                direction_intervals=intervals,
                 prediction={
                     "analysis_id": str(prediction.analysis_id),
                     "snapshot_id": str(prediction.snapshot_id),
@@ -314,13 +314,9 @@ def inspect_snapshots(
                     if value is not None:
                         activity[regime][field].append(float(value))
             for interval in series.direction_intervals:
-                direction, status = interval["direction"], interval["status"]
-                start, stop = interval["start"], interval["stop"]
-                assert isinstance(start, int) and isinstance(stop, int)
-                assert isinstance(status, str)
-                assert direction is None or isinstance(direction, str)
-                lengths[direction or "unclassified"].append(stop - start)
-                status_counts[status] += stop - start
+                length = interval.stop - interval.start
+                lengths[interval.direction or "unclassified"].append(length)
+                status_counts[interval.status] += length
     selected = _select_samples(sorted(names), min(sample_count, len(names)), experiment_id)
     identity = [
         {

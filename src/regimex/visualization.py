@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from plotly.offline import get_plotlyjs  # type: ignore[import-untyped]
 
+from regimex.application.report import report_trend_pauses
 from regimex.data_catalog import DatasetManifest, SourceSnapshot
 from regimex.directions import AnalysisConfig, summarize_interval
 from regimex.exports import ExportV2
@@ -50,7 +51,11 @@ def _write_direction_assets(target: Path, payload: Mapping[str, object]) -> None
         encoding="utf-8",
     )
     script = report_assets(
-        "report-theme.js", "plot-colors.js", "instrument-timeline.js", "direction-report.js"
+        "report-theme.js",
+        "plot-colors.js",
+        "instrument-timeline.js",
+        "trend-pauses.js",
+        "direction-report.js",
     )
     (target / "report.js").write_text(script, encoding="utf-8")
     css = report_assets("report-theme.css", "direction-report.css")
@@ -93,7 +98,15 @@ def render_snapshot_report(
     payload = {
         "kind": "prediction",
         "summary": inspection.summary,
-        "samples": [series.payload() for series in inspection.samples],
+        "samples": [
+            {
+                **series.payload(),
+                "trend_pauses": report_trend_pauses(
+                    series.rows, series.direction_intervals, series.analysis_config
+                ),
+            }
+            for series in inspection.samples
+        ],
         "colors": REGIME_COLORS,
     }
     with output_directory(output) as target:

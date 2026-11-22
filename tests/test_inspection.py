@@ -202,7 +202,7 @@ def test_extreme_finite_observations_preserve_intervals_and_serializable_statist
     assert stats.return_std is not None and stats.trade_count == 8
     updated = item.model_copy(update={"export": export})
     report = inspect_snapshots((updated,), results=(result,))
-    assert report.samples[0].direction_intervals[0]["statistics"] == stats.model_dump(mode="json")
+    assert report.samples[0].direction_intervals[0].statistics == stats
     from regimex.application.report import _interval_table
 
     assert _interval_table(result).count("out of range") == 2
@@ -233,9 +233,7 @@ def test_report_preserves_saved_directions_instead_of_annotating_prices() -> Non
     # the statistical annotator. Rendering must preserve the supplied decisions.
     sample = inspection.samples[0]
     assert sample.regimes == ("decline",) * 8
-    assert sample.direction_intervals == tuple(
-        interval.model_dump(mode="json") for interval in result.sequences[0].intervals
-    )
+    assert sample.direction_intervals == result.sequences[0].intervals
     assert sample.payload()["prediction"] == {
         "analysis_id": str(result.analysis_id),
         "snapshot_id": str(result.snapshot_id),
@@ -386,10 +384,10 @@ def test_offline_report_preserves_source_identity_and_canonical_symbols(tmp_path
     )
     data = report_data(output)
     assert data["kind"] == "prediction"
-    assert inspection.summary["report_version"] == "6.2"
+    assert inspection.summary["report_version"] == "6.3"
     assert all("events" not in sample.payload() for sample in inspection.samples)
     assert data["samples"] == json.loads(
-        json.dumps([sample.payload() for sample in inspection.samples])
+        json.dumps([{**sample.payload(), "trend_pauses": []} for sample in inspection.samples])
     )
     assert json.loads((output / "snapshots.json").read_text()) == [
         item.model_dump(mode="json") for item in sources
@@ -433,6 +431,7 @@ def test_blind_review_exports_no_automatic_labels_or_seed_metadata(tmp_path: Pat
     assert isinstance(samples, list)
     for sample in samples:
         assert sample["intervals"] == [] and "events" not in sample
+        assert "trend_pauses" not in sample
         assert "simulation" not in sample and "seed" not in sample
         assert sample["observations"]["last_price"] == [None] * 8
         assert sample["observations"]["trade_count"] == [0] * 8

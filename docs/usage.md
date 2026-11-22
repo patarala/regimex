@@ -68,8 +68,18 @@ snapshot under `export` and the predictions under `result`. In a multi-experimen
 CLI report, select an experiment, then an instrument. Select an interval in the
 table to zoom in on it.
 
+Select **Pauses within trends** on the price chart to highlight short stretches
+where trades continued at roughly the same price before growth or decline
+resumed. Hover over the price line to see the duration and the change between
+the first and last execution prices in the highlighted stretch. You can also
+expand the list of pauses and select a step range to zoom in. The overlay is
+off by default. These highlights are derived from execution prices within the
+model's intervals. The saved predictions still contain the three directions
+and their original boundaries. A very slow trend can also produce a highlight.
+See [how well the overlay distinguishes pauses from slowdowns](trend-pause-detection.md).
+
 A direction applies from the start step up to, but excluding, the stop step.
-`no_trades` marks a trading pause and `insufficient_data` marks a period with
+`no_trades` marks a period without executions and `insufficient_data` marks a period with
 too little information to assign a direction. Return standard deviation
 measures the spread of adjacent log price changes within an interval. The
 missing-data plot shows fields with gaps. For quotes, an empty book side means

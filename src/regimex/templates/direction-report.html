@@ -34,6 +34,8 @@
         <div class="toolbar">
           <button id="reset">Reset zoom</button>
           <label><input id="quotes" type="checkbox" checked /> Best quotes</label>
+          <label id="pause-control" hidden><input id="trend-pauses" type="checkbox" aria-controls="explorer pause-details pause-empty"
+            title="Highlight brief stretches of nearly flat execution prices within a predicted rise or decline." /> Pauses within trends</label>
         </div>
         <p id="render-error" role="alert" hidden></p>
         <p id="sample-meta" class="small muted"></p>
@@ -50,6 +52,11 @@
           <div id="explorer"></div>
         </div>
         <p id="focus-summary" class="focus-summary" aria-live="polite" hidden></p>
+        <details id="pause-details" hidden>
+          <summary id="pause-count"></summary>
+          <ul id="pause-list"></ul>
+        </details>
+        <p id="pause-empty" class="muted" role="status" hidden>No price pauses detected for this instrument.</p>
         <div class="table-wrap" id="interval-wrap">
           <table>
             <caption>Interval statistics · — unavailable</caption>

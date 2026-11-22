@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from support.report_fixtures import prediction_for
 
 pytest.importorskip("plotly")
 
@@ -146,6 +147,19 @@ def digest(result: AnalysisResult) -> str:
     return hashlib.sha256(json_bytes(result.model_dump(mode="json"))).hexdigest()
 
 
+def pause_report_inputs() -> tuple[ExportV2, AnalysisResult]:
+    """Two interleaved rising instruments. Only the first one has a plateau."""
+    export, _ = report_inputs(steps=192, interleaved=True)
+    payload = export.model_dump(mode="json", exclude={"content_sha256"})
+    for row in payload["observations"]:
+        step = row["step"]
+        if row["instrument_id"] == "A/Q":
+            step -= max(0, min(step - 80, 32))
+        row["last_price"] = round(100 + step * 0.1, 2)
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload)))
+    return export, prediction_for(export, analysis=AnalysisConfig())
+
+
 def embedded_data(report: bytes) -> dict[str, object]:
     match = re.search(
         rb'<script id="analysis-data" type="application/json">(.*?)</script>', report, re.S
@@ -210,7 +224,7 @@ def test_report_is_offline_escaped_and_preserves_original_zero_and_missing_value
     rendered = render_analysis_report(export, result, result_sha256=digest(result))
     document = rendered.html.decode()
     assert len(rendered.html) <= MAX_REPORT_BYTES
-    assert rendered.renderer_version == "analysis-html/3.5"
+    assert rendered.renderer_version == "analysis-html/3.6"
     assert '<footer class="provenance"' in document
     assert "Reading the plots" not in document and '<pre id="provenance"' not in document
     assert "whole requested completed snapshot" in document
@@ -257,6 +271,34 @@ def test_maximum_grid_with_long_unicode_identities_fits_without_browser_decompre
         "DecompressionStream"
         not in (Path(__file__).parents[1] / "src/regimex/templates/analysis-report.js").read_text()
     )
+
+
+def test_pause_overlay_matches_cli_and_keeps_the_saved_result(tmp_path: Path) -> None:
+    from regimex.data_catalog import SourceSnapshot, SplitGroup
+    from regimex.visualization import render_snapshot_report
+
+    export, result = pause_report_inputs()
+    original = result.model_dump(mode="json")
+    saved = embedded_data(render_analysis_report(export, result, result_sha256=digest(result)).html)
+    report = saved["report"]
+    assert isinstance(report, dict) and report["result_sha256"] == digest(result)
+    first, second = report["trend_pauses"]
+    assert not second
+    (pause,) = first
+    assert pause["direction"] == "growth" and pause["price_change_percent"] == 0
+    assert abs(pause["start"] - 80) <= 1 and abs(pause["stop"] - 112) <= 1
+    assert all(len(sequence.intervals) == 1 for sequence in result.sequences)
+
+    source = SourceSnapshot(
+        source_namespace="report",
+        split_group=SplitGroup(namespace="report", group_id="one"),
+        export=export,
+    )
+    folder = tmp_path / "cli"
+    render_snapshot_report((source,), folder, results=(result,))
+    samples = json.loads((folder / "examples.json").read_bytes())
+    assert [sample["trend_pauses"] for sample in samples] == [first, second]
+    assert json.loads((folder / "results.json").read_bytes()) == [original]
 
 
 @pytest.mark.parametrize("change", ["digest", "snapshot", "runtime", "statistics"])

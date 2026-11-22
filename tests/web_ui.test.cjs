@@ -1530,7 +1530,7 @@ test("an earlier session's diagnostics cannot overwrite a new session", async ()
 });
 
 function reportScript(name) {
-  return ["report-theme.js", "plot-colors.js", "instrument-timeline.js", "report-time.js", name]
+  return ["report-theme.js", "plot-colors.js", "instrument-timeline.js", "report-time.js", "trend-pauses.js", name]
     .map((script) => fs.readFileSync(path.join(root, "src/regimex/templates", script), "utf8"))
     .join("\n");
 }
@@ -1577,7 +1577,7 @@ test("offline chart rendering removes the PNG export control", async () => {
   assert.equal(configurations[0].toImageButtonOptions, undefined);
 });
 
-async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
+async function drawAnalysisReport(timeGrid, lastBinFraction = 1, pauses = []) {
   const elements = new Map();
   const get = (name) => {
     if (!elements.has(name)) {
@@ -1589,6 +1589,7 @@ async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
     return elements.get(name);
   };
   get("instrument").value = "BTC/USD";
+  get("instrument").selectedIndex = 0;
   get("intervals").rows = [];
   get("quotes").checked = true;
   get("analysis-data").textContent = JSON.stringify({
@@ -1597,6 +1598,7 @@ async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
       time_grid: {...timeGrid, step_count: 4, unit: "model-second"},
     },
     result: {class_names: ["sideways", "growth", "decline"]},
+    report: {trend_pauses: [pauses]},
     last_bin_fraction: lastBinFraction,
     observation_fields: ["step", "last_price", "trade_count", "trade_volume", "buy_order_count",
       "buy_order_volume", "sell_order_count", "sell_order_volume", "best_bid", "best_ask"],
@@ -1625,6 +1627,38 @@ async function drawAnalysisReport(timeGrid, lastBinFraction = 1) {
   await flush();
   return {get, plots};
 }
+
+test("price pause bands follow the original grid and affect only the price chart", async () => {
+  const {get, plots} = await drawAnalysisReport(
+    {origin: 100, completed_horizon: 108, bin_width: 2}, 1,
+    [{start: 1, stop: 3, direction: "growth", price_change_percent: -0.0123456}],
+  );
+  const price = get("price");
+  assert.equal(price.layout.shapes.length, 0);
+  assert.equal(get("pause-details").hidden, true);
+  assert.equal(get("pause-empty").hidden, true);
+  plots.length = 0;
+  const toggle = get("trend-pauses");
+  toggle.checked = true;
+  await toggle.emit("change");
+  assert.equal(plots.length, 1);
+  assert.equal(plots[0], price);
+  const [shape] = price.layout.shapes;
+  assert.deepEqual([shape.x0, shape.x1], [102, 106]);
+  const notes = Array.from(price.data[0].text);
+  assert.deepEqual(notes, ["", "<br>Pause in growth · 2 steps · price change -0.0123%", notes[1], ""]);
+  assert.equal(get("pause-details").hidden, false);
+  const [button] = get("pause-list").children[0].children;
+  await button.click();
+  await flush();
+  assert.deepEqual(Array.from(get("timeline").layout.xaxis.range), [102, 106]);
+  toggle.checked = false;
+  await toggle.emit("change");
+  assert.deepEqual(Array.from(price.layout.xaxis.range), [102, 106]);
+  assert.equal(price.data[0].text, undefined);
+  assert.equal(price.layout.shapes.length, 0);
+  assert.equal(get("pause-list").children.length, 0);
+});
 
 test("analysis report keeps sample times finite for large origins and offsets", async () => {
   for (const [grid, expected, lastBinFraction] of [

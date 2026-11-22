@@ -233,6 +233,53 @@ def test_offline_download_preserves_original_export(
 
 
 @pytest.mark.parametrize("width", [1280, 390])
+def test_trend_pauses_on_the_price_chart(browser: Any, tmp_path: Path, width: int) -> None:
+    from test_analysis_report import digest, pause_report_inputs
+
+    from regimex.application.report import render_analysis_report
+
+    export, result = pause_report_inputs()
+    report = tmp_path / "analysis.html"
+    report.write_bytes(render_analysis_report(export, result, result_sha256=digest(result)).html)
+    touch = width < 600
+    page = browser.new_page(viewport={"width": width, "height": 860}, has_touch=touch, offline=True)
+    try:
+        page.goto(report.as_uri())
+        price = page.locator("#price")
+        price.locator(".main-svg").first.wait_for()
+        toggle = page.get_by_role("checkbox", name="Pauses within trends")
+        assert not toggle.is_checked()
+        assert price.evaluate("p => p.layout.shapes.length") == 0
+        if touch:
+            toggle.tap()
+        else:
+            toggle.focus()
+            toggle.press("Space")
+        band = price.locator(".shapelayer path")
+        band.wait_for()
+        assert price.evaluate("p => [p.layout.shapes[0].x0, p.layout.shapes[0].x1]") == [140, 156]
+        page.evaluate("Plotly.Fx.hover('price', [{curveNumber: 0, pointNumber: 90}])")
+        assert "32 steps · price change 0%" in price.locator(".hoverlayer").text_content()
+        page.locator("#pause-count").click()
+        zoom = page.get_by_role("button", name="Zoom to A/Q pause at steps [80, 112)")
+        if touch:
+            zoom.tap()
+        else:
+            zoom.press("Enter")
+        for panel in ("price", "timeline", "probability"):
+            assert page.locator(f"#{panel}").evaluate("p => p.layout.xaxis.range") == [140, 156]
+        page.get_by_label("Instrument").select_option("B/Q")
+        page.locator("#pause-empty").wait_for()
+        band.wait_for(state="detached")
+        assert page.locator("#pause-list button").count() == 0
+        toggle.uncheck()
+        assert page.locator("#pause-empty").is_hidden()
+        assert page.locator("#plot-error").is_hidden()
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
 def test_high_resolution_report_preserves_each_bin(
     browser: Any, tmp_path: Path, width: int
 ) -> None:
@@ -293,12 +340,43 @@ def test_blind_review_shares_observations_under_an_opaque_id(
     try:
         page.goto((output / "index.html").as_uri())
         page.locator("#explorer .main-svg").first.wait_for()
+        assert page.get_by_label("Pauses within trends").is_hidden()
         page.get_by_label("Instrument", exact=True).select_option(index=1)
         assert export.content_sha256 in page.locator("#provenance").inner_text()
         page.get_by_role("link", name="Observations", exact=True).click()
         observations = json.loads(page.locator("body").inner_text())
         assert observations["experiment_id"] == draft["experiment_id"]
         assert observations["observations"] == export.model_dump(mode="json")["observations"]
+    finally:
+        page.close()
+
+
+def test_cli_pause_selection_keeps_zoom_on_instrument_change(browser: Any, tmp_path: Path) -> None:
+    from test_analysis_report import pause_report_inputs
+    from test_inspection import source
+
+    from regimex.visualization import render_snapshot_report
+
+    export, result = pause_report_inputs()
+    output = tmp_path / "report"
+    render_snapshot_report(
+        (source(0).model_copy(update={"export": export}),), output, results=(result,)
+    )
+    page = browser.new_page(offline=True)
+    try:
+        page.goto((output / "index.html").as_uri())
+        page.locator("#explorer .main-svg").first.wait_for()
+        toggle = page.get_by_label("Pauses within trends")
+        assert not toggle.is_checked()
+        toggle.check()
+        page.locator("#pause-count").click()
+        page.locator("#pause-list button").click()
+        axis_range = page.locator("#explorer").evaluate("plot => plot.layout.xaxis.range")
+        assert abs(axis_range[0] - 79.5) <= 1 and abs(axis_range[1] - 111.5) <= 1
+        page.get_by_label("Instrument", exact=True).select_option(label="B/Q")
+        page.locator("#pause-empty").wait_for()
+        assert page.locator("#explorer").evaluate("plot => plot.layout.xaxis.range") == axis_range
+        assert page.locator("#pause-details").is_hidden()
     finally:
         page.close()
 

@@ -4,12 +4,13 @@ import base64
 import hashlib
 import html
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
 from typing import TYPE_CHECKING
 
 from regimex.contracts import MAX_INPUT_BYTES, Observation
-from regimex.directions import DirectionAnnotations
+from regimex.directions import AnalysisConfig, DirectionAnnotations, DirectionInterval
 from regimex.exports import ExportInstrument, ExportObservation, ExportV2, parse_export_v2
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectIntegrityError
 from regimex.model_registry import RegistryError
@@ -57,6 +58,33 @@ def _script_json(data: bytes) -> str:
 
 def _hash_source(value: str) -> str:
     return "'sha256-" + base64.b64encode(hashlib.sha256(value.encode()).digest()).decode() + "'"
+
+
+def report_trend_pauses(
+    rows: Sequence[Observation], intervals: Sequence[DirectionInterval], analysis: AnalysisConfig
+) -> list[dict[str, object]]:
+    # Report generation can load NumPy. Validating or downloading a saved result cannot require it.
+    from regimex.trend_pauses import find_trend_pauses
+
+    # Thresholds are calibrated for exports without a declared exchange tick.
+    pauses = find_trend_pauses(
+        rows,
+        intervals,
+        analysis,
+        gain_multiplier=4.0,
+        absolute_multiplier=0.5,
+        absolute_limit=True,
+        multiple=True,
+    )
+    return [
+        {
+            "start": pause.start,
+            "stop": pause.stop,
+            "direction": pause.direction.value,
+            "price_change_percent": pause.price_change_percent,
+        }
+        for pause in pauses
+    ]
 
 
 def _number(value: float | int | None, *, percent: bool = False, out_of_range: bool = False) -> str:
@@ -174,6 +202,7 @@ def render_analysis_report(
         "plot-colors.js",
         "instrument-timeline.js",
         "report-time.js",
+        "trend-pauses.js",
         "analysis-report.js",
     )
     # Row order is part of the export digest. Use instrument indexes so long
@@ -182,9 +211,15 @@ def render_analysis_report(
     instrument_indexes = {
         instrument.instrument_id: index for index, instrument in enumerate(export.instruments)
     }
-    observations = [
-        [instrument_indexes[row.instrument_id], *(getattr(row, name) for name in fields)]
-        for row in export.observations
+    observations = []
+    instrument_rows: list[list[ExportObservation]] = [[] for _ in export.instruments]
+    for row in export.observations:
+        index = instrument_indexes[row.instrument_id]
+        observations.append([index, *(getattr(row, name) for name in fields)])
+        instrument_rows[index].append(row)
+    trend_pauses = [
+        report_trend_pauses(rows, sequence.intervals, result.analysis)
+        for rows, sequence in zip(instrument_rows, result.sequences, strict=True)
     ]
     sequences = []
     for sequence in result.sequences:
@@ -205,6 +240,7 @@ def render_analysis_report(
                     "renderer_version": REPORT_RENDERER_VERSION,
                     "plotly_version": plotly_version,
                     "result_sha256": result_sha256,
+                    "trend_pauses": trend_pauses,
                     "selection": "whole requested completed snapshot",
                 },
             }
