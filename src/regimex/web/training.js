@@ -124,6 +124,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   let pendingDownstream = false, retryDelay = 2500, target = null;
   let renderedFacts = null;
   let draftRevision = 0, submittingDraft = null, acceptedDraftRun = null;
+  let editedDraft = false;
   let draftRequests = new Map();
   let view = "active", listedView = null, listedOffset = 0, renderedRows = null;
   let listed = new Map();
@@ -675,6 +676,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function discardDraft() {
     draftRequests = new Map();
     draftRevision++;
+    editedDraft = false;
     form.discard();
   }
   $("training-new").addEventListener("click", () => {
@@ -684,6 +686,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   });
   $("training-copy-run").addEventListener("click", () => {
     if (!run || busy) return;
+    if (editedDraft && !window.confirm("Replace your unfinished training draft with settings from this run?")) return;
     discardDraft();
     acceptedDraftRun = null;
     form.useSavedRun(run.configuration);
@@ -691,6 +694,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   });
   function draftEdited() {
     draftRevision++;
+    editedDraft = true;
     form.setBusy(busy);
   }
   $("training-form").addEventListener("input", draftEdited);

@@ -180,3 +180,31 @@ def test_pending_runs_can_be_compared_without_archiving_or_reading_scores(browse
         assert not api.archive_requests
     finally:
         page.close()
+
+
+def test_copy_keeps_an_edited_draft_when_replacement_is_dismissed(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.runs.append(api.run)
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/training/new")
+        name = page.get_by_role("textbox", name="Run name (optional)")
+        expect(page.get_by_role("button", name="Start training")).to_be_enabled()
+        name.fill("Keep this draft")
+        page.locator(f"button[data-run-id='{RUN_ID}']").click()
+        seen: list[str] = []
+
+        def dismiss(dialog: Any) -> None:
+            seen.append(dialog.message)
+            dialog.dismiss()
+
+        page.once("dialog", dismiss)
+        page.get_by_role("button", name="New run from this run").click()
+        expect(page).to_have_url(f"{ORIGIN}/training/{RUN_ID}")
+        page.go_back()
+        expect(name).to_have_value("Keep this draft")
+        assert len(seen) == 1 and not api.posts
+    finally:
+        page.close()
