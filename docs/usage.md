@@ -42,6 +42,8 @@ Bookmark its URL to reopen it after signing in with the same account. A session
 lasts 30 minutes by default. Select an experiment to open its latest matching
 analysis, or expand the analysis count to pick a particular run. Search by name, instrument,
 run, model or analysis ID. Choose **Manage → Rename** to change the display name.
+If a saved experiment has no analyses, choose **Set up analysis** beside it.
+Select a model under **New analysis** and choose **Analyze** to use that saved snapshot.
 
 ## Read a report
 

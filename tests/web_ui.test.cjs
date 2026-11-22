@@ -381,11 +381,45 @@ test("empty experiments remain visible and can be renamed or deleted", async () 
   assert.equal(byClass(card, "experiment-expand").hidden, true);
   assert.equal(byClass(card, "experiment-rename").hidden, false);
   assert.equal(byClass(card, "experiment-delete").hidden, false);
+  await byClass(card, "experiment-setup").click();
+  assert.equal(ui.get("file-name").textContent, empty.run_id);
+  assert.equal(ui.get("classify").disabled, false);
+  assert.equal(ui.calls.some(call => call.options.method === "POST"), false);
   void byClass(card, "experiment-delete").click();
   const plan = {...deletionPlan(), analysis_count: 0};
   ui.pending(`/api/v1/experiments/${id(1000)}/deletion-preview`).reply(plan);
   await flush();
   assert.match(ui.get("deletion-summary").textContent, /1 experiment$/);
+  void ui.get("deletion-confirm").click();
+  ui.pending(`/api/v1/deletions/${plan.plan_id}`).reply(deletionReceipt(plan));
+  await flush();
+  assert.equal(ui.get("file-details").hidden, true);
+  assert.equal(ui.get("classify").disabled, true);
+});
+
+test("choosing a saved experiment supersedes validation and submits its existing snapshot", async () => {
+  const ui = await workspace(1);
+  await flush();
+  const empty = {...ui.groups()[0], latest_analysis: null, analysis_count: 0,
+    successful_analysis_count: 0, matching_analysis_count: 0, display_name: "Before analysis",
+    step_count: null, instrument_ids: []};
+  ui.state.holdHistory = true;
+  void ui.get("refresh-history").click();
+  ui.pending("/api/v1/experiments?limit=21&offset=0").reply({items: [empty]});
+  await flush();
+  void ui.get("export-file").emit("change", {target: {files: [batchFile("upload.json")]}});
+  await flush();
+  const oldValidation = ui.pending("/api/v1/validate");
+  await byClass(ui.get("history-list").children[0], "experiment-setup").click();
+  oldValidation.reply({step_count: 120, instrument_ids: ["ETH/USD"]});
+  await flush();
+  assert.equal(ui.get("file-name").textContent, "Before analysis");
+  assert.equal(ui.get("file-summary").textContent, "Saved experiment · run-1");
+  ui.get("upload-model").value = "baseline-1";
+  void ui.get("classify").click();
+  const admission = ui.pending("/api/v1/analyses");
+  assert.deepEqual(JSON.parse(admission.options.body), {snapshot_id: empty.snapshot_id, model_version_id: "baseline-1"});
+  assert.equal(ui.calls.some(call => call.url === "/api/v1/snapshots"), false);
 });
 
 test("storage shows saved and reserved bytes, handles errors and refreshes", async () => {
@@ -457,7 +491,14 @@ test("selection clears cancellation before loading and after a load failure", as
   await flush();
   await ui.get("cancel").emit("click");
   assert.equal(ui.calls.filter((call) => call.url.endsWith("/cancel")).length, 0);
-  assert.equal(ui.get("notice").textContent, "Load failed");
+  assert.equal(ui.get("job-guidance").textContent, "Load failed");
+  assert.equal(ui.get("job-guidance").hidden, false);
+  assert.equal(ui.get("job-detail").textContent, "");
+  void ui.get("retry").click();
+  ui.pending(`/api/v1/analyses/${id(2)}`).reply(metadata("job-B"));
+  await flush();
+  assert.equal(ui.get("job-guidance").hidden, true);
+  assert.equal(ui.get("retry").hidden, true);
 });
 
 test("late cancellation responses cannot change another analysis or its actions", async () => {
@@ -558,7 +599,9 @@ test("history pages reach every analysis without accumulating unbounded DOM rows
   await flush();
   assert.deepEqual(ui.rows(), Array.from({length: 20}, (_, index) => id(index + 1)));
   assert.equal(ui.get("history-previous").disabled, true);
+  ui.get("history-list").scrollTop = 280;
   await ui.get("history-next").click();
+  assert.equal(ui.get("history-list").scrollTop, 0);
   assert.deepEqual(ui.rows(), Array.from({length: 20}, (_, index) => id(index + 21)));
   assert.equal(ui.get("history-range").textContent, "21–40");
   await ui.get("history-next").click();
@@ -566,9 +609,11 @@ test("history pages reach every analysis without accumulating unbounded DOM rows
   assert.equal(ui.get("history-next").disabled, true);
   await ui.get("history-previous").click();
   assert.equal(ui.rows()[0], id(21));
+  ui.get("history-list").scrollTop = 70;
   await ui.get("refresh-history").click();
-  assert.equal(ui.rows()[0], id(1));
-  assert.equal(ui.get("history-range").textContent, "1–20");
+  assert.equal(ui.get("history-list").scrollTop, 70);
+  assert.equal(ui.rows()[0], id(21));
+  assert.equal(ui.get("history-range").textContent, "21–40");
 });
 
 test("late history pages cannot replace a newer refresh", async () => {
@@ -578,14 +623,32 @@ test("late history pages cannot replace a newer refresh", async () => {
   void ui.get("history-next").click();
   const stale = ui.pending("/api/v1/experiments?limit=21&offset=20");
   void ui.get("refresh-history").click();
-  ui.pending("/api/v1/experiments?limit=21&offset=0").reply({items: []});
+  const fresh = ui.calls.at(-1);
+  assert.equal(stale.url, fresh.url);
+  fresh.reply({items: ui.groups(ui.items.slice(20, 23))});
   await flush();
-  stale.reply({items: [{analysis_id: id(21), job: {state: "running", created_at: "2026-01-01"}}]});
+  stale.reply({items: []});
   await flush();
-  assert.deepEqual(ui.rows(), []);
-  assert.equal(ui.get("history-empty").hidden, false);
+  assert.deepEqual(ui.rows(), [21, 22, 23].map(id));
+  assert.equal(ui.get("history-empty").hidden, true);
   assert.equal(ui.get("history-next").disabled, true);
-  assert.equal(ui.get("history-previous").disabled, true);
+  assert.equal(ui.get("history-previous").disabled, false);
+});
+
+test("when a filtered page disappears, refresh returns to the preceding results", async () => {
+  const ui = await workspace(85);
+  await flush();
+  ui.get("history-search").value = "BTC/USD";
+  await ui.get("history-filters").emit("submit", {preventDefault() {}});
+  await ui.get("history-next").click();
+  await ui.get("history-next").click();
+  assert.equal(ui.get("history-range").textContent, "41–43");
+  ui.items.splice(80);
+  await ui.get("refresh-history").click();
+  assert.deepEqual(ui.rows(), Array.from({length: 20}, (_, index) => id(41 + 2 * index)));
+  assert.equal(ui.get("history-range").textContent, "21–40");
+  assert.equal(ui.get("history-next").disabled, true);
+  assert.equal(ui.get("history-search").value, "BTC/USD");
 });
 
 test("history shows experiment and model names and filters all pages on the server", async () => {
@@ -936,6 +999,9 @@ test("comparisons page only completed matching snapshots and clear when selectio
   assert.equal(ui.get("comparison-target").children.length, 11);
   ui.get("comparison-target").value = id(21);
   await ui.get("comparison-target").emit("change");
+  await ui.get("comparison-refresh").click();
+  assert.equal(ui.get("comparison-target").value, id(21));
+  assert.equal(ui.get("comparison-target").children.length, 11);
   await ui.get("compare").click();
   assert.equal(ui.get("comparison-preview").src, `/api/v1/analyses/${id(1)}/comparison/preview?other=${id(21)}`);
   assert.equal(ui.get("download-comparison").href, `/api/v1/analyses/${id(1)}/comparison?other=${id(21)}`);
@@ -1113,6 +1179,8 @@ test("history pages experiments before expanding a bounded list of their analyse
   assert.equal(list.children.length, 10);
   assert.equal(list.children[0].children[1].dataset.analysisId, id(21));
   assert.equal(byClass(runs, "experiment-run-pages").children[1].hidden, true);
+  await byClass(runs, "experiment-run-pages").children[2].click();
+  assert.equal(list.children[0].children[1].dataset.analysisId, id(21));
   assert.ok(ui.calls.some((call) => call.url === `/api/v1/analyses?snapshot_id=${id(1000)}&limit=21&offset=20`));
   await ui.get("history-next").click();
   assert.equal(ui.rows().length, 6);
@@ -1565,6 +1633,7 @@ test("batch bounds active jobs, keeps the selected model and retries only failed
   const ui = await workspace();
   await flush();
   await startBatch(ui, [batchFile("a.json"), batchFile("b.json"), batchFile("c.json")]);
+  await ui.get("history-next").click();
   await acceptBatchFile(ui, 1);
   const second = await acceptBatchFile(ui, 2);
   const rows = ui.get("batch-files").children;
@@ -1577,6 +1646,7 @@ test("batch bounds active jobs, keeps the selected model and retries only failed
   failed.job.failure = {message: "Worker unavailable."};
   ui.pending(`/api/v1/analyses/${id(2)}`).reply(failed);
   await flush();
+  assert.equal(ui.get("history-range").textContent, "21–40");
   assert.match(rows[1].children[1].textContent, /Failed.*Worker unavailable/);
   void ui.timers.values().next().value();
   await flush();

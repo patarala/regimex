@@ -34,6 +34,7 @@ const models = createModels({session, getSelection,
   getBusy: () => analysis.busy, getUploadReady: () => analysis.uploadReady,
   getBatchLocked: () => analysis.batchLocked});
 const history = createHistory({session, getSelection, openAnalysis: (id) => analysis.open(id),
+  chooseExperiment: experiment => analysis.chooseExperiment(experiment),
   deleteExperiment: (id, title) => deletion.open("experiment", id, title),
   compareAnalyses: async (first, second) => {
     const selection = await analysis.open(first.analysis_id);

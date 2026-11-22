@@ -73,7 +73,7 @@
             </label>
             <p id="file-limits" class="hint">Per file: up to 16 MiB · 4,096 steps · 2 instruments</p>
             <div id="file-details" class="file-details" hidden>
-              <strong id="file-name"></strong>
+              <strong id="file-name" tabindex="-1" aria-describedby="file-summary"></strong>
               <span id="file-summary"></span>
             </div>
             <div class="model-picker">
@@ -139,7 +139,7 @@
               <span></span>
             </div>
             <p id="job-detail" role="status" aria-live="polite"></p>
-            <p id="job-guidance" class="hint" hidden></p>
+            <p id="job-guidance" class="hint" role="status" hidden></p>
             <div class="actions job-actions">
               <button id="retry" type="button" hidden>Retry request</button>
               <button id="cancel" type="button" class="quiet" hidden>Cancel</button>

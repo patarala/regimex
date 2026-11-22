@@ -2,7 +2,7 @@ import {$, notice} from "./ui.js";
 import {createExperimentHistory} from "./experiment-history.js";
 
 const HISTORY_PAGE_SIZE = 20;
-export function createHistory({session, getSelection, openAnalysis, compareAnalyses, deleteExperiment}) {
+export function createHistory({session, getSelection, openAnalysis, chooseExperiment, compareAnalyses, deleteExperiment}) {
   let historyGeneration = 0;
   let historyOffset = 0;
   let historyHasMore = false;
@@ -32,7 +32,8 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     $("history-list").replaceChildren();
   }
 
-  async function history(offset = historyOffset) {
+  async function history(offset = historyPendingOffset ?? historyOffset,
+    fallback = Math.max(0, offset - HISTORY_PAGE_SIZE)) {
     const generation = ++historyGeneration;
     const workspace = session.epoch;
     historyPendingOffset = offset;
@@ -48,14 +49,16 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
       const data = await session.json(`/api/v1/experiments?${query}`);
       if (generation !== historyGeneration || workspace !== session.epoch || !session.value) return;
       const items = data.items.slice(0, HISTORY_PAGE_SIZE);
+      // Removing the final item can empty a page. Try its neighbor, then the first page.
+      if (!items.length && offset > 0) return history(fallback, 0);
+      if (offset !== historyOffset) $("history-list").scrollTop = 0;
       historyOffset = offset;
       historyHasMore = data.items.length > HISTORY_PAGE_SIZE;
       $("history-pages").hidden = offset === 0 && !historyHasMore;
       $("history-empty").hidden = items.length > 0;
       $("history-filters").hidden = !items.length && !offset && !historyQuery && !historyState;
-      $("history-empty").textContent = offset > 0
-        ? "No experiments on this page. Return to the previous page or refresh."
-        : historyQuery || historyState ? "No experiments match these filters." : "Uploaded experiments will appear here.";
+      $("history-empty").textContent = historyQuery || historyState
+        ? "No experiments match these filters." : "Uploaded experiments will appear here.";
       $("history-range").textContent = items.length ? `${offset + 1}–${offset + items.length}` : "";
       historyItems = items;
       renderHistory();
@@ -77,7 +80,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
 
   // Renaming needs to detect a failed refresh before accepting another edit.
   // Other callers display the error in this panel and keep the analysis open.
-  function load(offset = historyOffset) {
+  function load(offset) {
     return history(offset).catch(() => {});
   }
 
@@ -90,9 +93,10 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
       if (record) record.update(item);
       else {
         record = createExperimentHistory({session, experiment: item,
-          filters: {q: historyQuery, state: historyState}, getSelection, openAnalysis, compareAnalyses, deleteExperiment,
+          filters: {q: historyQuery, state: historyState}, getSelection, openAnalysis, chooseExperiment,
+          compareAnalyses, deleteExperiment,
           isActive: () => records.get(item.snapshot_id) === record,
-          refresh: () => history(historyOffset),
+          refresh: history,
         });
       }
       next.set(item.snapshot_id, record);
@@ -100,7 +104,8 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     records = next;
     $("history-list").replaceChildren(...[...records.values()].map((record) => record.node));
     $("history-list").scrollTop = scrollTop;
-    if (focused && [...records.values()].some((record) => record.node.contains(focused))) focused.focus();
+    if (focused && [...records.values()].some((record) => record.node.contains(focused)))
+      focused.focus({preventScroll: true});
   }
   function applyHistoryFilters(event) {
     event?.preventDefault();
@@ -124,8 +129,7 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
       if (changed && snapshotId === value.snapshot_id) void record.refreshRuns();
     }
     // Refetch after a state transition so an older list response cannot undo it.
-    if (changed && (historyState || historyPendingOffset !== null))
-      void load(historyPendingOffset ?? historyOffset);
+    if (changed && (historyState || historyPendingOffset !== null)) void load();
   }
   function markSelectedHistory() {
     for (const record of records.values()) record.markSelected();
@@ -135,11 +139,11 @@ export function createHistory({session, getSelection, openAnalysis, compareAnaly
     records = new Map();
     historyItems = [];
     renderHistory();
-    return load(0);
+    return load();
   }
   $("refresh-history").addEventListener("click", () => {
     const expandedPages = Array.from(records.values(), (record) => record.refreshRuns());
-    return Promise.all([load(0), ...expandedPages]);
+    return Promise.all([load(), ...expandedPages]);
   });
   $("history-filters").addEventListener("submit", applyHistoryFilters);
   $("history-state").addEventListener("change", applyHistoryFilters);

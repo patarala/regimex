@@ -22,6 +22,7 @@ export function createComparison({session, getSelection, rememberComparison}) {
     $("comparison-target").replaceChildren();
     $("comparison-target").disabled = true;
     $("compare").disabled = true;
+    $("comparison-previous").hidden = $("comparison-next").hidden = true;
     $("comparison-status").textContent = "";
   }
 
@@ -32,7 +33,7 @@ export function createComparison({session, getSelection, rememberComparison}) {
     $("download-comparison").removeAttribute("href");
   }
 
-  async function comparisonPage(offset = 0) {
+  async function comparisonPage(offset = comparisonOffset) {
     const selection = getSelection();
     if (!session.value || selection?.metadata?.job.state !== "succeeded"
       || !selection.metadata.snapshot_id) return;
@@ -56,6 +57,7 @@ export function createComparison({session, getSelection, rememberComparison}) {
         item.analysis_id !== selection.id && item.snapshot_id === selection.metadata.snapshot_id
         && item.job.state === "succeeded" && item.result_available);
       const picker = $("comparison-target");
+      const previousTarget = picker.value;
       picker.replaceChildren(option("", "Choose an analysis"));
       comparisonItems.forEach((item) => {
         const date = new Date(item.job.created_at).toLocaleString();
@@ -63,8 +65,9 @@ export function createComparison({session, getSelection, rememberComparison}) {
           `${item.job.model?.model_version_id || "Model unavailable"} · ${date} · ${item.analysis_id.slice(-8)}`));
       });
       const soleTarget = offset === 0 && !comparisonHasMore && comparisonItems.length === 1;
-      picker.value = soleTarget ? comparisonItems[0].analysis_id : "";
-      $("compare").disabled = !soleTarget;
+      const previousAvailable = comparisonItems.some(item => item.analysis_id === previousTarget);
+      picker.value = previousAvailable ? previousTarget : soleTarget ? comparisonItems[0].analysis_id : "";
+      $("compare").disabled = !picker.value;
       $("comparison-status").textContent = comparisonItems.length ? "" : offset || comparisonHasMore
         ? "No other completed analyses on this page."
         : "No other completed analyses of this experiment yet. Run it again to compare results.";

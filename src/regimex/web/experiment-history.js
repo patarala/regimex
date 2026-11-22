@@ -16,7 +16,7 @@ function button(className, text) {
 }
 
 export function createExperimentHistory({session, experiment, filters, isActive, getSelection,
-  openAnalysis, compareAnalyses, deleteExperiment, refresh}) {
+  openAnalysis, chooseExperiment, compareAnalyses, deleteExperiment, refresh}) {
   let value = experiment;
   let requestNumber = 0;
   let offset = 0;
@@ -42,6 +42,10 @@ export function createExperimentHistory({session, experiment, filters, isActive,
 
   const tools = element("div", "experiment-tools");
   const expand = button("quiet experiment-expand", "");
+  const setup = button("quiet experiment-setup", "Set up analysis");
+  setup.addEventListener("click", () => {
+    if (isActive() && !value.latest_analysis) chooseExperiment(value);
+  });
   const rename = button("quiet experiment-rename", "Rename");
   const remove = button("quiet delete-action experiment-delete", "Delete experiment");
   const management = element("details", "experiment-management");
@@ -52,7 +56,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   remove.addEventListener("click", () => {
     if (isActive()) return deleteExperiment(value.snapshot_id, title());
   });
-  tools.append(expand, management);
+  tools.append(expand, setup, management);
   const editor = element("form", "experiment-name");
   editor.hidden = true;
   const label = element("label", "", "Experiment name");
@@ -115,6 +119,8 @@ export function createExperimentHistory({session, experiment, filters, isActive,
       ? value.analysis_count : `${value.matching_analysis_count} of ${value.analysis_count}`;
     expand.textContent = `${runs.hidden ? "Show" : "Hide"} ${count} ${value.analysis_count === 1 ? "analysis" : "analyses"}`;
     expand.hidden = value.analysis_count === 0;
+    setup.hidden = Boolean(analysis);
+    setup.setAttribute("aria-label", "Set up analysis of " + title());
     if (!analysis) runs.hidden = true;
     markSelected();
   }
@@ -178,6 +184,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
       if (filters.state) query.set("state", filters.state);
       const data = await session.json(`/api/v1/analyses?${query}`);
       if (!active()) return;
+      if (offset !== page) list.scrollTop = 0;
       offset = page;
       hasMore = data.items.length > PAGE_SIZE;
       items = data.items.slice(0, PAGE_SIZE).filter((item) => item.snapshot_id === value.snapshot_id);
@@ -224,7 +231,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   });
   previous.addEventListener("click", () => load(Math.max(0, offset - PAGE_SIZE)));
   next.addEventListener("click", () => load(offset + PAGE_SIZE));
-  reload.addEventListener("click", () => load(0));
+  reload.addEventListener("click", () => load());
   compare.addEventListener("click", () => {
     if (!isActive() || selected.size !== 2) return;
     const workspace = session.epoch;

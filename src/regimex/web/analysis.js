@@ -32,7 +32,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   let fileEpoch = 0;
   const queue = createQueueStatus({session, getSelection: () => current});
   const batch = createBatch({session, openAnalysis, updateActions: models.updateActions,
-    refreshHistory: () => { void history.load(0); onStorageChange(); }});
+    refreshHistory: () => { void history.load(); onStorageChange(); }});
 
   function clearReport() {
     setPreview("report-preview");
@@ -74,19 +74,42 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     $("cancel").disabled = true;
   }
 
-  async function chooseFiles(files) {
-    if (busy || batch.locked)
-      throw new Error(
-        batch.locked ? "Close the current batch before choosing more files."
-          : "Wait for the current request to be accepted before choosing another export.",
-      );
-    const selected = Array.from(files);
-    const selection = ++fileEpoch;
+  function prepareInput() {
+    if (busy || batch.locked) {
+      notice(batch.locked ? "Close the current batch before choosing another experiment."
+        : "Wait for the current request to be accepted before choosing another experiment.", true);
+      return false;
+    }
+    fileEpoch++;
     exportText = snapshot = null;
     batch.clear();
-    $("classify").disabled = true;
     $("file-details").hidden = true;
     notice();
+    return true;
+  }
+
+  function showInput(name, details) {
+    $("file-name").textContent = name;
+    $("file-summary").textContent = details.filter(Boolean).join(" · ");
+    $("file-details").hidden = false;
+    models.updateActions();
+  }
+
+  function chooseExperiment(experiment) {
+    if (!prepareInput()) return;
+    snapshot = experiment;
+    $("export-file").value = "";
+    showInput(experiment.display_name || experiment.run_id, ["Saved experiment",
+      experiment.display_name && experiment.run_id,
+      experiment.step_count != null && `${experiment.step_count.toLocaleString()} steps`,
+      experiment.instrument_ids.join(", ")]);
+    $("file-name").focus();
+  }
+
+  async function chooseFiles(files) {
+    if (!prepareInput()) return;
+    const selected = Array.from(files);
+    const selection = fileEpoch;
     if (selected.length > 1) {
       batch.choose(selected);
       return;
@@ -99,11 +122,8 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       const validated = await session.json("/api/v1/validate", { method: "POST", body: text });
       if (selection !== fileEpoch || !session.value) return;
       exportText = text;
-      $("file-name").textContent = file.name;
-      $("file-summary").textContent =
-        `${validated.step_count.toLocaleString()} steps · ${validated.instrument_ids.join(", ")}`;
-      $("file-details").hidden = false;
-      models.updateActions();
+      showInput(file.name, [validated.run_id, `${validated.step_count.toLocaleString()} steps`,
+        validated.instrument_ids.join(", ")]);
     } catch (error) {
       if (selection === fileEpoch && session.value) throw error;
     }
@@ -117,7 +137,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   async function submit() {
     if (busy || !models.ready || !$("upload-model").value) return;
     if (batch.selected) return batch.start(models.selected("upload-model"));
-    if (!exportText) return;
+    if (!exportText && !snapshot) return;
     return submitRequest({
       snapshotId: snapshot?.snapshot_id || null,
       exportText,
@@ -161,6 +181,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       ? "Starting a new analysis of the saved experiment." : "Uploading the experiment.";
     $("progress").hidden = false;
     $("result").hidden = true;
+    $("analysis-title").focus();
     retry(null);
     clearReport();
     notice();
@@ -172,15 +193,16 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       }
       if (workspace !== session.epoch) return;
       const analysis = await requestAnalysis(session, submission.snapshotId, submission.model, submission.key);
-      if (current === selection) await openAnalysis(analysis.analysis_id);
-      if (workspace === session.epoch) await history.load(0);
+      if (current === selection) await openAnalysis(analysis.analysis_id, {focus: false});
+      if (workspace === session.epoch) await history.load();
     } catch (error) {
       if (current !== selection || workspace !== session.epoch) return;
       $("progress").hidden = true;
       $("job-detail").textContent = "The request was not confirmed. Retry to check or continue it.";
+      $("job-guidance").textContent = error.message;
+      $("job-guidance").hidden = false;
       // A retry must send the same model version and idempotency key.
       retry(() => submitRequest(submission));
-      notice(error.message, true);
     } finally {
       if (workspace === session.epoch) {
         onStorageChange();
@@ -190,7 +212,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     }
   }
 
-  async function openAnalysis(id, {restore = false} = {}) {
+  async function openAnalysis(id, {restore = false, focus = !restore} = {}) {
     onSelectionChange();
     $("delete-analysis").hidden = true;
     clearTimeout(timer);
@@ -212,6 +234,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     $("job-state").textContent = "";
     $("job-detail").textContent = "Loading the selected analysis.";
     $("progress").hidden = false;
+    if (focus) $("analysis-title").focus();
     notice();
     if (!restore) rememberAnalysis(id);
     selection.loading = poll(selection);
@@ -280,8 +303,10 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     } catch (error) {
       if (!active()) return;
       $("progress").hidden = true;
+      if (!selection.metadata) $("job-detail").textContent = "";
+      $("job-guidance").textContent = error.message;
+      $("job-guidance").hidden = false;
       retry(() => poll(selection));
-      notice(error.message, true);
     }
   }
 
@@ -398,7 +423,11 @@ export function createAnalysis({session, models, history, comparison, onStorageC
 
   function forgetDeleted(target) {
     batch.forgetDeleted(target);
-    if (target.kind === "experiment" && snapshot?.snapshot_id === target.id) snapshot = null;
+    if (target.kind === "experiment" && snapshot?.snapshot_id === target.id) {
+      snapshot = null;
+      if (!exportText) $("file-details").hidden = true;
+      models.updateActions();
+    }
     const affected = current && (target.kind === "analysis" ? current.id === target.id
       : current.metadata?.snapshot_id === target.id);
     if (affected) {
@@ -406,7 +435,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       rememberAnalysis(null);
     } else if (target.kind === "analysis") comparison.forgetAnalysis(target.id);
   }
-  return {reset, open: openAnalysis, clearSelection, forgetDeleted, get current() { return current; },
-    get busy() { return busy; }, get uploadReady() { return Boolean(exportText) || batch.ready; },
+  return {reset, open: openAnalysis, chooseExperiment, clearSelection, forgetDeleted, get current() { return current; },
+    get busy() { return busy; }, get uploadReady() { return Boolean(exportText || snapshot) || batch.ready; },
     get batchLocked() { return batch.locked; }};
 }
