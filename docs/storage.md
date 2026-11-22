@@ -15,12 +15,14 @@ The owner limit must not exceed the connection limit. The overall object-store
 capacity remains a separate hard limit shared with administrator-managed models,
 reference sets and other artifacts.
 
-PostgreSQL reserves an immutable object's bytes before an upload. Retrying the
-same object reuses its reservation. Usage includes both registered objects and
-reservations, so concurrent requests, key rotation and interrupted workers do not
-reset the budget. Failed uploads remain reserved because storage may have accepted
-their bytes before the failure became visible. Offline maintenance can release a
-reservation only after proving that its unregistered object is absent.
+PostgreSQL reserves an immutable object's bytes before an upload. Datasets owned
+by the same user share identical generated snapshots. If a worker retries an
+analysis, identical HTML for that analysis also reuses its reservation.
+Usage includes both registered objects and reservations, so concurrent requests,
+key rotation and interrupted workers do not reset the budget. Failed uploads
+remain reserved because storage may have accepted their bytes before the
+failure became visible. Offline maintenance can release a reservation only
+after proving that its unregistered object is absent.
 
 Open the workspace to see the current owner's usage. Administrators can see a
 connection's total in **Connections**. A quota refusal returns `storage_quota_exceeded`.

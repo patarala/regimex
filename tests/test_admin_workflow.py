@@ -443,6 +443,43 @@ def test_generation_has_separate_references_and_complete_immutable_dataset(
     assert service.run_admin(run.run_id) is None
 
 
+def test_retry_and_repeated_generation_fit_one_dataset_quota(
+    admin: tuple[AdminService, Principal],
+) -> None:
+    from regimex.infrastructure.storage_quotas import StorageQuotaRepository
+
+    service, principal = admin
+    base = service.analysis_service
+    spec = GenerationSpec(
+        dataset_id="quota-first", plan=RawGenerationPlan(seed=47, experiment_count=3, step_count=64)
+    )
+    first = service.submit_generation(principal, spec, idempotency_key="first")
+    with patch.object(
+        service.repository, "complete_generation", side_effect=OSError("connection lost")
+    ):
+        attempt = service.run_admin(first.run_id)
+    assert attempt is not None and attempt.operation.state == "queued"
+    usage = base.storage_usage(principal)
+    assert usage.used_bytes == 0 and usage.reserved_bytes > 0
+    budget = usage.reserved_bytes
+    base.storage_quotas = StorageQuotaRepository(
+        base.repository, max_owner_storage_bytes=budget, max_integration_storage_bytes=budget
+    )
+    completed(service, first.run_id)
+    after_retry = base.storage_usage(principal)
+    assert (after_retry.used_bytes, after_retry.reserved_bytes) == (budget, 0)
+
+    # A different dataset may select the same generated observations.
+    second_spec = spec.model_copy(update={"dataset_id": "quota-second"})
+    second = service.submit_generation(principal, second_spec, idempotency_key="second")
+    completed(service, second.run_id)
+    assert (
+        service.get_dataset(principal, spec.dataset_id).snapshot_ids
+        == service.get_dataset(principal, second_spec.dataset_id).snapshot_ids
+    )
+    assert base.storage_usage(principal) == after_retry
+
+
 def test_sealed_test_references_are_not_available_to_training_or_downloads(
     admin: tuple[AdminService, Principal],
 ) -> None:

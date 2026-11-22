@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 
 from regimex.exports import ExportV2
-from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
+from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo, ObjectIntegrityError
 from regimex.service_contracts import Conflict, Forbidden, NotFound, Principal, SnapshotRecord
 from regimex.storage import json_bytes
 from regimex.storage_contracts import StorageQuotaExceeded, StorageUsage
@@ -231,6 +231,86 @@ def test_failed_object_write_keeps_its_reservation_and_retry_reuses_it(
     assert application.create_snapshot(principal(), value) == saved
     usage = application.storage_usage(principal())
     assert (usage.used_bytes, usage.reserved_bytes, usage.available_bytes) == (size, 0, 0)
+
+
+def test_generation_shares_one_reservation_before_either_dataset_commits(
+    database: DatabaseRepository, tmp_path: Path
+) -> None:
+    value = export()
+    data = json_bytes(value.model_dump(mode="json"))
+    application = service(database, tmp_path, maximum=len(data))
+    path = tmp_path / "export.json"
+    path.write_bytes(data)
+    snapshot_id = uuid4()
+    checksum = hashlib.sha256(data).hexdigest()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        jobs = [
+            executor.submit(
+                application.store_generated_snapshot,
+                "alice",
+                snapshot_id,
+                value,
+                path,
+                expected_sha256=checksum,
+            )
+            for _ in range(2)
+        ]
+        first, second = (job.result() for job in jobs)
+    assert first == second
+    assert len(application.store.inventory()) == 1
+    usage = application.storage_usage(principal())
+    assert (usage.reserved_bytes, usage.available_bytes) == (len(data), 0)
+
+
+def test_generation_reuses_previously_registered_object_at_its_original_key(
+    database: DatabaseRepository,
+    tmp_path: Path,
+) -> None:
+    value = export()
+    data = json_bytes(value.model_dump(mode="json"))
+    application = service(database, tmp_path, maximum=len(data))
+    path = tmp_path / "export.json"
+    path.write_bytes(data)
+    checksum = hashlib.sha256(data).hexdigest()
+    snapshot_id = uuid4()
+    info = application.store.put(
+        f"admin/{uuid4()}/{uuid4()}/snapshot-{snapshot_id}.json", path, expected_sha256=checksum
+    )
+    database.add_snapshot(
+        SnapshotRecord(
+            snapshot_id=snapshot_id,
+            owner_id="alice",
+            source_id=value.source.source_id,
+            run_id=value.source.run_id,
+            source_snapshot_id=value.source.snapshot_id,
+            content_sha256=value.content_sha256,
+            object=info,
+            created_at=datetime.now(UTC),
+        )
+    )
+    reused = application.store_generated_snapshot(
+        "alice", snapshot_id, value, path, expected_sha256=checksum
+    )
+    assert reused == info
+    with pytest.raises(Conflict, match="another registered source snapshot"):
+        application.store_generated_snapshot(
+            "alice", uuid4(), value, path, expected_sha256=checksum
+        )
+    assert len(application.store.inventory()) == 1
+    usage = application.storage_usage(principal())
+    assert (usage.used_bytes, usage.reserved_bytes) == (len(data), 0)
+
+    (tmp_path / "objects" / info.key).unlink()
+    with pytest.raises(FileNotFoundError):
+        application.store_generated_snapshot(
+            "alice", snapshot_id, value, path, expected_sha256=checksum
+        )
+    replacement = application.store.put(info.key, path, expected_sha256=checksum)
+    assert replacement.version_id != info.version_id
+    with pytest.raises(ObjectIntegrityError, match="registered generation"):
+        application.store_generated_snapshot(
+            "alice", snapshot_id, value, path, expected_sha256=checksum
+        )
 
 
 def test_concurrent_conflicting_snapshots_only_charge_and_store_the_winner(

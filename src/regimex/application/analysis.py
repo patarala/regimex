@@ -267,7 +267,7 @@ def run_analysis(
                 report_object = service.store_owned_object(
                     operation.owner_id,
                     snapshot.source_id,
-                    f"reports/{analysis.analysis_id}/{token}.html",
+                    f"reports/{analysis.analysis_id}/{files.report_sha256}.html",
                     path,
                     expected_sha256=files.report_sha256,
                     checkpoint=heartbeat.poll,

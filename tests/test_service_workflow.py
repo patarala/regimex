@@ -614,6 +614,38 @@ def test_worker_persists_safe_reasons_and_only_retries_transient_storage_failure
     assert service.run_analysis(queued.operation.operation_id) is None
 
 
+def test_report_publication_retry_reuses_uploaded_bytes_with_a_full_quota(
+    service: AnalysisService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex.infrastructure.storage_quotas import StorageQuotaRepository
+
+    published_model(service, tmp_path)
+    owner = principal(service.repository)
+    snapshot = service.create_snapshot(owner, source(2020).export)
+    analysis = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key="report-retry")
+
+    def interrupt_publication(*args: object, **kwargs: object) -> None:
+        raise psycopg.OperationalError("connection lost at publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(service.repository, "complete_analysis", interrupt_publication)
+        first = service.run_analysis(analysis.analysis_id)
+    assert first is not None and first.state == "queued"
+    assert service.get_report_metadata(owner, analysis.analysis_id) is None
+    usage = service.storage_usage(owner)
+    assert usage.used_bytes == snapshot.object.size_bytes and usage.reserved_bytes > 0
+    budget = usage.used_bytes + usage.reserved_bytes
+    service.storage_quotas = StorageQuotaRepository(
+        service.repository, max_owner_storage_bytes=budget, max_integration_storage_bytes=budget
+    )
+
+    second = service.run_analysis(analysis.analysis_id)
+    assert second is not None and second.state == "succeeded" and second.attempt == 2
+    assert service.get_report_metadata(owner, analysis.analysis_id) is not None
+    after_retry = service.storage_usage(owner)
+    assert (after_retry.used_bytes, after_retry.reserved_bytes) == (budget, 0)
+
+
 def test_report_write_retries_after_owner_storage_lock_is_released(
     service: AnalysisService, tmp_path: Path
 ) -> None:

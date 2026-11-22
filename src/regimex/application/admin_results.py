@@ -148,13 +148,12 @@ class AdminResultCommitter:
                 != member
             ):
                 raise ValueError("generated snapshot differs from sealed dataset membership")
-            info = self.analysis_service.store_owned_object(
+            info = self.analysis_service.store_generated_snapshot(
                 self.principal.owner_id,
-                export.source.source_id,
-                f"{self._prefix}/snapshot-{binding.snapshot_id}.json",
+                binding.snapshot_id,
+                export,
                 path,
                 expected_sha256=digest(path, checkpoint=self.heartbeat),
-                generated_snapshot=(binding.snapshot_id, export),
                 checkpoint=self.heartbeat,
             )
             snapshots.append(
