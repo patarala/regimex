@@ -19,6 +19,8 @@ holds the architecture fixed and varies the data and optimizer budget. The
 in observed prices and against noisy paths with known pauses.
 The [pause overlay comparison](pause-precision.md) measures how often the
 report highlights a genuine price pause or a continuing trend.
+The [direction classifier comparison](direction-context.md) tests whether measuring
+price movement on either side of a level change improves the three predicted directions.
 
 ## Baseline and TCN on direction-32/2.1
 
