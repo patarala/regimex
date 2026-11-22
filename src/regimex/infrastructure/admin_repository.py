@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import cast
+from typing import NamedTuple, cast
 from uuid import UUID, uuid4
 
 import psycopg
@@ -80,6 +80,11 @@ _RUN_SELECT = (
 )
 
 
+class CatalogSnapshot(NamedTuple):
+    snapshot: SnapshotRecord
+    binding: CatalogBinding | None
+
+
 def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
     (
         run_id,
@@ -144,29 +149,49 @@ class AdminRepository:
             raise CapacityExceeded(f"{description} must not exceed {limit} bytes.")
         return checked
 
-    def _binding(self, connection: Connection, owner_id: str, snapshot_id: UUID) -> CatalogBinding:
-        snapshot = self.database._snapshot(connection, snapshot_id)
-        if snapshot.owner_id != owner_id:
+    @staticmethod
+    def _catalog_inputs(
+        connection: Connection, owner_id: str, snapshot_ids: tuple[UUID, ...]
+    ) -> tuple[CatalogSnapshot, ...]:
+        rows = connection.execute(
+            "SELECT s.document, b.document FROM unnest(%s::uuid[]) WITH ORDINALITY AS r(id,pos) "
+            "JOIN regimex_snapshots s ON s.snapshot_id=r.id AND s.owner_id=%s "
+            "LEFT JOIN regimex_catalog_bindings b USING(snapshot_id) ORDER BY r.pos",
+            (list(snapshot_ids), owner_id),
+        ).fetchall()
+        if len(rows) != len(snapshot_ids):
             raise NotFound()
-        row = connection.execute(
-            "SELECT document FROM regimex_catalog_bindings WHERE snapshot_id=%s", (snapshot_id,)
-        ).fetchone()
-        if row is None:
-            raise NotFound("The snapshot has no admitted catalog binding.")
-        return CatalogBinding.model_validate_json(json_bytes(row[0]))
+        inputs = tuple(
+            CatalogSnapshot(
+                SnapshotRecord.model_validate_json(json_bytes(snapshot)),
+                CatalogBinding.model_validate_json(json_bytes(binding))
+                if binding is not None
+                else None,
+            )
+            for snapshot, binding in rows
+        )
+        for requested, (snapshot, binding) in zip(snapshot_ids, inputs, strict=True):
+            if snapshot.owner_id != owner_id:
+                raise NotFound()
+            if snapshot.snapshot_id != requested or (binding and binding.snapshot_id != requested):
+                raise Conflict("Catalog metadata differs from the registered snapshot identity.")
+        return inputs
 
-    def get_binding(self, principal: Principal, snapshot_id: UUID) -> CatalogBinding | None:
+    def _binding(self, connection: Connection, owner_id: str, snapshot_id: UUID) -> CatalogBinding:
+        binding = self._catalog_inputs(connection, owner_id, (snapshot_id,))[0].binding
+        if binding is None:
+            raise NotFound("The snapshot has no admitted catalog binding.")
+        return binding
+
+    def catalog_inputs(
+        self, principal: Principal, snapshot_ids: tuple[UUID, ...]
+    ) -> tuple[CatalogSnapshot, ...]:
         self.database._admin(principal)
         with self.database.connection() as connection:
-            snapshot = self.database._snapshot(connection, snapshot_id)
-            if snapshot.owner_id != principal.owner_id:
-                raise NotFound()
-            exists = connection.execute(
-                "SELECT 1 FROM regimex_catalog_bindings WHERE snapshot_id=%s", (snapshot_id,)
-            ).fetchone()
-            if exists is None:
-                return None
-            return self._binding(connection, principal.owner_id, snapshot_id)
+            return self._catalog_inputs(connection, principal.owner_id, snapshot_ids)
+
+    def get_binding(self, principal: Principal, snapshot_id: UUID) -> CatalogBinding | None:
+        return self.catalog_inputs(principal, (snapshot_id,))[0].binding
 
     def _add_binding(
         self, connection: Connection, owner_id: str, binding: CatalogBinding
@@ -252,11 +277,12 @@ class AdminRepository:
         ).fetchone()
         if reservation is not None and reservation[0] != generation_run_id:
             raise Conflict("The dataset identity is reserved by a generation run.")
-        for binding in bindings:
-            self._add_binding(connection, record.owner_id, binding)
-        for snapshot_id, member in zip(record.snapshot_ids, record.manifest.members, strict=True):
-            snapshot = self.database._snapshot(connection, snapshot_id)
-            binding = self._binding(connection, record.owner_id, snapshot_id)
+        for declared in bindings:
+            self._add_binding(connection, record.owner_id, declared)
+        inputs = self._catalog_inputs(connection, record.owner_id, record.snapshot_ids)
+        for (snapshot, binding), member in zip(inputs, record.manifest.members, strict=True):
+            if binding is None:
+                raise NotFound("The snapshot has no admitted catalog binding.")
             if (
                 snapshot.owner_id != record.owner_id
                 or (member.source_namespace, member.split_group)

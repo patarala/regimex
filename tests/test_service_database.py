@@ -263,6 +263,40 @@ def test_credentials_are_hashed_revocable_and_source_bound(repository: DatabaseR
         repository.create_token("user", "user", source_namespace="untrusted")
 
 
+def test_bulk_snapshots_preserve_requested_order_and_access_scope(
+    repository: DatabaseRepository,
+) -> None:
+    first = _snapshot(repository)
+    second = repository.add_snapshot(
+        first.model_copy(
+            update={"snapshot_id": uuid4(), "run_id": "run-2", "object": _object("snapshots/run-2")}
+        )
+    )
+    foreign = _snapshot(repository, "bob")
+    ids = (second.snapshot_id, first.snapshot_id, second.snapshot_id)
+    assert repository.get_snapshots(_principal(), ids) == (second, first, second)
+    assert repository.get_snapshots(_principal(), ()) == ()
+    for missing in (foreign.snapshot_id, uuid4()):
+        with pytest.raises(NotFound):
+            repository.get_snapshots(_principal(), (first.snapshot_id, missing))
+    scoped = Principal(
+        owner_id=first.owner_id,
+        role="integration",
+        token_id=uuid4(),
+        integration_id=uuid4(),
+        integration_scopes=("read",),
+        source_namespace=first.source_id,
+        run_scope=first.run_id,
+    )
+    assert repository.get_snapshots(scoped, (first.snapshot_id,)) == (first,)
+    with pytest.raises(NotFound):
+        repository.get_snapshots(scoped, ids)
+    with pytest.raises(NotFound):
+        repository.get_snapshots(
+            scoped.model_copy(update={"source_namespace": "other"}), (first.snapshot_id,)
+        )
+
+
 def test_snapshot_identity_and_owner_access_survive_new_repository(
     repository: DatabaseRepository,
 ) -> None:

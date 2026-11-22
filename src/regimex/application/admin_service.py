@@ -551,14 +551,13 @@ class AdminService:
             "metrics": None if evaluation is None else evaluation.metrics,
         }
 
+    @staticmethod
     def _import_binding(
-        self,
-        principal: Principal,
         snapshot: SnapshotRecord,
         export: ExportV2,
         declared: SplitGroup | None,
+        existing: CatalogBinding | None,
     ) -> CatalogBinding:
-        existing = self.repository.get_binding(principal, snapshot.snapshot_id)
         group = _validate_request(
             imported_seed_group, export, declared or (existing.split_group if existing else None)
         )
@@ -603,10 +602,12 @@ class AdminService:
             raise CapacityExceeded("Dataset membership exceeds the server experiment limit.")
         members = []
         bindings = []
-        for selection in spec.members:
-            snapshot = self.analysis_service.get_snapshot(principal, selection.snapshot_id)
-            export = self.analysis_service.read_snapshot(principal, selection.snapshot_id)
-            binding = self._import_binding(principal, snapshot, export, selection.split_group)
+        inputs = self.repository.catalog_inputs(
+            principal, tuple(selection.snapshot_id for selection in spec.members)
+        )
+        for selection, (snapshot, existing) in zip(spec.members, inputs, strict=True):
+            export = self.analysis_service.read_snapshot_export(snapshot)
+            binding = self._import_binding(snapshot, export, selection.split_group, existing)
             members.append(
                 create_snapshot_member(
                     SourceSnapshot(
@@ -865,14 +866,17 @@ class AdminService:
                 {spec.partition} if not isinstance(spec, TrainingSpec) else {"train", "validation"}
             )
             snapshots: list[JsonValue] = []
-            for index, (snapshot_id, member) in enumerate(
-                zip(dataset.snapshot_ids, dataset.manifest.members, strict=True)
-            ):
-                if member.partition not in partitions:
-                    continue
-                snapshot = self.analysis_service.get_snapshot(principal, snapshot_id)
+            selected = [
+                (index, member)
+                for index, member in enumerate(dataset.manifest.members)
+                if member.partition in partitions
+            ]
+            records = self.analysis_service.repository.get_snapshots(
+                principal, tuple(dataset.snapshot_ids[index] for index, _ in selected)
+            )
+            for (index, member), snapshot in zip(selected, records, strict=True):
                 binding = CatalogBinding(
-                    snapshot_id=snapshot_id,
+                    snapshot_id=snapshot.snapshot_id,
                     source_namespace=member.source_namespace,
                     split_group=member.split_group,
                 )

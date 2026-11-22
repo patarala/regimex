@@ -384,6 +384,27 @@ class DatabaseRepository:
         self._authorize_snapshot(principal, result)
         return result
 
+    def get_snapshots(
+        self, principal: Principal, snapshot_ids: tuple[UUID, ...]
+    ) -> tuple[SnapshotRecord, ...]:
+        if not snapshot_ids:
+            return ()
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT s.document FROM unnest(%s::uuid[]) WITH ORDINALITY AS requested(id, pos) "
+                "JOIN regimex_snapshots s ON s.snapshot_id=requested.id AND s.owner_id=%s "
+                "ORDER BY requested.pos",
+                (list(snapshot_ids), principal.owner_id),
+            ).fetchall()
+        if len(rows) != len(snapshot_ids):
+            raise NotFound()
+        records = tuple(SnapshotRecord.model_validate_json(json_bytes(row[0])) for row in rows)
+        for requested, record in zip(snapshot_ids, records, strict=True):
+            self._authorize_snapshot(principal, record)
+            if record.snapshot_id != requested:
+                raise Conflict("Stored metadata differs from the requested snapshot identity.")
+        return records
+
     @staticmethod
     def _authorize_snapshot(principal: Principal, snapshot: SnapshotRecord) -> None:
         if (

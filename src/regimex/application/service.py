@@ -422,7 +422,9 @@ class AnalysisService:
         return self.repository.get_snapshot(principal, snapshot_id)
 
     def read_snapshot(self, principal: Principal, snapshot_id: UUID) -> ExportV2:
-        record = self.get_snapshot(principal, snapshot_id)
+        return self.read_snapshot_export(self.get_snapshot(principal, snapshot_id))
+
+    def read_snapshot_export(self, record: SnapshotRecord) -> ExportV2:
         with tempfile.TemporaryDirectory(prefix="snapshot-read-", dir=self.work_root) as temporary:
             return self._materialize_snapshot(record, Path(temporary) / "export.json")
 

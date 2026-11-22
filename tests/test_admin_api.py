@@ -563,14 +563,18 @@ def test_previously_bound_sample_keeps_its_historical_group(
         ),
     )
     context.service.repository.add_binding(owner, binding)
+    other_snapshots = [
+        context.analysis.create_snapshot(owner, sample_snapshot(seed=seed, steps=64, instruments=1))
+        for seed in (22, 31)
+    ]
     spec = DatasetSpec(
         dataset_id="new-dataset",
         members=(
             DatasetSelection(
                 snapshot_id=snapshot_id, partition="train", split_group=market_seed_group(17)
             ),
-            DatasetSelection(snapshot_id=uuid4(), partition="validation"),
-            DatasetSelection(snapshot_id=uuid4(), partition="test"),
+            DatasetSelection(snapshot_id=other_snapshots[0].snapshot_id, partition="validation"),
+            DatasetSelection(snapshot_id=other_snapshots[1].snapshot_id, partition="test"),
         ),
     )
     with pytest.raises(Conflict, match="registered group"):
