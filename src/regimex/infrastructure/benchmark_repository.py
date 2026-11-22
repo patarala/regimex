@@ -20,6 +20,7 @@ from regimex.benchmark_contracts import (
 from regimex.benchmarks import (
     BenchmarkRegistry,
     BenchmarkReservation,
+    DirectionSemantics,
     RegistryRevision,
     _member_keys,
     _preserves_history,
@@ -244,7 +245,13 @@ class BenchmarkRepository:
 
     @classmethod
     def validate_selection(
-        cls, connection: Connection, owner_id: str, spec: TrainingSpec, dataset: DatasetRecord
+        cls,
+        connection: Connection,
+        owner_id: str,
+        spec: TrainingSpec,
+        dataset: DatasetRecord,
+        *,
+        training_semantics: DirectionSemantics = CURRENT_TRAINING_SEMANTICS,
     ) -> None:
         cls.lock(connection)
         if spec.benchmark_selection_id is None:
@@ -256,6 +263,11 @@ class BenchmarkRepository:
         cls.require_reserved_seed_groups(connection, view)
         if not cls._selection_is_open(view.reservation):
             raise Forbidden("Selection requires a current attestation and an open selection phase.")
+        if (
+            training_semantics != CURRENT_TRAINING_SEMANTICS
+            or view.reservation.reference.semantics != training_semantics
+        ):
+            raise Conflict("The reserved benchmark uses incompatible direction semantics.")
         if spec.dataset_id != dataset.dataset_id or not cls._has_development_history(
             connection, state, owner_id, dataset
         ):

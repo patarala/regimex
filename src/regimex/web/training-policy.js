@@ -45,6 +45,36 @@ function repeatLimit(architecture) {
   return architecture.architecture_id === "tcn" ? Math.min(32, workspaceLimit) : workspaceLimit;
 }
 
+function budgetLimit(architecture, key) {
+  const limit = key === "epochs" ? architecture.max_training_epochs : architecture.max_training_updates;
+  return Math.min(limit ?? numbers[key].max, numbers[key].max);
+}
+
+function budgetLimitMessage(key, limit) {
+  const unit = limit === 1 ? key.slice(0, -1) : key;
+  return `This workspace allows up to ${limit} ${unit} per repeat.`;
+}
+
+function fixedBudget(policy) {
+  return "updates" in policy || "validation_updates" in policy || policy.budget === "updates";
+}
+
+function defaultSeeds(architecture) {
+  return architecture.architecture_id === "baseline" ? architecture.default_training_policy.seeds : [11, 23, 47];
+}
+
+export function validateTrainingLimits(architecture, policy) {
+  const seeds = policy.seeds ?? defaultSeeds(architecture);
+  const maxRepeats = repeatLimit(architecture);
+  if (Array.isArray(seeds) && seeds.length > maxRepeats)
+    throw new PolicyError("seeds", `Choose at most ${maxRepeats} training repeat${maxRepeats === 1 ? "" : "s"}.`);
+  const key = fixedBudget(policy) ? "updates" : "epochs";
+  const value = policy[key] ?? numbers[key].fallback, max = budgetLimit(architecture, key);
+  if (typeof value === "number" && value > max) throw new PolicyError(key, budgetLimitMessage(key, max));
+  if (key === "updates" && typeof value === "number" && Array.isArray(seeds) && value * seeds.length > maxUpdates)
+    throw new PolicyError(key, "All seeds together can use at most 32,000 updates.");
+}
+
 function isSeed(value) {
   return Number.isInteger(value) && value >= 0 && value <= maxSeed;
 }
@@ -66,7 +96,7 @@ function extendSeeds(seeds, count, excluded = []) {
 function validate(architecture, raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new PolicyError("budget", "Training policy must be a JSON object.");
-  const fixed = "updates" in raw || "validation_updates" in raw || raw.budget === "updates";
+  const fixed = fixedBudget(raw);
   const budget = fixed ? "updates" : "epochs";
   const numeric = [...(fixed ? ["updates"] : epochNumbers), ...commonNumbers];
   const allowed = ["optimizer", "selection_metric", "seeds", ...numeric];
@@ -78,7 +108,7 @@ function validate(architecture, raw) {
     throw new PolicyError("budget", "This architecture does not support " + budget + " budgets.");
 
   const budgetDefaults = fixed ? {budget: "updates", optimizer: "adamw"} : {};
-  const policy = {seeds: [11, 23, 47], selection_metric: selectionMetric, ...budgetDefaults, ...raw};
+  const policy = {seeds: defaultSeeds(architecture), selection_metric: selectionMetric, ...budgetDefaults, ...raw};
   if (fixed && (policy.budget !== "updates" || policy.optimizer !== "adamw"))
     throw new PolicyError("budget", "A fixed-update policy requires the updates budget and the AdamW optimizer.");
   const optimizers = architecture.supported_optimizers || [architecture.default_training_policy.optimizer];
@@ -93,8 +123,7 @@ function validate(architecture, raw) {
     throw new PolicyError("seeds", "Enter each seed only once.");
   if (architecture.architecture_id === "baseline" && policy.seeds.length !== 1)
     throw new PolicyError("seeds", "The logistic baseline requires exactly one seed.");
-  if (policy.seeds.length > repeatLimit(architecture))
-    throw new PolicyError("seeds", `Choose at most ${repeatLimit(architecture)} training repeats.`);
+  validateTrainingLimits(architecture, policy);
   for (const key of numeric) {
     const {min, max, step, title, fallback} = numbers[key];
     const value = key in raw ? raw[key] : fallback;
@@ -109,8 +138,6 @@ function validate(architecture, raw) {
   if (policy.learning_rate <= 0)
     throw new PolicyError("learning_rate", "Learning rate must be greater than zero.");
   if (fixed) {
-    if (policy.updates * policy.seeds.length > maxUpdates)
-      throw new PolicyError("updates", "All seeds together can use at most 32,000 updates.");
     const points = policy.validation_updates;
     if (!Array.isArray(points) || !points.length || points.length > 1000 ||
         points.some((n, i) => !Number.isInteger(n) || n < 1 || (i > 0 && n <= points[i - 1])) ||
@@ -172,6 +199,11 @@ export function createTrainingPolicy(container) {
     wrapper.append(label, field);
     container.append(wrapper);
     let hint = help[key];
+    if (key === "repeats")
+      hint = field.max === "1" ? "This workspace permits one training repeat."
+        : hint + ` You can select up to ${field.max} repeats.`;
+    if ((key === "epochs" || key === "updates") && field.max < numbers[key].max)
+      hint += " " + budgetLimitMessage(key, Number(field.max));
     if (key === "seeds" && architecture.architecture_id === "baseline")
       hint = "The logistic baseline records one seed and fits once for each regularization setting.";
     if (key === "validation_interval" && architecture.architecture_id === "tcn")
@@ -185,7 +217,8 @@ export function createTrainingPolicy(container) {
     input.type = "number";
     input.required = true;
     input.min = min;
-    if (max !== undefined) input.max = max;
+    if (key === "epochs" || key === "updates") input.max = budgetLimit(architecture, key);
+    else if (max !== undefined) input.max = max;
     input.step = step;
     return add(key, title, input);
   }
@@ -273,7 +306,8 @@ export function createTrainingPolicy(container) {
     architecture = next;
     const defaults = architecture?.default_training_policy;
     const seeds = defaults?.seeds.slice(0, repeatLimit(next));
-    values = defaults ? {...defaults, seeds: seeds.join(", "), repeats: seeds.length, budget: "epochs", ...draft} : {};
+    values = defaults ? {...defaults, epochs: Math.min(defaults.epochs, budgetLimit(next, "epochs")),
+      seeds: seeds.join(", "), repeats: seeds.length, budget: "epochs", ...draft} : {};
     render();
   }
 

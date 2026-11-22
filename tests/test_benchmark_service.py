@@ -447,6 +447,14 @@ def test_selection_options_are_owner_scoped_and_development_filter_precedes_pagi
     service.start_selection(other, "private")
     service.start_selection(owner, "fresh")
     assert service.selection_benchmarks(owner, development.dataset_id) == ("fresh",)
+    references(service, tmp_path, development, "train")
+    references(service, tmp_path, development, "validation")
+    incompatible = training(development, benchmark_id="earlier-profile")
+    with pytest.raises(Conflict, match="incompatible direction semantics"):
+        service.authorize_selection(owner, incompatible, development)
+    with pytest.raises(Conflict, match="incompatible direction semantics"):
+        service.admin_repository.submit(owner, incompatible, idempotency_key="wrong-profile")
+    assert service.admin_repository.list_runs(owner, kind="training") == ()
     assert service.selection_benchmarks(other, other_development.dataset_id) == ("private",)
     with pytest.raises(NotFound):
         service.selection_benchmarks(other, development.dataset_id)

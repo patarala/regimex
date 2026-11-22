@@ -173,6 +173,45 @@
       "title": "Interface Version",
       "type": "string"
     },
+    "max_training_epochs": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Training Epochs"
+    },
+    "max_training_seeds": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Training Seeds"
+    },
+    "max_training_updates": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Max Training Updates"
+    },
     "missing_value_policy": {
       "const": "explicit_masks",
       "title": "Missing Value Policy",

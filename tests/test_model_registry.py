@@ -346,6 +346,18 @@ def test_architecture_parameters_accept_json_arrays_without_scalar_coercion() ->
         descriptor.validate_training_policy(TrainingPolicy(optimizer="adamw"))
 
 
+def test_descriptor_checks_native_training_restrictions_before_fitting() -> None:
+    baseline = ArchitectureRegistry((baseline_descriptor(),)).get("baseline")
+    with pytest.raises(RegistryError, match="exactly one"):
+        baseline.validate_training_policy(TrainingPolicy(optimizer="lbfgs", seeds=(11, 23)))
+    with pytest.raises(RegistryError, match="epochs"):
+        baseline.validate_training_policy(TrainingPolicy(optimizer="lbfgs", seeds=(11,), epochs=40))
+    with pytest.raises(RegistryError, match="32 search seeds"):
+        tcn_descriptor().validate_training_policy(
+            TrainingPolicy(optimizer="adamw", seeds=tuple(range(33)))
+        )
+
+
 @pytest.mark.parametrize("runtime_model", [TrainingRuntime, InferenceRuntime])
 def test_runtime_profiles_reject_unsupported_device_and_invalid_threads(
     runtime_model: type[TrainingRuntime] | type[InferenceRuntime],

@@ -204,6 +204,8 @@ class AnalysisService:
         max_pending: int = 8,
         integration_max_pending: int = 32,
         max_training_seeds: int | None = None,
+        max_training_epochs: int | None = None,
+        max_training_updates: int | None = None,
         heartbeat_seconds: float = 10.0,
         stale_seconds: int = 120,
         cache_budget_bytes: int = 512 * 1024**2,
@@ -235,6 +237,8 @@ class AnalysisService:
         self.max_pending = max_pending
         self.integration_max_pending = integration_max_pending
         self.max_training_seeds = max_training_seeds
+        self.max_training_epochs = max_training_epochs
+        self.max_training_updates = max_training_updates
         self.heartbeat_seconds = heartbeat_seconds
         self.stale_seconds = stale_seconds
         self.cache_budget_bytes = cache_budget_bytes
@@ -697,7 +701,11 @@ class AnalysisService:
         if principal.role != "admin":
             raise Forbidden()
         return tuple(
-            descriptor.describe(max_training_seeds=self.max_training_seeds)
+            descriptor.describe(
+                max_training_seeds=self.max_training_seeds,
+                max_training_epochs=self.max_training_epochs,
+                max_training_updates=self.max_training_updates,
+            )
             for descriptor in self.registry.descriptors
         )
 

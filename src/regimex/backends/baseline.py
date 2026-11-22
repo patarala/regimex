@@ -39,6 +39,7 @@ from regimex.model_registry import (
     TrainingPolicy,
     TrainingPolicySpec,
     TrainingRuntime,
+    validate_baseline_policy,
 )
 from regimex.prediction_inputs import PredictionInputs, PreparedPredictionInputs
 from regimex.resource_limits import ResourceBudgetExceeded
@@ -100,26 +101,6 @@ class CandidateRecord(StrictModel):
 
 class HistoryRecord(StrictModel):
     candidates: tuple[CandidateRecord, ...] = Field(min_length=1)
-
-
-def _validate_policy(policy: TrainingPolicy) -> None:
-    TrainingPolicy.model_validate(policy.model_dump())
-    if policy.optimizer != "lbfgs":
-        raise ValueError("baseline supports only the lbfgs optimizer")
-    if len(policy.seeds) != 1:
-        raise ValueError("deterministic baseline requires exactly one recorded seed")
-    defaults = TrainingPolicy(optimizer="lbfgs")
-    unused = (
-        "epochs",
-        "batch_size",
-        "patience",
-        "learning_rate",
-        "weight_decay",
-        "validation_interval",
-    )
-    changed = [name for name in unused if getattr(policy, name) != getattr(defaults, name)]
-    if changed:
-        raise ValueError("baseline does not use training policy fields: " + ", ".join(changed))
 
 
 def _environment() -> dict[str, JsonValue]:
@@ -309,7 +290,7 @@ class BaselineBackend:
         AnalysisConfig.model_validate(analysis.model_dump())
         if not isinstance(policy, TrainingPolicy):
             raise ValueError("baseline does not support fixed-update training")
-        _validate_policy(policy)
+        validate_baseline_policy(policy)
         if {item.experiment_id for item in training.observations.info} & {
             item.experiment_id for item in validation.info
         }:
@@ -477,7 +458,7 @@ class BaselineBackend:
     def _validate_selection(
         configuration: BaselineConfiguration, validation: ValidationRecord, history: HistoryRecord
     ) -> None:
-        _validate_policy(configuration.training_policy)
+        validate_baseline_policy(configuration.training_policy)
         if (
             tuple(item.regularization for item in history.candidates)
             != configuration.parameters.regularization

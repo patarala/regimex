@@ -40,6 +40,7 @@ from regimex.model_registry import (
     TrainingPolicy,
     TrainingPolicySpec,
     TrainingRuntime,
+    validate_tcn_policy,
 )
 from regimex.prediction_inputs import PredictionInputs, PreparedPredictionInputs
 from regimex.resource_limits import ResourceBudgetExceeded
@@ -123,17 +124,6 @@ class ValidationRecord(StrictModel):
     score: float = Field(ge=0, le=1)
     selected_seed: Seed
     selected_epoch: int = Field(ge=1, le=1000)
-
-
-def _validate_policy(policy: TrainingPolicySpec) -> None:
-    if isinstance(policy, FixedUpdatePolicy):
-        FixedUpdatePolicy.model_validate(policy.model_dump())
-    else:
-        TrainingPolicy.model_validate(policy.model_dump())
-    if policy.optimizer != "adamw":
-        raise ValueError("TCN supports only the AdamW optimizer")
-    if len(policy.seeds) > 32:
-        raise ValueError("TCN supports at most 32 search seeds")
 
 
 def _environment() -> dict[str, JsonValue]:
@@ -421,7 +411,7 @@ class TCNBackend:
         TCNParameters.model_validate(parameters.model_dump())
         TrainingRuntime.model_validate(runtime.model_dump())
         AnalysisConfig.model_validate(analysis.model_dump())
-        _validate_policy(policy)
+        validate_tcn_policy(policy)
         if {item.experiment_id for item in training.observations.info} & {
             item.experiment_id for item in validation.info
         }:
@@ -539,7 +529,7 @@ class TCNBackend:
     def _validate_selection(
         configuration: TCNConfiguration, validation: ValidationRecord, history: HistoryRecord
     ) -> None:
-        _validate_policy(configuration.training_policy)
+        validate_tcn_policy(configuration.training_policy)
         policy = configuration.training_policy
         seeds: list[int] = []
         previous_epoch = 0

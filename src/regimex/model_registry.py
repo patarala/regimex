@@ -177,6 +177,54 @@ TrainingPolicySpec = TrainingPolicy | FixedUpdatePolicy
 type TrainingBudget = Literal["epochs", "updates"]
 
 
+BASELINE_DEFAULT_POLICY = TrainingPolicy(optimizer="lbfgs", seeds=(11,))
+
+
+def resolve_training_policy(architecture_id: str, policy: TrainingPolicySpec) -> TrainingPolicySpec:
+    """Apply native request defaults while preserving explicit choices and plugin policies."""
+    if (
+        architecture_id == "baseline"
+        and isinstance(policy, TrainingPolicy)
+        and "seeds" not in policy.model_fields_set
+    ):
+        return policy.model_copy(update={"seeds": BASELINE_DEFAULT_POLICY.seeds})
+    return policy
+
+
+def validate_baseline_policy(policy: TrainingPolicySpec) -> None:
+    if not isinstance(policy, TrainingPolicy):
+        raise RegistryError("baseline does not support fixed-update training")
+    TrainingPolicy.model_validate(policy.model_dump())
+    if policy.optimizer != "lbfgs":
+        raise RegistryError("baseline supports only the lbfgs optimizer")
+    if len(policy.seeds) != 1:
+        raise RegistryError("deterministic baseline requires exactly one recorded seed")
+    unused = (
+        "epochs",
+        "batch_size",
+        "patience",
+        "learning_rate",
+        "weight_decay",
+        "validation_interval",
+    )
+    changed = [
+        name for name in unused if getattr(policy, name) != getattr(BASELINE_DEFAULT_POLICY, name)
+    ]
+    if changed:
+        raise RegistryError("baseline does not use training policy fields: " + ", ".join(changed))
+
+
+def validate_tcn_policy(policy: TrainingPolicySpec) -> None:
+    if isinstance(policy, FixedUpdatePolicy):
+        FixedUpdatePolicy.model_validate(policy.model_dump())
+    else:
+        TrainingPolicy.model_validate(policy.model_dump())
+    if policy.optimizer != "adamw":
+        raise RegistryError("TCN supports only the AdamW optimizer")
+    if len(policy.seeds) > 32:
+        raise RegistryError("TCN supports at most 32 search seeds")
+
+
 class TrainingRuntime(StrictModel):
     device: Device = "cpu"
     threads: Annotated[int, Field(ge=1, le=256)] = 4
@@ -229,6 +277,8 @@ class ArchitectureInfo(StrictModel):
     sizes: tuple[ModelSize, ...] = ()
     default_training_policy: TrainingPolicy
     max_training_seeds: Annotated[int, Field(ge=1)] | None = None
+    max_training_epochs: Annotated[int, Field(ge=1)] | None = None
+    max_training_updates: Annotated[int, Field(ge=1)] | None = None
     supported_optimizers: tuple[Optimizer, ...]
     supported_training_budgets: tuple[TrainingBudget, ...] = ("epochs",)
     required_observation_fields: tuple[ObservationField, ...]
@@ -255,6 +305,10 @@ class ArchitectureDescriptor(StrictModel):
     implementation_version: Version
     interface_version: Literal["1.0"] = INTERFACE_VERSION
     parameters_model: type[StrictModel] = Field(exclude=True)
+    policy_validator: Callable[[TrainingPolicySpec], None] | None = Field(
+        default=None, exclude=True
+    )
+    trains_by_epoch: bool = True
     sizes: tuple[ModelSize, ...] = ()
     default_training_policy: TrainingPolicy
     supported_optimizers: Annotated[tuple[Optimizer, ...], Field(min_length=1)]
@@ -317,6 +371,9 @@ class ArchitectureDescriptor(StrictModel):
                 f"does not support optimizer {policy.optimizer!r}"
             )
 
+        if self.policy_validator is not None:
+            self.policy_validator(policy)
+
     def validate_observation_fields(self, available_fields: Collection[str]) -> None:
         """Check recorded field capabilities, independently from per-row missingness."""
         missing = set(self.required_observation_fields).difference(available_fields)
@@ -326,7 +383,13 @@ class ArchitectureDescriptor(StrictModel):
                 + ", ".join(sorted(missing))
             )
 
-    def describe(self, *, max_training_seeds: int | None = None) -> ArchitectureInfo:
+    def describe(
+        self,
+        *,
+        max_training_seeds: int | None = None,
+        max_training_epochs: int | None = None,
+        max_training_updates: int | None = None,
+    ) -> ArchitectureInfo:
         return ArchitectureInfo(
             descriptor_version=self.descriptor_version,
             architecture_id=self.architecture_id,
@@ -336,6 +399,10 @@ class ArchitectureDescriptor(StrictModel):
             sizes=self.sizes,
             default_training_policy=self.default_training_policy,
             max_training_seeds=max_training_seeds,
+            max_training_epochs=max_training_epochs if self.trains_by_epoch else None,
+            max_training_updates=max_training_updates
+            if "updates" in self.supported_training_budgets
+            else None,
             supported_optimizers=self.supported_optimizers,
             supported_training_budgets=self.supported_training_budgets,
             required_observation_fields=self.required_observation_fields,
@@ -503,7 +570,9 @@ def baseline_descriptor() -> ArchitectureDescriptor:
         architecture_id="baseline",
         implementation_version="0.1.0",
         parameters_model=LogisticParameters,
-        default_training_policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
+        default_training_policy=BASELINE_DEFAULT_POLICY,
+        policy_validator=validate_baseline_policy,
+        trains_by_epoch=False,
         supported_optimizers=("lbfgs",),
         # Activity and quotes contribute when recorded; their explicit masks
         # preserve the existing baseline's documented missing-data behavior.
@@ -534,6 +603,7 @@ def tcn_descriptor() -> ArchitectureDescriptor:
         parameters_model=TCNParameters,
         sizes=tuple(sizes),
         default_training_policy=TrainingPolicy(optimizer="adamw"),
+        policy_validator=validate_tcn_policy,
         supported_optimizers=("adamw",),
         supported_training_budgets=("epochs", "updates"),
         required_observation_fields=("last_price",),

@@ -577,6 +577,79 @@ def test_epoch_policy_uses_catalog_defaults_and_focuses_the_invalid_field(browse
         page.close()
 
 
+def test_workspace_limits_follow_the_selected_training_budget(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    architecture = {
+        **TCN,
+        "architecture_id": "custom-optimizer",
+        "default_training_policy": {
+            **POLICY,
+            "optimizer": "lbfgs",
+            "epochs": 55,
+            "seeds": [5, 8, 13],
+        },
+        "supported_optimizers": ["lbfgs", "adamw"],
+        "max_training_seeds": 2,
+        "max_training_epochs": 7,
+        "max_training_updates": 3,
+    }
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        ORIGIN + "/api/v1/architectures*", lambda r: r.fulfill(json={"items": [architecture]})
+    )
+    try:
+        page.goto(ORIGIN + "/training/new")
+        page.get_by_text("Training policy", exact=True).click()
+        epochs = page.get_by_label("Maximum epochs")
+        repeats = page.get_by_label("Training repeats")
+        seeds = page.get_by_label("Random seeds", exact=True)
+        expect(epochs).to_have_value("7")
+        expect(epochs).to_have_attribute("max", "7")
+        expect(repeats).to_have_attribute("max", "2")
+        expect(seeds).to_have_value("5, 8")
+        expect(page.get_by_label("Optimizer", exact=True)).to_have_value("lbfgs")
+        start = page.get_by_role("button", name="Start training")
+        epochs.fill("8")
+        start.click()
+        expect(epochs).to_be_focused()
+        expect(epochs).to_have_value("8")
+        epochs.fill("6")
+        page.get_by_role("button", name="Edit JSON").click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        use_form = page.get_by_role("button", name="Use form")
+        # Omitting epochs means the API default of 30, not the form's suggested 7.
+        editor.fill('{"optimizer":"lbfgs","seeds":[5]}')
+        use_form.click()
+        expect(page.locator("#training-prerequisite")).to_contain_text("7 epochs per repeat")
+        start.click()
+        expect(page.locator("#training-notice")).to_contain_text("7 epochs per repeat")
+        # Raw and form submissions enforce the workspace's update count per repeat.
+        fixed = {"updates": 4, "validation_updates": [4], "seeds": [5, 8]}
+        editor.fill(json.dumps(fixed))
+        start.click()
+        expect(page.locator("#training-notice")).to_contain_text("3 updates per repeat")
+        expect(editor).to_have_value(json.dumps(fixed))
+        assert not api.posts
+        fixed.update(updates=3, validation_updates=[3])
+        editor.fill(json.dumps(fixed))
+        use_form.click()
+        expect(editor).to_be_hidden()
+        updates = page.get_by_label("Updates per seed")
+        expect(updates).to_have_attribute("max", "3")
+        expect(updates).to_have_value("3")
+        expect(seeds).to_have_value("5, 8")
+        page.get_by_role("button", name="Help for Updates per seed").click()
+        expect(page.get_by_role("tooltip")).to_contain_text("3 updates per repeat")
+        page.keyboard.press("Escape")
+        start.click()
+        expect(page.locator("#training-detail")).to_be_visible()
+        assert api.posts[0][1]["policy"] == fixed
+    finally:
+        page.close()
+
+
 def test_repeat_count_and_generated_seeds_round_trip_through_run_json(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()

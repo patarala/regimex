@@ -873,7 +873,9 @@ class AdminRepository:
                 raise Conflict("Training and validation reference semantics must agree.")
             from regimex.infrastructure.benchmark_repository import BenchmarkRepository
 
-            BenchmarkRepository.validate_selection(connection, owner_id, spec, dataset)
+            BenchmarkRepository.validate_selection(
+                connection, owner_id, spec, dataset, training_semantics=labels.references.semantics
+            )
             exists = connection.execute(
                 "SELECT 1 FROM regimex_models WHERE model_version_id=%s", (spec.model_version_id,)
             ).fetchone()

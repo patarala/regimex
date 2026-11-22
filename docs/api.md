@@ -279,9 +279,12 @@ profile, `direction-32/2.2`. The service fills in this profile when you omit
 direction. Both built-in architectures run on CPU. Set `training_runtime` and
 `inference_runtime` to override their default thread counts or budgets.
 Read `GET /architectures` for parameter schemas, default policies and
-supported budgets. Each entry includes `max_training_seeds`, the deployment's
-limit on seeds per run. The baseline requires one seed and the TCN accepts up to 32
-within that limit.
+supported budgets. Each entry includes the deployment’s limit on seeds per
+run (`max_training_seeds`) and its limits per seed for epochs and optimizer
+updates (`max_training_epochs` and `max_training_updates`). A null epoch or
+update limit means the architecture does not use that budget. The baseline
+uses one seed (11 when omitted) and fits each regularization candidate once.
+The TCN accepts up to 32 seeds within the deployment limit.
 
 The TCN accepts `epochs` and `updates` budgets. The baseline evaluates its
 regularization candidates under the epoch policy. For a fixed TCN budget, set

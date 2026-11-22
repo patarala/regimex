@@ -162,7 +162,10 @@ def test_schema_export_stays_lightweight_and_excludes_previous_format(tmp_path: 
         ],
         check=True,
     )
-    assert {path.name for path in output.iterdir()} == {
+    published = Path(__file__).resolve().parents[1] / "schemas"
+    exported_names = {path.name for path in output.iterdir()}
+    assert exported_names == {path.name for path in published.iterdir()}
+    assert exported_names == {
         "annotations.schema.json",
         "experiment-v2.schema.json",
         "architecture.schema.json",
@@ -172,6 +175,9 @@ def test_schema_export_stays_lightweight_and_excludes_previous_format(tmp_path: 
         "raw-dataset.schema.json",
         "reference-set.schema.json",
     }
+    for path in output.iterdir():
+        expected = json.loads((published / path.name).read_bytes())
+        assert json.loads(path.read_bytes()) == expected, path.name
     observation = json.loads((output / "experiment-v2.schema.json").read_text())
     assert observation["properties"]["schema_version"]["const"] == "2.1"
     assert "v1_import" not in observation["properties"]

@@ -90,6 +90,20 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
         "benchmark_selection_id": "bench",
     }
     request = TrainingRunRequest.model_validate_json(json_bytes(body))
+    omitted = TrainingRunRequest.model_validate_json(
+        json_bytes({**body, "policy": {"optimizer": "lbfgs"}})
+    )
+    resolved, compatible = omitted.resolve()
+    assert resolved.policy == request.policy
+    assert compatible.sha256 == request.resolve()[1].sha256
+    historical = RequestFingerprint.for_profile_request(omitted)
+    assert {historical.sha256, *historical.previous_hashes} <= set(compatible.previous_hashes)
+    explicit_seeds = TrainingRunRequest.model_validate_json(
+        json_bytes({**body, "policy": {"optimizer": "lbfgs", "seeds": [11, 23, 47]}})
+    )
+    assert explicit_seeds.resolve()[0].policy.seeds == (11, 23, 47)
+    external = omitted.model_copy(update={"architecture_id": "other-lbfgs"})
+    assert external.resolve()[0].policy.seeds == (11, 23, 47)
     original = request.model_dump(mode="json")
     assert "display_name" not in original
     unnamed = TrainingRunRequest.model_validate_json(json_bytes({**body, "display_name": None}))
@@ -848,12 +862,36 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         "benchmark_selection_id": benchmark_id,
     }
     training_headers = context.headers
+    # A low epoch limit restricts TCN training. The deterministic solver uses no epochs.
+    context.service.settings = context.service.settings.model_copy(
+        update={"max_training_epochs": 2, "max_training_updates": 8}
+    )
+    invalid_policies: tuple[dict[str, object], ...]
     if tcn:
         training["display_name"] = "  Short windows  "
+        invalid_policies = (
+            {"optimizer": "adamw", "epochs": 3},
+            {"budget": "updates", "updates": 9, "validation_updates": [9]},
+        )
+        error_status, error_code = 429, "capacity_limit"
+    else:
+        invalid_policies = (
+            {"optimizer": "lbfgs", "seeds": [11, 23]},
+            {"optimizer": "lbfgs", "epochs": 10},
+        )
+        error_status, error_code = 422, "unsupported_configuration"
+        training["policy"] = {"optimizer": "lbfgs"}
+    for policy in invalid_policies:
+        rejected = context.client.post(
+            "/api/v1/training-runs", json={**training, "policy": policy}, headers=context.headers
+        )
+        assert rejected.status_code == error_status, rejected.text
+        assert rejected.json()["error"]["code"] == error_code
     response = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert response.status_code == 202, response.text
     run = AdminRunView.model_validate_json(response.content)
     assert run.training is not None and run.training.dataset_id == dataset_id
+    assert run.training.policy.seeds == (11,)
     assert run.trainable_parameters == (363 if tcn else 867)
     assert (run.display_name, run.name_revision) == ("Short windows" if tcn else None, 0)
     run_path = f"/api/v1/training-runs/{run.run_id}"

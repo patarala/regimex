@@ -78,7 +78,7 @@ def authorization(token: str = TOKEN) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def test_architecture_catalog_reports_the_configured_training_seed_limit(
+def test_architecture_catalog_reports_applicable_training_limits(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from regimex.service_bootstrap import create_service
@@ -88,6 +88,8 @@ def test_architecture_catalog_reports_the_configured_training_seed_limit(
     monkeypatch.setenv("REGIMEX_OBJECT_ROOT", str(tmp_path / "objects"))
     monkeypatch.setenv("REGIMEX_WORK_ROOT", str(tmp_path / "work"))
     monkeypatch.setenv("REGIMEX_MAX_TRAINING_SEEDS", "5")
+    monkeypatch.setenv("REGIMEX_MAX_TRAINING_EPOCHS", "2")
+    monkeypatch.setenv("REGIMEX_MAX_TRAINING_UPDATES", "24")
     service = create_service(ServiceSettings.from_env())
     admin = Principal(owner_id="fixture-admin", role="admin", token_id=uuid4())
     monkeypatch.setattr(service, "authenticate", lambda _: admin)
@@ -96,7 +98,12 @@ def test_architecture_catalog_reports_the_configured_training_seed_limit(
         detail = client.get("/api/v1/architectures/tcn", headers=authorization())
     assert catalog.status_code == detail.status_code == 200
     assert {item["max_training_seeds"] for item in catalog.json()["items"]} == {5}
-    assert detail.json()["max_training_seeds"] == 5
+    limits = {item["architecture_id"]: item for item in catalog.json()["items"]}
+    assert limits["tcn"] == detail.json()
+    assert limits["tcn"]["max_training_epochs"] == 2
+    assert limits["tcn"]["max_training_updates"] == 24
+    assert limits["baseline"]["max_training_epochs"] is None
+    assert limits["baseline"]["max_training_updates"] is None
 
 
 def test_validation_uses_strict_json_contract_without_model_or_storage(

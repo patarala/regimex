@@ -2,7 +2,7 @@
 
 import hashlib
 from collections.abc import Callable
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, Self
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Response
@@ -57,6 +57,7 @@ from regimex.model_registry import (
     TrainingPolicySpec,
     TrainingRuntime,
     configured_parameter_count,
+    resolve_training_policy,
 )
 from regimex.service_contracts import NotFound, Principal
 from regimex.storage import json_bytes
@@ -282,6 +283,23 @@ class TrainingRunRequest(StrictModel):
     inference_runtime: InferenceRuntime = Field(default_factory=InferenceRuntime)
     analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
     benchmark_selection_id: Identifier
+
+    def resolve(self) -> tuple[Self, RequestFingerprint]:
+        original = RequestFingerprint.for_profile_request(self)
+        policy = resolve_training_policy(self.architecture_id, self.policy)
+        if policy is self.policy:
+            return self, original
+        resolved = self.model_copy(update={"policy": policy})
+        fingerprint = RequestFingerprint.for_profile_request(resolved)
+        # Earlier receipts expanded an omitted baseline seed list to three seeds.
+        return resolved, RequestFingerprint(
+            sha256=fingerprint.sha256,
+            previous_hashes=(
+                *fingerprint.previous_hashes,
+                original.sha256,
+                *original.previous_hashes,
+            ),
+        )
 
 
 class PublicationRequest(StrictModel):
@@ -606,15 +624,16 @@ def install_admin_routes(
     def train(
         identity: Identity, intake: TrainingBody, response: Response, idempotency_key: Key
     ) -> AdminRunView:
+        resolved, fingerprint = intake.resolve()
         record = service.submit_training(
             identity,
             TrainingSpec(
-                **intake.model_dump(exclude={"display_name"}),
+                **resolved.model_dump(exclude={"display_name"}),
                 model_version_id=f"model-{uuid4().hex}",
                 build_id=__version__,
             ),
             idempotency_key=idempotency_key,
-            request_sha256=RequestFingerprint.for_profile_request(intake),
+            request_sha256=fingerprint,
             display_name=intake.display_name,
         )
         response.headers["Location"] = f"/api/v1/training-runs/{record.run_id}"

@@ -98,11 +98,17 @@ def repository(monkeypatch: pytest.MonkeyPatch) -> Iterator[AdminRepository]:
     database = DatabaseRepository(dsn, schema=schema)
 
     def software_transaction_selection(
-        _connection: Connection, _owner_id: str, spec: TrainingSpec, dataset: DatasetRecord
+        _connection: Connection,
+        _owner_id: str,
+        spec: TrainingSpec,
+        dataset: DatasetRecord,
+        *,
+        training_semantics: DirectionSemantics,
     ) -> None:
         # These tests never fit a model: their deliberately non-executable codec
         # metadata isolates SQL effects. Real training uses the benchmark gate.
         assert spec.benchmark_selection_id is None
+        assert training_semantics.profile_sha256 == analysis_profile_hash(PROFILE)
         assert all(
             member.source_namespace == "repository-fixtures" for member in dataset.manifest.members
         )

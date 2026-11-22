@@ -226,6 +226,10 @@ class AdminService:
                 "invalid_data", "Training and validation direction semantics differ.", 422
             )
         self._profile(labels.references.analysis_profile, spec.analysis_profile_id)
+        if labels.references.semantics.decoder_version != DECODER_VERSION:
+            raise ServiceError(
+                "unsupported_configuration", "Training references require the current decoder.", 422
+            )
         descriptor = _validate_request(
             lambda: self.analysis_service.registry.get(spec.architecture_id)
         )
@@ -238,7 +242,8 @@ class AdminService:
             or (
                 spec.policy.updates > self.settings.max_training_updates
                 if isinstance(spec.policy, FixedUpdatePolicy)
-                else spec.policy.epochs > self.settings.max_training_epochs
+                else descriptor.trains_by_epoch
+                and spec.policy.epochs > self.settings.max_training_epochs
             )
         ):
             raise CapacityExceeded("Training exceeds the allowed computation budget.")
