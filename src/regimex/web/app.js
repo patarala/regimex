@@ -168,7 +168,8 @@ async function restoreLocation() {
   if (section === "training" || section === "connections") {
     if (section === "connections") return integrations.show(id);
     const view = url.searchParams.get("view");
-    return training.show(id, ["archived", "all"].includes(view) ? view : "active");
+    const pair = ["left", "right"].map(key => url.searchParams.get(key)).filter(id => uuid.test(id));
+    return training.show(id, ["archived", "all"].includes(view) ? view : "active", pair);
   }
   $("open-analyses").href = url.href;
   if (previous && previous !== section) $("open-analyses").focus();

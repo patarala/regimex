@@ -12,7 +12,7 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function readTrainingRequest(text, base) {
+export function readTrainingRequest(text, base, {fromRun = false} = {}) {
   let input;
   try { input = JSON.parse(text); }
   catch { throw new Error("Enter valid JSON for the run configuration or training policy."); }
@@ -25,7 +25,8 @@ export function readTrainingRequest(text, base) {
   for (const key of Object.keys(request))
     if (!requestFields.has(key)) throw new Error("Unknown run configuration field: " + key + ".");
   for (const key of identifiers)
-    if (typeof request[key] !== "string" || !request[key].length)
+    if (!(fromRun && key === "benchmark_selection_id" && request[key] == null) &&
+        (typeof request[key] !== "string" || !request[key].length))
       throw new Error("Provide a nonempty string for " + key + ".");
   for (const key of ["parameters", "policy", "training_runtime", "inference_runtime"]) {
     if (key.endsWith("_runtime") && request[key] === undefined) continue;
@@ -62,6 +63,52 @@ function formatTagged(value) {
     token.startsWith('"n') ? token.slice(2, -1) : '"' + token.slice(2));
 }
 
+// Keep the persisted request's number literals when a stored run becomes a new draft.
+function savedConfiguration(row) {
+  const fields = Object.fromEntries([...requestFields]
+    .filter(key => Object.hasOwn(row.straining, "s" + key))
+    .map(key => ["s" + key, row.straining["s" + key]]));
+  if (row.sdisplay_name) fields.sdisplay_name = row.sdisplay_name;
+  return formatTagged(fields);
+}
+
+export function readTrainingRuns(text) {
+  const data = JSON.parse(text);
+  const tagged = JSON.parse(taggedTokens(text));
+  if (Array.isArray(data.items)) {
+    data.items.forEach((row, index) => { row.configuration = savedConfiguration(tagged.sitems[index]); });
+  } else {
+    data.configuration = savedConfiguration(tagged);
+  }
+  return data;
+}
+
+export function renamedConfiguration(text, name) {
+  const fields = JSON.parse(taggedTokens(text));
+  if (name) fields.sdisplay_name = "s" + name;
+  else delete fields.sdisplay_name;
+  return formatTagged(fields);
+}
+
+export function differentSettings(left, right) {
+  const differences = [];
+  function compare(a, b, path) {
+    if (isObject(a) && isObject(b)) {
+      const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+      for (const key of [...keys].sort()) {
+        if (!path.length && key === "sdisplay_name") continue;
+        compare(a[key], b[key], [...path, key.slice(1)]);
+      }
+      return;
+    }
+    const first = a === undefined ? "—" : formatTagged(a);
+    const second = b === undefined ? "—" : formatTagged(b);
+    if (first !== second) differences.push([path.join("."), first, second]);
+  }
+  compare(JSON.parse(taggedTokens(left)), JSON.parse(taggedTokens(right)), []);
+  return differences;
+}
+
 export function trainingFieldsBody(fields, settings) {
   const tagged = JSON.parse(taggedTokens(JSON.stringify(fields)));
   for (const [key, text] of Object.entries(settings))
@@ -91,8 +138,8 @@ function checkPolicyNumbers(value) {
     throw new Error("A number would change precision in the form. Use Start training from the JSON editor to keep it exact.");
 }
 
-export function parseTrainingJSON(text, base) {
-  const {request, body} = readTrainingRequest(text, base);
+export function parseTrainingJSON(text, base, options) {
+  const {request, body} = readTrainingRequest(text, base, options);
   const tagged = JSON.parse(taggedTokens(body));
   checkPolicyNumbers(tagged.spolicy);
   const settings = Object.fromEntries(["parameters", "training_runtime", "inference_runtime", "policy"]

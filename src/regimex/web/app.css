@@ -1153,9 +1153,27 @@ iframe {
   margin: 0;
 }
 .training-selection .actions {
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
   align-items: stretch;
   gap: 6px;
+}
+#training-comparison-results table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin-block: 14px;
+  font-variant-numeric: tabular-nums;
+}
+#training-comparison-results :is(th, td) {
+  padding: 6px 4px;
+  text-align: start;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid var(--border);
+}
+#training-comparison-results tbody th {
+  font-weight: normal;
+  color: var(--muted);
 }
 .training-runs li:has(input) {
   display: grid;

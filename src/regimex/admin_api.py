@@ -338,6 +338,11 @@ class AdminRunPage(StrictModel):
     offset: int
 
 
+class TrainingValidationScore(StrictModel):
+    model_version_id: Identifier
+    validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
+
+
 class TrainingArchiveUpdate(StrictModel):
     run_ids: Annotated[tuple[UUID, ...], Field(min_length=1, max_length=MAX_ARCHIVE_SELECTION)]
     archived: bool
@@ -710,6 +715,14 @@ def install_admin_routes(
     @app.get("/api/v1/training-runs/{run_id}/metrics")
     def training_metrics(run_id: UUID, identity: Identity) -> TrainingMetrics:
         return service.training_metrics(identity, run_id)
+
+    @app.get("/api/v1/training-runs/{run_id}/validation-score")
+    def training_validation_score(run_id: UUID, identity: Identity) -> TrainingValidationScore:
+        metrics = service.training_metrics(identity, run_id)
+        return TrainingValidationScore(
+            model_version_id=metrics.model_version_id,
+            validation_segment_macro_f1=metrics.validation_segment_macro_f1,
+        )
 
     @app.post("/api/v1/training-runs/{run_id}/weights/deletion-preview")
     def preview_weight_deletion(run_id: UUID, identity: Identity) -> DeletionPreview:

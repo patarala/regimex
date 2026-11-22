@@ -1188,6 +1188,7 @@ class AdminRepository:
                     "model_version_id": model.model_version_id,
                     "bundle_sha256": model.bundle_sha256,
                     "quality_status": model.quality_status,
+                    "validation_segment_macro_f1": metrics.validation_segment_macro_f1,
                     **(
                         {"fit_statistics": fit_statistics.model_dump(mode="json")}
                         if fit_statistics is not None

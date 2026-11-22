@@ -211,6 +211,18 @@ Open an archived run and choose **Restore run** to return it to the current
 list. The same link opens its charts in either view. Archiving preserves any
 saved weights and keeps published models available for analyses.
 
+Choose **New run from this run** to open an editable copy with the same data,
+architecture, seeds and resource settings. Select replacements for any
+references or reservations that are no longer available. **Start training**
+submits the new run. The JSON under **Run details and settings** can also be
+copied into the new-run editor.
+
+To compare two runs, choose **Select runs**, check both and choose
+**Compare**. The page shows times, parameter counts and settings that differ.
+For two successful runs with the same dataset, validation references and
+analysis profile, it also shows the validation interval macro-F1 difference.
+The comparison URL opens the same pair again.
+
 To free space, expand **Run details and settings** and choose **Delete model
 weights**. Review the file size and optionally check **Also archive this run**
 before confirming. Deleting weights permanently retires the model version.

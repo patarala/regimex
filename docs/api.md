@@ -329,6 +329,7 @@ run status and the choices available to the signed-in administrator:
 | `POST /jobs/{id}/cancel` | Request cancellation of a queued or running training job |
 | `GET /training-runs/{id}/progress` | New chart samples from the current training attempt |
 | `GET /training-runs/{id}/metrics` | Selected seed, validation interval macro-F1 and the history saved by the backend. Returns `409` until the run succeeds. |
+| `GET /training-runs/{id}/validation-score` | Model version and verified validation interval macro-F1, without the training history. |
 | `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model |
 
 Send `{"run_ids":["RUN_UUID"],"archived":true}` to archive a selection, or
@@ -337,6 +338,9 @@ identify a distinct run owned by the administrator. If any run is still
 queued, running or cancelling, the entire request returns `409`.
 The list and detail responses include `archived_at`, which is null for a
 current run. Archiving keeps the run URL, weights and publication status.
+
+Newly completed training jobs include `validation_segment_macro_f1` in their
+`output`. Use the validation-score endpoint for an older completed run.
 
 Training list and detail responses include a `statistics` object. All
 durations are wall-clock seconds. For active jobs, the values are current as

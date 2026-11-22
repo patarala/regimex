@@ -47,6 +47,7 @@ def test_workspace_deep_links_serve_the_app_shell_only_on_known_routes() -> None
         for path in (
             "/training",
             "/training/new",
+            f"/training/compare?left={resource_id}&right=00000000-0000-0000-0000-000000000001",
             f"/training/{resource_id}?view=archived",
             "/connections",
             f"/connections/{resource_id}",

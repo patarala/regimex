@@ -254,6 +254,7 @@
               <div id="training-selection" class="training-selection" hidden>
                 <span id="training-selection-count" class="hint" role="status"></span>
                 <div class="actions">
+                  <button id="training-compare-selected" type="button" class="quiet" disabled>Compare</button>
                   <button id="training-archive-selected" type="button" class="quiet">Archive selected</button>
                   <button id="training-restore-selected" type="button" class="quiet">Restore selected</button>
                 </div>
@@ -272,6 +273,12 @@
                 <button id="training-refresh" type="button" class="quiet">Refresh</button>
               </nav>
             </div>
+          </section>
+          <section id="training-comparison" class="panel" aria-labelledby="training-comparison-title" hidden>
+            <h2 id="training-comparison-title" tabindex="-1">Compare runs</h2>
+            <p id="training-comparison-status" class="hint" role="status"></p>
+            <div id="training-comparison-results"></div>
+            <button id="training-comparison-retry" type="button" class="quiet" hidden>Retry comparison</button>
           </section>
           <section id="training-config" class="panel" aria-labelledby="training-config-title" hidden>
             <div class="section-heading">
@@ -369,6 +376,7 @@
               <span id="training-archived" class="hint" hidden>Archived</span>
               <button id="training-rename" type="button" class="quiet">Rename</button>
               <button id="training-archive-run" type="button" class="quiet" hidden>Archive run</button>
+              <button id="training-copy-run" type="button" class="quiet">New run from this run</button>
             </div>
             <form id="training-name-editor" hidden>
               <label for="training-edited-name">Run name</label>

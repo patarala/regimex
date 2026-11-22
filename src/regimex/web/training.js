@@ -4,7 +4,8 @@ import {createTrainingMetrics} from "./training-metrics.js";
 import {createTrainingProgress} from "./training-progress.js";
 import {createRunArchive, finished} from "./training-archive.js";
 import {architectureName, createTrainingForm, datasetName, shortId} from "./training-form.js";
-import {trainingRequestKey} from "./training-json.js";
+import {readTrainingRuns, renamedConfiguration, trainingRequestKey} from "./training-json.js";
+import {createTrainingComparison} from "./training-comparison.js";
 import {createRunNameEditor} from "./training-name.js";
 import {parameterCountLabel} from "./training-size.js";
 import {queuedStageLabel} from "./queue-status.js";
@@ -109,8 +110,10 @@ function appendRunInfo(item, button, row, label) {
 function withSavedChanges(row, known) {
   if (known?.weights_deletion_id && !row.weights_deletion_id)
     row = {...row, weights_deletion_id: known.weights_deletion_id};
-  if ((known?.name_revision ?? 0) > (row.name_revision ?? 0))
+  if ((known?.name_revision ?? 0) > (row.name_revision ?? 0)) {
     row = {...row, display_name: known.display_name, name_revision: known.name_revision};
+    if (row.configuration) row.configuration = renamedConfiguration(row.configuration, row.display_name);
+  }
   return row;
 }
 
@@ -128,14 +131,34 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   const names = createRunNameEditor({session, getRun: () => run, applyName});
   const metrics = createTrainingMetrics();
   const progress = createTrainingProgress(session, metrics);
-  const archive = createRunArchive({apply: setArchived, renderRows});
+  let comparedIds = [];
+  const archive = createRunArchive({apply: setArchived, renderRows,
+    compare: ids => navigate(runPath("compare", view, ids))});
   const runsToggle = $("training-runs-toggle");
-  const runPath = (id, filter = view) => "/training" + (id ? "/" + encodeURIComponent(id) : "") +
-    (filter === "active" ? "" : "?view=" + filter);
+  function runPath(id, filter = view, ids = comparedIds) {
+    const query = new URLSearchParams();
+    if (filter !== "active") query.set("view", filter);
+    if (id === "compare" && ids.length === 2) {
+      query.set("left", ids[0]);
+      query.set("right", ids[1]);
+    }
+    return "/training" + (id ? "/" + encodeURIComponent(id) : "") + (query.size ? "?" + query : "");
+  }
+  const comparison = createTrainingComparison({readRun, session, runPath, duration});
   const pending = new Map();
   const isAdmin = () => session.value?.principal.role === "admin";
   const current = (stamp) => opened && stamp === epoch && isAdmin();
   const selected = (stamp) => opened && stamp === selection && isAdmin();
+
+  async function readRecords(path, options) {
+    const account = session.epoch;
+    const response = await session.request(path, options);
+    const text = await response.text();
+    if (session.epoch !== account) throw new Error("The workspace changed. Refresh the page to continue.");
+    return readTrainingRuns(text);
+  }
+
+  function readRun(id) { return readRecords(route(id)); }
 
   function message(value = "", error = false) {
     $("training-notice").textContent = value;
@@ -168,6 +191,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     metricsLoaded = false;
     progress.stop();
     metrics.clear();
+    comparison.close();
     $("training-downstream").hidden = $("training-detail").hidden = true;
     for (const id of ["training-state", "training-stage", "training-settings",
       "training-publication"]) $(id).textContent = "";
@@ -263,7 +287,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     if (history.inert) empty.hidden = true;
     let page;
     try {
-      page = await session.json(api + "training-runs?archive=" + view + "&limit=" + (pageSize + 1) + "&offset=" + offset);
+      page = await readRecords(api + "training-runs?archive=" + view + "&limit=" + (pageSize + 1) + "&offset=" + offset);
     } catch (error) {
       if (valid()) {
         history.setAttribute("aria-busy", "false");
@@ -310,7 +334,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     const request = JSON.stringify([path, trainingRequestKey(body)]);
     const key = requests.get(request) || crypto.randomUUID();
     requests.set(request, key);
-    const result = await session.json(path, {method: "POST", body, headers: {"Idempotency-Key": key}});
+    const options = {method: "POST", body, headers: {"Idempotency-Key": key}};
+    const result = path === api + "training-runs" ? await readRecords(path, options) : await session.json(path, options);
     // A draft can be edited while its request is in flight, then restored to the same settings.
     if (requests === pending && requests.get(request) === key) requests.delete(request);
     return result;
@@ -348,6 +373,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     if (run?.run_id === id) {
       run = withSavedChanges(run, saved);
       showTitle();
+      setText($("training-settings"), run.configuration);
     }
     if (listed.has(id)) {
       listed.set(id, withSavedChanges(listed.get(id), saved));
@@ -379,6 +405,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   function refreshDetail() {
+    if (target === "compare") return comparison.show(comparedIds, false);
     if (run) return refresh(selection);
     if (target && target !== "new") {
       // Supersede a detail request started before the mutation was acknowledged.
@@ -423,10 +450,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [element("dt", key), element("dd", value || "—")]));
       renderedFacts = content;
     }
-    setText($("training-settings"), JSON.stringify({parameters: spec.parameters, policy: spec.policy,
-      training_runtime: spec.training_runtime, inference_runtime: spec.inference_runtime,
-      analysis_profile_id: spec.analysis_profile_id, labels_reference_set_id: spec.labels_reference_set_id,
-      validation_reference_set_id: spec.validation_reference_set_id}, null, 2));
+    setText($("training-settings"), run.configuration);
     const stages = {
       starting: "Preparing training.", loading: "Loading training data.",
       "administrative-computation": "Training the model.", committing: "Saving the model and metrics.",
@@ -506,7 +530,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     const before = run.job.state;
     try {
       if (fetchRun) {
-        const next = await session.json(route(run.run_id));
+        const next = await readRun(run.run_id);
         if (!valid()) return;
         if (next.name_revision > run.name_revision) applyName(run.run_id, next.display_name, next.name_revision);
         run = withSavedChanges(next, run);
@@ -551,7 +575,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     }
   }
 
-  async function show(id = null, filter = "active") {
+  async function show(id = null, filter = "active", ids = []) {
     if (!isAdmin()) return;
     if (id === "new" && acceptedDraftRun) {
       const accepted = acceptedDraftRun;
@@ -560,12 +584,14 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     }
     const entering = !opened;
     const viewChanged = filter !== view;
+    const pairChanged = id === "compare" && ids.join() !== comparedIds.join();
+    comparedIds = id === "compare" ? ids : [];
     const filterFocused = document.activeElement === $("training-history-view");
     if (entering) {
       opened = true;
       epoch++;
       $("training").hidden = false;
-    } else if (id === target && !viewChanged) return;
+    } else if (id === target && !viewChanged && !pairChanged) return;
     if (entering || viewChanged) {
       view = filter;
       $("training-history-view").value = view;
@@ -573,7 +599,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       archive.reset();
       if (entering) $("training-empty").hidden = $("training-prev").hidden = $("training-next").hidden = true;
     }
-    if (!entering && id === target) {
+    if (!entering && id === target && !pairChanged) {
       void list();
       return;
     }
@@ -593,13 +619,14 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       $("training-config-title").focus();
       return;
     }
+    if (id === "compare") return comparison.show(comparedIds);
     markCurrent(id);
     return loadRun(id, selection, listed.get(id), !filterFocused);
   }
 
   async function loadRun(id, stamp, cached, focus = false) {
     try {
-      const row = cached || await session.json(route(id));
+      const row = cached || await readRun(id);
       if (!selected(stamp)) return;
       run = withSavedChanges(row, listed.get(id));
       const recheckRun = Boolean(cached && finished(row.job));
@@ -617,7 +644,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       clearTimeout(timer);
       pollRevision++;
     }
-    for (const id of ["training-new", "training-refresh", "training-cancel"])
+    for (const id of ["training-new", "training-refresh", "training-cancel", "training-copy-run"])
       $(id).disabled = locked;
     $("training-evaluate").disabled = $("training-publish").disabled =
       $("training-delete-weights").disabled = locked || pendingDownstream;
@@ -653,6 +680,13 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   $("training-new").addEventListener("click", () => {
     if (target !== "new" && submittingDraft === draftRevision) discardDraft();
     acceptedDraftRun = null;
+    chooseFromHistory("new");
+  });
+  $("training-copy-run").addEventListener("click", () => {
+    if (!run || busy) return;
+    discardDraft();
+    acceptedDraftRun = null;
+    form.useSavedRun(run.configuration);
     chooseFromHistory("new");
   });
   function draftEdited() {

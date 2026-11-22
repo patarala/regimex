@@ -56,6 +56,7 @@ function readSettings(id) {
 export function createTrainingForm({session, eachPage}) {
   let generation = 0, busy = false, architectures = [], draft = null;
   let currentArchitecture = null;
+  let sourceConfiguration = null;
   let jsonBase = null, importedBody = null;
   let converting = false, loading = false, analysisProfile;
   const jsonField = $("training-json");
@@ -107,7 +108,7 @@ export function createTrainingForm({session, eachPage}) {
   }
   const dependent = ["training-labels", "training-validation", "training-benchmark"];
   function restoreChoice(id, saved) {
-    if (saved && Array.from($(id).options).some(item => item.value === saved)) $(id).value = saved;
+    if (saved != null) $(id).value = saved;
   }
   async function datasetOptions(id, valid) {
     const query = "?dataset_id=" + encodeURIComponent(id);
@@ -120,6 +121,7 @@ export function createTrainingForm({session, eachPage}) {
         row.kind === "automatic" ? "Automatic" : "Human", row.reviewer, shortId(row.reference_set_id),
       ].filter(Boolean).join(" · ")]);
     return {
+      profile: benchmarks.analysis_profile_id,
       "training-labels": referencesFor("train"), "training-validation": referencesFor("validation"),
       "training-benchmark": benchmarks.benchmark_ids.map(id => [id, id]),
     };
@@ -218,6 +220,28 @@ export function createTrainingForm({session, eachPage}) {
       restoreChoice("training-dataset", draft?.["training-dataset"]);
       restoreChoice("training-architecture", draft?.["training-architecture"]);
       selectArchitecture();
+      if (sourceConfiguration) {
+        const source = sourceConfiguration;
+        try {
+          await applyRequest(source, source, true);
+        } catch (error) {
+          if (!valid()) return;
+          // Keep an unrepresentable policy editable, with a functional default form behind it.
+          const fallback = loadDataset(), fallbackStamp = generation;
+          await fallback;
+          if (generation !== fallbackStamp) return;
+          sourceConfiguration = null;
+          showEditor(fieldsBody(), source);
+          feedback(error.message);
+          return;
+        }
+        if (valid()) {
+          sourceConfiguration = null;
+          loading = false;
+          updateSubmit();
+        }
+        return;
+      }
       if (draft) {
         for (const id of runtimes) $(id).value = draft[id] ?? "";
         $("training-form-settings").open = draft.policyExpanded;
@@ -232,6 +256,7 @@ export function createTrainingForm({session, eachPage}) {
     preparation.close();
     if (!remember) {
       draft = null;
+      sourceConfiguration = null;
       architectureDrafts.clear();
     } else if (!$("training-config").hidden) {
       if (currentArchitecture) {
@@ -266,6 +291,7 @@ export function createTrainingForm({session, eachPage}) {
   }
   $("training-dataset").addEventListener("change", loadDataset);
   $("training-architecture").addEventListener("change", selectArchitecture);
+  for (const id of dependent) $(id).addEventListener("change", updateSubmit);
   $("training-policy").addEventListener("invalid", () => { $("training-form-settings").open = true; }, true);
   for (const id of ["training-parameters", ...runtimes])
     $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
@@ -307,10 +333,14 @@ export function createTrainingForm({session, eachPage}) {
       $("training-name").focus();
       return;
     }
-    const {request, settings, body} = parseTrainingJSON(jsonField.value, jsonBase);
+    await applyRequest(jsonField.value, jsonBase);
+  }
+  async function applyRequest(text, base, fromRun = false) {
+    const {request, settings, body} = parseTrainingJSON(text, base, {fromRun});
     const architecture = architectures.find(row => row.architecture_id === request.architecture_id);
     if (!architecture) throw new Error("The selected architecture is unavailable in this workspace.");
-    if (!Array.from($("training-dataset").options).some(item => item.value === request.dataset_id))
+    const datasetReady = Array.from($("training-dataset").options).some(item => item.value === request.dataset_id);
+    if (!datasetReady && !fromRun)
       throw new Error("Choose a development dataset available in this workspace.");
     const saved = currentArchitecture === request.architecture_id
       ? policy.snapshot() : architectureDrafts.get(request.architecture_id)?.policy;
@@ -319,15 +349,16 @@ export function createTrainingForm({session, eachPage}) {
     converting = true;
     updateSubmit();
     try {
-      const options = await datasetOptions(request.dataset_id, valid);
+      const options = datasetReady ? await datasetOptions(request.dataset_id, valid)
+        : Object.fromEntries(dependent.map(id => [id, []]));
       if (!valid()) return;
       for (const id of dependent) {
-        if (!options[id].some(([value]) => value === request[selectionFields[id]]))
+        if (!fromRun && !options[id].some(([value]) => value === request[selectionFields[id]]))
           throw new Error(selectionFields[id] + " is unavailable for this dataset.");
       }
       saveArchitecture();
       setDatasetOptions(options);
-      for (const id of selectors) $(id).value = request[selectionFields[id]];
+      for (const id of selectors) $(id).value = request[selectionFields[id]] ?? "";
       currentArchitecture = request.architecture_id;
       policy.select(architecture, imported);
       $("training-name").value = request.display_name ?? "";
@@ -335,11 +366,21 @@ export function createTrainingForm({session, eachPage}) {
       sizePicker.selectArchitecture(architecture);
       $("training-runtime").value = settings.training_runtime ?? "";
       $("training-inference").value = settings.inference_runtime ?? "";
-      analysisProfile = request.analysis_profile_id;
+      const changedProfile = fromRun && options.profile && request.analysis_profile_id &&
+        request.analysis_profile_id !== options.profile;
+      analysisProfile = fromRun && !datasetReady ? undefined :
+        changedProfile ? options.profile : request.analysis_profile_id;
       // The structured controls fill in defaults. Keep a pasted policy sparse until it is edited.
       importedBody = {architecture: currentArchitecture, policyFields: JSON.stringify(policy.payload()),
         policyText: settings.policy, text: body};
       importedBody.fields = formJSON();
+      // An unavailable reference or closed reservation must be chosen again before submission.
+      const missing = selectors.some(id => !$(id).value);
+      if (missing || changedProfile) {
+        importedBody.text = importedBody.fields;
+        feedback([changedProfile && `New runs use ${options.profile} instead of ${request.analysis_profile_id}.`,
+          missing && "Choose the missing dataset, labels or benchmark to continue."].filter(Boolean).join(" "));
+      }
       showEditor(null);
       $("training-name").focus();
     } catch (error) {
@@ -390,6 +431,7 @@ export function createTrainingForm({session, eachPage}) {
   }
   return {
     open, close, payload,
+    useSavedRun(configuration) { sourceConfiguration = configuration; },
     discard() { close(false); },
     setBusy(value) { busy = value; updateSubmit(); },
   };

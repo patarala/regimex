@@ -937,7 +937,7 @@ def test_training_acknowledgement_after_navigation(browser: Any, return_before_a
             page.go_back()
             expect(page).to_have_url(ORIGIN + "/training/" + RUN_ID)
             expect(page.get_by_role("heading", name="Submitted draft")).to_be_visible()
-            page.get_by_role("button", name="New run").click()
+            page.get_by_role("button", name="New run", exact=True).click()
             expect(name).to_have_value("")
     finally:
         page.close()
@@ -958,7 +958,7 @@ def test_explicit_new_run_can_use_the_same_settings_as_a_pending_submission(brow
             start.click()
         page.locator("#open-analyses").click()
         page.locator("#open-training").click()
-        page.get_by_role("button", name="New run").click()
+        page.get_by_role("button", name="New run", exact=True).click()
         with page.expect_request(lambda r: r.method == "POST"):
             start.click()
         first, second = held

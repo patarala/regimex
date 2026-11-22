@@ -36,7 +36,7 @@ from regimex.application.deletion import DeletionService
 from regimex.application.service import AnalysisService
 from regimex.benchmark_api import BenchmarkAPIService
 from regimex.data_catalog import content_hash
-from regimex.directions import AnalysisConfig
+from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.deletion_repository import DeletionRepository
@@ -831,7 +831,10 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
             headers=headers,
         )
         assert options.status_code == 200, options.text
-        assert options.json() == {"benchmark_ids": expected_ids}
+        assert options.json() == {
+            "benchmark_ids": expected_ids,
+            "analysis_profile_id": DEFAULT_ANALYSIS_PROFILE,
+        }
 
     assert_benchmark_options([])
     started = context.client.post(
@@ -938,12 +941,21 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     assert metrics.status_code == 200, metrics.text
     assert metrics.json()["model_version_id"] == model_id
     assert 0 <= metrics.json()["validation_segment_macro_f1"] <= 1
+    assert (
+        detail["output"]["validation_segment_macro_f1"]
+        == metrics.json()["validation_segment_macro_f1"]
+    )
+    score = context.client.get(run_path + "/validation-score", headers=headers)
+    assert score.json() == {
+        "model_version_id": model_id,
+        "validation_segment_macro_f1": metrics.json()["validation_segment_macro_f1"],
+    }
     assert metrics.json()["history"]["epochs" if tcn else "candidates"]
     assert metrics.json()["repeat_outcomes"] == (
         [{"seed": 11, "step": 1, "reason": "epoch_limit"}] if tcn else []
     )
     user_headers = {"Authorization": f"Bearer {context.user_token}"}
-    for part in ("metrics", "progress", "actions"):
+    for part in ("metrics", "progress", "actions", "validation-score"):
         assert context.client.get(run_path + "/" + part, headers=user_headers).status_code == 403
     assert (
         context.client.get(
