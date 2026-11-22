@@ -1,5 +1,6 @@
 """Run history remains readable at the narrowest sidebar and phone layouts."""
 
+import re
 from typing import Any
 
 import pytest
@@ -33,16 +34,29 @@ def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, wid
     try:
         # Older dates include the year even in the narrowest selection layout.
         page.clock.set_fixed_time("2027-01-01T13:00:00Z")
-        page.goto(f"{ORIGIN}/training/new?view=all")
+        page.goto(f"{ORIGIN}/training/{RUN_ID}?view=all")
+        expect(page.locator("#training-state")).to_have_text("Cancelled")
+        expect(page.locator("#training-archived")).to_be_visible()
         if width == 320:
+            created = page.locator("#training-created time")
+            assert created.evaluate("""time => {
+                const range = document.createRange();
+                range.selectNodeContents(time);
+                return range.getClientRects().length === 1;
+            }""")
             page.get_by_role("button", name="Run history", exact=True).click()
         row = page.locator(f'#training-runs button[data-run-id="{RUN_ID}"]')
         expect(row.locator("strong")).to_have_text(name)
         expect(row.locator("strong")).to_have_css("direction", "rtl")
-        expect(row.locator("[data-state]")).to_have_text("Cancelled · Archived")
+        expect(row.locator("[data-state]")).to_have_text("Cancelled")
+        expect(row).to_have_accessible_name(re.compile(r"\bArchived\b"))
+        expect(row.get_by_role("img", name="Archived")).to_be_visible()
         expect(row.locator(".training-run-id")).to_have_text("#00000001")
         expect(row.locator("time")).to_contain_text("PM")
         expect(row.locator("time")).to_contain_text("2026")
+        page.locator(f'[data-run-info="{RUN_ID}"]').click()
+        expect(page.get_by_role("tooltip")).to_contain_text("Archived Oct 1, 2026")
+        page.keyboard.press("Escape")
         for selecting in (False, True):
             if selecting:
                 page.get_by_role("button", name="Select runs", exact=True).click()
@@ -93,11 +107,72 @@ def test_run_history_shows_full_labels_and_keeps_time_together(browser: Any, wid
                 )
                 assert abs(alignment["timeInset"]) <= 1 and abs(alignment["stateInset"]) <= 1
                 assert alignment["clearsInfo"] and alignment["clearsSuffix"]
-                if run_id == RUN_ID and width == 821 and selecting:
-                    assert alignment["wrapped"]
-                if run_id == short["run_id"] and width == 320:
+                if width == 320:
                     assert not alignment["wrapped"]
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    finally:
+        page.close()
+
+
+def word_bounds(element: Any, word: str) -> dict[str, float]:
+    return dict(
+        element.evaluate(
+            """(element, word) => {
+        const nodes = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        while (nodes.nextNode()) {
+            const node = nodes.currentNode, start = node.textContent.indexOf(word);
+            if (start < 0) continue;
+            const range = document.createRange();
+            range.setStart(node, start);
+            range.setEnd(node, start + word.length);
+            if (range.getClientRects().length !== 1) throw Error(word + " wraps");
+            return range.getBoundingClientRect().toJSON();
+        }
+        throw Error(word + " is missing");
+    }""",
+            word,
+        )
+    )
+
+
+@pytest.mark.parametrize("width", [320, 821, 1280])
+def test_unnamed_archived_baseline_keeps_its_dataset_id_with_its_name(
+    browser: Any, width: int
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    prefix = "f6805c13"
+    dataset = f"dataset-{prefix}" + "0" * 24
+    api.run.update(display_name=None, archived_at="2026-10-01T12:00:00Z", trainable_parameters=9315)
+    api.run["training"].update(architecture_id="baseline", dataset_id=dataset)
+    api.run["job"]["state"] = "cancelled"
+    api.runs.append(api.run)
+    page = browser.new_page(viewport={"width": width, "height": 900})
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}?view=all")
+        heading = page.locator("#training-detail-title")
+        expect(heading).to_contain_text(prefix)
+        assert word_bounds(heading, "Dataset")["top"] == word_bounds(heading, prefix)["top"]
+        if width == 320:
+            page.get_by_role("button", name="Run history", exact=True).click()
+        row = page.locator(f'button[data-run-id="{RUN_ID}"]')
+        info = page.locator(f'[data-run-info="{RUN_ID}"]')
+        expect(row.locator("[data-state]")).to_have_text("Cancelled")
+        for selecting in (False, True):
+            if selecting:
+                page.get_by_role("button", name="Select runs", exact=True).click()
+                page.locator(f'input[data-select-run="{RUN_ID}"]').check()
+            name = word_bounds(row.locator("strong"), "Baseline")
+            identifier = word_bounds(row.locator("strong"), prefix)
+            archive = row.get_by_role("img", name="Archived").bounding_box()
+            details = info.bounding_box()
+            assert archive and details
+            assert name["top"] < (identifier["top"] + identifier["bottom"]) / 2 < name["bottom"]
+            assert archive["x"] + archive["width"] <= name["left"]
+            assert name["right"] <= identifier["left"] < identifier["right"] <= details["x"]
+        info.click()
+        expect(page.get_by_role("tooltip").locator(".run-info-dataset")).to_have_text(dataset)
     finally:
         page.close()
 

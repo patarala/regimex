@@ -1011,7 +1011,7 @@ iframe {
 }
 
 .training-layout {
-  grid-template-columns: minmax(230px, 25%) minmax(0, 1fr);
+  grid-template-columns: minmax(18rem, 25%) minmax(0, 1fr);
 }
 .training-runs-panel {
   padding-inline-end: clamp(16px, 2vw, 28px);
@@ -1044,9 +1044,18 @@ iframe {
   flex-wrap: wrap;
   gap: 2px 8px;
 }
-#training-created {
+#training-created, #training-archived {
   margin: 0;
+}
+#training-created {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 10px;
   overflow-wrap: anywhere;
+}
+#training-created time {
+  max-width: 100%;
 }
 #training-rename, #training-archive-run {
   min-height: 28px;
@@ -1148,8 +1157,27 @@ iframe {
   font-weight: 400;
   overflow-wrap: anywhere;
 }
-.training-run-link strong {
+.training-run-title {
   grid-column: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.training-run-title svg {
+  flex: none;
+  margin-top: .2em;
+  color: var(--muted);
+}
+.training-dataset-title {
+  display: inline-flex;
+  align-items: baseline;
+  column-gap: 6px;
+  min-width: 0;
+}
+.training-dataset-key {
+  font: 13px ui-monospace, monospace;
+  color: var(--muted);
+  white-space: nowrap;
 }
 .training-run-info {
   position: absolute;

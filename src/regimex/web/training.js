@@ -3,7 +3,7 @@ import {showTrainingActions} from "./training-evaluation.js";
 import {createTrainingMetrics} from "./training-metrics.js";
 import {createTrainingProgress} from "./training-progress.js";
 import {createRunArchive, finished} from "./training-archive.js";
-import {architectureName, createTrainingForm, datasetName} from "./training-form.js";
+import {architectureName, createTrainingForm, datasetName, shortId} from "./training-form.js";
 import {trainingRequestKey} from "./training-json.js";
 import {createRunNameEditor} from "./training-name.js";
 import {parameterCountLabel} from "./training-size.js";
@@ -29,12 +29,32 @@ function historyDate(value) {
 
 function historyEntry(row, view) {
   const {architecture_id, dataset_id} = row.training;
+  const model = architectureName(architecture_id, true), key = shortId(dataset_id);
   return {
-    id: row.run_id, name: row.display_name || architectureName(architecture_id, true) + " · " + datasetName(dataset_id),
+    id: row.run_id, name: row.display_name || model + " · " + datasetName(dataset_id),
+    compactTitle: !row.display_name && key !== dataset_id ? {model, key} : null,
     created: row.job.created_at, date: historyDate(row.job.created_at), state: row.job.state,
-    archived: view === "all" && Boolean(row.archived_at),
+    archivedAt: row.archived_at, showArchiveIcon: view === "all" && Boolean(row.archived_at),
     architecture: architectureName(architecture_id), dataset: dataset_id, parameters: row.trainable_parameters,
   };
+}
+
+function historyTitle(row) {
+  const heading = element("span", "", "training-run-title");
+  if (row.showArchiveIcon) heading.append($("training-archive-icon").content.cloneNode(true));
+  const title = element("strong");
+  title.dir = "auto";
+  if (row.compactTitle) {
+    title.className = "training-dataset-title";
+    title.append(row.compactTitle.model, element("span", " · Dataset ", "visually-hidden"),
+      element("span", row.compactTitle.key, "training-dataset-key"));
+  } else {
+    const [first, ...parts] = row.name.split("_");
+    title.append(first);
+    for (const part of parts) title.append("_", document.createElement("wbr"), part);
+  }
+  heading.append(title);
+  return heading;
 }
 
 function appendRunInfo(item, button, row, label) {
@@ -54,6 +74,7 @@ function appendRunInfo(item, button, row, label) {
   const dataset = element("div", "", "run-info-line");
   dataset.append(element("span", "Dataset:"), " ", element("span", row.dataset, "run-info-dataset"));
   note.append(model, dataset, element("div", "Created " + shortDate(row.created)));
+  if (row.archivedAt) note.append(element("div", "Archived " + shortDate(row.archivedAt)));
   note.id = "run-info-" + row.id;
   item.append(info, note);
   bindTooltip(info, note, {trigger: button});
@@ -175,14 +196,9 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       const time = element("time", row.date);
       time.dateTime = row.created;
       const sameLabel = rows.some(other => other !== row && other.name === row.name && other.date === row.date);
-      const [first, ...parts] = row.name.split("_");
-      const title = element("strong", first);
-      title.dir = "auto";
-      for (const part of parts) title.append("_", document.createElement("wbr"), part);
-      button.append(title);
+      button.append(historyTitle(row));
       const state = element("span", analysisStateLabel(row.state));
       state.dataset.state = row.state;
-      if (row.archived) state.append(" · Archived");
       const meta = element("span", "", "training-run-meta");
       meta.append(time, state);
       const suffix = sameLabel ? "#" + row.id.slice(-8) : "";
@@ -282,8 +298,10 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function showTitle() {
     const context = runContext(run);
     $("training-detail-title").textContent = run.display_name || context;
-    $("training-created").textContent = (run.display_name ? context + " · " : "") + "Created " + shortDate(run.job.created_at) +
-      (run.archived_at ? " · Archived " + shortDate(run.archived_at) : "");
+    const created = element("time", "Created " + shortDate(run.job.created_at));
+    created.dateTime = run.job.created_at;
+    $("training-created").replaceChildren(run.display_name ? context : "", created);
+    $("training-archived").hidden = !run.archived_at;
     archive.showRun(run);
   }
 
@@ -355,6 +373,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-state").dataset.state = run.job.state;
     const entries = [["Run", run.run_id], ["Dataset", spec.dataset_id], ["Selection benchmark", spec.benchmark_selection_id],
       ["Model version", spec.model_version_id]];
+    if (run.archived_at) entries.push(["Archived", shortDate(run.archived_at)]);
     $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [element("dt", key), element("dd", value || "—")]));
     $("training-settings").textContent = JSON.stringify({parameters: spec.parameters, policy: spec.policy,
       training_runtime: spec.training_runtime, inference_runtime: spec.inference_runtime,

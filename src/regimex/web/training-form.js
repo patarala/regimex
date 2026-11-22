@@ -18,13 +18,13 @@ export function architectureName(id, compact = false) {
   return id;
 }
 
-function shortId(id) {
+export function shortId(id) {
   return id.replace(/^(?:dataset|reference)-([0-9a-f]{8})[0-9a-f]{24}$/, "$1");
 }
 
 export function datasetName(id) {
   const key = shortId(id);
-  return key === id ? id : "Dataset " + key;
+  return key === id ? id : "Dataset\u00a0" + key;
 }
 
 function choices(id, items, empty) {

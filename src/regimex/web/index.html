@@ -259,6 +259,12 @@
                 </div>
               </div>
               <p id="training-empty" class="hint" hidden>No training runs yet.</p>
+              <template id="training-archive-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="1.7" stroke-linejoin="round" role="img" aria-label="Archived">
+                  <path d="M3 4h18v5H3z M5 9v11h14V9 M9 13h6" />
+                </svg>
+              </template>
               <ul id="training-runs" class="training-runs"></ul>
               <nav class="history-pages" aria-label="Training runs">
                 <button id="training-prev" type="button" class="quiet" hidden>Newer</button>
@@ -335,6 +341,7 @@
             </div>
             <div class="training-run-caption">
               <p id="training-created" class="hint"></p>
+              <span id="training-archived" class="hint" hidden>Archived</span>
               <button id="training-rename" type="button" class="quiet">Rename</button>
               <button id="training-archive-run" type="button" class="quiet" hidden>Archive run</button>
             </div>

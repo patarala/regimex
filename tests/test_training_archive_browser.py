@@ -1,5 +1,6 @@
 """Archive training history through its browser controls."""
 
+import re
 from typing import Any
 from uuid import UUID
 
@@ -13,7 +14,7 @@ def test_archive_and_restore_a_published_run_without_losing_its_details(browser:
     api = TrainingAPI()
     api.active_model = api.run["training"]["model_version_id"]
     api.runs.append(api.run)
-    page = browser.new_page()
+    page = browser.new_page(locale="en-US", timezone_id="UTC")
     page.route(ORIGIN + "/**", api.dispatch)
     detail_url = ORIGIN + "/training/" + RUN_ID
     try:
@@ -22,7 +23,12 @@ def test_archive_and_restore_a_published_run_without_losing_its_details(browser:
         page.get_by_role("button", name="Archive run", exact=True).click()
         expect(page.get_by_text("No current runs.")).to_be_visible()
         expect(page.get_by_role("button", name="Restore run")).to_be_enabled()
-        expect(page.locator("#training-created")).to_contain_text("Archived")
+        archived = page.locator("#training-archived")
+        expect(archived).to_be_visible()
+        expect(archived).to_have_text("Archived")
+        page.get_by_text("Run details and settings", exact=True).click()
+        expect(page.locator("#training-facts dt")).to_contain_text(["Archived"])
+        expect(page.locator("#training-facts dd")).to_contain_text(["Feb 1, 2026"])
         expect(page.locator("#training-score")).to_contain_text("0.72")
         expect(page).to_have_url(detail_url)
 
@@ -31,7 +37,9 @@ def test_archive_and_restore_a_published_run_without_losing_its_details(browser:
         expect(page.get_by_role("button", name="Restore run")).to_be_visible()
         view = page.get_by_role("combobox", name="Run history view")
         view.select_option("archived")
-        expect(page.locator("#training-runs button[data-run-id]")).to_have_count(1)
+        row = page.locator("#training-runs button[data-run-id]")
+        expect(row).to_have_count(1)
+        expect(row.get_by_role("img", name="Archived")).to_have_count(0)
         expect(page).to_have_url(detail_url + "?view=archived")
         page.go_back()
         expect(view).to_have_value("active")
@@ -41,6 +49,7 @@ def test_archive_and_restore_a_published_run_without_losing_its_details(browser:
         page.get_by_role("button", name="Restore run").click()
         expect(page.get_by_text("No archived runs.")).to_be_visible()
         expect(page.get_by_role("button", name="Archive run", exact=True)).to_be_enabled()
+        expect(archived).to_be_hidden()
         expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
         assert api.archive_requests == [
             {"run_ids": [RUN_ID], "archived": True},
@@ -78,7 +87,7 @@ def test_navigation_during_archive_ignores_a_stale_detail(browser: Any) -> None:
         with page.expect_request_finished(lambda request: request.url.endswith(detail_path)):
             reads.pop().fulfill(json=old_row)
         expect(restore).to_be_enabled()
-        expect(page.locator("#training-created")).to_contain_text("Archived")
+        expect(page.locator("#training-archived")).to_be_visible()
     finally:
         page.close()
 
@@ -241,7 +250,9 @@ def test_bulk_archive_across_pages_and_restore_a_mixed_selection(browser: Any) -
         expect(page.get_by_role("button", name="Newer")).to_be_hidden()
         view.select_option("all")
         select.click()
-        expect(page.locator("#training-runs").get_by_text("Failed · Archived")).to_be_visible()
+        archived = page.locator(f'button[data-run-id="{api.runs[0]["run_id"]}"]')
+        expect(archived.locator("[data-state]")).to_have_text("Failed")
+        expect(archived).to_have_accessible_name(re.compile(r"\bArchived\b"))
         page.get_by_role("checkbox", name="Select Trial 0", exact=True).check()
         page.get_by_role("checkbox", name="Select Trial 2", exact=True).check()
         expect(page.get_by_role("button", name="Archive selected (1 run)")).to_be_enabled()
