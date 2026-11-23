@@ -25,6 +25,8 @@ The [direction classifier comparison](direction-context.md) tests whether measur
 price movement on either side of a level change improves the three predicted directions.
 The [adaptive forest evaluation](adaptive-intervals.md) examines short sideways
 intervals and the effect of missing observations on their neighbors.
+The [1,536-experiment forest comparison](large-direction-forest.md) evaluates
+multiscale price features and interval weighting against the released forest.
 
 ## Baseline and TCN on direction-32/2.1
 

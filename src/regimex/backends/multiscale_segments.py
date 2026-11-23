@@ -1,0 +1,166 @@
+"""Multiscale piecewise-linear evidence for the adaptive direction forest."""
+
+import math
+from itertools import pairwise
+
+import numpy as np
+
+from regimex.backends.adaptive_forest import Floats, _errors, _line, _scaled_movement, price_blocks
+from regimex.contracts import Observation
+from regimex.directions import AnalysisConfig
+
+_SCALES = (0.625, 1.0, 1.625)
+_MEASURES = (
+    "line_movement",
+    "line_fit",
+    "intercept_adjusted_movement",
+    "intercept_adjusted_fit",
+    "supported_movement",
+    "log_length",
+    "previous_movement",
+    "previous_fit",
+    "next_movement",
+    "next_fit",
+)
+FEATURE_NAMES = tuple(f"scale_{scale:g}_{name}" for scale in _SCALES for name in _MEASURES)
+
+
+def _cuts(prefix: Floats, start: int, config: AnalysisConfig, noise: float) -> list[list[int]]:
+    """Fit three scales jointly on a bounded grid, then refine cuts at single steps."""
+    size = len(prefix) - 1
+    width = config.min_duration
+    if size < 2 * width:
+        return [[0, size] for _ in _SCALES]
+    # At most 512 interior candidates keep the dynamic program bounded on long exports.
+    stride = max(2, math.ceil(size / 512))
+    inside = np.arange((-start) % stride, size, stride)
+    nodes = np.r_[0, inside[(inside >= width) & (inside <= size - width)], size]
+    with np.errstate(over="ignore"):
+        scaled_noise = math.sqrt(config.boundary_penalty) * noise * math.sqrt(math.log(size))
+        penalties = np.asarray(_SCALES) * scaled_noise * scaled_noise
+    if not np.isfinite(penalties).all():
+        return [[0, size] for _ in _SCALES]
+    costs = np.full((len(nodes), len(_SCALES)), np.inf)
+    costs[0] = 0
+    parents = np.zeros(costs.shape, dtype=np.int64)
+    levels = np.arange(len(_SCALES))
+    for i, end in enumerate(nodes[1:], start=1):
+        count = nodes.searchsorted(end - width, side="right")
+        if not count:
+            continue
+        left = nodes[:count]
+        present = prefix[end, 0] - prefix[left, 0]
+        enough = (present >= config.minimum_observations) & (
+            present >= (end - left) * config.minimum_price_coverage
+        )
+        residual = np.where(enough, _errors(prefix, left, int(end)), np.inf)
+        options = costs[:count] + residual[:, None]
+        best = options.argmin(axis=0)
+        costs[i] = options[best, levels] + penalties
+        parents[i] = best
+    results = []
+    for level in levels:
+        i = len(nodes) - 1
+        cuts = [size]
+        while i:
+            i = int(parents[i, level])
+            cuts.append(int(nodes[i]))
+        cuts.reverse()
+        for j in range(1, len(cuts) - 1):
+            left_edge, cut, right_edge = cuts[j - 1 : j + 2]
+            choices = np.arange(
+                max(left_edge + width, cut - stride), min(right_edge - width, cut + stride) + 1
+            )
+            left_count = prefix[choices, 0] - prefix[left_edge, 0]
+            right_count = prefix[right_edge, 0] - prefix[choices, 0]
+            allowed = (
+                (left_count >= config.minimum_observations)
+                & (right_count >= config.minimum_observations)
+                & (left_count >= (choices - left_edge) * config.minimum_price_coverage)
+                & (right_count >= (right_edge - choices) * config.minimum_price_coverage)
+            )
+            residual = _errors(prefix, left_edge, choices) + _errors(prefix, choices, right_edge)
+            cuts[j] = int(choices[np.where(allowed, residual, np.inf).argmin()])
+        results.append(cuts)
+    return results
+
+
+def _measure(values: Floats) -> tuple[float, float, float, float]:
+    """Estimate sustained slope with and without an abrupt shift in the price level."""
+    x = np.flatnonzero(np.isfinite(values)).astype(np.float64)
+    y = values[np.isfinite(values)]
+    if len(y) < 2:
+        return 0.0, 0.0, 0.0, 0.0
+    x = (x - x.mean()) / (len(values) - 1)
+    y = y - y.mean()
+    slope, fit = _line(x, y)
+    if len(y) < 4:
+        return slope, fit, slope, fit
+    # Quantiles cover gradual transitions. Large innovations supply exact candidates
+    # for discrete price changes whose position falls between two quantiles.
+    changes = np.abs(np.diff(y))
+    largest = np.argpartition(changes, -min(4, len(changes)))[-4:] + 1
+    cuts = np.unique(np.r_[np.linspace(2, len(y) - 2, min(17, len(y) - 3)).round(), largest])
+    cuts = cuts[(cuts >= 2) & (cuts <= len(y) - 2)].astype(np.int64)
+    sx = np.cumsum(x)[cuts - 1]
+    sy = np.cumsum(y)[cuts - 1]
+    inv = 1 / cuts + 1 / (len(y) - cuts)
+    xx = np.maximum(x @ x - sx * sx * inv, 1e-24)
+    yy = np.maximum(y @ y - sy * sy * inv, 0.0)
+    xy = x @ y - sx * sy * inv
+    explained = xy**2 / xx
+    residual = np.maximum(0.0, yy - explained)
+    best = int(residual.argmin())
+    if residual[best] >= (1 - fit) * (y @ y) - 1e-14 * max(float(y @ y), 1e-18):
+        return slope, fit, slope, fit
+    return (
+        slope,
+        fit,
+        float(xy[best] / xx[best]),
+        min(1.0, float(explained[best] / max(yy[best], 1e-24))),
+    )
+
+
+def _support(moves: Floats, fits: Floats) -> Floats:
+    """Pool adjacent slopes while their sign agrees and their fits remain credible."""
+
+    def cumulative(movement: Floats, fit: Floats) -> Floats:
+        sums = movement.copy()
+        for i in range(1, len(sums)):
+            if movement[i] * movement[i - 1] > 0:
+                sums[i] += sums[i - 1] * min(fit[i], fit[i - 1])
+        return sums
+
+    return cumulative(moves, fits) + cumulative(moves[::-1], fits[::-1])[::-1] - moves
+
+
+def features(rows: tuple[Observation, ...], config: AnalysisConfig) -> Floats:
+    """Describe each step from observed prices in its own instrument and available block."""
+    output = np.zeros((len(rows), len(FEATURE_NAMES)))
+    scale = math.log1p(config.minimum_relative_change)
+    for start, values, prefix, noise in price_blocks(rows, config):
+        measures = {}
+        for level, cuts in enumerate(_cuts(prefix, start, config, noise)):
+            for a, b in pairwise(cuts):
+                if (a, b) not in measures:
+                    measures[a, b] = _measure(values[a:b])
+            piece = np.array([measures[a, b] for a, b in pairwise(cuts)])
+            support = _support(piece[:, 2], piece[:, 3])
+            first = level * len(_MEASURES)
+            for i, (a, b) in enumerate(pairwise(cuts)):
+                movement, fit, adjusted, adjusted_fit = piece[i]
+                previous = piece[i - 1, 2:] if i else (0.0, 0.0)
+                following = piece[i + 1, 2:] if i + 1 < len(piece) else (0.0, 0.0)
+                output[start + a : start + b, first : first + len(_MEASURES)] = (
+                    _scaled_movement(movement, scale),
+                    fit,
+                    _scaled_movement(adjusted, scale),
+                    adjusted_fit,
+                    _scaled_movement(support[i], scale),
+                    math.log1p(b - a),
+                    _scaled_movement(previous[0], scale),
+                    previous[1],
+                    _scaled_movement(following[0], scale),
+                    following[1],
+                )
+    return output

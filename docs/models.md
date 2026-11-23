@@ -149,12 +149,26 @@ controls the randomized splits. The defaults are 40 trees, maximum depth 12
 and seed 173. These are the settings used in the [direction model comparison](direction-context.md).
 The number of split decisions in the fitted forest depends on the training data.
 
+**Price features** controls how the forest reads the observed price path.
+The default, **Greedy**, splits a span at the step that most improves its fit,
+then considers its two sides separately. **Multiscale** fits a sequence of
+spans at three boundary penalties. It measures the slope both with and without
+an adjustment for a shift in the price level.
+
+**Training weights** controls how much each labeled step contributes to the
+fit. **Per step** weights all steps equally. **Interval** gives more weight
+to steps in shorter reference intervals while preserving the total weight
+of each direction class. Both settings use the same inference inputs.
+
 For the API, set `architecture_id` to `adaptive`. The following fields configure
 the forest and its single fit:
 
 ```json
 {"parameters":{"trees":40,"max_depth":12},"policy":{"optimizer":"extra_trees","seeds":[173]}}
 ```
+
+To use the alternative settings, add `"feature_set": "multiscale"` or
+`"sample_weighting": "interval"` to `parameters`.
 
 ## Saved models
 

@@ -2211,8 +2211,14 @@ def test_adaptive_form_edits_forest_settings_and_round_trips_json(browser: Any) 
         expect(page.get_by_label("Architecture")).to_have_value("adaptive")
         trees = page.get_by_label("Number of trees", exact=True)
         depth = page.get_by_label("Maximum tree depth", exact=True)
+        features = page.get_by_label("Price features", exact=True)
+        weights = page.get_by_label("Training weights", exact=True)
         expect(trees).to_have_value("40")
         expect(depth).to_have_value("12")
+        expect(features).to_have_value("greedy")
+        expect(weights).to_have_value("per_step")
+        features.select_option("multiscale")
+        weights.select_option("interval")
         trees.fill("24")
         depth.fill("8")
         page.get_by_text("Training policy", exact=True).click()
@@ -2222,7 +2228,12 @@ def test_adaptive_form_edits_forest_settings_and_round_trips_json(browser: Any) 
         edit.click()
         editor = page.get_by_label("Run configuration (JSON)")
         request = json.loads(editor.input_value())
-        assert request["parameters"] == {"trees": 24, "max_depth": 8}
+        assert request["parameters"] == {
+            "trees": 24,
+            "max_depth": 8,
+            "feature_set": "multiscale",
+            "sample_weighting": "interval",
+        }
         assert request["policy"] == adaptive["default_training_policy"]
         request["policy"] = {"optimizer": "extra_trees", "seeds": [123]}
         request["parameters"] = {"max_depth": 7}
@@ -2230,6 +2241,8 @@ def test_adaptive_form_edits_forest_settings_and_round_trips_json(browser: Any) 
         page.get_by_role("button", name="Use form").click()
         expect(trees).to_have_value("40")
         expect(depth).to_have_value("7")
+        expect(features).to_have_value("greedy")
+        expect(weights).to_have_value("per_step")
         expect(page.get_by_label("Random seed", exact=True)).to_have_value("123")
         page.get_by_role("button", name="Start training").click()
         assert api.posts[0][:2] == ("training-runs", request)

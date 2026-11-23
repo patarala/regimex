@@ -11,12 +11,15 @@ def adaptive() -> ModuleType:
     return import_module("regimex.backends.adaptive_forest")
 
 
-def test_adaptive_context_obeys_price_units_and_unavailable_blocks(adaptive: ModuleType) -> None:
+@pytest.mark.parametrize("module", ["adaptive_forest", "multiscale_segments"])
+def test_adaptive_context_obeys_price_units_and_unavailable_blocks(module: str) -> None:
+    pytest.importorskip("numpy")
     import numpy as np
     from test_segmentation import experiment
 
     from regimex.directions import AnalysisConfig
 
+    adaptive = import_module("regimex.backends." + module)
     config = AnalysisConfig()
     prices = (100 * np.exp(0.0003 * np.arange(96))).tolist()
     rows = experiment(prices + [None] * 40 + list(reversed(prices))).observations
@@ -41,17 +44,44 @@ def test_isolated_level_change_has_no_adjusted_slope(adaptive: ModuleType) -> No
     assert move > 1 and adjusted == pytest.approx(0, abs=1e-12)
 
 
-@pytest.mark.parametrize("noise", [1e154, 1e155])
-def test_extreme_valid_scales_keep_finite_signed_features(
-    adaptive: ModuleType, noise: float
+def test_multiscale_forest_separates_price_level_from_sustained_movement() -> None:
+    np = pytest.importorskip("numpy")
+    from regimex.backends.multiscale_segments import _measure
+
+    time = np.arange(96, dtype=np.float64)
+    jump = 0.04 * (time >= 39)
+    for slope in (0, -0.0003, 0.0002):
+        _, _, adjusted, fit = _measure(jump + slope * time)
+        assert adjusted == pytest.approx(slope * (len(time) - 1), abs=1e-12)
+        if slope:
+            assert fit == pytest.approx(1)
+
+
+def test_training_weights_respect_unavailable_steps_and_each_instrument(
+    adaptive: ModuleType,
 ) -> None:
+    import numpy as np
+
+    labels = np.repeat([0, -1, 0, 2, 1], [32, 48, 512, 32, 64]).astype(np.int64)
+    x = np.ones((len(labels), len(adaptive.FEATURE_NAMES)))
+    rows = adaptive.training_rows(x, labels)
+    np.testing.assert_array_equal(rows.counts, [32, 512, 32, 64])
+    np.testing.assert_array_equal(rows.table[:, -1], [0, 0, 2, 1])
+    np.testing.assert_allclose(rows.interval_weights, [64, 256, 64, 64 * np.sqrt(2)])
+
+
+@pytest.mark.parametrize("noise", [1e154, 1e155])
+@pytest.mark.parametrize("module", ["adaptive_forest", "multiscale_segments"])
+def test_extreme_valid_scales_keep_finite_signed_features(module: str, noise: float) -> None:
     import math
 
+    pytest.importorskip("numpy")
     import numpy as np
     from test_segmentation import experiment
 
     from regimex.directions import AnalysisConfig
 
+    adaptive = import_module("regimex.backends." + module)
     scale = 1e-312
     profile = AnalysisConfig(minimum_relative_change=scale, noise_floor=noise)
     for movement in (0.5, -0.5):

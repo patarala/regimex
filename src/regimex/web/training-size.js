@@ -80,13 +80,21 @@ export function createSizePicker() {
       modelFields.replaceChildren();
       if (architecture?.default_training_policy?.budget === "fit") {
         for (const [key, field] of Object.entries(properties)) {
-          if (field.type !== "integer") continue;
-          const input = element("input"), label = element("label", field.title), wrapper = element("div");
-          input.type = "number";
+          const choices = field.type === "string" && Array.isArray(field.enum);
+          if (field.type !== "integer" && !choices) continue;
+          const input = element(choices ? "select" : "input"), label = element("label", field.title), wrapper = element("div");
+          if (choices) {
+            for (const value of field.enum) {
+              const name = value.replaceAll("_", " ");
+              input.append(option(value, name[0].toUpperCase() + name.slice(1)));
+            }
+          } else {
+            input.type = "number";
+            input.min = field.minimum;
+            input.max = field.maximum;
+          }
           input.id = "training-parameter-" + key;
           input.required = true;
-          input.min = field.minimum;
-          input.max = field.maximum;
           label.htmlFor = input.id;
           wrapper.append(label, input);
           if (field.description) addFieldHelp(label, input, field.description);
@@ -94,7 +102,7 @@ export function createSizePicker() {
           modelFields.append(wrapper);
           input.addEventListener("input", () => {
             if (!input.validity.valid) return;
-            const value = input.valueAsNumber;
+            const value = choices ? input.value : input.valueAsNumber;
             parametersField.value = setParameterOverrides(parametersField.value, {
               [key]: value === field.default ? undefined : value,
             });

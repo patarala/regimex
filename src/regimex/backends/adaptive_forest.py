@@ -2,7 +2,7 @@
 
 import math
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -87,7 +87,7 @@ def _line(x: Floats, y: Floats) -> tuple[float, float]:
 
 
 def _scaled_movement(value: float, scale: float) -> float:
-    ratio = value / float(scale)
+    ratio = float(value) / float(scale)
     if math.isfinite(ratio):
         return float(np.arcsinh(ratio))
     # The ratio overflowed, but asinh is still finite and rounds to log(2 * |ratio|).
@@ -138,14 +138,10 @@ def _greedy_partitions(
     )
 
 
-def features(
-    rows: tuple[Observation, ...],
-    config: AnalysisConfig,
-    *,
-    partition: PartitionRule = _greedy_partitions,
-) -> Floats:
-    """Extract a row at each original step, keeping each available block independent."""
-    result = np.zeros((len(rows), _WIDTH))
+def price_blocks(
+    rows: tuple[Observation, ...], config: AnalysisConfig
+) -> Iterator[tuple[int, Floats, Floats, float]]:
+    """Prepare log prices, line-fit moments and noise from each available block."""
     for start, stop, status in observation_blocks(rows, config):
         if status != "observed":
             continue
@@ -163,11 +159,23 @@ def features(
         noise = config.noise_floor
         if len(diff):
             noise = max(noise, 1.4826 * float(np.median(np.abs(diff - np.median(diff)))))
+        yield start, log_price, prefix, noise
+
+
+def features(
+    rows: tuple[Observation, ...],
+    config: AnalysisConfig,
+    *,
+    partition: PartitionRule = _greedy_partitions,
+) -> Floats:
+    """Extract a row at each original step, keeping each available block independent."""
+    result = np.zeros((len(rows), _WIDTH))
+    scale = float(np.log1p(config.minimum_relative_change))
+    for start, log_price, prefix, noise in price_blocks(rows, config):
         try:
             variance = noise**2
         except OverflowError:
             variance = math.inf  # No finite reduction in residual error can justify a split.
-        scale = float(np.log1p(config.minimum_relative_change))
         for level, cuts in enumerate(partition(prefix, start, config, variance)):
             pieces = [_describe(log_price[a:b], scale) for a, b in pairwise(cuts)]
             first = level * _PIECE_WIDTH
@@ -376,21 +384,61 @@ class DirectionContextModel:
                 raise ValueError("Direction forest exceeds the configured tree depth")
 
 
-def fit(
-    x: Floats, targets: Ints, *, trees: int = 40, max_depth: int = 12, seed: int = 173
+@dataclass(frozen=True)
+class ForestTrainingRows:
+    table: Floats
+    counts: Ints
+    interval_weights: Floats
+
+
+def training_rows(x: Floats, targets: Ints) -> ForestTrainingRows:
+    """Collapse repeated feature/target pairs within one instrument, preserving both weights."""
+    if x.ndim != 2 or x.shape != (len(targets), _WIDTH) or not np.isfinite(x).all():
+        raise ValueError("Expected aligned finite training rows and direction targets")
+    if targets.dtype != np.int64 or np.any((targets < -1) | (targets > 2)):
+        raise ValueError("Expected original-grid direction targets or -1 for unavailable steps")
+    if not len(targets):
+        return ForestTrainingRows(np.empty((0, _WIDTH + 1)), targets, np.empty(0))
+    boundaries = targets[1:] != targets[:-1]
+    label_starts = np.r_[0, np.flatnonzero(boundaries) + 1]
+    lengths = np.diff(label_starts, append=len(targets))
+    point_weights = np.repeat(np.clip(np.sqrt(128 / lengths), 0.5, 2.0), lengths)
+    changes = boundaries | np.any(x[1:] != x[:-1], axis=1)
+    starts = np.r_[0, np.flatnonzero(changes) + 1]
+    counts = np.diff(starts, append=len(targets))
+    keep = targets[starts] >= 0
+    selected = starts[keep]
+    return ForestTrainingRows(
+        np.column_stack((x[selected], targets[selected])),
+        counts[keep],
+        point_weights[selected] * counts[keep],
+    )
+
+
+def fit_training_rows(
+    rows: list[ForestTrainingRows],
+    *,
+    interval_weighting: bool,
+    trees: int,
+    max_depth: int,
+    seed: int,
 ) -> DirectionContextModel:
     from sklearn.ensemble import ExtraTreesClassifier  # type: ignore[import-untyped]
 
-    if x.ndim != 2 or x.shape != (len(targets), _WIDTH) or not np.isfinite(x).all():
-        raise ValueError("Expected aligned finite training rows and direction targets")
-    labelled = targets != -1
-    if not np.array_equal(np.unique(targets[labelled]), np.arange(3)):
+    table = np.concatenate([row.table for row in rows])
+    counts = np.concatenate([row.counts for row in rows])
+    labels = table[:, -1].astype(np.int64)
+    if not np.array_equal(np.unique(labels), np.arange(3)):
         raise ValueError("Training requires all three directions")
-    # Identical piece descriptions can cover hundreds of steps. Preserve their
-    # target frequencies while fitting on the much smaller distinct table.
-    table, weights = np.unique(
-        np.column_stack((x[labelled], targets[labelled])), axis=0, return_counts=True
-    )
+    if interval_weighting:
+        weights = np.concatenate([row.interval_weights for row in rows])
+        # Retain the original class frequencies while giving shorter intervals more weight.
+        normalization = np.bincount(labels, weights=counts) / np.bincount(labels, weights=weights)
+        weights *= normalization[labels]
+    else:
+        weights = counts.astype(np.float64)
+    table, groups = np.unique(table, axis=0, return_inverse=True)
+    weights = np.bincount(groups, weights=weights)
     forest = ExtraTreesClassifier(
         n_estimators=trees,
         max_depth=max_depth,
@@ -417,4 +465,16 @@ def fit(
         np.concatenate(columns),
         np.concatenate(thresholds),
         np.concatenate(votes),
+    )
+
+
+def fit(
+    x: Floats, targets: Ints, *, trees: int = 40, max_depth: int = 12, seed: int = 173
+) -> DirectionContextModel:
+    return fit_training_rows(
+        [training_rows(x, targets)],
+        interval_weighting=False,
+        trees=trees,
+        max_depth=max_depth,
+        seed=seed,
     )

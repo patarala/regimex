@@ -95,6 +95,20 @@ TreeDepth = Annotated[int, Field(ge=1, le=16)]
 
 
 class AdaptiveParameters(StrictModel):
+    feature_set: Literal["greedy", "multiscale"] = Field(
+        default="greedy",
+        exclude_if=lambda value: value == "greedy",
+        title="Price features",
+        description="Greedy splits use a fast recursive fit. Multiscale fits several "
+        "segmentations jointly and estimates sustained slope across changes in price level.",
+    )
+    sample_weighting: Literal["per_step", "interval"] = Field(
+        default="per_step",
+        exclude_if=lambda value: value == "per_step",
+        title="Training weights",
+        description="Per step gives each labeled step equal weight. Interval weights give "
+        "shorter labeled intervals more influence within their direction class.",
+    )
     trees: TreeCount = Field(
         default=40,
         title="Number of trees",

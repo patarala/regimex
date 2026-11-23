@@ -77,12 +77,17 @@ def test_only_training_rows_enter_the_forest_and_every_instrument_keeps_its_grid
     assert result.validation_score == pytest.approx(float(expected[:, 0].mean()))
 
 
-def test_registered_backend_fits_scores_and_restores_a_candidate(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "overrides", [{}, {"feature_set": "multiscale", "sample_weighting": "interval"}]
+)
+def test_registered_backend_fits_scores_and_restores_a_candidate(
+    tmp_path: Path, overrides: dict[str, str]
+) -> None:
     data, _ = prepared_data()
     intake = request().model_copy(
         update={
             "architecture_id": "adaptive",
-            "parameters": {"trees": 5, "max_depth": 4},
+            "parameters": {"trees": 5, "max_depth": 4, **overrides},
             "policy": SingleFitPolicy(optimizer="extra_trees", seeds=(35,)),
         }
     )
@@ -143,7 +148,7 @@ def test_cache_budget_covers_expanded_weights_before_load_and_predict(tmp_path: 
 
 
 @pytest.mark.parametrize(
-    "member", ["history", "preprocessing", "validation", "configuration", "weights"]
+    "member", ["history", "preprocessing", "validation", "configuration", "weights", "feature_set"]
 )
 def test_rejects_resealed_incompatible_bundle_members(tmp_path: Path, member: str) -> None:
     result, _, _ = fitted()
@@ -158,7 +163,7 @@ def test_rejects_resealed_incompatible_bundle_members(tmp_path: Path, member: st
         values["offsets"] = values["offsets"][:1]
         np.savez(tmp_path / "weights.npz", **values)
     else:
-        path = tmp_path / (member + ".json")
+        path = tmp_path / ("configuration.json" if member == "feature_set" else member + ".json")
         changed = json.loads(path.read_bytes())
         if member == "history":
             changed["fits"][0]["seed"] += 1
@@ -166,6 +171,8 @@ def test_rejects_resealed_incompatible_bundle_members(tmp_path: Path, member: st
             changed["score"] = 1 - changed["score"]
         elif member == "configuration":
             changed["codec_version"] = "unknown/99"
+        elif member == "feature_set":
+            changed["parameters"]["feature_set"] = "multiscale"
         else:
             changed["feature_names"].reverse()
         write_json(path, changed)
