@@ -1,6 +1,8 @@
 """The browser can fetch every packaged module through the real asset routes."""
 
+import hashlib
 from importlib.resources import files
+from pathlib import Path
 
 import pytest
 
@@ -35,6 +37,47 @@ def test_packaged_browser_assets_are_available_without_authentication() -> None:
             assert response.content == resource.read_bytes()
         assert client.get("/assets/__init__.py").status_code == 404
         assert client.get("/assets/missing.js").status_code == 404
+
+
+def test_running_app_can_serve_a_new_browser_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("regimex.web.files", lambda package: tmp_path)
+    app = FastAPI()
+    install_web_routes(app)
+    module = tmp_path / "new-panel.js"
+
+    with TestClient(app) as client:
+        route = "/assets/new-panel.js"
+        assert client.get(route).status_code == 404
+        for version in (b"export const version = 1;", b"export const version = 2;"):
+            module.write_bytes(version)
+            response = client.get(route)
+            assert response.status_code == 200
+            assert response.content == version
+            assert response.headers["etag"] == f'"{hashlib.sha256(version).hexdigest()}"'
+            assert response.headers["cache-control"] == "no-store"
+        module.unlink()
+        assert client.get(route).status_code == 404
+
+
+def test_only_direct_browser_resources_are_public(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "package"
+    package.mkdir()
+    monkeypatch.setattr("regimex.web.files", lambda name: package)
+    outside = tmp_path / "outside.js"
+    outside.write_text("export default 0", encoding="utf-8")
+    (package / "linked.js").symlink_to(outside)
+    (package / "folder.css").mkdir()
+    for name in ("app.js.map", "notes.txt", "draft.tmp.js", "témoin.js"):
+        (package / name).touch()
+    app = FastAPI()
+    install_web_routes(app)
+    with TestClient(app) as client:
+        for resource in package.iterdir():
+            assert client.get(f"/assets/{resource.name}").status_code == 404, resource.name
 
 
 def test_workspace_deep_links_serve_the_app_shell_only_on_known_routes() -> None:

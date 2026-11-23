@@ -1082,6 +1082,56 @@ def test_analysis_user_has_no_administrative_controls(browser: Any, path: str) -
         page.close()
 
 
+def test_training_bookmark_restores_session_and_defers_analysis_requests(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        ORIGIN + "/api/v1/session",
+        lambda route: route.fulfill(status=503, json={"error": {"message": "Restarting"}}),
+        times=1,
+    )
+    try:
+        page.goto(ORIGIN + "/training")
+        expect(page.get_by_text("Reconnecting to the service…")).to_be_visible()
+        expect(page.get_by_role("heading", name="Sign in")).to_be_hidden()
+        expect(page.get_by_text("No current runs.")).to_be_visible()
+        analysis_requests = {"storage", "deletions", "experiments", "models"}
+        assert analysis_requests.isdisjoint(api.pages)
+        page.get_by_role("link", name="Analyses").click()
+        expect(page.locator("#history-empty")).to_be_visible()
+        expect(page.locator("#storage-usage")).to_be_visible()
+        assert analysis_requests.issubset(api.pages)
+        page.go_back()
+        expect(page.get_by_text("No current runs.")).to_be_visible()
+        page.go_forward()
+        expect(page.locator("#history-empty")).to_be_visible()
+        assert api.pages.count("experiments") == 1
+    finally:
+        page.close()
+
+
+def test_training_metrics_retry_an_interrupted_read(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        ORIGIN + f"/api/v1/training-runs/{RUN_ID}/metrics",
+        lambda route: route.fulfill(status=408, json={"error": {"message": "Request timeout"}}),
+        times=1,
+    )
+    try:
+        page.goto(ORIGIN + f"/training/{RUN_ID}")
+        expect(page.locator("#training-sync")).to_be_visible()
+        expect(page.get_by_role("link", name="Download metric data")).to_be_visible()
+        expect(page.locator("#training-sync")).to_be_hidden()
+        assert not api.posts
+    finally:
+        page.close()
+
+
 def test_training_fragment_bookmark_replaces_its_history_entry(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()

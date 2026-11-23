@@ -1,4 +1,5 @@
 import {$} from "./ui.js";
+import {canRetryRead} from "./session.js";
 
 const api = "/api/v1/";
 const inventoryStatement = "I confirm that all known prior uses of data from these sources are registered.";
@@ -155,7 +156,7 @@ export function createDataPreparation({session, onUse}) {
       }
     } catch (error) {
       if (!active(stamp)) return;
-      if (reading && (!error.status || error.status === 429 || error.status >= 500)) {
+      if (reading && canRetryRead(error)) {
         show("Could not update the preparation. Retrying automatically…");
         timer = setTimeout(() => void advance(stamp), retryDelay);
         retryDelay = Math.min(30000, retryDelay * 2);

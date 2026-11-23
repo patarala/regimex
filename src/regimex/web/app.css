@@ -586,6 +586,17 @@ p {
 .job-actions:has(> [hidden]):not(:has(> :not([hidden]))) {
   display: none;
 }
+#workspace-startup {
+  color: var(--muted);
+  animation: show-startup 0s 1.5s backwards;
+}
+@keyframes show-startup {
+  from { visibility: hidden; }
+  to { visibility: visible; }
+}
+@media (scripting: none) {
+  #workspace-startup { display: none; }
+}
 .notice {
   padding: 12px 14px;
   margin-bottom: 20px;
