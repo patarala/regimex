@@ -5,12 +5,14 @@ experiments. Each model sees observations only. The scores measure agreement
 with the labeling rule. Agreement with human judgments or on another simulator
 has yet to be measured. [Interval definitions](models.md)
 
-An interval matches a reference when the directions agree and their overlap
-covers at least half their union. Each interval can match once, and the evaluator
-finds the largest set of valid matches. Point F1 instead scores individual steps
-with a reference direction. For both metrics, macro-F1 gives equal weight to all
-three directions and assigns zero to an undefined class F1. The pooled scores
-use counts across all experiments.
+Within one experiment and instrument, an interval matches a reference when
+the directions agree and their overlap covers at least half their union.
+Each interval can match once, and the evaluator finds the largest set of
+valid matches. Point F1 scores individual steps with a
+reference direction. If the model leaves one of those steps unclassified, the
+evaluator counts a false negative for its reference class. For both metrics,
+macro-F1 gives equal weight to all three directions and assigns zero to an
+undefined class F1. The pooled scores use counts across all experiments.
 
 For profile `direction-32/2.2`, the [architecture comparison](temporal-comparison.md)
 tests different temporal classifiers. The [training population comparison](training-populations.md)

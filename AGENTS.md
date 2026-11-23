@@ -52,6 +52,9 @@ Start with the affected test file. For example, after a TCN backend change run
 `uv run --locked --extra ml pytest tests/test_tcn_backend.py`. For documentation,
 check changed links and headings, run changed command examples where possible,
 and verify model settings against the backend or the named release bundle.
+For a reproduction command that checks a digest, verify it against the
+specified source revision, bundle and input files. A rebuild from the current
+checkout can have a different manifest even when the weights match.
 
 Use the [development guide](docs/development.md) for local checks and the full CI
 setup. Report any skipped integrations. When editing the [CI workflow](.github/workflows/ci.yml),

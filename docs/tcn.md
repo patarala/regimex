@@ -77,7 +77,7 @@ probability can fall inside a longer sideways interval. Trading activity can
 affect whether the decoder assigns a direction even when the price inputs to
 the network stay the same. [Interval and availability rules](models.md#observations-and-intervals)
 
-## Training and the published model
+## Training and saved versions
 
 Training uses AdamW and class-balanced cross-entropy on steps with known
 training directions. The four steps on either side of a training direction
@@ -93,11 +93,19 @@ the checkpoint with the highest decoded validation interval macro-F1.
 [Why these defaults?](usage.md#why-these-defaults) ·
 [Training request and checkpoint example](api.md#3-train-and-publish)
 
-The published `tcn-0.2.0` uses 48 hidden channels and the eight dilations
-above. Validation selected update 900 with seed 29. Its saved preprocessing,
-weights and `direction-32/2.0` profile determine its predictions. For the
-measured interval accuracy and the effect of allowing a transition a few
-steps early or late, see the [reference model evaluation](quality.md#reference-model-on-direction-3220).
+Both published versions use 48 hidden channels, the eight dilations above
+and the `direction-32/2.0` profile. Each has its own fitted weights and
+preprocessing. The `model_version_id` in the bundle's `manifest.json` tells
+you which one you have.
+
+| Model version | Selected training checkpoint |
+| --- | --- |
+| `tcn-0.1.0` | Epoch 1, seed 11 |
+| `tcn-0.2.0` | Optimizer update 900, seed 29 |
+
+The [direction classifier comparison](direction-context.md#results) evaluates
+both versions on the same 144 experiments. The [reference model evaluation](quality.md#reference-model-on-direction-3220)
+gives the original 384-experiment benchmark and boundary scores for `tcn-0.2.0`.
 
 ## Comparing model widths
 

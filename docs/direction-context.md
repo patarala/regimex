@@ -92,57 +92,75 @@ does not establish agreement with a human analyst or a different simulator.
 
 ## Reproduce
 
-Use the locked ML environment and fresh output directories. Prepare the
-[mixed 192 training population and its TCN](training-populations.md#reproduce).
-Provide an exposure index built from previously used dataset manifests and
-indices with `scripts/build_exposure_index.py`. The recorded run checked the
-native cohorts against 9,873 previous seeds and 37,952 identity keys.
+Start in a Git checkout that contains the historical commits below. The
+original fits and scores are bound to the source at `7090f35`. Use its
+scripts and locked ML environment for the comparison. Input and output
+paths are relative to the checkout where you run the commands.
+
+- Place the [mixed 192 training population and its frozen TCN](training-populations.md#reproduce)
+  under `var/verification/training-populations/`. The comparison checks the
+  control bundle's manifest against its recorded SHA-256.
+- The TCN 0.1.0 bundle belongs in `release/models/tcn/`. The TCN 0.2.0 check
+  also requires its publication working directory, including the original
+  training manifest and exposure inventory, under `var/model-finalization/`.
+  Pass `--publication` to both published-model commands to use another path.
+- Supply an exposure index at `var/verification/direction-context-prior.json`.
+  Build one from known dataset manifests and indices with
+  `scripts/build_exposure_index.py`. Reproducing the archived evidence digests
+  requires the original index, which covered 9,873 seeds and 37,952 identity keys.
+
+Use new directories for `trial` and `transfer`.
 
 ```sh
 trial=var/verification/direction-context
 transfer=var/verification/direction-context-transfer
 prior=var/verification/direction-context-prior.json
-uv run --locked --extra ml python scripts/compare_direction_context.py reserve "$trial" --prior "$prior"
-uv run --locked --extra ml python scripts/check_direction_context_transfer.py reserve "$transfer" "$trial" --prior "$prior"
-uv run --locked --extra ml python scripts/check_direction_release.py reserve "$trial"
-uv run --locked --extra ml python scripts/compare_direction_context.py train "$trial"
-uv run --locked --extra ml python scripts/compare_direction_context.py freeze "$trial"
-uv run --locked --extra ml python scripts/compare_direction_context.py score "$trial"
-uv run --locked --extra ml python scripts/check_direction_context_transfer.py score "$transfer" "$trial"
-uv run --locked --extra ml python scripts/check_direction_release.py score "$trial"
+source_dir=var/direction-comparison-source
+git worktree add --detach "$source_dir" 7090f35
+run_comparison() {
+  script=$1
+  shift
+  uv run --project "$source_dir" --locked --extra ml python "$source_dir/scripts/$script.py" "$@"
+}
+run_comparison compare_direction_context reserve "$trial" --prior "$prior"
+run_comparison check_direction_context_transfer reserve "$transfer" "$trial" --prior "$prior"
+run_comparison check_direction_release reserve "$trial"
+run_comparison compare_direction_context train "$trial"
+run_comparison compare_direction_context freeze "$trial"
+run_comparison compare_direction_context score "$trial"
+run_comparison check_direction_context_transfer score "$transfer" "$trial"
+run_comparison check_direction_release score "$trial"
 ```
 
-The defaults look for the training population and control under
-`var/verification/training-populations/` and the 0.1.0 bundle in
-`release/models/tcn/`. The 0.2.0 check expects its publication working
-directory, including the training manifest and exposure inventory, under
-`var/model-finalization/`. Pass `--publication` to use another path.
-Native scoring, transfer and published-model scoring each write a
-`results.json` in their own output directory. The source, fitted weights and
-selected model are digest-bound. The original comparison used revision
-`7090f35`.
+Native scoring writes `$trial/results.json`, transfer scoring writes
+`$transfer/results.json` and
+the published-model comparison writes `$trial/published/results.json`.
 
 To inspect the winner's intervals and three probabilities per step on your own
-export, run this from the comparison checkout. The output records the input
+export, use the same shell function and frozen trial. The output records the input
 and selection digests and preserves instrument and step order.
 
 ```sh
-uv run --locked --extra ml python scripts/predict_direction_context.py "$trial" example.json var/predictions.json
+run_comparison predict_direction_context "$trial" example.json var/predictions.json
 ```
 
 ## Use the trained forest
 
 In the training workspace, choose **Adaptive direction forest** to fit a new
 model on your own dataset. The [model guide](models.md#learned-backends)
-describes its settings. To use the fitted model evaluated above, run the
-following in a checkout with the adaptive backend. Set `trial` and
-`transfer` to the completed comparison directories.
+describes its settings. To package the fitted model evaluated above, set
+`trial` and `transfer` to the archived comparison directories. Packaging
+checks their result digests. It also records the backend source in the
+manifest, so recreating the published bundle requires the original packaging
+revision, `a27c034`. Use new paths for the worktree and output.
 
 ```sh
+packager=var/adaptive-package-source
+git worktree add --detach "$packager" a27c034
 git show 7090f35:scripts/adaptive_direction_model.py > var/frozen-adaptive.py
-uv run --locked --extra ml python scripts/package_adaptive_direction.py \
+uv run --project "$packager" --locked --extra ml python "$packager/scripts/package_adaptive_direction.py" \
   "$trial" "$transfer" var/verification/training-populations/development/mixed-192 \
-  var/frozen-adaptive.py var/release/adaptive-0.1.0
+  var/frozen-adaptive.py var/release/adaptive-direction-0.1.0
 ```
 
 Packaging checks the recorded model and gates, restores the native bundle,

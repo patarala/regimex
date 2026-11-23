@@ -28,6 +28,11 @@ gaps and pauses can fall inside a classified interval. The minimum duration is
 32 steps, or the length of the whole available block if shorter. Adjacent
 intervals with the same direction merge.
 
+A sideways interval means the model found no sustained rise or decline in
+the available prices. It can contain many trades. The report's **Pauses within
+trends** overlay highlights trades that stay near one price inside a predicted
+trend. The highlight appears only in the report. [Reading the report](usage.md#read-a-report)
+
 ### Reading interval statistics
 
 - **Price change** is the percentage difference between the first and last
@@ -86,9 +91,9 @@ straight lines. Adding a piece incurs a penalty based on the local noise level.
 
 To assign a direction, the policy estimates a slope in each piece. It also
 tries a line with the same slope on both sides of a single price-level change,
-with at least two observed prices per side. The fit with the smallest residual
-error wins. This lets a price that moves once and then stays flat receive a
-sideways label despite a large end-to-end change.
+with at least two observed prices per side. The simpler line wins if the
+residual errors agree within roundoff. This lets a price that moves once and
+then stays flat receive a sideways label despite a large end-to-end change.
 
 A slope must explain at least half of the price variation in its fit. Consecutive
 supported slopes of the same sign form a run. The policy adds their fitted log
@@ -96,11 +101,19 @@ movements and assigns growth or decline when the absolute sum reaches
 `log1p(0.005)`. Profile 2.2 fits log price ratios relative to the first
 available price in the block. It accepts movements within floating-point
 roundoff of the threshold so that changing quote units preserves a borderline
-label. Other runs receive sideways. Human reference sets are recorded
-separately. A reviewer can see observations with the predictions hidden by
-running `regimex report --input export.json --output var/blind --blind`. The review
-folder contains the observations and a draft keyed by the original export’s SHA-256.
-The reference import uses that digest to match the completed draft to its snapshot.
+label. Other runs receive sideways.
+
+To prepare an independent review with predictions hidden, run the following
+from the checkout with a new output directory.
+
+```sh
+uv run --locked --extra viz regimex report --input export.json --output var/blind --blind
+```
+
+Open `var/blind/index.html`. The reviewer's template is
+`var/blind/annotation-draft.json`. Its `experiment_id` is the export's
+`content_sha256`, the digest of its canonical JSON content. Reference import
+uses that value to match the completed draft to its snapshot.
 
 ## Learned backends
 

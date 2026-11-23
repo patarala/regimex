@@ -57,15 +57,18 @@ slows to 40% of its original speed.
 
 Use the locked ML dependencies, the previous [direction comparison](direction-context.md#reproduce)
 and its verified [model bundle](direction-context.md#use-the-trained-forest).
-The comparison source and selection are digest-bound. The feature experiment
-used revision `f283900`. Set `release` to the verified bundle directory
+Run the phases below in one checkout with unused output directories. To replay
+a saved fit, use its original revision (`f283900` for the reported feature
+comparison). The scorer checks the source fingerprint recorded during training.
+Set `release` to the verified bundle directory
 (manifest SHA-256 `8bf057911823ed1d149320de2d765f91937ddc4b7205c4356951d208a52b48a0`).
-Run the two reserves before freezing the winner.
+Reserve both populations before fitting. If the release wins validation,
+leave the reserved data closed.
 
 ```sh
 result=var/verification/adaptive-interval-quality
 transfer=var/verification/adaptive-interval-transfer
-release=var/release/adaptive-0.1.0/bundle
+release=var/release/adaptive-direction-0.1.0/bundle
 uv run --locked --extra ml python scripts/compare_adaptive_intervals.py reserve "$result"
 uv run --locked --extra ml python scripts/check_adaptive_gap_transfer.py reserve "$transfer" "$result"
 uv run --locked --extra ml python scripts/compare_adaptive_intervals.py train "$result"
@@ -114,12 +117,18 @@ exports. We retained the weights from `adaptive-0.1.0`.
 
 ### Reproduce the training comparison
 
-Use revision `eec81e2` with the completed feature comparison above. The new
-reservation excludes the previous training and evaluation groups. The final
-commands open the two independent benchmarks only if a new model wins
-validation. For the descriptive comparison of the original automatic labels,
-run `scripts/check_adaptive_gap_labels.py "$transfer"` with the same Python
-environment after the feature comparison closes.
+Use the completed feature comparison above. Its `result`, `transfer` and
+`release` paths are reused below. The training comparison used revision
+`eec81e2`. The new reservation excludes the previous training and evaluation
+groups. The two final scoring commands require a new validation winner.
+To compare the automatic labels with the known path directions after closing
+the feature benchmark, run the label check once in the same ML environment.
+
+```sh
+uv run --locked --extra ml python scripts/check_adaptive_gap_labels.py "$transfer"
+```
+
+Reserve the new training and transfer populations before fitting.
 
 ```sh
 mix=var/verification/forest-training-mix
