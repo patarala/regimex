@@ -107,6 +107,7 @@ def create_app() -> FastAPI:
     app = api_factory(
         analysis,
         admin_service=administration,
+        http_concurrency_limit=settings.http_concurrency_limit,
         body_timeout_seconds=settings.http_body_timeout_seconds,
         benchmark_service=create_benchmark_service(analysis, administration.repository),
         auth_service=AuthService(AuthRepository(analysis.repository), settings.auth_policy),

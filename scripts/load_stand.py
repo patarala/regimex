@@ -847,7 +847,7 @@ def main():
     parser.add_argument("--runtime-file", type=Path, help="inference runtime JSON for all cells")
     parser.add_argument("--output", type=Path, help="new directory (default var/load-test/run-*)")
     parser.add_argument(
-        "--http-concurrency-limit", type=int, default=8, help="API connection/task limit"
+        "--http-concurrency-limit", type=int, default=8, help="maximum active API requests"
     )
     parser.add_argument(
         "--cgroup-parent",

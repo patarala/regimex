@@ -24,8 +24,8 @@ class ServiceSettings(StrictModel):
     work_root: Path = _DEFAULT_WORK_ROOT
     public_origin: Annotated[str, Field(min_length=1, max_length=2048)] = "https://localhost"
     allow_loopback_http: bool = False
-    # Uvicorn counts the current connection when testing its admission limit.
     http_concurrency_limit: Annotated[int, Field(ge=2)] = 8
+    http_connection_limit: Annotated[int, Field(ge=2)] | None = None
     http_header_timeout_seconds: Annotated[int, Field(ge=1, le=60)] = 10
     http_body_timeout_seconds: Annotated[int, Field(ge=1, le=300)] = 30
     session_ttl_seconds: Annotated[int, Field(ge=60, le=8 * 3600)] = 1800
@@ -73,6 +73,11 @@ class ServiceSettings(StrictModel):
         if object_root.is_relative_to(work_root) or work_root.is_relative_to(object_root):
             raise ValueError("object and working roots must not overlap")
         return self
+
+    @property
+    def transport_limit(self) -> int:
+        # Uvicorn also counts idle keep-alive sockets from browsers loading the workspace.
+        return self.http_connection_limit or self.http_concurrency_limit + 24
 
     @property
     def auth_policy(self) -> AuthPolicy:
@@ -147,6 +152,7 @@ class ServiceSettings(StrictModel):
         for name in (
             "max_object_bytes",
             "http_concurrency_limit",
+            "http_connection_limit",
             "http_header_timeout_seconds",
             "http_body_timeout_seconds",
             "max_store_bytes",

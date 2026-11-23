@@ -161,10 +161,15 @@ def test_https_server_rejects_a_readable_private_key_before_startup(tmp_path: Pa
     assert result.exit_code == 1 and "private file" in result.output
 
 
-@pytest.mark.parametrize("limit", [None, "16"])
+@pytest.mark.parametrize(
+    ("active_limit", "connection_limit", "expected"),
+    [(None, None, 32), ("16", None, 40), ("6", "18", 18)],
+)
 def test_server_installs_intake_deadlines_without_automatic_protocol_selection(
     monkeypatch: pytest.MonkeyPatch,
-    limit: str | None,
+    active_limit: str | None,
+    connection_limit: str | None,
+    expected: int,
 ) -> None:
     uvicorn = pytest.importorskip("uvicorn")
     pytest.importorskip("psycopg")
@@ -179,9 +184,14 @@ def test_server_installs_intake_deadlines_without_automatic_protocol_selection(
 
     monkeypatch.setattr(service_bootstrap, "create_app", lambda: application)
     monkeypatch.setattr(uvicorn, "run", run)
-    monkeypatch.delenv("REGIMEX_HTTP_CONCURRENCY_LIMIT", raising=False)
-    if limit:
-        monkeypatch.setenv("REGIMEX_HTTP_CONCURRENCY_LIMIT", limit)
+    for variable, value in (
+        ("REGIMEX_HTTP_CONCURRENCY_LIMIT", active_limit),
+        ("REGIMEX_HTTP_CONNECTION_LIMIT", connection_limit),
+    ):
+        if value is None:
+            monkeypatch.delenv(variable, raising=False)
+        else:
+            monkeypatch.setenv(variable, value)
     result = CliRunner().invoke(
         app,
         ["service", "serve"],
@@ -194,7 +204,7 @@ def test_server_installs_intake_deadlines_without_automatic_protocol_selection(
     assert result.exit_code == 0, result.output
     assert isinstance(captured["http"], type)
     assert captured["ws"] == "none"
-    assert captured["limit_concurrency"] == (8 if limit is None else int(limit))
+    assert captured["limit_concurrency"] == expected
     assert captured["proxy_headers"] is False
 
 

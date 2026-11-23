@@ -196,7 +196,8 @@ or ineffective backend settings fail explicitly.
 | `REGIMEX_SESSION_TTL_SECONDS` | 1,800 seconds, absolute expiry |
 | `REGIMEX_HTTP_HEADER_TIMEOUT_SECONDS` | 10 seconds; range 1–60 |
 | `REGIMEX_HTTP_BODY_TIMEOUT_SECONDS` | 30 seconds; range 1–300 |
-| `REGIMEX_HTTP_CONCURRENCY_LIMIT` | 8 connections or tasks per API process, minimum 2 |
+| `REGIMEX_HTTP_CONCURRENCY_LIMIT` | 8 active requests per API process, minimum 2. Reads of static assets and the liveness probe are exempt. |
+| `REGIMEX_HTTP_CONNECTION_LIMIT` | Active request limit + 24 (32 by default), minimum 2. Uvicorn returns 503 when the number of open connections or tasks reaches this threshold. |
 | `REGIMEX_MAX_SESSIONS_PER_TOKEN` | 8 |
 | `REGIMEX_MAX_PENDING_PER_OWNER` / `REGIMEX_MAX_ADMIN_PENDING_PER_OWNER` | 8 / 4 |
 | `REGIMEX_MAX_GENERATION_EXPERIMENTS` | 128 |

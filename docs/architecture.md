@@ -131,11 +131,14 @@ count is set on registration. More threads and more workers can compete for the
 same CPUs.
 
 If upload or polling latency rises while workers have spare capacity, measure
-the API and database separately. If the API logs `Exceeded concurrency limit`
-and returns HTTP 503, repeat the same load with a higher
-`REGIMEX_HTTP_CONCURRENCY_LIMIT`. This per-process limit includes open
-connections. Raising it permits more simultaneous request bodies and database
-connections. When a submission returns `429 capacity_limit` because the queue
+the API and database separately. Each API process admits up to
+`REGIMEX_HTTP_CONCURRENCY_LIMIT` active requests. A request holds its slot
+until the response finishes. Static assets and the liveness probe bypass
+this limit. A `503 capacity_limit` with `Retry-After` means all slots are busy.
+Before raising the limit, check memory use and database connections under load.
+If Uvicorn logs `Exceeded concurrency limit`, it has reached the separate
+`REGIMEX_HTTP_CONNECTION_LIMIT`, which also counts idle keep-alive sockets.
+When a submission returns `429 capacity_limit` because the queue
 quota is full, wait for an outstanding job to finish. By default, a single owner
 can have eight outstanding operations, and an integration can have 32 analyses
 in flight across its users. See [request and queue limits](access.md#request-and-queue-limits).

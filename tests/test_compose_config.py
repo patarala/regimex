@@ -37,6 +37,8 @@ def test_effective_compose_storage(compose: list[str], s3: bool) -> None:
     env.update(
         REGIMEX_DATABASE_SCHEMA="lab",
         REGIMEX_HTTPS_PORT="12443",
+        REGIMEX_HTTP_CONCURRENCY_LIMIT="6",
+        REGIMEX_HTTP_CONNECTION_LIMIT="20",
         REGIMEX_S3_ENDPOINT_URL="https://store.example.org",
         REGIMEX_S3_BUCKET="experiments",
         REGIMEX_S3_PREFIX="test",
@@ -59,6 +61,8 @@ def test_effective_compose_storage(compose: list[str], s3: bool) -> None:
     services = json.loads(output)["services"]
     api = services["api"]
     assert api["environment"]["REGIMEX_PUBLIC_ORIGIN"] == "https://localhost:12443"
+    assert api["environment"]["REGIMEX_HTTP_CONCURRENCY_LIMIT"] == "6"
+    assert api["environment"]["REGIMEX_HTTP_CONNECTION_LIMIT"] == "20"
     assert str(api["ports"][0]["published"]) == "12443"
     migration = services["migrate"]
     assert migration["environment"]["REGIMEX_DATABASE_SCHEMA"] == "lab"

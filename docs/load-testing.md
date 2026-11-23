@@ -37,7 +37,7 @@ The runner checks each downloaded result's analysis, snapshot and model identiti
 
 Each comparison cell runs in its own cgroup. By default it has two logical CPUs, a CPU quota of 200%, a total memory limit of 3 GiB and zero swap. The API, database, workers, computation subprocesses and k6 share those limits. All cells use the same CPU IDs. The driver verifies the effective affinity and kernel settings before starting the workload. Use `--cpus` and `--memory-mib` to select other limits. Host contention and page-cache state can vary between runs.
 
-Use `--http-concurrency-limit` to vary the private API’s Uvicorn connection/task limit independently of worker count. The default is 8 and the minimum is 2. The selected value is recorded in `run.json`.
+Use `--http-concurrency-limit` to vary how many active requests the private API can handle per process. The default is 8 and the minimum is 2. The stand records the value in `run.json` and leaves room for 24 additional connections, including idle keep-alive sockets.
 
 The sustained executor schedules arrivals independently of completions. The default requests 12 analyses. To vary the arrival rate, window and client pool, run e.g.
 

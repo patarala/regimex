@@ -123,6 +123,7 @@ services:
     environment:
       <<: *service-environment
       REGIMEX_HTTP_CONCURRENCY_LIMIT: ${REGIMEX_HTTP_CONCURRENCY_LIMIT:-8}
+      REGIMEX_HTTP_CONNECTION_LIMIT:
     command: [service, serve, --host, 0.0.0.0, --port, "8000", --tls-cert-file, /run/secrets/api_certificate, --tls-key-file, /run/secrets/api_key]
     secrets: [database_dsn, api_certificate, api_key, api_ca]
     networks: [backend, frontend]

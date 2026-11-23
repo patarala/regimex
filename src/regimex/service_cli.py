@@ -298,7 +298,7 @@ def serve(
             access_log=False,
             log_config=None,
             timeout_graceful_shutdown=30,
-            limit_concurrency=settings.http_concurrency_limit,
+            limit_concurrency=settings.transport_limit,
             ssl_certfile=None if tls_cert_file is None else str(tls_cert_file),
             ssl_keyfile=None if tls_key_file is None else str(tls_key_file),
         )

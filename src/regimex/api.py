@@ -273,6 +273,39 @@ def _html_report(payload: bytes, *, filename: str | None = None) -> Response:
     return Response(payload, media_type="text/html", headers=headers)
 
 
+class RequestAdmission:
+    """Reserve capacity before reading a body or starting application work."""
+
+    def __init__(self, app: ASGIApp, *, limit: int) -> None:
+        if limit < 1:
+            raise ValueError("HTTP request concurrency must be positive")
+        self.app = app
+        self.limit = limit
+        self.active = 0
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or (
+            scope["method"] in {"GET", "HEAD"}
+            and (scope["path"].startswith("/assets/") or scope["path"] == "/health/live")
+        ):
+            await self.app(scope, receive, send)
+            return
+        # Each server worker has one event loop. Checking and reserving a slot
+        # without an await keeps admissions atomic without queueing request bodies.
+        if self.active >= self.limit:
+            await JSONResponse(
+                _error("capacity_limit", "The server is handling its maximum number of requests."),
+                status_code=503,
+                headers={"Retry-After": "1", "Connection": "close", "Cache-Control": "no-store"},
+            )(scope, receive, send)
+            return
+        self.active += 1
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            self.active -= 1
+
+
 class BoundedJSONBody:
     """Bound body bytes and total intake time before parsing or storage."""
 
@@ -477,6 +510,7 @@ def create_app(
     benchmark_service: BenchmarkAPIService | None = None,
     auth_service: AuthService | None = None,
     deletion_service: DeletionAPIService | None = None,
+    http_concurrency_limit: int = 8,
     body_timeout_seconds: float = 30,
 ) -> FastAPI:
     """Create an app over configured persistence; startup never auto-migrates."""
@@ -492,6 +526,7 @@ def create_app(
         ),
     )
     app.add_middleware(BoundedJSONBody, timeout_seconds=body_timeout_seconds)
+    app.add_middleware(RequestAdmission, limit=http_concurrency_limit)
     app.state.request_models = (ExportV2, AnalysisRequest, ExperimentNameUpdate)
     bearer = HTTPBearer(auto_error=False)
     integration_limits = None if auth_service is None else auth_service.integration_limits

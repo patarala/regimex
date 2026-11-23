@@ -78,6 +78,8 @@ def test_database_file_and_value_cannot_silently_override_each_other(
         {"public_origin": "https://example.invalid", "allow_loopback_http": True},
         {"public_origin": "https://example.invalid/private/path"},
         {"session_ttl_seconds": 59},
+        {"http_concurrency_limit": 1},
+        {"http_connection_limit": 1},
         {"http_header_timeout_seconds": 0},
         {"http_header_timeout_seconds": 61},
         {"http_body_timeout_seconds": 0},
