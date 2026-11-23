@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
 
-from regimex.contracts import Observation
+from regimex.contracts import MAX_STEPS, Observation
 from regimex.directions import AnalysisConfig, observation_blocks
 from regimex.resource_limits import ResourceBudgetExceeded
 
@@ -182,20 +182,37 @@ class DirectionContextModel:
     def predict(self, x: Floats) -> Floats:
         if x.ndim != 2 or x.shape[1] != _WIDTH or not np.isfinite(x).all():
             raise ValueError("Expected finite adaptive context features")
+        if not len(x):
+            return np.empty((0, 3))
         # The fitted sklearn trees compare their thresholds with float32 inputs.
         values = x.astype(np.float32)
-        probabilities = np.zeros((len(x), 3))
-        for root in self.offsets:
-            nodes = np.full(len(x), root, dtype=np.int64)
+        changes = np.flatnonzero(np.any(values[1:] != values[:-1], axis=1)) + 1
+        lengths = None
+        if len(changes) < len(values) - 1:
+            # A fitted piece repeats the same feature row until one of the partitions changes.
+            starts = np.r_[0, changes]
+            lengths = np.diff(starts, append=len(values))
+            values = values[starts]
+        probabilities = np.zeros((len(values), 3))
+        # When only a few different pieces remain, traverse multiple trees together.
+        # Once the input fills a whole instrument's worth of node slots, use one tree per pass.
+        trees_per_pass = max(1, MAX_STEPS // len(values))
+        for first in range(0, len(self.offsets), trees_per_pass):
+            roots = self.offsets[first : first + trees_per_pass]
+            nodes = np.repeat(roots, len(values))
             while True:
                 selected = np.flatnonzero(self.columns[nodes] >= 0)
                 if not len(selected):
                     break
                 current = nodes[selected]
-                right = values[selected, self.columns[current]] > self.thresholds[current]
+                rows = selected if len(roots) == 1 else selected % len(values)
+                right = values[rows, self.columns[current]] > self.thresholds[current]
                 nodes[selected] = self.children[current, right.astype(np.int64)]
-            probabilities += self.votes[nodes]
-        return probabilities / len(self.offsets)
+            # Preserve floating-point accumulation order across tree batches.
+            for leaves in nodes.reshape(len(roots), len(values)):
+                probabilities += self.votes[leaves]
+        probabilities /= len(self.offsets)
+        return np.repeat(probabilities, lengths, axis=0) if lengths is not None else probabilities
 
     def save(self, path: Path) -> None:
         with path.open("xb") as stream:
