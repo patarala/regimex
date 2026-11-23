@@ -118,28 +118,31 @@ into the workspace sign-in form.
 )
 ```
 
-To activate a release model, use the bundle path and manifest digest from the
-verified archive's `SHA256SUMS`. For the TCN in an extracted archive containing
-`release/models/tcn/manifest.json`, run this from the archive root.
+To activate the first model in a new installation, use the bundle path and
+manifest digest from the verified archive's `SHA256SUMS`. Set `RELEASE_ROOT`
+to the absolute path of the extracted release containing
+`release/models/tcn/manifest.json`. Run Compose from the same directory and
+with the same project name used to start the service, so the operator sees the
+existing registry and token volume.
 
 ```sh
-manifest_sha256=$(awk '$2 == "release/models/tcn/manifest.json" {print $1}' SHA256SUMS)
-docker compose --profile ops run --rm -v "$PWD/release/models/tcn:/bundle:ro" ops \
+manifest_sha256=$(awk '$2 == "release/models/tcn/manifest.json" {print $1}' "$RELEASE_ROOT/SHA256SUMS")
+docker compose --profile ops run --rm --no-deps -v "$RELEASE_ROOT/release/models/tcn:/bundle:ro" ops \
   service register-model --bundle /bundle --manifest-sha256 "$manifest_sha256" \
   --token-file /operator-output/admin.token --activate
 ```
 
-Use the [administrative API](api.md#administration) to train and publish a
-candidate in this installation.
+When replacing an active model, pass its current version ID as
+`--expected-previous` with `--activate`. To train and publish a candidate in
+this installation, use the [Training screen](usage.md#train-a-model) or the
+[administrative API](api.md#administration).
 
 ## Move an existing installation to Compose
 
 1. Block client and simulator traffic to the source. Drain or cancel pending jobs
    and finish pending deletions. Make a [coordinated backup](storage.md#backup-and-restore)
-   of the database and its registered objects. If the installation has its own
-   `service.sh`, you can run `./service.sh backup --output PATH` in its directory.
-   The helper resumes managed services when it finishes. Keep traffic blocked
-   and stop the old instance and its automatic startup before cutover.
+   of the database and its registered objects. Keep traffic blocked and the old
+   API and workers stopped through cutover. Disable their automatic startup.
 2. Record the printed manifest SHA-256 separately. Keep the original data,
    configuration and token files private. The backup preserves token hashes and
    model registrations. The token files are still needed to sign in.
@@ -182,10 +185,11 @@ migrated or used for another install is ineligible for restore.
 
 ## Configuration and capacity
 
-Processes started from source accept `REGIMEX_DATABASE_DSN` or a private, owned UTF-8 file at
-`REGIMEX_DATABASE_DSN_FILE`, never both. Object/work roots must be distinct;
-use absolute paths when processes have different working directories. Invalid
-or ineffective backend settings fail explicitly.
+Processes started from source require one database connection setting. Set
+`REGIMEX_DATABASE_DSN` or point `REGIMEX_DATABASE_DSN_FILE` at a private
+UTF-8 file owned by the service user. Choose separate object and work
+directories outside each other's trees. Use absolute paths when processes
+have different working directories.
 
 | Environment variable | Default |
 | --- | --- |
@@ -212,13 +216,17 @@ or ineffective backend settings fail explicitly.
 | `REGIMEX_MAX_OWNER_STORAGE_BYTES` / `REGIMEX_MAX_INTEGRATION_STORAGE_BYTES` | 1 GiB per owner / 2 GiB per connection, including reservations |
 | `REGIMEX_CACHE_BUDGET_BYTES` | 512 MiB |
 
-Compose fixes some infrastructure values in its shared environment mapping and
-forwards analysis budgets, integration limits and storage quotas from the shell. Inspect `docker compose
-config` after changing limits. Child memory limits are virtual address space,
-not measured resident memory. Requests must fit both application and container limits.
+Compose forwards the variables referenced in [compose.yaml](../compose.yaml),
+including analysis budgets, integration limits and owner storage quotas.
+Other settings, such as `REGIMEX_MAX_GENERATION_EXPERIMENTS`, need an
+`environment` entry for the relevant services in a Compose override. Check
+the effective values with `docker compose --profile service --profile ops config`.
+Child memory limits apply to virtual address space. Requests must fit both
+application and container limits.
 
-Containers use UID 10001, a read-only root, dropped capabilities, PID limits and
-bounded tmpfs. Each CPU worker handles one task at a time, with default 8 GiB RAM,
+Application containers run as UID 10001 and PostgreSQL runs as UID 999. Both
+use a read-only root, dropped capabilities, PID limits and bounded tmpfs.
+Each CPU worker handles one task at a time, with default 8 GiB RAM,
 2 CPUs and 5 GiB scratch. Size the host for both workers running together,
 PostgreSQL, the API and the maintenance worker. Operator jobs need additional headroom. Reserve disk space for the
 database, retained objects, container images and backups.
@@ -365,8 +373,10 @@ If multiple installations share an engine, assign each its own `REGIMEX_IMAGE_TA
 to keep their locally built images separate.
 
 For an application upgrade on the existing PostgreSQL deployment, build the
-new images, run their migrations, then recreate the API and workers. If a step
-fails, the shell stops before starting the next one.
+new images, run their migrations, then recreate the API and workers. Record the
+intended replica counts before stopping the deployment. Set
+`REGIMEX_ANALYSIS_REPLICAS` to the desired analysis worker count and repeat
+any other manual `--scale SERVICE=COUNT` settings on the `up` command.
 
 ```sh
 (

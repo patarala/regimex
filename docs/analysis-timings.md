@@ -1,16 +1,20 @@
 # Analysis timing report
 
-The load stand can join the analyses accepted in each k6 phase to PostgreSQL
-queue events and structured analysis-worker logs. To collect these measurements
-independently, use the disposable instance's service environment (including
-its database DSN and schema) and run the collector before deleting the instance.
+The [disposable load stand](load-testing.md) collects queue and worker timings
+before it shuts down each temporary database. Open `timings.json` in the cell
+directory under the run's output directory, for example `parallel-512-2w/timings.json`.
+
+To collect the same report on a test installation you manage, keep its
+PostgreSQL database available and load its service environment, including the
+DSN and schema. Set `TIMING_DIR` to a directory containing your accepted job
+IDs and worker logs. This example uses two analysis workers.
 
 ```sh
 uv run --locked --extra service python scripts/load_timings.py \
-  --jobs var/load-test/jobs.jsonl \
-  --worker-log var/load-test/analysis-1.log \
-  --worker-log var/load-test/analysis-2.log \
-  --output var/load-test/timings.json
+  --jobs "$TIMING_DIR/jobs.jsonl" \
+  --worker-log "$TIMING_DIR/worker-1.log" \
+  --worker-log "$TIMING_DIR/worker-2.log" \
+  --output "$TIMING_DIR/timings.json"
 ```
 
 Supply one raw JSON service log per analysis worker. The jobs file contains

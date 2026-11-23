@@ -48,15 +48,16 @@ Paths below are relative to `src/regimex/`.
 
 | Area | Code | Responsibility |
 | --- | --- | --- |
-| Browser | `web/` | Sign-in, upload, history, report preview and comparisons |
-| HTTP | `api.py`, `auth_api.py`, `admin_api.py`, `benchmark_api.py` | Validate requests and call the application as the authenticated principal |
+| Browser | `web/` | Analysis, model training and integration connection management |
+| HTTP | `api.py`, `auth_api.py`, `admin_api.py`, `benchmark_api.py`, `integration_api.py`, `deletion_api.py` | Authenticate requests, validate inputs and call application workflows |
 | Workflows | `application/` | Check access, manage snapshots and jobs, train and publish model versions |
 | Persistence | `infrastructure/` | Database transactions, migrations, queue and object storage |
 | Workers | `service_worker.py`, `computation_worker.py` | Claim tasks, supervise child processes and recover unfinished work |
 | Scientific code | `model_registry.py`, `backends/`, `directions.py`, `segmentation.py`, `evaluation.py` | Restore models, prepare features, decode predictions and measure quality |
 | Inputs and artifacts | `exports.py`, `data_catalog.py`, `model_bundles.py` | Validate exports, dataset membership and saved model bundles |
 | Generator | `market.py`, `market_sampling.py`, `market_export.py` | Simulate a sampled market and build the same export format for the CLI and generated datasets |
-| Reports | `templates/`, `visualization.py`, `comparison.py` | Render results and comparisons with scripts that work offline |
+| Service reports | `application/report.py`, `application/analysis_comparison.py`, `templates/` | Render a single analysis or compare two completed analyses of the same saved snapshot |
+| Report directories | `visualization.py`, `comparison.py` | Render saved predictions across experiments or compare model evaluations |
 
 ## Why the components are separate
 
@@ -69,12 +70,13 @@ publication. On deletion, the database removes access first. Storage usage
 drops after cleanup succeeds.
 
 **Models and workers.** Each backend receives the original observations, timing
-and units. It restores its own weights and preprocessing. All backends use the
-same decoder and interval metric, so results from different models are
-comparable on the same snapshot. Model code runs in a child process with its
-own time, memory and thread limits. An administrator can evaluate a trained
-candidate before publishing it. Each accepted analysis keeps its selected model
-version even if the active model changes.
+and units. It restores its own weights and preprocessing. The analysis worker's
+child process turns the backend's per-step probabilities into intervals using
+the decoder settings from that model's bundle. The analysis result records the
+settings and the pinned model version. Changing the active model affects future
+submissions that select it. To publish a trained candidate, the administrator
+must supply a completed validation evaluation for the same weights and
+inference policy.
 
 During training, the child writes measured scores and losses to a file in its
 attempt directory. The worker sends new rows to PostgreSQL in batches, checking
@@ -93,8 +95,9 @@ See the [integration contract](integration.md).
 
 **Offline reports.** The browser workspace reads jobs and history from the API.
 A downloaded HTML report carries the observations, predictions and plotting
-code it needs. The CLI can also build a report directory from matching exports
-and saved results. See [using reports](usage.md#read-a-report).
+code it needs. The in-app preview can reuse a cached copy of Plotly when its
+bytes match the version embedded in the report. The CLI can also build a report
+directory from matching exports and saved results. See [using reports](usage.md#read-a-report).
 
 ## Scaling Regimex
 
@@ -107,10 +110,17 @@ A separate message broker would require another mechanism for that guarantee.
 
 ### Add capacity on one host
 
-For a Compose installation, set the following in the project's `.env` file
-and apply with `docker compose --profile service up -d analysis-worker`.
+For an existing installation, set the desired worker count and resources in the
+project's `.env`. Run Compose from the deployment directory with the same project
+name and files used at startup. For [S3 storage](deployment.md#s3-profile),
+keep `COMPOSE_FILE=compose.yaml:compose.s3.yaml` in the environment.
+
+```sh
+docker compose --profile service up -d --wait --no-deps analysis-worker
+```
+
 Each replica has a separate work directory, model cache and health identity.
-The object volume and job queue are shared.
+All replicas share the job queue and the configured object store.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -139,9 +149,11 @@ Before raising the limit, check memory use and database connections under load.
 If Uvicorn logs `Exceeded concurrency limit`, it has reached the separate
 `REGIMEX_HTTP_CONNECTION_LIMIT`, which also counts idle keep-alive sockets.
 When a submission returns `429 capacity_limit` because the queue
-quota is full, wait for an outstanding job to finish. By default, a single owner
-can have eight outstanding operations, and an integration can have 32 analyses
-in flight across its users. See [request and queue limits](access.md#request-and-queue-limits).
+quota is full, wait for an outstanding job to finish. Both analysis and admin
+intake count the owner's queued, running and cancellation-requested operations.
+By default, analysis intake refuses new work at eight outstanding operations
+and admin intake at four. An integration also has a limit of 32 outstanding
+analyses across its users. See [request and queue limits](access.md#request-and-queue-limits).
 
 Analysis jobs share a priority. A free worker claims the ready, unlocked
 delivery with the lowest job ID. An owner with room in their quota can still
@@ -157,13 +169,14 @@ new arrival overtake that older job. Measure both owners' queue delays and
 total completed analyses before changing the scheduling policy.
 
 The supplied Compose API publishes one host port. Multiple API replicas would
-need a shared HTTPS entry point
-that preserves the configured origin and authentication checks.
+need a shared HTTPS entry point that preserves the configured origin and
+authentication checks.
 
 ### Accelerators and multiple hosts
 
-The baseline uses CPU numerical libraries, and the released TCN uses a CPU
-PyTorch build. Device selection forms part of the immutable inference policy.
+All three packaged backends run on the CPU. The adaptive forest uses NumPy
+for inference, the baseline uses CPU numerical libraries and the TCN uses the
+CPU build of PyTorch. Device selection forms part of the immutable inference policy.
 Operators can pin the device, thread count and batch limit when
 [registering a model](models.md#saved-models). The packaged workers validate
 CPU execution and reject a CUDA request.

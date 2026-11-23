@@ -74,9 +74,10 @@ reuses the file. A different payload under that key is rejected.
 Readers can verify and copy files concurrently. Writers and maintenance take
 an exclusive lock. The local store admits up to 100,000 committed files.
 
-Workers verify cached models against their bundle and inference-policy hashes.
-If the shared cache is full, stop the workers and clear it. Model bundles can be
-loaded again from the object store.
+Each analysis worker caches model bundles in `$REGIMEX_WORK_ROOT/model-cache`,
+keyed by bundle and inference-policy hashes. The Compose workers each have
+their own work directory. If a cache is full, stop the workers using that
+directory before clearing the cache. They fetch the bundles again on demand.
 
 ## S3 storage
 
@@ -84,7 +85,9 @@ Regimex tests against SeaweedFS 4.48 with versioning enabled, conditional
 creation and HTTPS. Use a dedicated bucket prefix. Verify the same semantics
 before using another provider.
 
-When starting Regimex from a checkout, configure the provider in the process environment.
+When starting Regimex from a checkout, load the service's database settings
+first, then configure the provider. Give the service account write access to
+the work and coordination directories.
 
 ```sh
 export REGIMEX_OBJECT_BACKEND=s3
@@ -94,12 +97,13 @@ export REGIMEX_S3_BUCKET=private-regimex
 export REGIMEX_S3_PREFIX=installation-one
 export REGIMEX_WORK_ROOT=/var/lib/regimex/work
 export REGIMEX_S3_LOCK_ROOT=/var/lib/regimex/s3-coordination
-uv run --locked --extra service --extra s3 regimex service storage-check
 ```
 
-Credentials use the SDK's environment/profile/role chain;
+Configure credentials through the SDK's environment, profile or role chain.
 `REGIMEX_S3_CREDENTIAL_PROFILE` selects a profile and `REGIMEX_S3_CA_BUNDLE`
-specifies a private CA. The endpoint cannot contain credentials, a path, query or
+specifies a private CA. Check the resulting connection with
+`uv run --locked --extra service --extra s3 regimex service storage-check`.
+The endpoint cannot contain credentials, a path, query or
 fragment. HTTP is allowed only for literal loopback with
 `REGIMEX_S3_ALLOW_LOOPBACK_HTTP=true`. The production Compose profile requires HTTPS.
 

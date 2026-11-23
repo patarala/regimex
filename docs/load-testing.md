@@ -63,21 +63,30 @@ The driver exits nonzero on failure. A partial comparison shows how many cells r
 
 ## Running against an existing test installation
 
-Use a dedicated loopback instance with an active model, an analysis worker and an idle test owner. This mode needs k6 and uv and uses the deployment's own resource limits. It submits one warm-up, four serial and four parallel 512-step analyses. The sustained option runs the warm-up and fixed-arrival workload. These analyses and their outputs persist in that installation.
+Use a dedicated loopback instance with an analysis worker, a published model and an idle test owner. This mode needs k6 and uv and uses the deployment's own resource limits. It submits one warm-up, four serial and four parallel 512-step analyses. The sustained option runs the warm-up and fixed-arrival workload. These analyses and their outputs persist in that installation.
 
-For a test deployment following the [Compose guide](deployment.md#start-the-service), use its exported user token and the public CA certificate that signed the server certificate. This command connects to `https://localhost:8443` over loopback and verifies the certificate for `localhost`.
+Set the token file and the exact published model version to test. Both setup guides write the user token to `var/credentials/user.token`. If you registered the TCN from a local asset pack, read its version from the same manifest you imported. For a model published through **Training**, use its **Model version** instead.
 
 ```sh
-REGIMEX_LOAD_SCHEME=https REGIMEX_LOAD_TOKEN_FILE=var/credentials/user.token \
+export REGIMEX_LOAD_TOKEN_FILE=var/credentials/user.token
+REGIMEX_LOAD_MODEL=$(python3 -c 'import json; print(json.load(open("release/models/tcn/manifest.json"))["model_version_id"])')
+export REGIMEX_LOAD_MODEL
+```
+
+For a test deployment following the [Compose guide](deployment.md#start-the-service), use the public CA certificate that signed the server certificate. This command connects to `https://localhost:8443` and verifies the certificate for `localhost`.
+
+```sh
+REGIMEX_LOAD_SCHEME=https \
   SSL_CERT_FILE="$PWD/var/secrets/api-ca.crt" sh scripts/load_test.sh
 ```
 
-For a source deployment on HTTP port 8001, run either workload as follows.
+For a deployment started with the [source setup](usage.md#start-locally), use its HTTP port 8000.
 
 ```sh
+export REGIMEX_LOAD_PORT=8000
 sh scripts/load_test.sh
 REGIMEX_LOAD_RATE_PER_MINUTE=12 REGIMEX_LOAD_DURATION_SECONDS=60 \
     sh scripts/load_test.sh --sustained
 ```
 
-Set `REGIMEX_LOAD_PORT` to override the port (HTTP defaults to 8001, HTTPS to 8443), `REGIMEX_LOAD_TOKEN_FILE` to override `var/load-instance/credentials/user.token`, or `REGIMEX_LOAD_MODEL` to select a model other than `tcn-0.2.0`. With `--sustained`, `REGIMEX_LOAD_MAX_VUS` sets the preallocated client pool. Use `REGIMEX_LOAD_MAX_RESULT_MS` to impose a submit-to-download latency threshold.
+With `--sustained`, `REGIMEX_LOAD_MAX_VUS` sets the preallocated client pool. Use `REGIMEX_LOAD_MAX_RESULT_MS` to impose a submit-to-download latency threshold.
