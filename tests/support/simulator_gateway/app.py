@@ -1,8 +1,4 @@
-"""Deliberate contract simulator and backend gateway, not the real website.
-
-Only immutable pre-existing fixture records are served. No trading, scheduling,
-balances or simulator database access is implemented here.
-"""
+"""Contract gateway for immutable simulator fixtures."""
 
 import hashlib
 import re
@@ -123,22 +119,17 @@ def idempotency_key(subject: str, export: ExportV2) -> str:
     return "gateway-" + hashlib.sha256(json_bytes(identity)).hexdigest()
 
 
-def _snapshot_matches(snapshot: dict[str, object], export: ExportV2) -> UUID:
-    try:
-        snapshot_id = UUID(str(snapshot["snapshot_id"]))
-    except KeyError, ValueError, TypeError:
-        raise _unverified() from None
+def _check_binding(metadata: dict[str, object], export: ExportV2, digest_field: str) -> None:
     if any(
-        snapshot.get(key) != value
+        metadata.get(key) != value
         for key, value in {
             "source_id": export.source.source_id,
             "run_id": export.source.run_id,
             "source_snapshot_id": export.source.snapshot_id,
-            "content_sha256": export.content_sha256,
+            digest_field: export.content_sha256,
         }.items()
     ):
         raise _unverified()
-    return snapshot_id
 
 
 def _analysis_ids(value: dict[str, object], *, expected: UUID | None = None) -> tuple[UUID, UUID]:
@@ -250,14 +241,7 @@ def create_gateway(
             run_id=run_id,
         )
         _, snapshot_id = _analysis_ids(analysis, expected=analysis_id)
-        snapshot = client.json(
-            "GET",
-            f"/api/v1/integration/snapshots/{snapshot_id}",
-            subject=subject,
-            run_id=run_id,
-        )
-        if _snapshot_matches(snapshot, export) != snapshot_id:
-            raise _unverified()
+        _check_binding(analysis, export, "snapshot_sha256")
         return analysis, export, snapshot_id
 
     @app.get("/api/simulations/{simulation_id}/results")
@@ -324,23 +308,20 @@ def create_gateway(
         subject: str,
         export: ExportV2,
     ) -> JSONResponse:
-        snapshot = client.json(
+        intake = client.json(
             "POST",
-            "/api/v1/integration/snapshots",
+            "/api/v1/integration/analysis-intake",
             subject=subject,
             run_id=run_id,
             payload=export.model_dump(mode="json"),
-        )
-        snapshot_id = _snapshot_matches(snapshot, export)
-        analysis = client.json(
-            "POST",
-            "/api/v1/integration/analyses",
-            subject=subject,
-            run_id=run_id,
-            payload={"snapshot_id": str(snapshot_id), "model_version_id": "active"},
             idempotency_key=idempotency_key(subject, export),
         )
-        if _analysis_ids(analysis)[1] != snapshot_id:
+        snapshot, analysis = intake.get("snapshot"), intake.get("analysis")
+        if not isinstance(snapshot, dict) or not isinstance(analysis, dict):
+            raise _unverified()
+        _check_binding(snapshot, export, "content_sha256")
+        _check_binding(analysis, export, "snapshot_sha256")
+        if str(_analysis_ids(analysis)[1]) != snapshot.get("snapshot_id"):
             raise _unverified()
         view = _view(analysis, simulation_id, run_id)
         return JSONResponse(
@@ -367,14 +348,15 @@ def create_gateway(
         subject: Annotated[str, Depends(authenticate)],
     ) -> Response:
         _, export, snapshot_id = bound_analysis(simulation_id, run_id, analysis_id, subject)
-        value = client.json(
+        response = client.request(
             "GET",
             f"/api/v1/integration/analyses/{analysis_id}/result",
             subject=subject,
             run_id=run_id,
         )
+        response.json()
         try:
-            parsed = AnalysisResult.model_validate_json(json_bytes(value))
+            parsed = AnalysisResult.model_validate_json(response.body)
         except ValidationError:
             raise _unverified() from None
         if (
@@ -387,7 +369,7 @@ def create_gateway(
         ):
             raise _unverified()
         return Response(
-            json_bytes(value), media_type="application/json", headers={"Cache-Control": "no-store"}
+            response.body, media_type="application/json", headers={"Cache-Control": "no-store"}
         )
 
     @app.get("/api/simulations/{simulation_id}/regime-analyses/{analysis_id}/report")

@@ -56,6 +56,11 @@ For a reproduction command that checks a digest, verify it against the
 specified source revision, bundle and input files. A rebuild from the current
 checkout can have a different manifest even when the weights match.
 
+For changes to the analysis API or export format, check the consumers listed
+in the [development guide](docs/development.md#checks-by-change). Update the
+contract examples, affected tests, k6 assertions and simulator adapter wherever
+their behavior changes.
+
 Use the [development guide](docs/development.md) for local checks and the full CI
 setup. Report any skipped integrations. When editing the [CI workflow](.github/workflows/ci.yml),
 pin actions to reviewed commit SHAs and keep permissions read-only.

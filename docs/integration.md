@@ -84,9 +84,11 @@ backend keys out of exports and browser links.
    `POST /api/v1/integration/snapshots`. To choose a published model explicitly,
    submit the returned `snapshot_id` and the `model_version_id` to
    `POST /api/v1/integration/analyses` with an `Idempotency-Key`.
-4. Poll `GET /api/v1/integration/analyses/{id}`. List and detail responses
-   include `snapshot_sha256` so the simulator can check the binding in that
-   request. Recheck simulator ownership before serving status or downloads.
+4. Poll `GET /api/v1/integration/analyses/{id}`. The response includes
+   `source_id`, `run_id`, `source_snapshot_id` and `snapshot_sha256`. Compare
+   them with the saved export on each poll. Stop polling once `job.state` is
+   `succeeded`, `failed` or `cancelled`. Recheck simulator ownership before
+   serving status or downloads.
 5. After success, fetch the committed classification and its binding in one
    `GET /api/v1/integration/analyses/{id}/delivery`. Add `?include_report=true`
    to include the saved HTML. This consumes one request and requires the `read`
@@ -100,7 +102,9 @@ Verify the analysis ID, snapshot ID, source, run and snapshot digest against the
 selected run before serving the requested content. A pending analysis returns
 `409 result_pending`, and requesting an absent report on a successful analysis
 returns `404 report_unavailable`. An unknown analysis returns `404 not_found`.
-The individual `/result` and `/report` routes are also available.
+The individual `/result` and `/report` routes are also available. The JSON
+download and the ZIP's `result.json` contain identical bytes. Hash the
+downloaded bytes directly when checking the result digest in an offline report.
 
 Report download returns `409` before success, `404` if no report was committed,
 and `200` for the HTML attachment. Use verified HTTPS, reject redirects and
@@ -108,13 +112,16 @@ bound response size and duration.
 
 ## Contract tests
 
-The example gateway in `tests/support/simulator_gateway/` shows the delegation
-headers, response checks and download limits. Set `REGIMEX_TEST_DATABASE_DSN`
-to a disposable PostgreSQL database, then run the gateway tests.
+The [example gateway](../tests/support/simulator_gateway/app.py) exercises
+combined intake, status polling and individual JSON and HTML downloads.
+[Delegated API tests](../tests/test_integration_scope.py) also verify the ZIP
+contents and its access rules. Set `REGIMEX_TEST_DATABASE_DSN` to a disposable
+PostgreSQL database, then run both sets of tests.
 
 ```sh
 uv run --locked --all-extras --group queue-test --group service-test \
-  pytest tests/test_simulator_gateway.py tests/test_simulator_gateway_integration.py
+  pytest tests/test_simulator_gateway.py tests/test_simulator_gateway_integration.py \
+  tests/test_integration_scope.py
 ```
 
 These tests use two local HTTP services and cover analysis, retries, restarts,

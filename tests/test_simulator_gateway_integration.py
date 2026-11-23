@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import threading
@@ -239,6 +240,7 @@ def test_gateway_real_tcp_restart_scope_result_report_and_retry(
             report = browser.get(status.json()["report_url"], headers=headers)
             assert result.status_code == 200 and result.json()["source"]["run_id"] == run_id
             assert result.json()["snapshot_sha256"] == context.export.content_sha256
+            assert hashlib.sha256(result.content).hexdigest() == completed.result_sha256
             assert report.status_code == 200 and report.headers["content-type"].startswith(
                 "text/html"
             )

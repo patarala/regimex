@@ -110,6 +110,22 @@ class UpstreamResponse:
     content_type: str
     body: bytes
 
+    def json(self) -> dict[str, object]:
+        try:
+            if self.content_type.split(";", 1)[0].strip().lower() != "application/json":
+                raise ValueError
+            value = strict_json(self.body)
+            if not isinstance(value, dict):
+                raise ValueError
+            return dict(value)
+        except ValueError, UnicodeError, RecursionError:
+            raise GatewayError(
+                "invalid_classification_response",
+                "The classification response could not be verified.",
+                502,
+                retryable=True,
+            ) from None
+
 
 class RegimexClient:
     def __init__(self, settings: GatewaySettings) -> None:
@@ -280,25 +296,11 @@ class RegimexClient:
         payload: object | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, object]:
-        response = self.request(
+        return self.request(
             method,
             path,
             subject=subject,
             run_id=run_id,
             body=None if payload is None else json_bytes(payload),
             idempotency_key=idempotency_key,
-        )
-        try:
-            if response.content_type.split(";", 1)[0].strip().lower() != "application/json":
-                raise ValueError
-            value = strict_json(response.body)
-            if not isinstance(value, dict):
-                raise ValueError
-            return dict(value)
-        except ValueError, UnicodeError, RecursionError:
-            raise GatewayError(
-                "invalid_classification_response",
-                "The classification response could not be verified.",
-                502,
-                retryable=True,
-            ) from None
+        ).json()

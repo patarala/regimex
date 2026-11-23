@@ -415,38 +415,50 @@ def test_upstream_failure_preserves_existing_simulator_results(gateway: GatewayC
     assert result.status_code == 200 and result.json() == {"trades": [1]}
 
 
-def test_gateway_rejects_analysis_bound_to_another_snapshot(gateway: GatewayContext) -> None:
+@pytest.mark.parametrize("digest_matches", [True, False])
+def test_gateway_verifies_each_intake_and_status_in_one_request(
+    gateway: GatewayContext, digest_matches: bool
+) -> None:
     analysis_id, snapshot_id = str(uuid4()), str(uuid4())
+    export = gateway.export
+    binding = {
+        "snapshot_id": snapshot_id,
+        "source_id": export.source.source_id,
+        "run_id": export.source.run_id,
+        "source_snapshot_id": export.source.snapshot_id,
+    }
+    analysis = {
+        **binding,
+        "snapshot_sha256": export.content_sha256 if digest_matches else "0" * 64,
+        "analysis_id": analysis_id,
+        "job": {
+            "operation_id": analysis_id,
+            "resource_id": analysis_id,
+            "kind": "analysis",
+            "state": "queued",
+        },
+    }
+    intake = {
+        "snapshot": {**binding, "content_sha256": export.content_sha256},
+        "analysis": analysis,
+    }
 
     def respond(handler: BaseHTTPRequestHandler) -> None:
-        value = (
-            {
-                "analysis_id": analysis_id,
-                "snapshot_id": snapshot_id,
-                "job": {
-                    "operation_id": str(uuid4()),
-                    "resource_id": analysis_id,
-                    "kind": "analysis",
-                    "state": "succeeded",
-                },
-            }
-            if "/analyses/" in handler.path
-            else {
-                "snapshot_id": snapshot_id,
-                "source_id": "test-simulator",
-                "run_id": "run-1",
-                "source_snapshot_id": "snapshot-1",
-                "content_sha256": "0" * 64,
-            }
-        )
-        handler.send_response(200)
+        creating = handler.command == "POST"
+        handler.send_response(202 if creating else 200)
         handler.send_header("Content-Type", "application/json")
         handler.end_headers()
-        handler.wfile.write(json_bytes(value))
+        handler.wfile.write(json_bytes(intake if creating else analysis))
 
     gateway.upstream.responder = respond
-    response = gateway.client.get(
-        f"/api/simulations/configuration-1/regime-analyses/{analysis_id}?run_id=run-1",
-        headers=authenticated(gateway),
+    path = "/api/simulations/configuration-1/regime-analyses"
+    created = gateway.client.post(path, json={"run_id": "run-1"}, headers=authenticated(gateway))
+    status = gateway.client.get(
+        f"{path}/{analysis_id}?run_id=run-1", headers=authenticated(gateway)
     )
-    assert response.status_code == 502 and response.json()["error"]["retryable"]
+    assert created.status_code == (202 if digest_matches else 502)
+    assert status.status_code == (200 if digest_matches else 502)
+    assert [request[:2] for request in gateway.upstream.requests] == [
+        ("POST", "/api/v1/integration/analysis-intake"),
+        ("GET", f"/api/v1/integration/analyses/{analysis_id}"),
+    ]
