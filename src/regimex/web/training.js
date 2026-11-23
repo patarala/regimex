@@ -524,6 +524,18 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     metricsLoaded = true;
   }
 
+  function handleRunReadError(error, retry) {
+    if (!canRetryRead(error)) {
+      $("training-sync").hidden = true;
+      message(error.message, true);
+      return;
+    }
+    $("training-sync").textContent = "Could not load this run. Retrying automatically…";
+    $("training-sync").hidden = false;
+    timer = setTimeout(retry, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, 30000);
+  }
+
   async function refresh(stamp, fetchRun = true) {
     if (!selected(stamp) || !run || busy) return;
     clearTimeout(timer);
@@ -564,16 +576,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       retryDelay = 2500;
       if (waiting) timer = setTimeout(() => refresh(stamp), 2500);
     } catch (error) {
-      if (!valid()) return;
-      if (!canRetryRead(error)) {
-        $("training-sync").hidden = true;
-        message(error.message, true);
-        return;
-      }
-      $("training-sync").textContent = "Could not update this run. Retrying automatically…";
-      $("training-sync").hidden = false;
-      timer = setTimeout(() => refresh(stamp), retryDelay);
-      retryDelay = Math.min(retryDelay * 2, 30000);
+      if (valid()) handleRunReadError(error, () => refresh(stamp));
     }
   }
 
@@ -627,16 +630,20 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   async function loadRun(id, stamp, cached, focus = false) {
+    if (!selected(stamp)) return;
+    clearTimeout(timer);
     try {
       const row = cached || await readRun(id);
       if (!selected(stamp)) return;
+      $("training-sync").hidden = true;
+      retryDelay = 2500;
       run = withSavedChanges(row, listed.get(id));
       const recheckRun = Boolean(cached && finished(row.job));
       if (recheckRun) facts();
       void refresh(stamp, recheckRun);
       if (focus && document.activeElement !== $("training-history-view")) $("training-detail-title").focus();
     } catch (error) {
-      if (selected(stamp)) message(error.message, true);
+      if (selected(stamp)) handleRunReadError(error, () => loadRun(id, stamp));
     }
   }
 

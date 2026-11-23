@@ -1112,6 +1112,36 @@ def test_training_bookmark_restores_session_and_defers_analysis_requests(browser
         page.close()
 
 
+@pytest.mark.parametrize("leave", [False, True], ids=["reconnect", "navigate-away"])
+def test_training_bookmark_survives_an_interrupted_first_read(browser: Any, leave: bool) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.clock.install()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        f"{ORIGIN}/api/v1/training-runs/{RUN_ID}",
+        lambda route: route.fulfill(status=503, json={"error": {"message": "Restarting"}}),
+        times=1,
+    )
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        expect(page.locator("#training-sync")).to_be_visible()
+        if leave:
+            page.get_by_role("button", name="New run", exact=True).click()
+            expect(page).to_have_url(f"{ORIGIN}/training/new")
+        page.clock.fast_forward(3000)
+        if leave:
+            assert f"training-runs/{RUN_ID}" not in api.pages
+        else:
+            expect(page.get_by_role("link", name="Download metric data")).to_be_visible()
+            assert api.pages.count(f"training-runs/{RUN_ID}") == 1
+        expect(page.locator("#training-sync")).to_be_hidden()
+        assert not api.posts
+    finally:
+        page.close()
+
+
 def test_training_metrics_retry_an_interrupted_read(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
