@@ -236,11 +236,14 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       if (workspace === session.epoch) await history.load();
     } catch (error) {
       if (current !== selection || workspace !== session.epoch) return;
+      const recoverable = isTransientRequestError(error);
       $("progress").hidden = true;
-      $("job-detail").textContent = "The request was not confirmed. Retry to check or continue it.";
+      $("job-detail").textContent = recoverable
+        ? "The request was not confirmed. Retry to check or continue it."
+        : "The service rejected the request.";
       $("job-guidance").textContent = error.message;
       $("job-guidance").hidden = false;
-      retry(() => submitRequest(submission));
+      retry(recoverable ? () => submitRequest(submission) : null);
     } finally {
       if (workspace === session.epoch) {
         onStorageChange();

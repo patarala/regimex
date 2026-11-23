@@ -1091,6 +1091,31 @@ test("Analyze recovers an unconfirmed request even after visiting another analys
   assert.equal(ui.calls.filter(call => call.url === "/api/v1/snapshots").length, 1);
 });
 
+test("a rejected analysis shows the reason and lets the user choose another model", async () => {
+  const ui = await workspace(1);
+  await flush();
+  void ui.get("export-file").emit("change", {target: {files: [batchFile("input.json")]}});
+  await flush();
+  ui.pending("/api/v1/validate").reply({step_count: 12, instrument_ids: ["BTC/USD"]});
+  await flush();
+  void ui.get("classify").click();
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2000)});
+  await flush();
+  const rejected = ui.pending("/api/v1/analyses");
+  rejected.reply({error: {message: "This model is no longer published."}}, 404);
+  await flush();
+  assert.equal(ui.get("job-guidance").textContent, "This model is no longer published.");
+  assert.equal(ui.get("retry").hidden, true);
+  assert.match(ui.get("job-detail").textContent, /rejected/i);
+
+  ui.get("upload-model").value = "baseline-1";
+  await ui.get("upload-model").emit("change");
+  void ui.get("classify").click();
+  const corrected = ui.pending("/api/v1/analyses");
+  assert.equal(JSON.parse(corrected.options.body).model_version_id, "baseline-1");
+  assert.notEqual(corrected.options.headers["Idempotency-Key"], rejected.options.headers["Idempotency-Key"]);
+});
+
 test("the active model is captured as an immutable version before submission", async () => {
   const ui = await workspace();
   await flush();

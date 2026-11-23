@@ -28,7 +28,11 @@ your device by default and resumes following it when you switch back to its them
 4. When the job finishes, read the preview or select **Download report** for
    an offline copy. **Download JSON** saves the predictions and statistics.
    You can leave while the worker runs. Returning to the analysis refreshes
-   its status. Temporary connection errors are retried automatically.
+   its status. The browser automatically retries interrupted status checks.
+
+If the connection drops while submitting, choose **Retry request** in the
+same tab to recover the original request. If the service rejects a submission,
+the workspace shows the reason so you can correct the file or model selection.
 
 To analyze several exports with the same model, select or drop the files together.
 Select **Analyze files** (the button includes the count). Keep the batch open while
@@ -328,7 +332,9 @@ continues on the server after you stop waiting.
 To use the predictions in another program or a multi-experiment report, choose
 `--format json`. You can request JSON on the initial submission or download it
 later using the analysis ID printed by the command. Both formats come from the
-same saved analysis.
+same saved analysis. The offline report shows the SHA-256 of the canonical
+result JSON. You can reformat the file while preserving that digest. Keep
+numeric values as written, including the distinction between `1` and `1.0`.
 
 ```sh
 uv run --locked regimex analyze --analysis-id ANALYSIS_UUID --format json --output var/result.json
