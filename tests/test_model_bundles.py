@@ -260,3 +260,37 @@ def test_supplemental_training_populations_are_bound_to_inventory(tmp_path: Path
         load(source, source)
     with pytest.raises(ValidationError, match="leave weight"):
         load({**source, "weight_fraction": 0.75}, {**source, "exports_sha256": "e" * 64})
+
+
+def test_parent_model_provenance_includes_all_exposed_datasets(tmp_path: Path) -> None:
+    from regimex.model_bundles import ParentModelEvidence
+
+    model = bundle(tmp_path / "parent")
+    parent = ParentModelEvidence.from_bundle(model, "a" * 64)
+    assert parent.dataset_sha256 == model.training.dataset_sha256
+    assert parent.labels == model.training.labels
+    other = parent.model_copy(
+        update={
+            "model_version_id": "other-parent",
+            "manifest_sha256": "b" * 64,
+            "dataset_sha256": "c" * 64,
+            "additional_dataset_hashes": ("d" * 64,),
+        }
+    )
+    training = TrainingEvidence.model_validate(
+        {
+            **model.training.model_dump(),
+            "parent_models": (parent, other),
+            "validation_dataset_sha256": "e" * 64,
+        }
+    )
+    assert training.training_dataset_hashes == (
+        model.training.dataset_sha256,
+        "e" * 64,
+        "c" * 64,
+        "d" * 64,
+    )
+    with pytest.raises(ValidationError, match="unique manifest"):
+        TrainingEvidence.model_validate(
+            {**training.model_dump(), "parent_models": (parent, parent)}
+        )

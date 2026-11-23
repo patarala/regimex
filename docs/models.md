@@ -170,6 +170,11 @@ the forest and its single fit:
 To use the alternative settings, add `"feature_set": "multiscale"` or
 `"sample_weighting": "interval"` to `parameters`.
 
+The imported model `direction-blend-500-v3` runs both the released greedy
+forest and the larger multiscale forest, then averages their class
+probabilities before decoding. Its bundle includes both parents' weights and
+training records. [Evaluation and import command](large-direction-forest.md#combining-two-trained-forests)
+
 ## Saved models
 
 When importing a bundle with `regimex service register-model`, use

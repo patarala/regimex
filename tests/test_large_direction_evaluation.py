@@ -117,3 +117,31 @@ def test_mixed_selection_uses_both_populations_and_falls_back_only_for_diagnosti
         controlled[name]["pass"] = False
     fallback, eligible, _ = mixed.rank(scores, controlled)
     assert not eligible and fallback == second
+
+
+def test_ensemble_requires_strict_native_gain_and_controlled_gates(
+    trial: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ensemble = import_module("evaluate_ensemble_direction")
+    native = {name: {"interval_macro_f1": 0.80} for name in ensemble.ORDER}
+    transfer = {name: name for name in ensemble.ORDER}
+
+    def gate(control: str, candidate: str) -> dict[str, object]:
+        return {
+            "pooled": True,
+            "stability": candidate != "blend-125",
+            "per_class": {"growth": True},
+        }
+
+    monkeypatch.setattr(ensemble, "gate", gate)
+    native["blend-125"]["interval_macro_f1"] = 0.85
+    winner, _ = ensemble.select(native, transfer)
+    assert winner is None
+    monkeypatch.setattr(ensemble, "decision", lambda *_: {"challenger": None})
+    with pytest.raises(ValueError, match="remain reserved"):
+        ensemble.score(tmp_path, tmp_path, tmp_path, tmp_path)
+    assert not (tmp_path / "opened.json").exists()
+    for name in ("blend-250", "blend-500"):
+        native[name]["interval_macro_f1"] = 0.84
+    winner, _ = ensemble.select(native, transfer)
+    assert winner == "blend-250"

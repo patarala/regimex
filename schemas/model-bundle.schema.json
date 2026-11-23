@@ -101,6 +101,58 @@
       "title": "BundleMember",
       "type": "object"
     },
+    "ParentModelEvidence": {
+      "additionalProperties": false,
+      "description": "Preserve the fitted population of a model reused in a derived bundle.",
+      "properties": {
+        "additional_dataset_hashes": {
+          "default": [],
+          "items": {
+            "pattern": "^[0-9a-f]{64}$",
+            "type": "string"
+          },
+          "title": "Additional Dataset Hashes",
+          "type": "array"
+        },
+        "dataset_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Dataset Sha256",
+          "type": "string"
+        },
+        "labels": {
+          "$ref": "#/$defs/ReferenceIdentity"
+        },
+        "manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Sha256",
+          "type": "string"
+        },
+        "model_version_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Model Version Id",
+          "type": "string"
+        },
+        "split_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Split Manifest Sha256",
+          "type": "string"
+        },
+        "validation_references": {
+          "$ref": "#/$defs/ReferenceIdentity"
+        }
+      },
+      "required": [
+        "model_version_id",
+        "manifest_sha256",
+        "dataset_sha256",
+        "split_manifest_sha256",
+        "labels",
+        "validation_references"
+      ],
+      "title": "ParentModelEvidence",
+      "type": "object"
+    },
     "ReferenceIdentity": {
       "additionalProperties": false,
       "properties": {
@@ -164,6 +216,14 @@
         "labels": {
           "$ref": "#/$defs/ReferenceIdentity"
         },
+        "parent_models": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ParentModelEvidence"
+          },
+          "title": "Parent Models",
+          "type": "array"
+        },
         "run_id": {
           "maxLength": 128,
           "minLength": 1,
@@ -195,6 +255,19 @@
           "pattern": "^[0-9a-f]{64}$",
           "title": "Split Manifest Sha256",
           "type": "string"
+        },
+        "validation_dataset_sha256": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Validation Dataset Sha256"
         },
         "validation_references": {
           "$ref": "#/$defs/ReferenceIdentity"

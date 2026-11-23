@@ -64,12 +64,44 @@ class AdditionalTrainingSource(StrictModel):
     weight_fraction: Annotated[float, Field(gt=0, lt=1)]
 
 
+class ParentModelEvidence(StrictModel):
+    """Preserve the fitted population of a model reused in a derived bundle."""
+
+    model_version_id: Identifier
+    manifest_sha256: Sha256
+    dataset_sha256: Sha256
+    split_manifest_sha256: Sha256
+    labels: ReferenceIdentity
+    validation_references: ReferenceIdentity
+    additional_dataset_hashes: tuple[Sha256, ...] = Field(
+        default=(), exclude_if=lambda values: not values
+    )
+
+    @classmethod
+    def from_bundle(cls, bundle: ModelBundle, manifest_sha256: str) -> Self:
+        training = bundle.training
+        return cls(
+            model_version_id=bundle.model_version_id,
+            manifest_sha256=manifest_sha256,
+            dataset_sha256=training.dataset_sha256,
+            split_manifest_sha256=training.split_manifest_sha256,
+            labels=training.labels,
+            validation_references=training.validation_references,
+            additional_dataset_hashes=tuple(
+                h for h in training.training_dataset_hashes if h != training.dataset_sha256
+            ),
+        )
+
+
 class TrainingEvidence(StrictModel):
     run_id: Identifier
     dataset_sha256: Sha256
     split_manifest_sha256: Sha256
     labels: ReferenceIdentity
     validation_references: ReferenceIdentity
+    validation_dataset_sha256: Sha256 | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     seeds: Annotated[tuple[Seed, ...], Field(min_length=1)]
     selected_seed: Seed
     selection_metric: Literal["decoded_segment_macro_f1/iou-0.50"]
@@ -78,14 +110,34 @@ class TrainingEvidence(StrictModel):
         default=(), exclude_if=lambda sources: not sources
     )
 
+    parent_models: tuple[ParentModelEvidence, ...] = Field(
+        default=(), exclude_if=lambda models: not models
+    )
+
     @property
     def training_dataset_hashes(self) -> tuple[str, ...]:
-        return (self.dataset_sha256, *(s.exports_sha256 for s in self.additional_training_sources))
+        datasets = [
+            self.dataset_sha256,
+            *(s.exports_sha256 for s in self.additional_training_sources),
+        ]
+        if self.validation_dataset_sha256:
+            datasets.append(self.validation_dataset_sha256)
+        for parent in self.parent_models:
+            datasets.extend((parent.dataset_sha256, *parent.additional_dataset_hashes))
+        return tuple(dict.fromkeys(datasets))
 
     @model_validator(mode="after")
     def compatible_references(self) -> Self:
-        if len(set(self.training_dataset_hashes)) != len(self.training_dataset_hashes):
+        sources = [
+            self.dataset_sha256,
+            *(s.exports_sha256 for s in self.additional_training_sources),
+        ]
+        if len(set(sources)) != len(sources):
             raise ValueError("each training dataset must have a unique identity")
+        if len({parent.manifest_sha256 for parent in self.parent_models}) != len(
+            self.parent_models
+        ):
+            raise ValueError("each parent model must have a unique manifest")
         if sum(s.weight_fraction for s in self.additional_training_sources) >= 1:
             raise ValueError(
                 "additional training sources must leave weight for the primary dataset"

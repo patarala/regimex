@@ -103,6 +103,54 @@ versus 0.743 for the release. The discrepancy was largest on sparsely traded
 paths. Both final populations for this comparison stayed closed. The separate
 weights, manifests and labeled paths allow replay without regenerating prices.
 
+## Combining two trained forests
+
+`direction-blend-500-v3` averages the class probabilities from the released
+forest and the native multiscale forest with interval weights. The normal
+decoder turns that average into direction intervals. The bundle contains both
+sets of weights and their original training records. Loading it requires a
+worker that supports the `adaptive-probability-blend/1.0` feature version.
+
+We compared multiscale weights of 12.5%, 25%, 37.5% and 50% using another
+192 native validation experiments and 384 controlled paths. All four passed
+the controlled validation margins. The 50% blend had the highest native
+validation interval macro-F1 (0.9218), so we froze that weight before either
+final comparison. The two models below received exactly the same inputs in
+each final comparison.
+
+| Final measurement | Released forest | 50% blend |
+| --- | ---: | ---: |
+| Interval macro-F1 on 384 native experiments | 0.7925 | **0.8947** |
+| Point macro-F1 on the same experiments | 0.9320 | **0.9632** |
+| Short sideways intervals found | 68 / 156 | **112 / 156** |
+| False sideways intervals | 62 | **31** |
+| Interval macro-F1 on 768 known-drift paths, complete and masked views | **0.9195** | 0.9098 |
+| Changed directions on steps observable in both views | 3.05% | **2.54%** |
+
+The paired 95% interval for the increase in native interval macro-F1 was
+0.0758 to 0.1268. The blend improved all three directions at the pooled level
+and improved each series length. On the controlled paths, the largest class
+loss was in sideways F1 (0.8391 to 0.8192). The selection rules allowed
+losses of 0.02 pooled and 0.04 per class, and at most 0.005 more changed
+directions as a fraction of commonly observed steps. The blend met all three
+conditions. The release remains the higher-scoring choice for the controlled
+drift task alone.
+
+To try the bundle on an **empty local service**, extract the portable archive
+under `var/release/direction-ensemble-v3` and load the service environment.
+The following command activates the imported model.
+
+```sh
+uv run --locked --all-extras regimex service register-model \
+  --bundle var/release/direction-ensemble-v3/bundle \
+  --manifest-sha256 c419fc689ddc254e0e871b9f48760a610900e63cabe7f9ac603f74a08806976a \
+  --token-file var/credentials/admin.token --activate
+```
+
+On a service with an active model, activation also requires
+`--expected-previous` and the current active version ID. See the
+[local service guide](usage.md#start-locally) for worker and API startup.
+
 ## Reproduce
 
 Use the locked ML environment and the [original control bundle](direction-context.md#use-the-trained-forest).
@@ -138,4 +186,39 @@ uv run --locked --extra ml python scripts/prepare_large_direction.py \
   --inventory var/verification/forest-training-mix/prior.json \
   --dataset var/verification/forest-training-mix/dataset.json \
   --transfer var/verification/forest-training-transfer/plan.json --workers 5
+```
+
+To reproduce the mixed-supervision comparison, use revision `a539a90`,
+the first comparison's data and selected bundle, and the control bundle. The commands below
+regenerate the two training sources, fit all three models and stop after joint
+validation, as in the reported comparison. If using the `direction-mixed-v2`
+data archive, unpack it under `var/verification` and start at the register step.
+The archive includes the 1,152 labeled paths.
+
+```sh
+data=var/verification/direction-mixed-v2
+run prepare_mixed_direction "$data" --workers 5
+run train_mixed_direction prepare "$data" --workers 3
+run evaluate_mixed_direction register
+run check_mixed_direction_transfer reserve
+run train_mixed_direction fit "$data" --workers 3
+run evaluate_mixed_direction validate
+run check_mixed_direction_transfer validation
+run evaluate_mixed_direction freeze
+```
+
+The blend comparison uses the original released bundle, the multiscale bundle
+from the first comparison, and the mixed comparison's data for exposure checks.
+It fits no additional trees. Freeze packages the chosen blend and verifies
+that the restored bundle reproduces the selected probabilities.
+
+```sh
+run prepare_ensemble_direction var/verification/direction-ensemble-v3 --workers 5
+run evaluate_ensemble_direction register
+run check_ensemble_direction_transfer reserve
+run evaluate_ensemble_direction validate
+run check_ensemble_direction_transfer validation
+run evaluate_ensemble_direction freeze
+run evaluate_ensemble_direction score
+run check_ensemble_direction_transfer test
 ```

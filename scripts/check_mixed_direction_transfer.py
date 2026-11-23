@@ -36,6 +36,15 @@ def protocol():
     }
 
 
+def measure(groups, names, predict):
+    totals = {name: replay.Totals() for name in names}
+    for index, seed in enumerate(groups):
+        evaluate_group(seed, index, predict, totals)
+        if (index + 1) % 16 == 0:
+            print(f"Scored {index + 1}/{len(groups)} drift groups", flush=True)
+    return {name: counters.summary() for name, counters in totals.items()}
+
+
 def score(phase, output, data, comparison, control, native_bundle):
     plan = output / "plan.json"
     selection = comparison / "selection"
@@ -92,13 +101,8 @@ def score(phase, output, data, comparison, control, native_bundle):
     def predict(inputs):
         return {key: model.predict(inputs, runtime=RUNTIME) for key, model in models.items()}
 
-    totals = {name: replay.Totals() for name in models}
     groups = GROUPS[phase]
-    for index, seed in enumerate(groups):
-        evaluate_group(seed, index, predict, totals)
-        if (index + 1) % 16 == 0:
-            print(f"Scored {index + 1}/{len(groups)} {phase} groups", flush=True)
-    results = {name: counters.summary() for name, counters in totals.items()}
+    results = measure(groups, models, predict)
     checks = {k: replay.gate(results[CONTROL], v) for k, v in results.items() if k != CONTROL}
     if opening["weights_sha256"] != {k: digest(path) for k, path in weights.items()}:
         raise ValueError("Model weights changed during scoring")

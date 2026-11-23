@@ -22,7 +22,7 @@ from regimex.application.training import (
 from regimex.backends.adaptive import AdaptiveBackend, AdaptivePredictor
 from regimex.backends.adaptive_forest import features, fit
 from regimex.directions import AnalysisConfig
-from regimex.model_contracts import FitResult, ObservationInputs, TrainingInputs
+from regimex.model_contracts import BundleProvenance, FitResult, ObservationInputs, TrainingInputs
 from regimex.model_registry import (
     AdaptiveParameters,
     ArchitectureRegistry,
@@ -34,6 +34,120 @@ from regimex.model_registry import (
 )
 from regimex.resource_limits import ResourceBudgetExceeded
 from regimex.storage import write_json
+
+
+def blended_bundle(
+    tmp_path: Path,
+) -> tuple[str, ObservationInputs, AdaptivePredictor, AdaptivePredictor]:
+    from regimex.backends.adaptive_blend import blend_environment, pack_bundle
+    from regimex.data_catalog import content_hash
+    from regimex.model_bundles import ModelBundle, ParentModelEvidence
+
+    greedy, valid, train = fitted()
+    assert isinstance(greedy.predictor, AdaptivePredictor)
+    config = greedy.predictor.configuration
+    multi = AdaptiveBackend().fit(
+        train,
+        valid,
+        parameters=AdaptiveParameters(trees=5, max_depth=4, feature_set="multiscale"),
+        policy=config.training_policy,
+        analysis=config.analysis,
+        runtime=config.training_runtime,
+        evaluator=lambda p: float(p[:, 1].mean()),
+    )
+    assert isinstance(multi.predictor, AdaptivePredictor)
+    parents = []
+    for name, candidate in (("greedy", greedy), ("multiscale", multi)):
+        origin = provenance(candidate).model_copy(update={"model_version_id": name})
+        sha = AdaptiveBackend().write_bundle(
+            candidate, tmp_path / name, provenance=origin, analysis=config.analysis
+        )
+        manifest = ModelBundle.model_validate_json((tmp_path / name / "manifest.json").read_bytes())
+        parents.append(ParentModelEvidence.from_bundle(manifest, sha))
+    greedy_sha, multi_sha = (p.manifest_sha256 for p in parents)
+    primary = provenance(multi)
+    lineage = BundleProvenance.model_validate(
+        {
+            **primary.model_dump(),
+            "model_version_id": "example-blend",
+            "training": {
+                **primary.training.model_dump(),
+                "parent_models": tuple(parents),
+                "validation_dataset_sha256": "a" * 64,
+            },
+            "environment_sha256": content_hash(blend_environment(greedy_sha, multi_sha, 0.25)),
+        }
+    )
+    sha = pack_bundle(
+        tmp_path / "blend",
+        greedy_bundle=tmp_path / "greedy",
+        greedy_sha256=greedy_sha,
+        multiscale_bundle=tmp_path / "multiscale",
+        multiscale_sha256=multi_sha,
+        fraction=0.25,
+        provenance=lineage,
+    )
+    return sha, valid, greedy.predictor, multi.predictor
+
+
+def test_blend_restores_exact_mixture_without_parent_directories_and_enforces_combined_budget(
+    tmp_path: Path,
+) -> None:
+    from regimex.backends.adaptive_blend import BlendedAdaptivePredictor
+
+    sha, valid, greedy, multi = blended_bundle(tmp_path)
+    (tmp_path / "greedy").rename(tmp_path / "original-greedy")
+    (tmp_path / "multiscale").rename(tmp_path / "original-multi")
+    budget = greedy.numeric_bytes + multi.numeric_bytes
+    runtime = InferenceRuntime(threads=1, model_cache_budget_bytes=budget)
+    restored = AdaptiveBackend().load_bundle(
+        tmp_path / "blend", manifest_sha256=sha, runtime=runtime
+    )
+    assert isinstance(restored, BlendedAdaptivePredictor)
+    expected = 0.75 * greedy.predict(valid, runtime=runtime) + 0.25 * multi.predict(
+        valid, runtime=runtime
+    )
+    np.testing.assert_array_equal(expected, restored.predict(valid, runtime=runtime))
+    assert restored.numeric_bytes == budget
+    small = InferenceRuntime(model_cache_budget_bytes=budget - 1)
+    with pytest.raises(ResourceBudgetExceeded):
+        AdaptiveBackend().load_bundle(tmp_path / "blend", manifest_sha256=sha, runtime=small)
+    with pytest.raises(ResourceBudgetExceeded):
+        restored.predict(valid, runtime=small)
+
+
+@pytest.mark.parametrize("change", ["source", "extra", "recipe", "lineage", "truncated"])
+def test_blend_checks_nested_sources_and_selection_after_outer_reseal(
+    tmp_path: Path, change: str
+) -> None:
+    import zipfile
+
+    from regimex.storage import digest
+
+    blended_bundle(tmp_path)
+    root = tmp_path / "blend"
+    if change == "source":
+        archive = root / "forests.zip"
+        with zipfile.ZipFile(archive) as old:
+            payloads = {n: old.read(n) for n in old.namelist()}
+        payloads["greedy/weights.npz"] = payloads["multiscale/weights.npz"]
+        with zipfile.ZipFile(archive, "w") as rebuilt:
+            for key, payload in payloads.items():
+                rebuilt.writestr(key, payload)
+    elif change == "extra":
+        with zipfile.ZipFile(root / "forests.zip", "a") as archive_writer:
+            archive_writer.writestr("other-file", "unregistered")
+    elif change == "truncated":
+        (root / "forests.zip").write_bytes(b"truncated")
+    elif change == "recipe":
+        write_json(root / "validation.json", {"score": 0.0})
+    else:
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        manifest["training"]["parent_models"].reverse()
+        write_json(root / "manifest.json", manifest)
+    sha = digest(root / "manifest.json") if change == "lineage" else rehash(root)
+    with pytest.raises(ValueError):
+        AdaptiveBackend().load_bundle(root, manifest_sha256=sha, runtime=InferenceRuntime())
 
 
 def fitted() -> tuple[FitResult, ObservationInputs, TrainingInputs]:

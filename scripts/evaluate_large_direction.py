@@ -160,13 +160,19 @@ def samples(corpus, references):
 
 
 def measure(corpus, references, models):
-    counts = {name: {} for name in models}
-    losses = {name: np.zeros(3) for name in models}
+    def predict(inputs):
+        return {name: model.predict(inputs, runtime=RUNTIME) for name, model in models.items()}
+
+    return measure_predictions(corpus, references, tuple(models), predict)
+
+
+def measure_predictions(corpus, references, names, predict):
+    counts = {name: {} for name in names}
+    losses = {name: np.zeros(3) for name in names}
     for index, chunk in enumerate(batched(samples(corpus, references), 8, strict=False), start=1):
         batch = evaluator(chunk)
         labels = targets(batch)
-        for name, model in models.items():
-            probabilities = model.predict(batch.inputs, runtime=RUNTIME)
+        for name, probabilities in predict(batch.inputs).items():
             ids, _, values = experiment_counts(batch, probabilities)
             if counts[name].keys() & ids:
                 raise ValueError("An experiment was scored more than once")

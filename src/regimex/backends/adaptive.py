@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import numpy as np
 from pydantic import Field, JsonValue
@@ -43,6 +43,9 @@ from regimex.model_registry import (
 )
 from regimex.resource_limits import ResourceBudgetExceeded
 from regimex.storage import digest, output_directory, write_json
+
+if TYPE_CHECKING:
+    from regimex.backends.adaptive_blend import BlendedAdaptivePredictor
 
 ARCHITECTURE_ID = "adaptive"
 IMPLEMENTATION_VERSION = "0.1.0"
@@ -134,18 +137,21 @@ class AdaptivePredictor:
     def numeric_bytes(self) -> int:
         return self.model.numeric_bytes
 
+    def predict_sequence(self, rows: tuple[Observation, ...]) -> DoubleArray:
+        features = _FEATURE_SETS[self.configuration.parameters.feature_set].extract
+        return self.model.predict(features(rows, self.analysis))
+
     def predict(self, inputs: ObservationInputs, *, runtime: InferenceRuntime) -> DoubleArray:
         require_observation_inputs(inputs)
         InferenceRuntime.model_validate(runtime.model_dump())
         if self.numeric_bytes > runtime.model_cache_budget_bytes:
             raise ResourceBudgetExceeded("adaptive forest exceeds the inference model cache budget")
         probabilities = np.empty((inputs.row_count, len(DIRECTION_NAMES)), dtype=np.float64)
-        extract = _FEATURE_SETS[self.configuration.parameters.feature_set].extract
         offset = 0
         # One sequence at a time keeps both context and temporary arrays within an instrument.
         for rows in inputs.observations:
             end = offset + len(rows)
-            probabilities[offset:end] = self.model.predict(extract(rows, self.analysis))
+            probabilities[offset:end] = self.predict_sequence(rows)
             offset = end
         probabilities_valid(probabilities, inputs.row_count)
         return probabilities
@@ -372,7 +378,9 @@ class AdaptiveBackend:
 
     def load_bundle(
         self, root: Path, *, manifest_sha256: str, runtime: InferenceRuntime
-    ) -> AdaptivePredictor:
+    ) -> AdaptivePredictor | BlendedAdaptivePredictor:
+        from regimex.backends.adaptive_blend import BLEND_VERSION, load_blend
+
         InferenceRuntime.model_validate(runtime.model_dump())
         bundle = verify_model_bundle(
             root,
@@ -380,8 +388,17 @@ class AdaptiveBackend:
             architecture_id=ARCHITECTURE_ID,
             implementation_version=IMPLEMENTATION_VERSION,
         )
+        if bundle.feature_version == BLEND_VERSION:
+            return load_blend(root, bundle, runtime)
+        return self._restore_forest(root, bundle, runtime)
+
+    def _restore_forest(
+        self, root: Path, bundle: ModelBundle, runtime: InferenceRuntime
+    ) -> AdaptivePredictor:
+        """Restore a single forest after its envelope and file digests have been verified."""
         if (
             {member.role: member.path for member in bundle.members} != _MEMBERS
+            or bundle.training.parent_models
             or bundle.preprocessing_version != PREPROCESSING_VERSION
             or bundle.decoder_version != DECODER_VERSION
         ):

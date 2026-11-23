@@ -283,6 +283,8 @@ def supervise_child(
             )
         }
     )
+    # Include files created by codecs and scientific libraries in this job's scratch accounting.
+    environment["TMPDIR"] = str(root.resolve())
     command = [
         sys.executable,
         "-m",

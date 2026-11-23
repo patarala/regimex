@@ -88,6 +88,38 @@ def test_fast_child_completes_with_one_second_budget(
     )
 
 
+def test_temporary_files_in_the_child_count_toward_its_own_scratch_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scratch = tmp_path / "job"
+    scratch.mkdir()
+    inherited = tmp_path / "parent-temp"
+    inherited.mkdir()
+    monkeypatch.setenv("TMPDIR", str(inherited))
+    script = """
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+import sys
+with NamedTemporaryFile(delete=False) as temporary:
+    temporary.write(b'x' * 8192)
+(Path(sys.argv[1]) / 'child-result.json').write_text('{}')
+"""
+    real_launch = subprocess.Popen
+
+    def child(*args: Any, **kwargs: Any) -> Popen[bytes]:
+        return cast(
+            Popen[bytes], real_launch([sys.executable, "-c", script, str(scratch)], **kwargs)
+        )
+
+    monkeypatch.setattr(subprocess, "Popen", child)
+    with pytest.raises(ComputationFailure, match="scratch"):
+        supervise_child(
+            {}, scratch, limits=ChildLimits(5, 1024**3, 4096, 1), heartbeat=lambda: None
+        )
+    assert list(inherited.iterdir()) == []
+    assert any(p.stat().st_size == 8192 for p in scratch.iterdir())
+
+
 @pytest.mark.parametrize("leader_outcome", ["success", "cancelled"])
 @pytest.mark.parametrize("descendant_stop", ["graceful", "forced", "oversized"])
 def test_supervisor_stops_its_descendants_after_leader_exit(

@@ -47,6 +47,11 @@ On 144 held-out synthetic experiments with automatic profile 2.2 references,
 `adaptive-0.1.0` scored 0.786 interval macro-F1 and `tcn-0.2.0` scored 0.726.
 Their point macro-F1 scores were 0.916 and 0.915. [Results by direction and behavior on incomplete exports](docs/direction-context.md#results)
 
+On 384 further synthetic experiments, `direction-blend-500-v3` scored 0.895
+interval macro-F1 against 0.793 for `adaptive-0.1.0`. The former averages
+two trained forests. On separate paths with known drift, they scored 0.910
+and 0.920 respectively. [Comparison and model import](docs/large-direction-forest.md#combining-two-trained-forests)
+
 ## Guides
 
 | Task | Guide |
