@@ -51,6 +51,19 @@ class ReferenceIdentity(StrictModel):
     direction_semantics_sha256: Sha256
 
 
+class AdditionalTrainingSource(StrictModel):
+    """Bind a supplemental labeled population and its contribution to the fit."""
+
+    source_id: Identifier
+    exports_sha256: Sha256
+    references_sha256: Sha256
+    recipe_sha256: Sha256
+    manifest_sha256: Sha256
+    experiment_count: Annotated[int, Field(gt=0)]
+    classified_steps: Annotated[int, Field(gt=0)]
+    weight_fraction: Annotated[float, Field(gt=0, lt=1)]
+
+
 class TrainingEvidence(StrictModel):
     run_id: Identifier
     dataset_sha256: Sha256
@@ -61,9 +74,22 @@ class TrainingEvidence(StrictModel):
     selected_seed: Seed
     selection_metric: Literal["decoded_segment_macro_f1/iou-0.50"]
     validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
+    additional_training_sources: tuple[AdditionalTrainingSource, ...] = Field(
+        default=(), exclude_if=lambda sources: not sources
+    )
+
+    @property
+    def training_dataset_hashes(self) -> tuple[str, ...]:
+        return (self.dataset_sha256, *(s.exports_sha256 for s in self.additional_training_sources))
 
     @model_validator(mode="after")
     def compatible_references(self) -> Self:
+        if len(set(self.training_dataset_hashes)) != len(self.training_dataset_hashes):
+            raise ValueError("each training dataset must have a unique identity")
+        if sum(s.weight_fraction for s in self.additional_training_sources) >= 1:
+            raise ValueError(
+                "additional training sources must leave weight for the primary dataset"
+            )
         if len(set(self.seeds)) != len(self.seeds) or self.selected_seed not in self.seeds:
             raise ValueError("selected seed must belong to a unique recorded search")
         if (

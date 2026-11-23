@@ -521,7 +521,7 @@ class BenchmarkService:
                 at=_event_time(state.registry),
                 choices_sha256=choices_sha256,
                 model_artifact_sha256=model.bundle_sha256,
-                training_dataset_hashes=(manifest.training.dataset_sha256,),
+                training_dataset_hashes=manifest.training.training_dataset_hashes,
                 training_reference=training_reference,
             )
             frozen = FrozenChoice(

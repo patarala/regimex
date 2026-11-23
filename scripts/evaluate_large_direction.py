@@ -229,17 +229,29 @@ def choose(scores, names):
     return max(names, key=lambda name: scores[name]["interval_macro_f1"])
 
 
-def package(stage, name, spec, score, dataset, refs, corpus):
+def package(
+    stage,
+    name,
+    spec,
+    score,
+    dataset,
+    refs,
+    corpus,
+    *,
+    model_version_id=None,
+    additional_training_sources=(),
+    build_id=None,
+):
     policy = spec["policy"]
     fit = fit_result_from_forest(**spec, validation_score=score)
     provenance = BundleProvenance(
-        model_version_id=f"direction-{name}-v1",
-        build_id="direction-large-" + digest(Path(__file__)),
+        model_version_id=model_version_id or f"direction-{name}-v1",
+        build_id=build_id or "direction-large-" + digest(Path(__file__)),
         analysis_profile="direction-32/2.2",
         analysis_profile_sha256=analysis_profile_hash(PROFILE),
         environment_sha256=content_hash(spec["environment"]),
         training=TrainingEvidence(
-            run_id=f"direction-{name}-v1",
+            run_id=model_version_id or f"direction-{name}-v1",
             dataset_sha256=dataset.content_sha256,
             split_manifest_sha256=dataset.split_manifest_sha256,
             labels=refs["train"].identity(),
@@ -248,6 +260,7 @@ def package(stage, name, spec, score, dataset, refs, corpus):
             selected_seed=policy.seeds[0],
             selection_metric="decoded_segment_macro_f1/iou-0.50",
             validation_segment_macro_f1=score,
+            additional_training_sources=additional_training_sources,
         ),
     )
     backend = AdaptiveBackend()
@@ -340,6 +353,19 @@ def score(data, output, control):
         or frozen["challenger"] != choose(frozen["validation"], CHALLENGERS)
     ):
         raise ValueError("Frozen selection or comparison inputs changed")
+    score_frozen(
+        data,
+        output,
+        control,
+        frozen,
+        validation_qualified=frozen["validation_winner"] == frozen["challenger"],
+        evidence=evidence_files,
+    )
+
+
+def score_frozen(data, output, control, frozen, *, validation_qualified, evidence):
+    selection = output / "selection"
+    freeze_path = selection / "freeze.json"
     name = frozen["challenger"]
     models = {
         CONTROL: AdaptiveBackend().load_bundle(
@@ -361,8 +387,8 @@ def score(data, output, control):
     scores, groups = measure(corpus, None, models)
     paired = contrast(groups[CONTROL], groups[name])
     checks = qualification(scores[CONTROL], scores[name], paired)
-    checks["validation_winner"] = frozen["validation_winner"] == name
-    if digest(freeze_path) != opening["freeze_sha256"] or frozen["inputs"] != evidence_files(data):
+    checks["validation_winner"] = validation_qualified
+    if digest(freeze_path) != opening["freeze_sha256"] or frozen["inputs"] != evidence(data):
         raise ValueError("Inputs changed during final scoring")
     result = {
         **opening,

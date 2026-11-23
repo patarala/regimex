@@ -68,9 +68,45 @@ price features use the same family of piecewise-linear fits as that profile.
 It did not qualify to replace the release across both populations. Neither
 evaluation measures accuracy against human labels or on real markets.
 
+For long series the multiscale fit searches at most 512 interior grid
+points per observed block before refining the cuts. The grid is anchored to
+the original step numbers. Prepending unavailable steps can shift predicted
+boundaries in an otherwise identical observed series. For example, prepending
+33 steps to a 1,024-step training series changed 84 decoded steps after
+aligning the two price paths.
+
+## Adding examples with known drift
+
+We retained the 1,536 native training experiments and generated 1,152 new
+price paths. The second generator first chooses drift direction and duration,
+then applies changing speed, price-level shifts, noise, tick rounding,
+execution sampling and missing observations. It supplied 657,477 additional
+labeled steps. The two sources have separate content and reference digests
+in the model bundle. None of the controlled evaluation paths entered training.
+
+The three mixed forests used identical inputs and different contributions
+from the known-drift paths. Each contribution was fixed within every class.
+Joint validation used 192 fresh native experiments and 384 fresh controlled
+paths, each with complete and masked views.
+
+| Model | Native validation interval F1 | Known-drift validation interval F1 |
+| --- | ---: | ---: |
+| Release | 0.7865 | 0.9039 |
+| Multiscale, native training only | 0.9455 | 0.8560 |
+| 10% known-drift weight | 0.9438 | 0.8571 |
+| 25% known-drift weight | 0.9358 | 0.8642 |
+| 45% known-drift weight | 0.9370 | 0.8629 |
+
+The mixed forests improved native agreement. All three missed the controlled
+pooled and sideways F1 margins. At 25% weight, sideways precision was 0.639
+versus 0.743 for the release. The discrepancy was largest on sparsely traded
+paths. Both final populations for this comparison stayed closed. The separate
+weights, manifests and labeled paths allow replay without regenerating prices.
+
 ## Reproduce
 
 Use the locked ML environment and the [original control bundle](direction-context.md#use-the-trained-forest).
+Use revision `5ae5b41` to reproduce the source fingerprints of this comparison.
 The data archive unpacks to `direction-large-v1/` and contains the registered
 splits, relative export paths and automatic training and validation references.
 From the repository root, unpack it under `var/verification`. Use empty output

@@ -1,5 +1,65 @@
 {
   "$defs": {
+    "AdditionalTrainingSource": {
+      "additionalProperties": false,
+      "description": "Bind a supplemental labeled population and its contribution to the fit.",
+      "properties": {
+        "classified_steps": {
+          "exclusiveMinimum": 0,
+          "title": "Classified Steps",
+          "type": "integer"
+        },
+        "experiment_count": {
+          "exclusiveMinimum": 0,
+          "title": "Experiment Count",
+          "type": "integer"
+        },
+        "exports_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Exports Sha256",
+          "type": "string"
+        },
+        "manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Sha256",
+          "type": "string"
+        },
+        "recipe_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Recipe Sha256",
+          "type": "string"
+        },
+        "references_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "References Sha256",
+          "type": "string"
+        },
+        "source_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "weight_fraction": {
+          "exclusiveMaximum": 1,
+          "exclusiveMinimum": 0,
+          "title": "Weight Fraction",
+          "type": "number"
+        }
+      },
+      "required": [
+        "source_id",
+        "exports_sha256",
+        "references_sha256",
+        "recipe_sha256",
+        "manifest_sha256",
+        "experiment_count",
+        "classified_steps",
+        "weight_fraction"
+      ],
+      "title": "AdditionalTrainingSource",
+      "type": "object"
+    },
     "BundleMember": {
       "additionalProperties": false,
       "properties": {
@@ -88,6 +148,14 @@
     "TrainingEvidence": {
       "additionalProperties": false,
       "properties": {
+        "additional_training_sources": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/AdditionalTrainingSource"
+          },
+          "title": "Additional Training Sources",
+          "type": "array"
+        },
         "dataset_sha256": {
           "pattern": "^[0-9a-f]{64}$",
           "title": "Dataset Sha256",

@@ -47,7 +47,7 @@ def test_frozen_challenger_can_be_measured_when_release_wins_validation(
     monkeypatch.setattr(trial, "development", lambda _: (None, None))
     monkeypatch.setattr(trial, "PartitionCorpus", lambda *args: None)
 
-    def measure(corpus, references, models):
+    def measure(corpus: object, references: object, models: dict[str, object]) -> None:
         assert references is None and list(models) == [trial.CONTROL, new]
         assert trial.read(tmp_path / "opened.json") == {
             "freeze_sha256": digest(selection / "freeze.json")
@@ -79,7 +79,7 @@ def test_partition_loader_limits_shared_catalog_to_its_own_locations(
     dataset = SimpleNamespace(content_sha256="shared", members=members)
     locations = {"validation": "exports/1.json"}
 
-    def load_corpus(corpus, path, expected_digest):
+    def load_corpus(corpus: SimpleNamespace, path: Path, expected_digest: str) -> None:
         assert expected_digest == "shared" and path == tmp_path / "validation"
         corpus.dataset = dataset
         corpus.locations = locations
@@ -89,3 +89,31 @@ def test_partition_loader_limits_shared_catalog_to_its_own_locations(
     locations["test"] = "exports/2.json"
     with pytest.raises(ValueError, match="differ from the registered split"):
         trial.PartitionCorpus(tmp_path, "validation", dataset)
+
+
+def test_mixed_selection_uses_both_populations_and_falls_back_only_for_diagnostics(
+    trial: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mixed = import_module("evaluate_mixed_direction")
+    base, second, rejected, previous = mixed.CHALLENGERS
+    scores = {name: {"interval_macro_f1": 0.8} for name in mixed.ORDER}
+    scores[base]["interval_macro_f1"] = 0.85
+    scores[second]["interval_macro_f1"] = 0.9
+    scores[rejected]["interval_macro_f1"] = 0.95
+    scores[previous]["interval_macro_f1"] = 0.79
+    controlled = {
+        name: {"interval": {"pooled": {"macro_f1": f1}}, "pass": True}
+        for name, f1 in zip(mixed.ORDER, (0.79, 0.80, 0.75, 0.83, 0.80), strict=True)
+    }
+
+    def gate(control: object, candidate: dict[str, object]) -> dict[str, object]:
+        return {"pooled": True, "stability": True, "per_class": {"sideways": candidate["pass"]}}
+
+    monkeypatch.setattr(mixed, "gate", gate)
+    controlled[rejected]["pass"] = False
+    winner, eligible, _ = mixed.rank(scores, controlled)
+    assert eligible and winner == second
+    for name in mixed.CHALLENGERS:
+        controlled[name]["pass"] = False
+    fallback, eligible, _ = mixed.rank(scores, controlled)
+    assert not eligible and fallback == second

@@ -231,3 +231,32 @@ def test_envelope_verification_does_not_claim_a_loadable_backend_model(tmp_path:
     weights = next(member for member in verified.members if member.role == "weights")
     # Fixture bytes deliberately are not any backend's weight codec.
     assert (root / weights.path).read_bytes() == b"weights"
+
+
+def test_supplemental_training_populations_are_bound_to_inventory(tmp_path: Path) -> None:
+    training = bundle(tmp_path / "bundle").training
+    original = training.model_dump(mode="json")
+    assert "additional_training_sources" not in original
+    source = {
+        "source_id": "latent-training",
+        "exports_sha256": "a" * 64,
+        "references_sha256": "b" * 64,
+        "recipe_sha256": "c" * 64,
+        "manifest_sha256": "d" * 64,
+        "experiment_count": 12,
+        "classified_steps": 1024,
+        "weight_fraction": 0.25,
+    }
+
+    def load(*sources: dict[str, object]) -> TrainingEvidence:
+        return TrainingEvidence.model_validate_json(
+            json.dumps({**original, "additional_training_sources": sources})
+        )
+
+    mixed = load(source)
+    assert mixed.training_dataset_hashes == (training.dataset_sha256, source["exports_sha256"])
+    assert mixed.model_dump(mode="json")["additional_training_sources"] == [source]
+    with pytest.raises(ValidationError, match="unique identity"):
+        load(source, source)
+    with pytest.raises(ValidationError, match="leave weight"):
+        load({**source, "weight_fraction": 0.75}, {**source, "exports_sha256": "e" * 64})
