@@ -7,11 +7,13 @@ Resource paths in this guide are relative to `/api/v1`. Health checks use
 
 ## Authentication and request rules
 
-Send a bearer token for API calls. The browser exchanges a user or administrator
-token at `POST /session` for an HttpOnly session cookie. Use `GET /session` to
-restore a session and `DELETE /session` to sign out. Cookie-authenticated
-mutations require the configured Origin, an allowed fetch-site context and the
-session's `X-CSRF-Token`. Use one authentication method per request.
+Send a bearer token for API calls. The browser sends `{"token":"…"}` as JSON
+to `POST /session` with the configured `Origin` to obtain an HttpOnly session
+cookie. Use `GET /session` to restore a session and `DELETE /session` to sign
+out. For cookie-authenticated changes, send the session's `csrf_token` in the
+`X-CSRF-Token` header and include the configured `Origin`. If
+`Sec-Fetch-Site` is present, use `same-origin` or `none`. Use one
+authentication method per request.
 
 Sessions expire 30 minutes after sign-in by default. Revoking the underlying
 token also ends access on the next request. Simulator backends use a separate
@@ -110,9 +112,11 @@ and attempt counts. Once it reaches `failed`, automatic retries have ended.
 
 `GET /models?published_only=true` lists published versions and the active
 model ID. Administrators can omit the filter to see unpublished candidates.
-`GET /models/{id}` and `GET /metrics` expose model metadata and evaluation
-information. Use `GET /architectures` as an administrator to inspect installed
-backend schemas.
+`GET /models/{id}` returns model metadata. `GET /metrics` defaults to the
+active version. Pass `?model_version_id=ID` to see the quality status and
+publication evaluation for another accessible version. An administrator can
+download a specific evaluation from `GET /evaluations/{id}/result`. Use
+`GET /architectures` as an administrator to inspect installed backend schemas.
 
 Compare two successful analyses of the same saved snapshot with
 `GET /analyses/{id}/comparison?other=ANALYSIS_UUID`. The HTML attachment
@@ -260,8 +264,9 @@ returns the registry revision, registered dataset count and complete source
 scope for review. After the administrator confirms the inventory, send
 `dataset_id`, `final_dataset_id`, `final_reference_set_id`,
 `expected_registry_revision` and their `inventory_statement` to
-`POST /training-options/selection`. The response contains the open
-`benchmark_id`. If the registry changed since review, the request returns
+`POST /training-options/selection`. The response contains the
+`benchmark_id` to use for training. Selection has started, and final test
+references remain sealed. If the registry changed since review, the request returns
 `409`. Repeating a successful request for the same datasets and references
 recovers the existing reservation while selection remains open.
 
@@ -301,9 +306,11 @@ takes one seed (173 by default) and scores validation once after fitting. For
 its policy, send `{"optimizer":"extra_trees"}`. Set `trees` and `max_depth`
 under `parameters` to change the [forest settings](models.md#adaptive-direction-forest).
 
-The TCN accepts `epochs` and `updates` budgets. The baseline evaluates its
-regularization candidates under the epoch policy. For a fixed TCN budget, set
-`architecture_id` to `tcn` and use this `policy`:
+For epoch-based TCN training, send a policy with `"optimizer":"adamw"` and
+an optional `epochs` count. Omit the `budget` field for this policy. For a
+fixed number of optimizer updates, set `architecture_id` to `tcn` and use
+the following policy. The last validation checkpoint must equal `updates`,
+and all seeds together can use at most 32,000 updates.
 
 ```json
 {
@@ -364,7 +371,9 @@ a successful fit records them. Archived runs retain the same measurements.
 
 To follow a running fit, request `/progress`, then pass the returned `attempt`
 and `cursor` as `?attempt=ATTEMPT&after=CURSOR` on the next request. Each page
-contains up to 512 measured candidates, epochs or updates in `history`.
+contains up to 512 new measurements in `history`. A forest records a single
+fit, the baseline records regularization candidates, and the TCN records
+epochs or optimizer updates.
 An empty `history` means there are no new samples. Read the next page immediately
 when `has_more` is true. If the attempt changes, replace your local history
 with the new attempt's points. A successful run serves its saved history from
@@ -399,12 +408,19 @@ evaluated on the development validation set has quality status
 
 ### 4. Freeze and evaluate final data
 
-After selection, call `POST /benchmarks/freeze?benchmark_id=ID` with one concrete model
-version. Pending training blocks this action; further training under the frozen
-reservation is rejected. Then call `/benchmarks/open?benchmark_id=ID` and
-`/benchmarks/evaluations?benchmark_id=ID`. The worker evaluates only the exact frozen bundle,
-runtime, decoder and bound test references. Access and identity are checked before
-reading payloads and again at commit. Further selection requires fresh final data.
+After all training under the reservation finishes, URL-encode its ID in each
+request below. Freezing closes model selection for that reservation.
+
+1. Send `POST /benchmarks/freeze?benchmark_id=ID` with
+   `{"model_version_id":"MODEL_VERSION_ID"}` to freeze a concrete version.
+2. Send `POST /benchmarks/open?benchmark_id=ID` with no body to open the
+   sealed test references for evaluation.
+3. Send `POST /benchmarks/evaluations?benchmark_id=ID` with the same model
+   JSON and an `Idempotency-Key`. Follow the evaluation URL in `Location`.
+   Once it succeeds, download `GET /evaluations/{id}/result`.
+
+The worker evaluates the frozen bundle, runtime and decoder against the
+bound test references. Further selection requires fresh final data.
 
 ### Compare evaluations
 
@@ -455,7 +471,9 @@ model restoration. See the [usage guide](usage.md).
 
 A `409` can mean changed content under an existing key, an outdated revision or
 a conflict with the current job state. Read the error code and message before
-resubmitting. For an integration rate limit (`429`, `rate_limit`), wait for
+resubmitting. A `503 capacity_limit` with `Retry-After` means this API process
+is handling its maximum number of active requests. Wait for the indicated
+delay. For an integration rate limit (`429`, `rate_limit`), wait for
 `Retry-After`. A storage quota refusal (`429`, `storage_quota_exceeded`) requires
 freeing storage or raising the quota. For other capacity limits, read the
 reported reason. If intake returns `409 model_unavailable`, an administrator

@@ -11,16 +11,26 @@ Send a schema 2.1 export as `application/json`. A file can contain up to 16 MiB,
 
 - Give each completed run and snapshot a stable identity. Include the source
   version, instrument units and precision.
-- Export every original bin for every instrument, including leading and
-  trailing inactivity. Declare how the grid treats a partial final bin.
+- Export one observation per instrument per bin, in increasing step order
+  within each instrument. Include leading and trailing inactivity and declare
+  how the grid treats a partial final bin.
 - Use zero for measured inactivity and `null` for unknown values. Record
   whether the last price came from an execution, was carried forward or is
-  unavailable. Count each partial fill once. Accepted submissions and rejections
-  have separate fields.
+  unavailable. Count each partial fill once in the execution totals. The buy
+  and sell order totals count accepted submissions, including immediate fills,
+  and exclude rejected orders.
 - Export historical quotes from saved book observations or complete event
   history. For reconstructed quotes, include the reconstruction policy and
   event-history digest. If only the current book is available, mark historical
-  quotes unavailable.
+  quotes unavailable. An observed empty side has a null quote and state
+  `empty`. A side whose history is unavailable has a null quote and state
+  `unknown`.
+
+The required `content_sha256` covers the validated payload with this field
+omitted. Python adapters can use `seal_export` on an `ExportPayloadV2` from
+`regimex.exports`. For other languages, follow the encoding rules in the
+`content_sha256` field of the [export schema](../schemas/experiment-v2.schema.json).
+Whitespace in the uploaded file has no effect on the digest.
 
 ## Delegated access
 
@@ -54,7 +64,7 @@ server-to-server call.
 Subject and run IDs must match `[A-Za-z0-9._:@-]{1,128}`. Map other identifiers
 to a stable representation. Regimex takes the source from the key and scopes
 access to the connection, subject and run. Rotating keys on the same connection
-preserves that access. Browser session cookies and Origin/Fetch headers are
+preserves that access. Browser session credentials, `Origin` and `Sec-Fetch-Site` are
 rejected on delegated routes. Keep the simulator's own login credentials and
 backend keys out of exports and browser links.
 
@@ -70,8 +80,10 @@ backend keys out of exports and browser links.
 3. Retry a lost response with the same key. To retry a failed or cancelled
    classification, send the same export with `?retry_of=<analysis-id>` and a
    new key for that attempt. A submission failure may leave its valid snapshot
-   available for reuse. Separate `/snapshots` and `/analyses` endpoints are
-   available for explicit model selection or upload without analysis.
+   available for reuse. For an upload without analysis, use
+   `POST /api/v1/integration/snapshots`. To choose a published model explicitly,
+   submit the returned `snapshot_id` and the `model_version_id` to
+   `POST /api/v1/integration/analyses` with an `Idempotency-Key`.
 4. Poll `GET /api/v1/integration/analyses/{id}`. List and detail responses
    include `snapshot_sha256` so the simulator can check the binding in that
    request. Recheck simulator ownership before serving status or downloads.

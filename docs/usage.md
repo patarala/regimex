@@ -80,10 +80,12 @@ See [how well the overlay distinguishes pauses from slowdowns](pause-precision.m
 
 A direction applies from the start step up to, but excluding, the stop step.
 `no_trades` marks a period without executions and `insufficient_data` marks a period with
-too little information to assign a direction. Return standard deviation
-measures the spread of adjacent log price changes within an interval. The
-missing-data plot shows fields with gaps. For quotes, an empty book side means
-there was no resting order on that side. See [interval definitions](models.md).
+too little information to assign a direction. **Return standard deviation %**
+is 100 times the population standard deviation of adjacent log price changes
+in that interval. It needs at least two changes and skips pairs with a missing
+price. The missing-data plot appears only for fields with gaps. For quotes,
+an empty side means there was no resting order there. An unknown side means
+the source could not report it. See [interval definitions](models.md).
 
 When absolute timestamps are too close together to plot accurately, the analysis
 and comparison reports use bins from the start. The instrument details show the
@@ -120,8 +122,9 @@ source namespaces. If known prior data use is missing, register it before
 confirming. Choose **Reserve benchmark**, then **Use prepared data** to fill
 the training form. Training starts when you choose **Start training**.
 To resume after leaving or refreshing the page, reopen **New run** in the
-same browser and account and choose **Continue preparation**. Queued jobs
-continue on the server while the page is closed.
+same browser and account and choose **Continue preparation**. If the page says
+that progress is available only while it stays open, keep that tab open until
+you choose **Use prepared data**. Jobs already queued continue on the server.
 
 To use imported snapshots or externally prepared data, use the API.
 [Data preparation](api.md#1-create-observations-and-references) ·
@@ -139,8 +142,10 @@ To use imported snapshots or externally prepared data, use the API.
    **Advanced settings** holds the architecture parameters and CPU runtime
    overrides.
 
-   The **Logistic baseline** uses one seed and compares regularization settings.
-   Choose **Generate seed** for a fresh value. For the **Temporal convolutional
+   The **Adaptive direction forest** fits once. Set **Number of trees** and
+   **Maximum tree depth** directly in the form. The **Logistic baseline**
+   fits once per regularization setting. Both take one seed and offer
+   **Generate seed** for a fresh value. For the **Temporal convolutional
    network (TCN)**, set **Training repeats** to the number of models to train.
    The form fills in one seed per repeat. Choose **Generate seeds** for a fresh
    set, or paste the seeds from an earlier run to reuse them. You'll find the
@@ -189,7 +194,8 @@ To use imported snapshots or externally prepared data, use the API.
    marks its most recent measurement. The validation curve also marks the
    first measurement to reach its highest score.
 
-   The baseline chart shows a validation score for each regularization setting.
+   The adaptive forest shows one validation score after fitting. The baseline
+   chart shows a validation score for each regularization setting.
    The TCN records training loss at every epoch or optimizer update. With an
    epoch budget, it scores validation interval macro-F1 at epoch 1, at the
    chosen interval and at the final scheduled epoch if reached. **Checks
@@ -233,10 +239,12 @@ For two successful runs with the same dataset, validation references and
 analysis profile, it also shows the validation interval macro-F1 difference.
 The comparison URL opens the same pair again.
 
-To free space, expand **Run details and settings** and choose **Delete model
-weights**. Review the file size and optionally check **Also archive this run**
-before confirming. Deleting weights permanently retires the model version.
-The charts, settings and completed evaluations stay with the run.
+To free space used by an unpublished candidate, expand **Run details and
+settings** and choose **Delete model weights**. The preview shows the file
+size and any use that blocks deletion, such as a frozen benchmark choice.
+Optionally check **Also archive this run** before confirming. Deleting weights
+permanently retires the model version. The charts, settings and completed
+evaluations stay with the run.
 
 You can train and compare several candidates under one reservation. The
 training screen keeps the final test references sealed. Once you have chosen the
@@ -260,7 +268,9 @@ data, settings and budget used for each evaluated model. [Policy definitions](..
 
 The logistic baseline uses a deterministic solver with one recorded seed, 11.
 It compares inverse regularization strengths of 0.1, 1 and 10 on the same
-validation data and saves the fit with the highest interval macro-F1.
+validation data and saves the fit with the highest interval macro-F1. The
+adaptive forest starts with 40 trees, a maximum depth of 12 and seed 173 for
+its randomized splits. [Adaptive forest settings and results](direction-context.md)
 
 ## Delete saved work
 
@@ -356,7 +366,8 @@ sudo -u postgres createdb --owner=regimex regimex
 
 Put the password in a private `~/.pgpass` file with mode `0600`. For the
 connection below the entry is `127.0.0.1:5432:regimex:regimex:YOUR_PASSWORD`.
-Prepare the local configuration and issue the tokens from the checkout root.
+For a fresh installation, prepare the local configuration and issue the tokens
+from the checkout root.
 
 ```sh
 uv sync --locked --all-extras
@@ -375,9 +386,9 @@ uv run --locked --all-extras regimex service token-create --owner admin --role a
 uv run --locked --all-extras regimex service token-create --owner researcher --role user --output var/credentials/user.token
 ```
 
-If you have the release assets in `release/`, verify their checksums and import
-the supplied TCN. For a source-only installation, the [administrative
-API](api.md#administration) can train and publish a model.
+If you have the release asset pack in `release/`, verify its checksums and
+import the supplied TCN. With a source-only installation, start the processes
+below, sign in as an administrator and [train and publish a model](#train-a-model).
 
 ```sh
 (cd release && sha256sum -c SHA256SUMS)
@@ -386,7 +397,7 @@ API](api.md#administration) can train and publish a model.
 Once all files pass verification, register and activate the model.
 
 ```sh
-MODEL_MANIFEST_SHA256=$(sha256sum release/models/tcn/manifest.json | cut -d ' ' -f 1)
+MODEL_MANIFEST_SHA256=$(awk '$2 == "models/tcn/manifest.json" {print $1}' release/SHA256SUMS)
 uv run --locked --all-extras regimex service register-model \
   --bundle release/models/tcn --manifest-sha256 "$MODEL_MANIFEST_SHA256" \
   --token-file var/credentials/admin.token --activate

@@ -91,9 +91,10 @@ printed. Use `key-revoke CONNECTION_ID TOKEN_ID` to revoke a key. Use
 A stale revision returns a conflict instead of overwriting another operator's change.
 
 Local `service token-create --role integration` provisions the same connection/key
-records with `read`, `upload` and `analyze` and a 30-day lifetime. Browser and API
-management provide explicit names and chosen capabilities. The CLI accepts
-`--scope delete` when issuing a key; omit it to retain the default non-deleting key.
+records with `read`, `upload` and `analyze` and a 30-day lifetime. To choose
+capabilities in the CLI, use `service connections key-create`. Omitting
+`--scope` gives those same three defaults. Supplying any scopes replaces
+the defaults, so repeat `--scope` for each capability the backend needs.
 
 ## Request and queue limits
 
@@ -101,13 +102,14 @@ Limits apply across processes and across every key of a connection:
 
 | Environment setting | Default | Meaning |
 | --- | --- | --- |
-| `REGIMEX_INTEGRATION_REQUESTS_PER_MINUTE` | `600` | Accepted requests per connection in a 60-second window |
-| `REGIMEX_INTEGRATION_SUBJECT_REQUESTS_PER_MINUTE` | `120` | Accepted requests per delegated owner in a 60-second window |
+| `REGIMEX_INTEGRATION_REQUESTS_PER_MINUTE` | `600` | Requests admitted per connection in a 60-second window |
+| `REGIMEX_INTEGRATION_SUBJECT_REQUESTS_PER_MINUTE` | `120` | Requests admitted per authenticated owner in a 60-second window |
 | `REGIMEX_INTEGRATION_MAX_PENDING` | `32` | Queued, running or cancelling analyses across the connection |
-| `REGIMEX_MAX_PENDING_PER_OWNER` | `8` | Pending analyses per owner |
+| `REGIMEX_MAX_PENDING_PER_OWNER` | `8` | Pending operations allowed per owner before a new analysis is refused |
 
-The first accepted request starts a 60-second window. All keys on the connection
-share its quota. The subject's limit must fit within the connection limit.
+The first admitted request starts a 60-second window. A request can count even
+if the subsequent resource lookup or job submission fails. All keys on the
+connection share its quota. The subject's limit must fit within the connection limit.
 
 If a request returns `429` with `rate_limit`, wait the number of seconds in
 `Retry-After`. If the pending-job quota is full, wait for a job to finish or
@@ -124,7 +126,8 @@ reservations](storage.md#owner-and-connection-quotas).
 Call `GET /api/v1/connection` with the simulator's integration bearer key and
 no delegated headers. Compare the returned `analysis_protocol`, `source_namespace`
 and `scopes` with the backend configuration. Any valid integration key can do this, even
-without `read`. It consumes one connection request. A `401` can mean a wrong,
+without `read`. It counts against the connection's request budget and the
+integration account's own minute window. A `401` can mean a wrong,
 expired or revoked key, or a paused connection. Check the key and connection
 in **Connections**. For worker and model readiness use the [deployment health
 checks](deployment.md#health-shutdown-and-maintenance).

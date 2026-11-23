@@ -8,8 +8,11 @@ download an HTML report that works offline.
 ## Getting started
 
 **With a running service**, sign in with your access token. Under **New
-analysis**, choose a JSON export, select a model and click **Analyze**. Once
-the job finishes, open the report or download it. [Using Regimex](docs/usage.md#analyze-an-experiment)
+analysis**, choose a JSON export, select a published model and click **Analyze**.
+If the model list is empty, an administrator needs to publish a trained model
+or activate an imported bundle first. Once the analysis finishes, open or
+download its report.
+[Using Regimex](docs/usage.md#analyze-an-experiment)
 
 **From a checkout**, use Python 3.14.4 and uv 0.13.0. This command validates
 the included export locally and prints `Valid snapshot: snapshot-1`.
@@ -21,7 +24,7 @@ uv run --locked regimex validate --input tests/fixtures/experiment-v2.json
 To host the service, use [Docker Compose](docs/deployment.md).
 For development, [run the API and workers from source](docs/usage.md#start-locally).
 To create an experiment to analyze, use [`regimex generate`](docs/usage.md#terminal-tools).
-If you have the reference TCN asset pack, you can preview a classification
+If you have the `tcn-0.2.0` reference asset pack, you can preview a classification
 directly in a browser by opening `examples/1-instrument/tcn-report.html` inside the pack.
 
 ## Data and models
@@ -33,16 +36,16 @@ statistics. Steps with missing observations and steps with known zero activity
 have different meanings. [Export contract](docs/integration.md#export-contract) ·
 [Interval definitions](docs/models.md#observations-and-intervals)
 
-| Model | How it uses an instrument's history |
+| Trainable architecture | How it uses an instrument's history |
 | --- | --- |
 | [Adaptive direction forest](docs/direction-context.md) | Locates stretches with a consistent price slope and learns to classify each stretch using its own movement and its neighbors. |
 | [Logistic baseline](docs/baseline-context.md) | Classifies each step using summaries of price, trading activity and quotes over centered windows. |
 | [Temporal convolutional network (TCN)](docs/tcn.md) | Combines price and return features across several time scales with convolutions that look before and after each step. |
 
-All three use the same interval decoder. On 144 held-out synthetic experiments
-with automatic profile 2.2 references, the adaptive forest achieved interval
-macro-F1 of 0.786 and the published TCN 0.726. Point macro-F1 was 0.916 and
-0.915 respectively. [Results by direction and behavior on incomplete exports](docs/direction-context.md#results)
+All three use the same decoding algorithm with the settings saved in each model.
+On 144 held-out synthetic experiments with automatic profile 2.2 references,
+`adaptive-0.1.0` scored 0.786 interval macro-F1 and `tcn-0.2.0` scored 0.726.
+Their point macro-F1 scores were 0.916 and 0.915. [Results by direction and behavior on incomplete exports](docs/direction-context.md#results)
 
 ## Guides
 
