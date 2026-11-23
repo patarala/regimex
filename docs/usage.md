@@ -318,8 +318,11 @@ To fit on your machine, run the [offline forest workflow](large-direction-forest
 or a local baseline or TCN comparison. In the current checkout, the scripts
 that produce supported bundles can also record the result in your service.
 Load its operator environment and set `REGIMEX_TRAINING_TOKEN_FILE` to the
-administrator token file in that shell. Unset the variable to return to
-offline-only fitting. Training uses local resources in both cases.
+administrator token file in that shell. Use both `--extra ml` and
+`--extra service` with `uv run` so the same environment can fit the model
+and register its bundle. Add `--extra s3` for
+an S3-backed deployment. Unset the variable to return to offline-only fitting.
+Training uses local resources in both cases.
 
 An existing bundle can be added later with `regimex service register-model`.
 Supply its recorded manifest SHA-256 and the administrator token for the
