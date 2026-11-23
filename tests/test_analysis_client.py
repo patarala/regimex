@@ -1,6 +1,8 @@
 """Public CLI behavior against bounded, recorded service responses."""
 
+import asyncio
 import json
+import time
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
@@ -284,6 +286,80 @@ def test_timeout_prints_resumable_id(command: list[str], monkeypatch: pytest.Mon
     mock_http(monkeypatch, lambda request: reply(200, status_for("running")))
     result = CliRunner().invoke(app, [*command, "--analysis-id", ANALYSIS_ID, "--timeout", "1"])
     assert result.exit_code == 1 and ANALYSIS_ID in result.output and "Timed out" in result.output
+
+
+def test_transient_reads_resume_status_and_download_without_resubmitting(
+    tmp_path: Path, command: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    delays: list[float] = []
+    calls: list[str] = []
+
+    async def record_delay(seconds: float) -> None:
+        delays.append(seconds)
+
+    def service(request: httpx2.Request) -> httpx2.Response:
+        assert request.method == "GET"
+        path = request.url.path
+        calls.append(path)
+        if path.endswith("/report"):
+            if calls.count(path) == 1:
+                raise httpx2.ReadError("Connection closed during download.")
+            return reply(200, HTML)
+        if calls.count(path) == 1:
+            return httpx2.Response(503, headers={"Retry-After": "4"})
+        return reply(200, status_for("succeeded"))
+
+    mock_http(monkeypatch, service)
+    monkeypatch.setattr(asyncio, "sleep", record_delay)
+    result = CliRunner().invoke(app, [*command, "--analysis-id", ANALYSIS_ID])
+    assert result.exit_code == 0, result.output
+    path = f"/api/v1/analyses/{ANALYSIS_ID}"
+    assert calls == [path, path, path + "/report", path + "/report"]
+    assert delays == [4, 1]
+    assert (tmp_path / "report.html").read_bytes() == HTML
+
+
+@pytest.mark.parametrize(
+    ("value", "delay"),
+    [
+        ("Wed, 21 Oct 2015 07:28:00 GMT", 5),
+        ("Wed, 21 Oct 2015 07:27:00 GMT", 2),
+        ("invalid", 2),
+    ],
+)
+def test_retry_after_date_uses_the_remaining_delay(
+    value: str, delay: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(time, "time", lambda: 1445412475)
+    assert analysis_client._retry_delay(value, minimum=2) == delay
+
+
+@pytest.mark.parametrize(("status", "expected_calls"), [(404, 1), (503, 3)])
+def test_download_preserves_final_error_and_leaves_no_partial_file(
+    tmp_path: Path,
+    command: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    expected_calls: int,
+) -> None:
+    calls = 0
+
+    async def skip_delay(_seconds: float) -> None:
+        pass
+
+    def service(request: httpx2.Request) -> httpx2.Response:
+        nonlocal calls
+        if request.url.path.endswith("/report"):
+            calls += 1
+            return reply(status, {"error": {"message": "Report unavailable."}})
+        return reply(200, status_for("succeeded"))
+
+    mock_http(monkeypatch, service)
+    monkeypatch.setattr(asyncio, "sleep", skip_delay)
+    result = CliRunner().invoke(app, [*command, "--analysis-id", ANALYSIS_ID])
+    assert result.exit_code == 1 and f"HTTP {status}. Report unavailable." in result.output
+    assert calls == expected_calls
+    assert not (tmp_path / "report.html").exists()
 
 
 def test_submission_replay_after_lost_response(

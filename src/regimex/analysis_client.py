@@ -6,7 +6,9 @@ import json
 import os
 import ssl
 import stat
+import time
 from collections.abc import Callable
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
@@ -23,6 +25,7 @@ from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.storage import write_new_file
 
 _JSON_LIMIT = 64 * 1024
+_RETRYABLE_READ_STATUSES = {408, 429, 502, 503, 504}
 
 
 class _Snapshot(BaseModel):
@@ -96,6 +99,41 @@ async def _response_bytes(response: httpx2.Response, limit: int) -> bytes:
     return bytes(data)
 
 
+def _retry_delay(value: str | None, minimum: float) -> float:
+    if value is None:
+        return minimum
+    if value.isascii() and value.isdecimal():
+        return max(minimum, float(value))
+    try:
+        date = parsedate_to_datetime(value)
+        if date.tzinfo is not None:
+            return max(minimum, date.timestamp() - time.time())
+    except ValueError, OverflowError:
+        pass
+    return minimum
+
+
+async def _checked_body(
+    response: httpx2.Response, expected_status: int, media_type: str, limit: int
+) -> bytes:
+    actual_type = response.headers.get("content-type", "").partition(";")[0].lower().strip()
+    if response.status_code != expected_status:
+        message = f"Service returned HTTP {response.status_code}."
+        if actual_type == "application/json":
+            body = await _response_bytes(response, _JSON_LIMIT)
+            try:
+                error = json.loads(body)["error"]["message"]
+            except ValueError, KeyError, TypeError:
+                pass
+            else:
+                if isinstance(error, str):
+                    message += " " + _display(error)
+        raise RuntimeError(message)
+    if actual_type != media_type:
+        raise ValueError(f"Expected a {media_type} response from the service.")
+    return await _response_bytes(response, limit)
+
+
 async def _request(
     client: httpx2.AsyncClient,
     path: str,
@@ -112,23 +150,20 @@ async def _request(
     if key is not None:
         headers["Idempotency-Key"] = str(key)
     method = "GET" if content is None else "POST"
-    async with client.stream(method, path, headers=headers, content=content) as response:
-        actual_type = response.headers.get("content-type", "").partition(";")[0].lower().strip()
-        if response.status_code != expected_status:
-            message = f"Service returned HTTP {response.status_code}."
-            if actual_type == "application/json":
-                body = await _response_bytes(response, _JSON_LIMIT)
-                try:
-                    error = json.loads(body)["error"]["message"]
-                except ValueError, KeyError, TypeError:
-                    pass
-                else:
-                    if isinstance(error, str):
-                        message += " " + _display(error)
-            raise RuntimeError(message)
-        if actual_type != media_type:
-            raise ValueError(f"Expected a {media_type} response from the service.")
-        return await _response_bytes(response, limit)
+    attempt = 0
+    while True:
+        attempt += 1
+        may_retry = method == "GET" and attempt < 3
+        delay = float(attempt)
+        try:
+            async with client.stream(method, path, headers=headers, content=content) as response:
+                if not may_retry or response.status_code not in _RETRYABLE_READ_STATUSES:
+                    return await _checked_body(response, expected_status, media_type, limit)
+                delay = _retry_delay(response.headers.get("retry-after"), delay)
+        except httpx2.NetworkError, httpx2.TimeoutException, httpx2.RemoteProtocolError:
+            if not may_retry:
+                raise
+        await asyncio.sleep(delay)
 
 
 async def _submit(

@@ -319,8 +319,11 @@ an ID, resume the download without submitting again:
 uv run --locked regimex analyze --analysis-id ANALYSIS_UUID --output var/analysis.html
 ```
 
-Waiting stops after 300 seconds by default. Use `--timeout SECONDS` to change it.
-An accepted analysis continues on the server after you stop waiting.
+The CLI retries a status check or download up to twice after a connection
+failure or a temporary HTTP response (408, 429, 502, 503 or 504). It honors
+`Retry-After` within the overall time limit. Waiting stops after 300 seconds
+by default. Use `--timeout SECONDS` to change it. An accepted analysis
+continues on the server after you stop waiting.
 
 To use the predictions in another program or a multi-experiment report, choose
 `--format json`. You can request JSON on the initial submission or download it
