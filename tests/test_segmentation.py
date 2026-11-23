@@ -73,6 +73,29 @@ def test_slow_sustained_movement_covers_the_whole_experiment(
     assert annotations.reference_kind == "automatic"
 
 
+@pytest.mark.parametrize("noise", [1e154, 1e155])
+def test_prohibitive_split_penalty_keeps_one_eligible_piece(noise: float) -> None:
+    config = AnalysisConfig(noise_floor=noise)
+    values = np.linspace(0, 0.5, 96)
+    annotations = segmentation.annotate(experiment(np.exp(values).tolist()), config)
+    assert [(i.start, i.stop, i.direction) for i in annotations.intervals] == [
+        (0, 96, Direction.GROWTH)
+    ]
+    for count in (3, 75):
+        sparse = values.copy()
+        sparse[count:] = np.nan
+        with pytest.raises(ValueError, match="cannot be partitioned"):
+            segmentation._pieces(sparse, config)
+
+
+def test_small_weight_offsets_an_unrepresentable_noise_variance() -> None:
+    values = np.r_[np.linspace(0, 1, 48), np.linspace(1, 0, 48)]
+    pieces = segmentation._pieces(
+        values, AnalysisConfig(noise_floor=1e155, boundary_penalty=1e-318)
+    )
+    assert pieces == [(0, 48), (48, 96)]
+
+
 @pytest.mark.parametrize(
     ("factor", "direction"),
     [

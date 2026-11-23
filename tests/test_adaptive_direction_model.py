@@ -41,6 +41,28 @@ def test_isolated_level_change_has_no_adjusted_slope(adaptive: ModuleType) -> No
     assert move > 1 and adjusted == pytest.approx(0, abs=1e-12)
 
 
+@pytest.mark.parametrize("noise", [1e154, 1e155])
+def test_extreme_valid_scales_keep_finite_signed_features(
+    adaptive: ModuleType, noise: float
+) -> None:
+    import math
+
+    import numpy as np
+    from test_segmentation import experiment
+
+    from regimex.directions import AnalysisConfig
+
+    scale = 1e-312
+    profile = AnalysisConfig(minimum_relative_change=scale, noise_floor=noise)
+    for movement in (0.5, -0.5):
+        rows = experiment(np.exp(np.linspace(0, movement, 96)).tolist()).observations
+        features = adaptive.features(rows, profile)
+        assert np.isfinite(features).all()
+        # With no splits the first column is the fitted movement over the whole block.
+        expected = math.copysign(math.log(2 * abs(movement)) - math.log(scale), movement)
+        np.testing.assert_allclose(features[:, 0], expected, rtol=1e-14)
+
+
 def test_numeric_forest_matches_fitted_trees_and_rejects_cycles(
     adaptive: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -86,6 +86,14 @@ def _line(x: Floats, y: Floats) -> tuple[float, float]:
     return movement, fit
 
 
+def _scaled_movement(value: float, scale: float) -> float:
+    ratio = value / float(scale)
+    if math.isfinite(ratio):
+        return float(np.arcsinh(ratio))
+    # The ratio overflowed, but asinh is still finite and rounds to log(2 * |ratio|).
+    return math.copysign(math.log(2) + math.log(abs(value)) - math.log(scale), value)
+
+
 def _describe(values: Floats, scale: float) -> tuple[float, ...]:
     present = np.isfinite(values)
     x = np.flatnonzero(present).astype(np.float64)
@@ -106,11 +114,11 @@ def _describe(values: Floats, scale: float) -> tuple[float, ...]:
     edge = max(1, len(y) // 5)
     median_move = float(np.median(y[-edge:]) - np.median(y[:edge]))
     return (
-        float(np.arcsinh(movement / scale)),
+        _scaled_movement(movement, scale),
         fit,
-        float(np.arcsinh(adjusted_move / scale)),
+        _scaled_movement(adjusted_move, scale),
         adjusted_fit,
-        float(np.arcsinh(median_move / scale)),
+        _scaled_movement(median_move, scale),
         float(np.log1p(length)),
     )
 
@@ -123,7 +131,9 @@ def _greedy_partitions(
 ) -> tuple[list[int], ...]:
     size = len(prefix) - 1
     return tuple(
-        _partition(prefix, size, config.min_duration, multiplier * np.log1p(size) * noise_variance)
+        _partition(
+            prefix, size, config.min_duration, float(multiplier * np.log1p(size)) * noise_variance
+        )
         for multiplier in _PENALTIES
     )
 
@@ -153,11 +163,13 @@ def features(
         noise = config.noise_floor
         if len(diff):
             noise = max(noise, 1.4826 * float(np.median(np.abs(diff - np.median(diff)))))
-        for level, cuts in enumerate(partition(prefix, start, config, noise**2)):
-            pieces = [
-                _describe(log_price[a:b], np.log1p(config.minimum_relative_change))
-                for a, b in pairwise(cuts)
-            ]
+        try:
+            variance = noise**2
+        except OverflowError:
+            variance = math.inf  # No finite reduction in residual error can justify a split.
+        scale = float(np.log1p(config.minimum_relative_change))
+        for level, cuts in enumerate(partition(prefix, start, config, variance)):
+            pieces = [_describe(log_price[a:b], scale) for a, b in pairwise(cuts)]
             first = level * _PIECE_WIDTH
             for i, (a, b) in enumerate(pairwise(cuts)):
                 # A shallow piece between two sustained moves in the same direction

@@ -75,6 +75,24 @@ def _fit(values: NDArray[np.float64]) -> tuple[float, float]:
     return slope, r_squared
 
 
+def _split_penalty(weight: float, size: int, noise: float) -> float:
+    log_size = math.log(size)
+    try:
+        penalty = weight * log_size * noise**2
+    except OverflowError:
+        penalty = math.inf
+    if 0 < penalty < math.inf:
+        return penalty
+    # A small weight can offset a noise variance too large to represent on its
+    # own. Combine the exponents before rounding the product to float64.
+    coefficient, exponent = math.frexp(weight)
+    scale, shift = math.frexp(noise)
+    try:
+        return math.ldexp(coefficient * log_size * scale * scale, exponent + 2 * shift)
+    except OverflowError:
+        return math.inf
+
+
 def _pieces(values: NDArray[np.float64], config: AnalysisConfig) -> list[tuple[int, int]]:
     """Choose piece boundaries by minimizing line-fit error plus a penalty per split."""
     size = len(values)
@@ -92,7 +110,15 @@ def _pieces(values: NDArray[np.float64], config: AnalysisConfig) -> list[tuple[i
     scale = config.noise_floor
     if len(returns):
         scale = max(scale, 1.4826 * float(np.median(np.abs(returns - np.median(returns)))))
-    penalty = config.boundary_penalty * math.log(size) * scale**2
+    penalty = _split_penalty(config.boundary_penalty, size, scale)
+    if math.isinf(penalty):
+        # A single eligible piece has no split cost, even when every split is prohibitive.
+        count = int(known.sum())
+        if count < config.minimum_observations or count / size < config.minimum_price_coverage:
+            raise ValueError(
+                "eligible observations cannot be partitioned with the configured constraints"
+            )
+        return [(0, size)]
     cost = np.full(size + 1, np.inf)
     cost[0] = -penalty
     previous = np.full(size + 1, -1, dtype=np.int64)
