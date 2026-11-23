@@ -1578,6 +1578,9 @@ iframe {
 #training-metrics {
   container-type: inline-size;
 }
+#training-score span {
+  white-space: nowrap;
+}
 #training-charts figure {
   min-width: 0;
   margin: 24px 0;

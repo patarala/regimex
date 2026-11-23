@@ -200,11 +200,16 @@ To use imported snapshots or externally prepared data, use the API.
 
    Hover or tap inside a chart to read the nearest measurement. With the chart
    cursor focused, use the arrow keys to move between measurements. Each curve
-   marks its most recent measurement. The validation curve also marks the
-   first measurement to reach its highest score.
+   marks its most recent measurement. The baseline and TCN validation curves
+   also mark the first measurement to reach their highest score.
 
-   The adaptive forest shows one validation score after fitting. The baseline
-   chart shows a validation score for each regularization setting.
+   For the adaptive forest, **Trees used** shows how validation interval macro-F1
+   changes as more trees vote. At each point the worker scores the first trees
+   of the fitted forest on the same validation intervals. The saved model uses all
+   its trees, even if an earlier point scored higher. A run with only the
+   final measurement shows its score without a chart.
+
+   The baseline chart shows a validation score for each regularization setting.
    The TCN records training loss at every epoch or optimizer update. With an
    epoch budget, it scores validation interval macro-F1 at epoch 1, at the
    chosen interval and at the final scheduled epoch if reached. **Checks
@@ -332,6 +337,13 @@ identity. For the forest comparisons you can also attach the
 [final scores and inference timings](large-direction-forest.md#import-a-completed-comparison).
 Repeating registration recovers the same run. Use `--activate` only when
 you intend to change the default model.
+
+To add a chart to a forest with only a final score in its history, measure
+the original validation examples with increasing numbers of trees from the
+saved bundle. Pass the resulting JSON to `regimex service register-model`
+with `--forest-validation-curve PATH`, using the bundle's original manifest
+digest and inference policy. The run displays these measurements as coming
+from saved weights. [Curve format](models.md#adaptive-direction-forest)
 
 ### Find a run started in the terminal
 

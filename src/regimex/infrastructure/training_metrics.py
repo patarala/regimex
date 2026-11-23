@@ -66,4 +66,23 @@ def store_training_metrics(
     saved = read_training_metrics(connection, run.operation.owner_id, run.run_id)
     if saved is None:
         raise Conflict("Metrics differ from the committed training result.")
-    return saved
+    if metrics.forest_validation_curve is None:
+        return saved
+    if (
+        saved.forest_validation_curve is not None
+        and saved.forest_validation_curve != metrics.forest_validation_curve
+    ):
+        raise Conflict("A different validation curve is already recorded for this forest.")
+    # Registration holds the model lock. Keep the original history and its numeric representation.
+    supplemental = {"forest_validation_curve"}
+    if json_bytes(saved.model_dump(mode="json", exclude=supplemental)) != json_bytes(
+        metrics.model_dump(mode="json", exclude=supplemental)
+    ):
+        raise Conflict("Forest curve differs from the saved training result.")
+    if saved.forest_validation_curve is not None:
+        return saved
+    connection.execute(
+        "UPDATE regimex_training_metrics SET document=%s WHERE operation_id=%s",
+        (Json(document), run.run_id),
+    )
+    return metrics

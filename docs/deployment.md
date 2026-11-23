@@ -365,6 +365,11 @@ can open every record the updated writer has already saved.
 Use this coordinated procedure for schema migrations or incompatible changes to
 operation payloads and stored data.
 
+The adaptive forest's validation curve is one such change. Earlier releases
+expect a single fit record when loading a forest bundle. Upgrade the API,
+workers and operator image before resuming forest training or importing
+tree-count measurements.
+
 Block intake, drain pending jobs, stop all writers and take a
 [coordinated backup](storage.md#backup-and-restore) with the current release
 before replacing its images. Keep PostgreSQL running. Open the new checkout

@@ -396,13 +396,19 @@ a successful fit records them. Archived runs retain the same measurements.
 
 To follow a running fit, request `/progress`, then pass the returned `attempt`
 and `cursor` as `?attempt=ATTEMPT&after=CURSOR` on the next request. Each page
-contains up to 512 new measurements in `history`. A forest records a single
-fit, the baseline records regularization candidates, and the TCN records
-epochs or optimizer updates.
+contains up to 512 new measurements in `history`. A forest reports decoded
+validation scores in `history.fits` for increasing numbers of trees from the
+same fit. The final row scores the complete forest. A single row is valid.
+The baseline records regularization candidates, and the TCN records epochs
+or optimizer updates.
 An empty `history` means there are no new samples. Read the next page immediately
 when `has_more` is true. If the attempt changes, replace your local history
 with the new attempt's points. A successful run serves its saved history from
-`/metrics`.
+`/metrics`. A forest trained before tree-count scores were recorded can also
+return `forest_validation_curve.points` when an administrator supplies scores
+measured from its saved weights on the original validation data. Each point
+contains `trees` and `validation_segment_macro_f1`. The original `history`
+and final score are preserved.
 
 The optional `display_name` accepts up to 120 Unicode characters after trimming
 and NFC normalization. To rename a run later, send

@@ -19,6 +19,7 @@ const histories = [
   {rows: "epochs", field: "epoch", label: "Epoch"},
   {rows: "updates", field: "update", label: "Update"},
   {rows: "candidates", field: "regularization", label: "Regularization"},
+  {rows: "fits", field: "trees", label: "Trees used"},
 ];
 const metricsToPlot = [
   {field: "training_loss", label: "Training loss", style: "training-loss"},
@@ -50,7 +51,12 @@ function horizontalAxis(history, records) {
   const middle = values.reduce((a, b) => Math.abs(percent(a) - 50) <= Math.abs(percent(b) - 50) ? a : b);
   const ticks = first === last ? [first] : [first, last];
   if (first !== last && percent(middle) >= 35 && percent(middle) <= 65) ticks.splice(1, 0, middle);
-  return {dimension: history.label, label: history.label + (useLog ? " (log scale)" : ""), percent, ticks};
+  const reading = history.field === "trees" ? treeCount : value => history.label + " " + format(value);
+  return {dimension: history.label, label: history.label + (useLog ? " (log scale)" : ""), reading, percent, ticks};
+}
+
+function treeCount(value) {
+  return format(value) + (value === 1 ? " tree" : " trees");
 }
 
 function lossCeiling(points) {
@@ -64,8 +70,12 @@ function lossCeiling(points) {
 
 const plotHeight = 106, plotRight = 16, plotTop = 12;
 
+function plotY(metric, value) {
+  return plotHeight * ((metric.ceiling - value) / (metric.ceiling - metric.floor));
+}
+
 function plot(metric, axis, gutter) {
-  const {points, ceiling, ticks} = metric;
+  const {points, ticks} = metric;
   const caption = element("figcaption", metric.label);
   if (metric.sampling) {
     const sampling = element("span", metric.sampling);
@@ -75,14 +85,14 @@ function plot(metric, axis, gutter) {
   const graph = svgNode("svg", {width: "100%", height: 168, role: "img",
     "aria-label": metric.label + " by " + axis.label.toLowerCase()});
   const start = points[0], end = points.at(-1);
-  const describe = ([x, y]) => axis.dimension + " " + format(x) + ": " + format(y);
+  const describe = ([x, y]) => axis.reading(x) + ": " + format(y);
   const range = start === end ? describe(end) : describe(start) + ". " + describe(end);
   graph.append(svgNode("desc", {}, range + "." + (metric.best ? " Best validation score: " + describe(metric.best) + "." : "")));
   // Only the line stretches horizontally. Labels and point markers retain their size on phones.
   const height = plotHeight;
   const area = svgNode("svg", {x: gutter, y: plotTop, width: "calc(100% - " + (gutter + plotRight) + "px)",
     height, overflow: "visible"});
-  const y = value => height * (1 - value / ceiling);
+  const y = value => plotY(metric, value);
   for (const {value, label} of ticks) {
     area.append(svgNode("line", {x1: 0, x2: "100%", y1: y(value), y2: y(value), class: "training-grid"}),
       svgNode("text", {x: -8, y: y(value) + 4, "text-anchor": "end"}, label));
@@ -150,7 +160,7 @@ function chartInspector() {
   function updateReadout() {
     const [x, value, row] = metric.points[index];
     reading.textContent = format(value);
-    stepLabel.textContent = axis.dimension + " " + format(x);
+    stepLabel.textContent = axis.reading(x);
     const lines = [stepLabel.textContent, metric.label + ": " + reading.textContent];
     for (const other of metricsToPlot) {
       if (other.field !== metric.field && Number.isFinite(row[other.field]))
@@ -165,7 +175,7 @@ function chartInspector() {
     if (!mode) return;
     const rect = control.getBoundingClientRect(), width = rect.width - gutter - plotRight;
     const [x, value] = metric.points[index];
-    const position = axis.percent(x) + "%", y = plotHeight * (1 - value / metric.ceiling);
+    const position = axis.percent(x) + "%", y = plotY(metric, value);
     crosshair.setAttribute("x1", position);
     crosshair.setAttribute("x2", position);
     dot.setAttribute("cx", position);
@@ -319,25 +329,34 @@ function valuesTable(history, metric) {
   return {details, update};
 }
 
-function chartSeries(history, selected) {
+function chartSeries(history, selected, fromSavedWeights) {
   const series = [];
   for (const metric of metricsToPlot) {
     const points = selected.filter(row => Number.isFinite(row[metric.field]))
       .map(row => [row[history.field], row[metric.field], row]);
     if (!points.length) continue;
-    const ceiling = metric.field === "training_loss" ? lossCeiling(points) : 1;
-    const ticks = [0, ceiling / 2, ceiling].map(value => ({value, label: format(value)}));
+    const forest = history.field === "trees";
+    let floor = 0, ceiling = metric.field === "training_loss" ? lossCeiling(points) : 1;
     let sampling = "";
+    if (forest) {
+      const low = points.reduce((min, [, score]) => Math.min(min, score), 1);
+      const high = points.reduce((max, [, score]) => Math.max(max, score), 0);
+      floor = Math.max(0, Math.floor(10 * (low - 0.01)) / 10);
+      ceiling = Math.min(1, Math.ceil(10 * (high + 0.01)) / 10);
+      sampling = fromSavedWeights ? "Measured from saved weights, adding trees in their original order."
+        : "Each point adds trees from the same fitted forest.";
+    }
+    const ticks = [floor, (floor + ceiling) / 2, ceiling].map(value => ({value, label: format(value)}));
     if (metric.field === "validation_segment_macro_f1" && points.length < selected.length &&
         (history.field === "epoch" || history.field === "update")) {
       sampling = points.length + " of " + selected.length + " " + history.field + "s evaluated";
     }
     // Candidates can be evaluated in a different order from their numeric x-axis.
     const latest = points.at(-1);
-    const best = metric.field === "validation_segment_macro_f1" ?
+    const best = metric.field === "validation_segment_macro_f1" && !forest ?
       points.reduce((first, point) => point[1] > first[1] ? point : first) : null;
     points.sort((a, b) => a[0] - b[0]);
-    series.push({...metric, points, ceiling, ticks, sampling, best, latestIndex: points.indexOf(latest)});
+    series.push({...metric, points, floor, ceiling, ticks, sampling, best, latestIndex: points.indexOf(latest)});
   }
   return series;
 }
@@ -374,8 +393,11 @@ export function createTrainingMetrics() {
   }
 
   function show(historyData, result, policy) {
-    const history = histories.find(schema => Array.isArray(historyData?.[schema.rows]));
-    const rows = history && historyData[history.rows];
+    const measured = result?.forest_validation_curve?.points;
+    const fromSavedWeights = Array.isArray(measured) && measured.length > 1 && !(historyData?.fits?.length > 1);
+    const data = fromSavedWeights ? {fits: measured} : historyData;
+    const history = histories.find(schema => Array.isArray(data?.[schema.rows]));
+    const rows = history && data[history.rows];
     const records = rows?.filter(row => row && Number.isFinite(row[history.field]));
     section.hidden = false;
     const fit = historyData?.fits?.at(-1);
@@ -383,11 +405,13 @@ export function createTrainingMetrics() {
       validation_segment_macro_f1: fit.validation_segment_macro_f1});
     score.hidden = !validated;
     if (validated) {
-      const selection = history?.rows === "candidates" ? "selected settings" : "seed " + validated.selected_seed;
+      let selection = "seed " + validated.selected_seed;
+      if (history?.rows === "candidates") selection = "selected settings";
+      if (history?.rows === "fits" && Number.isInteger(rows.at(-1)?.trees)) selection = treeCount(rows.at(-1).trees);
       score.replaceChildren(element("strong", format(validated.validation_segment_macro_f1)),
-        " validation interval macro-F1 · " + selection);
+        " validation interval macro-F1 ", element("span", "· " + selection));
     }
-    if (!records?.length) {
+    if (!records?.length || (history.rows === "fits" && records.length === 1)) {
       for (const view of figures.values()) view.inspector.hide();
       figures.clear();
       if ((policy?.budget === "fit" || fit) && validated && !result?.history_note) charts.replaceChildren();
@@ -415,7 +439,7 @@ export function createTrainingMetrics() {
       if (drawn?.rows === rows && drawn.seed === seed.value && drawn.count === selected.length) return;
       const resetPage = drawn?.seed !== seed.value;
       drawn = {rows, seed: seed.value, count: selected.length};
-      const series = chartSeries(history, selected);
+      const series = chartSeries(history, selected, fromSavedWeights);
       selected.sort((a, b) => a[history.field] - b[history.field]);
       const last = selected.at(-1);
       const outcome = result?.repeat_outcomes?.find(item => item.seed === last.seed && item.step === last[history.field]);

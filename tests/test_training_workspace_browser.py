@@ -2292,12 +2292,86 @@ def test_adaptive_single_validation_is_visible_while_running_and_after_completio
     try:
         page.goto(f"{ORIGIN}/training/{RUN_ID}")
         score = page.locator("#training-score")
-        expect(score).to_have_text("0.75 validation interval macro-F1 · seed 173")
+        expect(score).to_have_text("0.75 validation interval macro-F1 · 40 trees")
         expect(page.locator("#training-charts")).to_be_empty()
         api.run["job"]["state"] = "succeeded"
         page.get_by_role("button", name="Refresh", exact=True).click()
         expect(page.locator("#training-state")).to_have_text("Complete")
-        expect(score).to_have_text("0.75 validation interval macro-F1 · seed 173")
+        expect(score).to_have_text("0.75 validation interval macro-F1 · 40 trees")
         expect(page.locator("#training-charts")).to_be_empty()
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("supplemental", [False, True], ids=["training", "saved-weights"])
+def test_forest_curve_uses_real_prefix_counts_and_keeps_the_full_model_score(
+    browser: Any,
+    supplemental: bool,
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["training"].update(
+        architecture_id="adaptive",
+        policy={"budget": "fit", "optimizer": "extra_trees", "seeds": [173]},
+    )
+    points = [
+        {"trees": trees, "validation_segment_macro_f1": score}
+        for trees, score in [(1, 0.89), (5, 0.97), (40, 0.95)]
+    ]
+    fits = [{**row, "seed": 173, "max_depth": 12} for row in points]
+    api.metrics.update(
+        selected_seed=173,
+        validation_segment_macro_f1=0.95,
+        history={"fits": fits[-1:] if supplemental else fits},
+    )
+    page = browser.new_page(viewport={"width": 320, "height": 800}, locale="en-US")
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        if not supplemental:
+            api.run["job"].update(state="running", stage="training", attempt=1)
+            api.progress_kind = "fits"
+            api.progress_rows = fits[:2]
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        chart = page.get_by_role("img", name="Validation interval macro-F1 by trees used")
+        score = page.locator("#training-score")
+        if supplemental:
+            expect(score).to_contain_text("0.95")
+            expect(chart).to_have_count(0)
+            api.metrics["forest_validation_curve"] = {"points": points}
+            page.evaluate("window.dispatchEvent(new Event('focus'))")
+            expect(page.get_by_text("Measured from saved weights", exact=False)).to_be_visible()
+        else:
+            expect(score).to_contain_text("0.97 validation interval macro-F1 · 5 trees")
+            expect(chart.locator("[data-last] title")).to_have_text("5 trees: 0.97")
+            api.metrics["forest_validation_curve"] = {"points": points}
+            api.run["job"]["state"] = "succeeded"
+            expect(page.locator("#training-state")).to_have_text("Complete", timeout=7000)
+            expect(page.get_by_text("Measured from saved weights", exact=False)).to_have_count(0)
+        expect(score).to_have_text("0.95 validation interval macro-F1 · 40 trees")
+        selection = score.get_by_text("· 40 trees", exact=True)
+        for width in (320, 360):
+            page.set_viewport_size({"width": width, "height": 800})
+            assert selection.evaluate("item => item.getClientRects().length") == 1
+        expect(chart).to_have_count(1)
+        expect(chart.locator(".training-point")).to_have_count(1)
+        expect(chart.locator("[data-last] title")).to_have_text("40 trees: 0.95")
+        expect(chart.locator("[data-best]")).to_have_count(0)
+        expect(page.get_by_label("Training repeat")).to_be_hidden()
+        inspect = page.get_by_role(
+            "slider", name="Inspect validation interval macro-f1 by trees used"
+        )
+        inspect.press("Home")
+        expect(inspect).to_have_attribute("aria-valuenow", "1")
+        expect(page.locator(".training-chart-tooltip")).to_have_text("0.891 tree")
+        inspect.press("ArrowRight")
+        expect(inspect).to_have_attribute("aria-valuenow", "5")
+        inspect.press("End")
+        expect(inspect).to_have_attribute("aria-valuenow", "40")
+        inspect.press("Escape")
+        page.locator('summary[aria-label="Validation interval macro-F1 values"]').press("Enter")
+        table = page.get_by_role("table", name="Validation interval macro-F1 by trees used")
+        expect(table.get_by_role("rowheader")).to_have_text(["1", "5", "40"])
+        expect(table.get_by_role("cell")).to_have_text(["0.89", "0.97", "0.95"])
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     finally:
         page.close()

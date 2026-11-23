@@ -235,16 +235,26 @@ def register_model(
         Path | None,
         typer.Option(exists=True, dir_okay=False, help="Offline inference latency evidence JSON."),
     ] = None,
+    forest_validation_curve: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True,
+            dir_okay=False,
+            help="Tree-count scores on the bundle's original validation set.",
+        ),
+    ] = None,
 ) -> None:
     """Import a verified bundle into Training. Use --activate to serve it."""
 
     def action() -> None:
+        from regimex.admin_contracts import ForestValidationCurve
         from regimex.external_evaluations import read_external_evaluations
         from regimex.external_latency import read_latency_evidence
         from regimex.infrastructure.admin_repository import AdminRepository
         from regimex.model_registry import InferenceRuntime, read_inference_runtime
         from regimex.operations import LaunchSource
         from regimex.service_bootstrap import create_service
+        from regimex.service_client import read_file
 
         if runtime_file is None:
             runtime = InferenceRuntime() if threads is None else InferenceRuntime(threads=threads)
@@ -280,6 +290,13 @@ def register_model(
             display_name=name,
             external_evaluations=evaluations,
             external_latency=latency,
+            forest_validation_curve=(
+                ForestValidationCurve.model_validate_json(
+                    read_file(forest_validation_curve, 64 * 1024)
+                )
+                if forest_validation_curve is not None
+                else None
+            ),
         )
         typer.echo(f"Registered {model.model_version_id} ({model.bundle_sha256}).")
         run = AdminRepository(service.repository).get_training_run_for_model(

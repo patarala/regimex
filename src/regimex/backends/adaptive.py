@@ -2,14 +2,15 @@
 
 import platform
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from importlib.metadata import version
+from itertools import pairwise
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, Self
 
 import numpy as np
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
 from regimex.backends import multiscale_segments
 from regimex.backends.adaptive_forest import (
@@ -40,6 +41,8 @@ from regimex.model_registry import (
     SingleFitPolicy,
     TrainingPolicySpec,
     TrainingRuntime,
+    TreeCount,
+    TreeDepth,
 )
 from regimex.resource_limits import ResourceBudgetExceeded
 from regimex.storage import digest, output_directory, write_json
@@ -91,8 +94,8 @@ class PreprocessingRecord(StrictModel):
 
 class FitRecord(StrictModel):
     seed: Seed
-    trees: int = Field(ge=1)
-    max_depth: int = Field(ge=1)
+    trees: TreeCount
+    max_depth: TreeDepth
     validation_segment_macro_f1: float = Field(ge=0, le=1)
 
 
@@ -103,7 +106,18 @@ class ValidationRecord(StrictModel):
 
 
 class HistoryRecord(StrictModel):
-    fits: tuple[FitRecord]
+    fits: tuple[FitRecord, ...] = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def one_forest(self) -> Self:
+        for left, right in pairwise(self.fits):
+            if (
+                left.trees >= right.trees
+                or left.seed != right.seed
+                or left.max_depth != right.max_depth
+            ):
+                raise ValueError("Adaptive history must describe increasing prefixes of one forest")
+        return self
 
 
 def environment() -> dict[str, JsonValue]:
@@ -156,13 +170,63 @@ class AdaptivePredictor:
         probabilities_valid(probabilities, inputs.row_count)
         return probabilities
 
+    def validation_predictions(
+        self,
+        inputs: ObservationInputs,
+        *,
+        memory_budget_bytes: int,
+        check_time: Callable[[], None] | None = None,
+    ) -> Iterator[tuple[int, DoubleArray]]:
+        """Yield probabilities on the original grid for tree prefixes and the complete forest."""
+        require_observation_inputs(inputs)
+        feature_set = _FEATURE_SETS[self.configuration.parameters.feature_set]
+        maximum_sequence = max(info.step_count for info in inputs.info)
+        feature_bytes = maximum_sequence * len(feature_set.names) * 8 * 4
+        matrix_bytes = inputs.row_count * len(DIRECTION_NAMES) * 8
+        slots = (memory_budget_bytes - self.numeric_bytes - feature_bytes) // matrix_bytes
+        if slots < 1:
+            raise ResourceBudgetExceeded("adaptive validation predictions exceed the memory budget")
+        trees = len(self.model.offsets)
+        counts = sorted(
+            {
+                count
+                for count in (1, 5, 10, trees // 4, trees // 2, 3 * trees // 4, trees)
+                if 1 <= count <= trees
+            }
+        )
+        # Keep the full model under a tight budget. Other checkpoints share the remaining space.
+        if slots == 1:
+            counts = [trees]
+        elif slots < len(counts):
+            counts = [counts[i * (len(counts) - 1) // (slots - 1)] for i in range(slots)]
+        checkpoints = tuple(counts)
+        predictions = [np.empty((inputs.row_count, len(DIRECTION_NAMES))) for _ in counts]
+        first = 0
+        for rows in inputs.observations:
+            if check_time is not None:
+                check_time()
+            sequence_features = feature_set.extract(rows, self.analysis)
+            stop = first + len(rows)
+            for matrix, prefix in zip(
+                predictions,
+                self.model.predict_prefixes(sequence_features, checkpoints),
+                strict=True,
+            ):
+                matrix[first:stop] = prefix
+            first = stop
+        for count, matrix in zip(counts, predictions, strict=True):
+            if check_time is not None:
+                check_time()
+            probabilities_valid(matrix, inputs.row_count)
+            yield count, matrix
 
-def _record(configuration: AdaptiveConfiguration, validation: ValidationRecord) -> FitRecord:
+
+def _record(configuration: AdaptiveConfiguration, trees: int, score: float) -> FitRecord:
     return FitRecord(
         seed=configuration.training_policy.seeds[0],
-        trees=configuration.parameters.trees,
+        trees=trees,
         max_depth=configuration.parameters.max_depth,
-        validation_segment_macro_f1=validation.score,
+        validation_segment_macro_f1=score,
     )
 
 
@@ -184,18 +248,20 @@ def fit_result_from_forest(
         training_runtime=runtime,
         environment=environment,
     )
-    return _fit_result(AdaptivePredictor(model, config), validation_score)
+    return _fit_result(
+        AdaptivePredictor(model, config), [_record(config, parameters.trees, validation_score)]
+    )
 
 
-def _fit_result(predictor: AdaptivePredictor, score: float) -> FitResult:
+def _fit_result(predictor: AdaptivePredictor, history: list[FitRecord]) -> FitResult:
     config = predictor.configuration
     predictor.model.validate(trees=config.parameters.trees, max_depth=config.parameters.max_depth)
-    validation = ValidationRecord(score=score, selected_seed=config.training_policy.seeds[0])
+    full = history[-1]
     return FitResult(
         predictor=predictor,
-        history=(_record(config, validation).model_dump(mode="json"),),
-        selected_seed=validation.selected_seed,
-        validation_score=validation.score,
+        history=tuple(row.model_dump(mode="json") for row in history),
+        selected_seed=full.seed,
+        validation_score=full.validation_segment_macro_f1,
         selected_settings=config.parameters.model_dump(mode="json"),
         environment=config.environment.copy(),
     )
@@ -284,18 +350,16 @@ class AdaptiveBackend:
             environment=environment(),
         )
         predictor = AdaptivePredictor(model, config)
-        predictions = predictor.predict(
-            validation,
-            runtime=InferenceRuntime(
-                threads=runtime.threads, model_cache_budget_bytes=runtime.memory_budget_bytes
-            ),
-        )
-        score = evaluator(predictions)
-        check_time()
-        result = _fit_result(predictor, score)
-        if training.on_history is not None:
-            training.on_history(result.history[0].copy())
-        return result
+        history = []
+        for count, predictions in predictor.validation_predictions(
+            validation, memory_budget_bytes=runtime.memory_budget_bytes, check_time=check_time
+        ):
+            row = _record(config, count, evaluator(predictions))
+            check_time()
+            history.append(row)
+            if training.on_history is not None:
+                training.on_history(row.model_dump(mode="json"))
+        return _fit_result(predictor, history)
 
     def write_bundle(
         self,
@@ -322,10 +386,10 @@ class AdaptiveBackend:
             or provenance.training.validation_segment_macro_f1 != validation.score
         ):
             raise ValueError("adaptive bundle provenance differs from the fitted configuration")
-        expected = _record(config, validation)
+        expected = _record(config, config.parameters.trees, validation.score)
         history = HistoryRecord.model_validate({"fits": result.history})
         if (
-            history.fits != (expected,)
+            history.fits[-1] != expected
             or expected.seed != validation.selected_seed
             or result.selected_settings != config.parameters.model_dump(mode="json")
         ):
@@ -417,7 +481,7 @@ class AdaptiveBackend:
             or bundle.training.selected_seed != validation.selected_seed
             or bundle.training.validation_segment_macro_f1 != validation.score
             or validation.selected_seed != config.training_policy.seeds[0]
-            or history.fits != (_record(config, validation),)
+            or history.fits[-1] != _record(config, config.parameters.trees, validation.score)
         ):
             raise ValueError("adaptive preprocessing, scientific provenance or selection disagree")
         model = DirectionContextModel.load(

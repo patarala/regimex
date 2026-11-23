@@ -5,7 +5,7 @@ from pathlib import Path
 
 from pydantic import JsonValue, RootModel
 
-from regimex.admin_contracts import ImportedTrainingSpec
+from regimex.admin_contracts import ForestValidationCurve, ImportedTrainingSpec
 from regimex.application.service import AnalysisService, materialize_object
 from regimex.application.training_metrics import build_training_metrics
 from regimex.external_evaluations import ExternalEvaluation
@@ -25,6 +25,7 @@ def record_external_training(
     evaluations: tuple[ExternalEvaluation, ...],
     latency: ExternalLatencyEvidence | None,
     launch_source: LaunchSource | None,
+    forest_validation_curve: ForestValidationCurve | None,
 ) -> ModelRecord:
     members = {member.role: member for member in manifest.members}
     with tempfile.TemporaryDirectory(dir=service.work_root) as tmp:
@@ -53,6 +54,10 @@ def record_external_training(
             inference_runtime=model.inference_runtime,
         )
         metrics = build_training_metrics(spec, manifest, read_history=read_member)
+        if forest_validation_curve is not None:
+            metrics = metrics.model_copy(
+                update={"forest_validation_curve": forest_validation_curve}
+            )
     # The model and its completed history become visible together, after all byte verification.
     return AdminRepository(service.repository).register_external_training(
         principal,

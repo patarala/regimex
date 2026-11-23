@@ -136,10 +136,11 @@ several revisions, choose the one to evaluate before registering its reference s
 
 All three backends need every direction in their training targets. Learned
 weights and preprocessing use training data only. Model selection requires at
-least one validation interval with a known direction. The decoded validation interval
-macro-F1 selects the settings or checkpoint, with the first best score winning a
-tie. The administrative workflow covers benchmark reservation, freezing the
-model and final evaluation. [API guide](api.md#administration)
+least one validation interval with a known direction. When a backend compares
+settings or checkpoints, it selects the highest decoded validation interval
+macro-F1 and breaks ties with the first result. The administrative workflow
+covers benchmark reservation, freezing the model and final evaluation.
+[API guide](api.md#administration)
 
 ### Adaptive direction forest
 
@@ -148,6 +149,12 @@ one forest and reports its decoded validation interval macro-F1. The seed
 controls the randomized splits. The defaults are 40 trees, maximum depth 12
 and seed 173. These are the settings used in the [direction model comparison](direction-context.md).
 The number of split decisions in the fitted forest depends on the training data.
+
+After fitting, the worker measures how the interval score changes as more
+trees contribute their votes, in the order they were fitted. It computes
+validation features once, averages the class probabilities at each sampled
+tree count and applies the usual interval decoder. A smaller memory budget
+can reduce the number of measurements. The reported model score uses every tree.
 
 **Price features** controls how the forest reads the observed price path.
 The default, **Greedy**, splits a span at the step that most improves its fit,
@@ -169,6 +176,16 @@ the forest and its single fit:
 
 To use the alternative settings, add `"feature_set": "multiscale"` or
 `"sample_weighting": "interval"` to `parameters`.
+
+For a saved forest with one history point, the operator can attach a curve
+measured on the original validation set. The JSON for
+`--forest-validation-curve` contains `bundle_sha256`, `dataset_sha256`
+(the validation dataset), `validation_reference_sha256`,
+`metric` (`decoded_segment_macro_f1/iou-0.50`) and `points`.
+Each point has `trees` and `validation_segment_macro_f1`. Supply at least
+two points in increasing tree count. The last count and score must match
+the full forest. Regimex stores the measurements with the run's metrics
+and preserves the original bundle and fit history.
 
 The imported model `direction-blend-500-v3` runs both the released greedy
 forest and the larger multiscale forest, then averages their class

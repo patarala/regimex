@@ -216,10 +216,23 @@ class DirectionContextModel:
         )
 
     def predict(self, x: Floats) -> Floats:
+        return next(self.predict_prefixes(x, (len(self.offsets),)))
+
+    def predict_prefixes(self, x: Floats, tree_counts: tuple[int, ...]) -> Iterator[Floats]:
+        """Average successive tree votes without traversing a tree twice."""
+        if (
+            not tree_counts
+            or tree_counts[0] < 1
+            or tree_counts[-1] > len(self.offsets)
+            or any(a >= b for a, b in pairwise(tree_counts))
+        ):
+            raise ValueError("Tree counts must be increasing prefixes of this forest")
         if x.ndim != 2 or x.shape[1] != _WIDTH or not np.isfinite(x).all():
             raise ValueError("Expected finite adaptive context features")
         if not len(x):
-            return np.empty((0, 3))
+            for _ in tree_counts:
+                yield np.empty((0, 3))
+            return
         # The fitted sklearn trees compare their thresholds with float32 inputs.
         values = x.astype(np.float32)
         changes = np.flatnonzero(np.any(values[1:] != values[:-1], axis=1)) + 1
@@ -233,22 +246,25 @@ class DirectionContextModel:
         # When only a few different pieces remain, traverse multiple trees together.
         # Once the input fills a whole instrument's worth of node slots, use one tree per pass.
         trees_per_pass = max(1, MAX_STEPS // len(values))
-        for first in range(0, len(self.offsets), trees_per_pass):
-            roots = self.offsets[first : first + trees_per_pass]
-            nodes = np.repeat(roots, len(values))
-            while True:
-                selected = np.flatnonzero(self.columns[nodes] >= 0)
-                if not len(selected):
-                    break
-                current = nodes[selected]
-                rows = selected if len(roots) == 1 else selected % len(values)
-                right = values[rows, self.columns[current]] > self.thresholds[current]
-                nodes[selected] = self.children[current, right.astype(np.int64)]
-            # Preserve floating-point accumulation order across tree batches.
-            for leaves in nodes.reshape(len(roots), len(values)):
-                probabilities += self.votes[leaves]
-        probabilities /= len(self.offsets)
-        return np.repeat(probabilities, lengths, axis=0) if lengths is not None else probabilities
+        visited = 0
+        for count in tree_counts:
+            for first in range(visited, count, trees_per_pass):
+                roots = self.offsets[first : min(first + trees_per_pass, count)]
+                nodes = np.repeat(roots, len(values))
+                while True:
+                    selected = np.flatnonzero(self.columns[nodes] >= 0)
+                    if not len(selected):
+                        break
+                    current = nodes[selected]
+                    rows = selected if len(roots) == 1 else selected % len(values)
+                    right = values[rows, self.columns[current]] > self.thresholds[current]
+                    nodes[selected] = self.children[current, right.astype(np.int64)]
+                # Preserve floating-point accumulation order across tree batches.
+                for leaves in nodes.reshape(len(roots), len(values)):
+                    probabilities += self.votes[leaves]
+            visited = count
+            average = probabilities / count
+            yield np.repeat(average, lengths, axis=0) if lengths is not None else average
 
     def save(self, path: Path) -> None:
         with path.open("xb") as stream:

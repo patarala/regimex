@@ -217,14 +217,9 @@ def test_registered_backend_fits_scores_and_restores_a_candidate(
     )
     saved = json.loads((root / "history.json").read_bytes())
     assert saved == {"fits": events}
-    assert events == [
-        {
-            "trees": 5,
-            "max_depth": 4,
-            "seed": 35,
-            "validation_segment_macro_f1": result.validation_segment_macro_f1,
-        }
-    ]
+    assert [row["trees"] for row in events] == [1, 2, 3, 5]
+    assert all(row["max_depth"] == 4 and row["seed"] == 35 for row in events)
+    assert events[-1]["validation_segment_macro_f1"] == result.validation_segment_macro_f1
     predictor = AdaptiveBackend().load_bundle(
         root, manifest_sha256=result.manifest_sha256, runtime=intake.verification_runtime
     )
@@ -235,6 +230,56 @@ def test_registered_backend_fits_scores_and_restores_a_candidate(
     assert (
         evaluator(predictor.predict(valid, runtime=intake.verification_runtime))
         == result.validation_segment_macro_f1
+    )
+
+
+def test_validation_prefix_scores_use_original_grid_and_full_forest_selection() -> None:
+    result, valid, _ = fitted()
+    predictor = result.predictor
+    assert isinstance(predictor, AdaptivePredictor)
+    curves = dict(predictor.validation_predictions(valid, memory_budget_bytes=1024**2))
+    assert list(curves) == [1, 2, 3]
+    for row, (trees, probabilities) in zip(result.history, curves.items(), strict=True):
+        prefix = replace(predictor.model, offsets=predictor.model.offsets[:trees])
+        expected = np.concatenate(
+            [prefix.predict(features(rows, predictor.analysis)) for rows in valid.observations]
+        )
+        np.testing.assert_array_equal(probabilities, expected)
+        assert row["validation_segment_macro_f1"] == float(expected[:, 0].mean())
+    assert result.validation_score == result.history[-1]["validation_segment_macro_f1"]
+
+    feature_bytes = (
+        max(i.step_count for i in valid.info)
+        * len(features(valid.observations[0], predictor.analysis)[0])
+        * 8
+        * 4
+    )
+    one_matrix = curves[3].nbytes
+    budget = predictor.numeric_bytes + feature_bytes + one_matrix
+    constrained = dict(predictor.validation_predictions(valid, memory_budget_bytes=budget))
+    assert list(constrained) == [3]
+    np.testing.assert_array_equal(constrained[3], curves[3])
+    assert [
+        trees
+        for trees, _ in predictor.validation_predictions(
+            valid, memory_budget_bytes=budget + one_matrix
+        )
+    ] == [1, 3]
+    with pytest.raises(ResourceBudgetExceeded):
+        next(predictor.validation_predictions(valid, memory_budget_bytes=1))
+
+
+def test_restore_forest_that_recorded_only_the_final_validation_score(tmp_path: Path) -> None:
+    result, valid, _ = fitted()
+    backend = AdaptiveBackend()
+    original = replace(result, history=result.history[-1:])
+    sha = backend.write_bundle(
+        original, tmp_path, provenance=provenance(original), analysis=result.predictor.analysis
+    )
+    restored = backend.load_bundle(tmp_path, manifest_sha256=sha, runtime=InferenceRuntime())
+    np.testing.assert_array_equal(
+        restored.predict(valid, runtime=InferenceRuntime()),
+        result.predictor.predict(valid, runtime=InferenceRuntime()),
     )
 
 

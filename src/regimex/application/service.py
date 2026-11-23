@@ -64,6 +64,7 @@ from regimex.storage_contracts import StorageUsage
 if TYPE_CHECKING:
     import psycopg
 
+    from regimex.admin_contracts import ForestValidationCurve
     from regimex.external_evaluations import ExternalEvaluation
     from regimex.external_latency import ExternalLatencyEvidence
     from regimex.infrastructure.database import DatabaseRepository
@@ -732,6 +733,7 @@ class AnalysisService:
         display_name: str | None = None,
         external_evaluations: tuple[ExternalEvaluation, ...] = (),
         external_latency: ExternalLatencyEvidence | None = None,
+        forest_validation_curve: ForestValidationCurve | None = None,
     ) -> ModelRecord:
         """Explicit administrator bootstrap; verify actual saved backend restoration.
 
@@ -741,7 +743,9 @@ class AnalysisService:
         if principal.role != "admin":
             raise Forbidden()
         display_name = validate_display_name(display_name)
-        if not record_training and (display_name or external_evaluations or external_latency):
+        if not record_training and (
+            display_name or external_evaluations or external_latency or forest_validation_curve
+        ):
             raise ValueError("Training names and external reports require recording the run.")
         manifest_path = root / "manifest.json"
         root_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -823,6 +827,7 @@ class AnalysisService:
                 external_evaluations,
                 external_latency,
                 launch_source,
+                forest_validation_curve,
             )
         elif existing is None:
             record = self.repository.register_model(principal, record)

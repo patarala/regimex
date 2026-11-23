@@ -1391,6 +1391,14 @@ class AdminRepository:
             or (latency is not None and latency.manifest_sha256 != model.bundle_sha256)
         ):
             raise Conflict("Imported training evidence belongs to another model or policy.")
+        curve = metrics.forest_validation_curve
+        if curve is not None and not curve.matches_original_fit(
+            spec, model.bundle_sha256, metrics.history
+        ):
+            raise Conflict(
+                "Forest curve must match the original single fit, validation data "
+                "and full-forest score."
+            )
         with self.database.connection() as connection:
             self.database.lock_catalog_identity(connection, "model", model.model_version_id)
             row = connection.execute(
@@ -1429,6 +1437,8 @@ class AdminRepository:
                         raise Conflict("The bundle does not identify its training run.")
                 elif run.spec != spec:
                     raise Conflict("The training run already records different bundle evidence.")
+                if curve is not None:
+                    store_training_metrics(connection, run, metrics)
             self._save_external_reports(connection, run, evaluations, latency)
             return registered
 

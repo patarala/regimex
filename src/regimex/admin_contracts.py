@@ -319,6 +319,49 @@ class RepeatOutcome(StrictModel):
     reason: Literal["early_stopping", "epoch_limit", "update_limit"]
 
 
+class ForestValidationPoint(StrictModel):
+    trees: TreeCount
+    validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
+
+
+class ForestValidationCurve(StrictModel):
+    """Validation measurements reconstructed from the first trees of a saved forest."""
+
+    bundle_sha256: Sha256
+    dataset_sha256: Sha256
+    validation_reference_sha256: Sha256
+    metric: Literal["decoded_segment_macro_f1/iou-0.50"]
+    points: Annotated[tuple[ForestValidationPoint, ...], Field(min_length=2, max_length=128)]
+
+    @model_validator(mode="after")
+    def increasing_tree_counts(self) -> Self:
+        counts = [point.trees for point in self.points]
+        if counts != sorted(set(counts)):
+            raise ValueError("Forest measurements require increasing tree counts")
+        return self
+
+    def matches_original_fit(
+        self, spec: ImportedTrainingSpec, bundle_sha256: str, history: JsonValue
+    ) -> bool:
+        fits = history.get("fits") if isinstance(history, dict) else None
+        if not isinstance(fits, list) or len(fits) != 1 or not isinstance(fits[0], dict):
+            return False
+        evidence = spec.evidence
+        last = self.points[-1]
+        return (
+            spec.architecture_id == "adaptive"
+            and (spec.configuration or {}).get("codec_version") == "adaptive-forest/1.0"
+            and self.bundle_sha256 == bundle_sha256
+            and self.dataset_sha256
+            == (evidence.validation_dataset_sha256 or evidence.dataset_sha256)
+            and self.validation_reference_sha256 == evidence.validation_references.content_sha256
+            and fits[0].get("trees") == last.trees
+            and fits[0].get("seed") == evidence.selected_seed
+            and fits[0].get("validation_segment_macro_f1") == last.validation_segment_macro_f1
+            and last.validation_segment_macro_f1 == evidence.validation_segment_macro_f1
+        )
+
+
 class TrainingMetrics(StrictModel):
     model_version_id: Identifier
     selected_seed: Seed
@@ -326,6 +369,9 @@ class TrainingMetrics(StrictModel):
     history: JsonValue
     history_note: str | None = None
     repeat_outcomes: tuple[RepeatOutcome, ...] = ()
+    forest_validation_curve: ForestValidationCurve | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 MAX_PROGRESS_BATCH = 512

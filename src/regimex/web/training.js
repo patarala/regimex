@@ -419,7 +419,11 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   function refreshDetail() {
     if (target === "compare") return comparison.show(comparedIds, false);
-    if (run) return refresh(selection);
+    if (run) {
+      // A verified curve can be attached to a completed forest from another client.
+      if (run.training.architecture_id === "adaptive") metricsLoaded = false;
+      return refresh(selection);
+    }
     if (target && target !== "new") {
       // Supersede a detail request started before the mutation was acknowledged.
       return loadRun(target, ++selection);
