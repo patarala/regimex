@@ -1,6 +1,20 @@
 import {$, analysisStateLabel, element, shortDate} from "./ui.js";
 import {architectureName} from "./training-form.js";
 import {differentSettings} from "./training-json.js";
+import {isImported} from "./training-import.js";
+
+function sameValidation(left, right) {
+  if (left.analysis_profile_id !== right.analysis_profile_id || !left.analysis_profile_id) return false;
+  if (left.origin === "external" || right.origin === "external") {
+    if (left.origin !== right.origin) return false;
+    const a = left.evidence, b = right.evidence;
+    return (a.validation_dataset_sha256 || a.dataset_sha256) === (b.validation_dataset_sha256 || b.dataset_sha256)
+      && a.split_manifest_sha256 === b.split_manifest_sha256
+      && a.validation_references.content_sha256 === b.validation_references.content_sha256
+      && a.validation_references.direction_semantics_sha256 === b.validation_references.direction_semantics_sha256;
+  }
+  return ["dataset_id", "validation_reference_set_id"].every(key => left[key] && left[key] === right[key]);
+}
 
 function table(caption, links, rows) {
   const result = element("table");
@@ -50,7 +64,8 @@ export function createTrainingComparison({readRun, session, runPath, duration}) 
     try {
       const runs = await Promise.all(ids.map(readRun));
       if (generation !== stamp) return;
-      const names = runs.map(run => run.display_name || architectureName(run.training.architecture_id, true));
+      const names = runs.map(run => run.display_name || (isImported(run) ? run.training.model_version_id
+        : architectureName(run.training.architecture_id, true)));
       const links = () => runs.map((run, index) => {
         const suffix = names[0] === names[1] ? " #" + run.run_id.slice(-8) : "";
         const link = element("a", (index === 0 ? "A · " : "B · ") + names[index] + suffix);
@@ -60,28 +75,30 @@ export function createTrainingComparison({readRun, session, runPath, duration}) 
       });
       const row = (name, select) => [name, ...runs.map(run => select(run) ?? "—")];
       const rows = [
-        row("Status", r => analysisStateLabel(r.job.state)),
-        row("Created", r => shortDate(r.job.created_at)),
-        row("Dataset", r => r.training.dataset_id),
+        row("Status", r => isImported(r) ? "Imported" : analysisStateLabel(r.job.state)),
+        row(runs.some(isImported) ? "Recorded" : "Created", r => shortDate(r.job.created_at)),
+        row("Dataset", r => isImported(r) ? r.training.evidence.dataset_sha256 : r.training.dataset_id),
         row("Architecture", r => architectureName(r.training.architecture_id, true)),
         row("Trainable parameters", r => r.trainable_parameters?.toLocaleString()),
         ...[["Elapsed", "elapsed_seconds"], ["In queue", "queued_seconds"],
           ["With worker", "running_seconds"], ["Model fit time", "fit_seconds"]].map(([name, key]) =>
-          row(name, r => r.statistics?.[key] == null ? null : duration(r.statistics[key]))),
+          row(name, r => r.statistics?.[key] == null || (isImported(r) && key !== "fit_seconds")
+            ? null : duration(r.statistics[key]))),
       ];
       const overview = table("Run results", links(), rows);
       content.append(overview);
-      const differences = differentSettings(runs[0].configuration, runs[1].configuration);
-      content.append(element("h3", "Settings that differ"), differences.length
-        ? table("Settings that differ", links(), differences)
-        : element("p", "Both runs used the same settings.", "hint"));
+      if (isImported(runs[0]) === isImported(runs[1]) && runs.every(run => run.configuration)) {
+        const differences = differentSettings(runs[0].configuration, runs[1].configuration);
+        content.append(element("h3", "Settings that differ"), differences.length
+          ? table("Settings that differ", links(), differences)
+          : element("p", "Both runs used the same settings.", "hint"));
+      }
       if (!runs.every(run => run.job.state === "succeeded")) {
         status.textContent = "Both runs must succeed to compare their validation scores.";
         return;
       }
       const [a, b] = runs.map(run => run.training);
-      if (!["dataset_id", "validation_reference_set_id", "analysis_profile_id"].every(key =>
-        a[key] && a[key] === b[key])) {
+      if (!sameValidation(a, b)) {
         status.textContent = "Comparing validation scores requires the same dataset, validation labels and analysis profile.";
         return;
       }

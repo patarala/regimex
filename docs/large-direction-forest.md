@@ -151,6 +151,30 @@ On a service with an active model, activation also requires
 `--expected-previous` and the current active version ID. See the
 [local service guide](usage.md#start-locally) for worker and API startup.
 
+## Import a completed comparison
+
+To open a locally fitted result in **Training**, load the service environment
+and register the bundle. The frozen selection identifies the candidate in
+the native and controlled reports. Timings are the recorded wall-clock
+medians for each tested input length. For the multiscale forest:
+
+```sh
+comparison=var/verification/direction-large-evaluation-v1
+uv run --locked --all-extras regimex service register-model \
+  --bundle var/release/direction-large-v1/bundle \
+  --manifest-sha256 e60f2a3f4de68436a396e904b1781492df94de5531f1c9b5bf7d55989e6d5495 \
+  --token-file var/credentials/admin.token \
+  --selection-file "$comparison/selection/freeze.json" --native-final "$comparison/results.json" \
+  --controlled-final var/verification/large-direction-transfer-v1/results.json \
+  --inference-latency var/verification/direction-large-v1/inference-latency.json
+```
+
+The bundle alone is sufficient to open its settings, weights and validation
+score. Register it again with the evidence flags to add measurements later.
+For other fitted contenders with saved weights and validation scores, the
+large and mixed evaluation scripts provide a `package-candidates` command.
+They reuse the stored fits and validation results.
+
 ## Reproduce
 
 Use the locked ML environment and the [original control bundle](direction-context.md#use-the-trained-forest).

@@ -35,6 +35,10 @@ its database transaction commits.
   trusted installed backends, verify the bundle's codec and class order, and
   restore both weights and preprocessing. Keep labels, reference boundaries,
   seeds and generator settings out of prediction inputs. [Evaluation protocol and results](docs/quality.md)
+- **Terminal workflows.** Keep local fits runnable offline. When a fit writes
+  a verified bundle, use the shared optional registration hook to make its
+  actual settings and evidence available in Training. For other local work a
+  user wants in the workspace, record it with the [activity CLI](docs/usage.md#show-a-local-command-in-activity).
 - **Jobs.** Pin the model version at intake. Commit the operation and queue task
   together. Scope idempotency by owner and operation. Renew the lease during
   I/O, verify output objects before publication, and check the attempt token and

@@ -114,8 +114,8 @@ both versions must have been published or activated.
 
 ## Train a model
 
-Sign in with an administrator token and open **Training** at `/training`. The
-service needs a running `admin` worker. For your first run, choose **New run →
+Sign in with an administrator token and open **Training** at `/training`. To
+train on the service, start an `admin` worker. For your first run, choose **New run →
 Prepare training data**, set the experiment counts and length, then select
 **Generate datasets**. The worker generates two independent datasets and
 creates automatic labels. The form shows how many experiments enter training,
@@ -295,6 +295,75 @@ cleanup**. If the server response was lost, select **Check deletion** to find
 out whether it accepted the request.
 
 ## Terminal tools
+
+### Choose where training runs
+
+| How you start | Where it runs | Where to find it |
+| --- | --- | --- |
+| **Start training** in the browser, or `regimex submit-training` | Service worker | **Training** shows the queue, progress and outcome from submission onward. |
+| A local fitting or comparison script | Your machine | The files stay in the chosen output directory. You can run offline. |
+| Local fitting with bundle registration enabled | Your machine | **Training** shows the verified result under the administrator account that imported it. |
+
+To submit the same request as the web form, save its complete configuration
+as `var/training.json`, including the dataset, references and benchmark IDs.
+The CLI prints the run link as soon as the service accepts it. Reuse the
+printed `--idempotency-key` if the response is lost. [Request example](api.md#3-train-and-publish)
+
+```sh
+uv run --locked regimex submit-training --input var/training.json \
+  --origin http://127.0.0.1:8000 --token-file var/credentials/admin.token
+```
+
+To fit on your machine, run the [offline forest workflow](large-direction-forest.md#reproduce)
+or a local baseline or TCN comparison. In the current checkout, the scripts
+that produce supported bundles can also record the result in your service.
+Load its operator environment and set `REGIMEX_TRAINING_TOKEN_FILE` to the
+administrator token file in that shell. Unset the variable to return to
+offline-only fitting. Training uses local resources in both cases.
+
+An existing bundle can be added later with `regimex service register-model`.
+Supply its recorded manifest SHA-256 and the administrator token for the
+intended workspace. The command prints the link to its **Imported** run.
+The page shows the saved settings, validation score, history and weight
+identity. For the forest comparisons you can also attach the
+[final scores and inference timings](large-direction-forest.md#import-a-completed-comparison).
+Repeating registration recovers the same run. Use `--activate` only when
+you intend to change the default model.
+
+### Show a local command in Activity
+
+Run commands directly for terminal-only work. To share a named execution
+with your own web workspace, wrap it with `regimex activity run`. Arguments
+after `--` run on your machine. For example, record the validation of an export:
+
+```sh
+uv run --locked regimex activity run --title "Validate the two-instrument export" \
+  --token-file var/credentials/user.token -- \
+  uv run --locked regimex validate --input tests/fixtures/experiment-v2.json
+```
+
+Open the printed URL or choose **Activity** while signed in as the same
+owner. The entry shows start and finish times, status and exit code.
+Set `REGIMEX_CLI_ORIGIN` and `REGIMEX_CLI_TOKEN_FILE` in your shell to
+reuse a service and account for activity, analysis and training submissions.
+Explicit `--origin` and `--token-file` options take precedence.
+Use `--note` for context or `--result-file PATH` to attach a UTF-8 text
+result of up to 16,000 characters after the process exits. Command arguments,
+environment variables and terminal output stay local.
+
+If the service is unreachable, the command still runs. The CLI saves a private
+receipt in `var/terminal-activity/`. Replay it against the same origin and
+account when the service is available. The original command runs once.
+
+```sh
+uv run --locked regimex activity sync --receipt var/terminal-activity/ACTIVITY_UUID.json \
+  --token-file var/credentials/user.token
+```
+
+If the wrapper was killed before it could record the outcome, add
+`--interrupted` after checking that the local job has stopped.
+
+### Generate and analyze an experiment
 
 To try a market of your own, generate one completed experiment locally. The seed,
 step count and instrument count determine its contents. With the same generator

@@ -21,6 +21,7 @@ from compare_temporal_architectures import (
     summary,
 )
 from confirm_training_populations import contrast
+from direction_candidate_bundles import package_candidates
 from train_large_direction import CANDIDATES, SEED
 
 from regimex.application.analysis_computation import snapshot_inputs
@@ -44,6 +45,7 @@ from regimex.model_contracts import BundleProvenance
 from regimex.model_registry import AdaptiveParameters, SingleFitPolicy, TrainingRuntime
 from regimex.segmentation import annotate
 from regimex.storage import digest, json_bytes, output_directory, write_json, write_new_file
+from regimex.terminal_training import register_frozen_selection
 
 DATA = Path("var/verification/direction-large-v1")
 OUTPUT = Path("var/verification/direction-large-evaluation-v1")
@@ -342,6 +344,7 @@ def freeze(data, output, control):
                 "round_trip_on_validation": verified,
             },
         )
+    package_candidates(data, output, mixed=False)
     print(f"Validation winner: {winner}; packaged {challenger} ({sha})", flush=True)
 
 
@@ -412,17 +415,20 @@ def score_frozen(data, output, control, frozen, *, validation_qualified, evidenc
         },
     }
     write_new_file(output / "results.json", json_bytes(result))
+    register_frozen_selection(output, native_final=output / "results.json")
     print(f"{name}: {checks}", flush=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("register", "freeze", "score"))
+    parser.add_argument("command", choices=("register", "freeze", "score", "package-candidates"))
     parser.add_argument("--data", type=Path, default=DATA)
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--control", type=Path, default=BUNDLE)
     args = parser.parse_args()
-    if args.command == "register":
+    if args.command == "package-candidates":
+        package_candidates(args.data, args.output, mixed=False, explicit=True)
+    elif args.command == "register":
         write_new_file(args.output / "protocol.json", json_bytes(protocol()))
     elif args.command == "freeze":
         freeze(args.data, args.output, args.control)

@@ -210,10 +210,38 @@ def register_model(
         Path | None,
         typer.Option(exists=True, dir_okay=False, readable=True, help="Inference runtime JSON."),
     ] = None,
+    name: Annotated[
+        str | None, typer.Option(help="Display name for the imported training run.")
+    ] = None,
+    selection_file: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True, dir_okay=False, help="Frozen selection JSON for external final reports."
+        ),
+    ] = None,
+    native_final: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True, dir_okay=False, help="Completed native experiment comparison JSON."
+        ),
+    ] = None,
+    controlled_final: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True, dir_okay=False, help="Completed controlled transfer comparison JSON."
+        ),
+    ] = None,
+    inference_latency: Annotated[
+        Path | None,
+        typer.Option(exists=True, dir_okay=False, help="Offline inference latency evidence JSON."),
+    ] = None,
 ) -> None:
-    """Verify and import a saved model bundle. Use --activate to serve it."""
+    """Import a verified bundle into Training. Use --activate to serve it."""
 
     def action() -> None:
+        from regimex.external_evaluations import read_external_evaluations
+        from regimex.external_latency import read_latency_evidence
+        from regimex.infrastructure.admin_repository import AdminRepository
         from regimex.model_registry import InferenceRuntime, read_inference_runtime
         from regimex.service_bootstrap import create_service
 
@@ -223,8 +251,22 @@ def register_model(
             if threads is not None:
                 raise ValueError("Set threads in the runtime file when using --runtime-file.")
             runtime = read_inference_runtime(runtime_file)
-        service = create_service(ServiceSettings.from_env())
+        settings = ServiceSettings.from_env()
+        service = create_service(settings)
         principal = service.authenticate(token_file.read_text(encoding="utf-8").strip())
+        evaluations = read_external_evaluations(
+            manifest_sha256,
+            selection_file=selection_file,
+            native_final=native_final,
+            controlled_final=controlled_final,
+        )
+        latency = (
+            read_latency_evidence(
+                inference_latency, manifest_sha256=manifest_sha256, selection_file=selection_file
+            )
+            if inference_latency is not None
+            else None
+        )
         model = service.register_bundle(
             principal,
             bundle,
@@ -232,8 +274,19 @@ def register_model(
             inference_runtime=runtime,
             activate=activate,
             expected_previous=expected_previous,
+            record_training=True,
+            display_name=name,
+            external_evaluations=evaluations,
+            external_latency=latency,
         )
         typer.echo(f"Registered {model.model_version_id} ({model.bundle_sha256}).")
+        run = AdminRepository(service.repository).get_training_run_for_model(
+            principal, model.model_version_id
+        )
+        if run is not None:
+            typer.echo(
+                f"Open in browser: {settings.public_origin.rstrip('/')}/training/{run.run_id}"
+            )
 
     _execute(action)
 

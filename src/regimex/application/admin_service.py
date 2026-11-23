@@ -27,6 +27,7 @@ from regimex.admin_contracts import (
     EvaluationSpec,
     FinalReferenceImportSpec,
     GenerationSpec,
+    ImportedTrainingSpec,
     PublicationSpec,
     ReferenceGenerationSpec,
     ReferenceImportSpec,
@@ -420,9 +421,9 @@ class AdminService:
 
     def _training_bundle(
         self, principal: Principal, run_id: UUID, root: Path
-    ) -> tuple[TrainingSpec, ModelRecord, ModelBundle]:
+    ) -> tuple[TrainingSpec | ImportedTrainingSpec, ModelRecord, ModelBundle]:
         run = self.get_run(principal, run_id)
-        if not isinstance(run.spec, TrainingSpec):
+        if not isinstance(run.spec, (TrainingSpec, ImportedTrainingSpec)):
             raise NotFound()
         if run.output is None:
             raise Conflict("Training has no completed result.")
@@ -432,7 +433,10 @@ class AdminService:
         if run.output.get("bundle_sha256") != model.bundle_sha256:
             raise ObjectIntegrityError("training output differs from its registered model")
         manifest = read_bundle_manifest(self.analysis_service.store, model, root / "manifest.json")
-        if manifest.training.run_id != str(run_id):
+        expected_id = (
+            run.spec.evidence.run_id if isinstance(run.spec, ImportedTrainingSpec) else str(run_id)
+        )
+        if manifest.training.run_id != expected_id:
             raise ObjectIntegrityError("model training provenance differs from the run")
         return run.spec, model, manifest
 
@@ -440,7 +444,7 @@ class AdminService:
         self,
         principal: Principal,
         run_id: UUID,
-        spec: TrainingSpec,
+        spec: TrainingSpec | ImportedTrainingSpec,
         model: ModelRecord,
         manifest: ModelBundle,
         root: Path,
@@ -503,7 +507,7 @@ class AdminService:
         self, principal: Principal, run_id: UUID, *, limit: int, offset: int
     ) -> tuple[AdminRunRecord, ...]:
         run = self.get_run(principal, run_id)
-        if not isinstance(run.spec, TrainingSpec):
+        if not isinstance(run.spec, (TrainingSpec, ImportedTrainingSpec)):
             raise NotFound()
         return self.repository.list_runs(principal, training=run.spec, limit=limit, offset=offset)
 
@@ -990,6 +994,8 @@ class AdminService:
                 ExitStack() as observers,
             ):
                 run = self.repository.get_run_internal(operation_id)
+                if isinstance(run.spec, ImportedTrainingSpec):
+                    raise Conflict("An imported training result cannot be executed by a worker.")
                 principal = Principal(
                     owner_id=operation.owner_id, role="admin", token_id=UUID(int=0)
                 )

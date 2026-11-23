@@ -23,6 +23,7 @@ from regimex.admin_contracts import (
     FinalReferenceImportSpec,
     GenerationSpec,
     HumanAnnotation,
+    ImportedTrainingSpec,
     PublicationSpec,
     RawGenerationPlan,
     ReferenceGenerationSpec,
@@ -51,6 +52,8 @@ from regimex.directions import (
     AnalysisConfig,
     DirectionAnnotations,
 )
+from regimex.external_evaluations import ExternalEvaluation
+from regimex.external_latency import ExternalLatencyEvidence
 from regimex.history_contracts import DisplayName, DisplayNameUpdate
 from regimex.model_registry import (
     ArchitectureId,
@@ -316,6 +319,11 @@ class EvaluationRequest(StrictModel):
     partition: Literal["validation"] = "validation"
 
 
+class ImportedTrainingView(ImportedTrainingSpec):
+    external_evaluations: tuple[ExternalEvaluation, ...]
+    external_latency: ExternalLatencyEvidence | None
+
+
 class AdminRunView(StrictModel):
     run_id: UUID
     job: OperationView
@@ -323,7 +331,13 @@ class AdminRunView(StrictModel):
     weights_deletion_id: UUID | None = None
     archived_at: AwareDatetime | None = None
     polling_url: str
-    training: TrainingSpec | None = None
+    training: TrainingSpec | ImportedTrainingView | None = None
+    external_evaluations: tuple[ExternalEvaluation, ...] = Field(
+        default=(), exclude_if=lambda items: not items
+    )
+    external_latency: ExternalLatencyEvidence | None = Field(
+        default=None, exclude_if=lambda item: item is None
+    )
     trainable_parameters: int | None = None
     statistics: TrainingRunStatistics | None = Field(
         default=None, exclude_if=lambda value: value is None
@@ -408,10 +422,20 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         "evaluation_run_id",
         "published_model_version_id",
     }
-    training = record.spec if isinstance(record.spec, TrainingSpec) else None
+    training: TrainingSpec | ImportedTrainingView | None = None
     saved_count = (record.output or {}).get("trainable_parameters")
     count = None
-    if training:
+    if isinstance(record.spec, ImportedTrainingSpec):
+        training = ImportedTrainingView(
+            **record.spec.model_dump(),
+            external_evaluations=record.external_evaluations,
+            external_latency=record.external_latency,
+        )
+        parameters = (training.configuration or {}).get("parameters")
+        if isinstance(parameters, dict):
+            count = configured_parameter_count(training.architecture_id, parameters)
+    elif isinstance(record.spec, TrainingSpec):
+        training = record.spec
         count = (
             saved_count
             if type(saved_count) is int
@@ -421,11 +445,15 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         run_id=record.run_id,
         job=_operation(record.operation),
         training=training,
+        external_evaluations=record.external_evaluations
+        if isinstance(training, TrainingSpec)
+        else (),
+        external_latency=record.external_latency if isinstance(training, TrainingSpec) else None,
         trainable_parameters=count,
         statistics=TrainingRunStatistics.from_operation(
             record.operation, record.output, now=datetime.now(UTC)
         )
-        if training
+        if isinstance(training, TrainingSpec)
         else None,
         display_name=record.display_name,
         name_revision=record.name_revision,

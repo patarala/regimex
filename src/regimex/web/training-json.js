@@ -65,6 +65,10 @@ function formatTagged(value) {
 
 // Keep the persisted request's number literals when a stored run becomes a new draft.
 function savedConfiguration(row) {
+  if (row.straining.sorigin === "sexternal") {
+    const configuration = row.straining.sconfiguration;
+    return configuration == null ? null : formatTagged(configuration);
+  }
   const fields = Object.fromEntries([...requestFields]
     .filter(key => Object.hasOwn(row.straining, "s" + key))
     .map(key => ["s" + key, row.straining["s" + key]]));

@@ -16,6 +16,7 @@
         <nav class="workspace-nav" aria-label="Workspace">
           <a id="open-analyses" href="/" data-workspace-link>Analyses</a>
           <a id="open-training" href="/training" data-workspace-link hidden>Training</a>
+          <a id="open-activity" href="/activity" data-workspace-link>Activity</a>
           <a id="open-connections" href="/connections" data-workspace-link hidden>Connections</a>
         </nav>
         <span id="owner"></span>
@@ -229,6 +230,31 @@
           </section>
         </div>
       </div>
+      <section id="activity" aria-labelledby="activity-title" hidden>
+        <a id="activity-back" href="/activity" data-workspace-link hidden>All terminal activity</a>
+        <div class="section-heading">
+          <h1 id="activity-title" tabindex="-1">Terminal activity</h1>
+          <button id="activity-refresh" class="quiet" type="button">Refresh</button>
+        </div>
+        <p id="activity-status" class="hint" role="status"></p>
+        <p id="activity-empty" class="hint" hidden>Record a command here with <code id="activity-example"></code>.</p>
+        <ul id="activity-list" aria-label="Recorded commands"></ul>
+        <nav id="activity-pages" class="history-pages" aria-label="Activity pages" hidden>
+          <a id="activity-newer" data-workspace-link hidden>Newer</a>
+          <a id="activity-older" data-workspace-link hidden>Older</a>
+        </nav>
+        <div id="activity-detail" hidden>
+          <dl id="activity-facts" class="training-facts"></dl>
+          <section id="activity-note-section" hidden>
+            <h2>Note</h2>
+            <p id="activity-note"></p>
+          </section>
+          <section id="activity-result-section" hidden>
+            <h2>Saved result</h2>
+            <pre id="activity-result"></pre>
+          </section>
+        </div>
+      </section>
       <section id="training" aria-labelledby="training-title" hidden>
         <div class="section-heading training-page-heading">
           <h1 id="training-title" tabindex="-1">Model training</h1>
@@ -407,6 +433,10 @@
               <div id="training-charts"></div>
               <a id="training-metric-data" download hidden>Download metric data</a>
             </section>
+            <section id="training-external-evaluations" class="training-section" aria-labelledby="training-external-title" hidden>
+              <h3 id="training-external-title">Imported results</h3>
+              <div id="training-imported-results"></div>
+            </section>
             <section id="training-downstream" class="training-section" aria-labelledby="training-actions-title" hidden>
               <h3 id="training-actions-title">Model evaluation</h3>
               <ul id="training-actions" class="training-actions"></ul>
@@ -418,10 +448,11 @@
               </div>
             </section>
             <details id="training-run-details" class="training-run-details">
-              <summary>Run details and settings</summary>
+              <summary id="training-details-label">Run details and settings</summary>
               <dl id="training-facts" class="training-facts"></dl>
               <button id="training-delete-weights" type="button" class="quiet" hidden>Delete model weights</button>
               <pre id="training-settings"></pre>
+              <a id="training-import-data" download hidden>Download import record</a>
             </details>
           </section>
         </div>

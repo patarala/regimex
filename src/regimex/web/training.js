@@ -10,6 +10,7 @@ import {createRunNameEditor} from "./training-name.js";
 import {parameterCountLabel} from "./training-size.js";
 import {queuedStageLabel} from "./queue-status.js";
 import {isTransientRequestError} from "./session.js";
+import {importedFacts, isImported, showImportedResults} from "./training-import.js";
 
 const api = "/api/v1/";
 const pageSize = 12;
@@ -43,7 +44,7 @@ function showTiming(statistics) {
 function runContext(row) {
   return [architectureName(row.training.architecture_id, true),
     row.trainable_parameters && parameterCountLabel(row.trainable_parameters),
-    datasetName(row.training.dataset_id)].filter(Boolean).join(" · ");
+    isImported(row) ? row.training.model_version_id : datasetName(row.training.dataset_id)].filter(Boolean).join(" · ");
 }
 
 function historyDate(value) {
@@ -56,13 +57,15 @@ function historyDate(value) {
 
 function historyEntry(row, view) {
   const {architecture_id, dataset_id} = row.training;
-  const model = architectureName(architecture_id, true), key = shortId(dataset_id);
+  const imported = isImported(row), model = architectureName(architecture_id, true);
+  const key = imported ? null : shortId(dataset_id);
   return {
-    id: row.run_id, name: row.display_name || model + " · " + datasetName(dataset_id),
-    compactTitle: !row.display_name && key !== dataset_id ? {model, key} : null,
-    created: row.job.created_at, date: historyDate(row.job.created_at), state: row.job.state,
+    id: row.run_id, name: row.display_name || (imported ? row.training.model_version_id : model + " · " + datasetName(dataset_id)),
+    compactTitle: !imported && !row.display_name && key !== dataset_id ? {model, key} : null,
+    created: row.job.created_at, date: historyDate(row.job.created_at), state: imported ? "imported" : row.job.state,
     archivedAt: row.archived_at, showArchiveIcon: view === "all" && Boolean(row.archived_at),
     architecture: architectureName(architecture_id), dataset: dataset_id, parameters: row.trainable_parameters,
+    version: imported ? row.training.model_version_id : null,
   };
 }
 
@@ -99,8 +102,9 @@ function appendRunInfo(item, button, row, label) {
     model.append(" ", element("span", parameterCountLabel(row.parameters), "run-info-size"));
   }
   const dataset = element("div", "", "run-info-line");
-  dataset.append(element("span", "Dataset:"), " ", element("span", row.dataset, "run-info-dataset"));
-  note.append(model, dataset, element("div", "Created " + shortDate(row.created)));
+  dataset.append(element("span", row.version ? "Model version:" : "Dataset:"), " ",
+    element("span", row.version || row.dataset, "run-info-dataset"));
+  note.append(model, dataset, element("div", (row.version ? "Imported " : "Created ") + shortDate(row.created)));
   if (row.archivedAt) note.append(element("div", "Archived " + shortDate(row.archivedAt)));
   note.id = "run-info-" + row.id;
   item.append(info, note);
@@ -113,7 +117,7 @@ function withSavedChanges(row, known) {
     row = {...row, weights_deletion_id: known.weights_deletion_id};
   if ((known?.name_revision ?? 0) > (row.name_revision ?? 0)) {
     row = {...row, display_name: known.display_name, name_revision: known.name_revision};
-    if (row.configuration) row.configuration = renamedConfiguration(row.configuration, row.display_name);
+    if (row.configuration && !isImported(row)) row.configuration = renamedConfiguration(row.configuration, row.display_name);
   }
   return row;
 }
@@ -124,6 +128,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   let run = null, evaluation = null, activeModel, metricsLoaded = false;
   let pendingDownstream = false, retryDelay = 2500, target = null;
   let renderedFacts = null;
+  let renderedEvaluations = null;
   let draftRevision = 0, submittingDraft = null, acceptedDraftRun = null;
   let editedDraft = false;
   let draftRequests = new Map();
@@ -203,6 +208,12 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-metric-data").hidden = true;
     $("training-facts").replaceChildren();
     renderedFacts = null;
+    renderedEvaluations = null;
+    $("training-external-evaluations").hidden = true;
+    $("training-imported-results").replaceChildren();
+    $("training-import-data").removeAttribute("href");
+    $("training-import-data").removeAttribute("download");
+    $("training-import-data").hidden = true;
     showTiming(null);
     $("training-actions").replaceChildren();
   }
@@ -255,7 +266,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       time.dateTime = row.created;
       const sameLabel = rows.some(other => other !== row && other.name === row.name && other.date === row.date);
       button.append(historyTitle(row));
-      const state = element("span", analysisStateLabel(row.state));
+      const state = element("span", row.state === "imported" ? "Imported" : analysisStateLabel(row.state));
       state.dataset.state = row.state;
       const meta = element("span", "", "training-run-meta");
       meta.append(time, state);
@@ -360,7 +371,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     setText($("training-detail-title"), run.display_name || context);
     const caption = $("training-created");
     const prefix = run.display_name ? context : "";
-    const date = "Created " + shortDate(run.job.created_at);
+    const date = (isImported(run) ? "Imported " : "Created ") + shortDate(run.job.created_at);
     if (caption.lastElementChild?.dateTime !== run.job.created_at || caption.textContent !== prefix + date) {
       const created = element("time", date);
       created.dateTime = run.job.created_at;
@@ -437,12 +448,15 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     const stats = run.statistics;
     showTitle();
     if (run.weights_deletion_id) showRemovedWeights();
-    setText($("training-state"), analysisStateLabel(run.job.state));
-    $("training-state").dataset.state = run.job.state;
-    showTiming(stats);
-    const entries = [["Run", run.run_id], ["Dataset", spec.dataset_id], ["Selection benchmark", spec.benchmark_selection_id],
-      ["Model version", spec.model_version_id]];
-    if (run.job.attempt > 0) entries.push(["Attempts", String(run.job.attempt)]);
+    const imported = isImported(run);
+    setText($("training-state"), imported ? "Imported" : analysisStateLabel(run.job.state));
+    $("training-state").dataset.state = imported ? "imported" : run.job.state;
+    $("training-copy-run").hidden = imported;
+    setText($("training-details-label"), imported ? "Bundle, weights and settings" : "Run details and settings");
+    showTiming(imported ? null : stats);
+    const entries = imported ? importedFacts(run) : [["Run", run.run_id], ["Dataset", spec.dataset_id],
+      ["Selection benchmark", spec.benchmark_selection_id], ["Model version", spec.model_version_id]];
+    if (!imported && run.job.attempt > 0) entries.push(["Attempts", String(run.job.attempt)]);
     if (stats?.fit_seconds != null) entries.push(["Model fit time", duration(stats.fit_seconds)]);
     if (stats?.train_rows != null) entries.push(["Training rows", stats.train_rows.toLocaleString()]);
     if (stats?.validation_rows != null) entries.push(["Validation rows", stats.validation_rows.toLocaleString()]);
@@ -452,7 +466,22 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       $("training-facts").replaceChildren(...entries.flatMap(([key, value]) => [element("dt", key), element("dd", value || "—")]));
       renderedFacts = content;
     }
-    setText($("training-settings"), run.configuration);
+    setText($("training-settings"), run.configuration || "");
+    $("training-settings").hidden = !run.configuration;
+    const record = $("training-import-data");
+    record.hidden = !imported;
+    if (imported) {
+      record.href = route(run.run_id);
+      record.download = "import-" + run.run_id + ".json";
+    }
+    const evidence = imported ? spec : run;
+    const results = evidence.external_evaluations || [], latency = evidence.external_latency;
+    const currentResults = JSON.stringify([results, latency]);
+    if (currentResults !== renderedEvaluations) {
+      showImportedResults($("training-imported-results"), results, latency);
+      $("training-external-evaluations").hidden = !results.length && !latency;
+      renderedEvaluations = currentResults;
+    }
     const stages = {
       starting: "Preparing training.", loading: "Loading training data.",
       "administrative-computation": "Training the model.", committing: "Saving the model and metrics.",
@@ -516,7 +545,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     if (metricsLoaded) return;
     const result = await session.json(route(run.run_id) + "/metrics");
     if (!valid()) return;
-    metrics.show(result.history, result, run.training.policy);
+    const policy = isImported(run) ? run.training.configuration?.training_policy : run.training.policy;
+    metrics.show(result.history, result, policy);
     $("training-metric-data").href = route(run.run_id) + "/metrics";
     $("training-metric-data").download = "training-" + run.run_id + "-metrics.json";
     $("training-metric-data").hidden = false;
@@ -560,7 +590,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
         if (run.job.state !== "succeeded") metrics.clear();
       }
       if (run.job.state === "succeeded") {
-        const [charts, actions] = await Promise.allSettled([completedMetrics(valid), downstream(valid)]);
+        const [charts, actions] = await Promise.allSettled([completedMetrics(valid), isImported(run) ? false : downstream(valid)]);
         if (!valid()) return;
         if (actions.status === "rejected") throw actions.reason;
         waiting = actions.value;
@@ -693,7 +723,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     chooseFromHistory("new");
   });
   $("training-copy-run").addEventListener("click", () => {
-    if (!run || busy) return;
+    if (!run || busy || isImported(run)) return;
     if (editedDraft && !window.confirm("Replace your unfinished training draft with settings from this run?")) return;
     discardDraft();
     acceptedDraftRun = null;
@@ -784,5 +814,11 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       if (!delta) void refreshDetail();
     });
 
-  return {close, reset, show, weightsRemoved};
+  function refreshAfterReturn() {
+    if (!opened) return;
+    void list();
+    if (run && finished(run.job)) void refreshDetail();
+  }
+
+  return {close, reset, show, weightsRemoved, refreshAfterReturn};
 }

@@ -8,9 +8,12 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
 from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup, content_hash
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
+from regimex.external_evaluations import ExternalEvaluation
+from regimex.external_latency import ExternalLatencyEvidence
 from regimex.history_contracts import DisplayName
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.market_config import MarketConfig
+from regimex.model_bundles import BundleMember, TrainingEvidence
 from regimex.model_registry import (
     ArchitectureId,
     InferenceRuntime,
@@ -236,6 +239,22 @@ class EvaluationSpec(StrictModel):
         return self
 
 
+class ImportedTrainingSpec(StrictModel):
+    """Recorded bundle provenance for a completed fit outside the service queue."""
+
+    kind: Literal["training"] = "training"
+    origin: Literal["external"]
+    model_version_id: Identifier
+    architecture_id: ArchitectureId
+    implementation_version: Identifier
+    build_id: Identifier
+    analysis_profile_id: Identifier
+    evidence: TrainingEvidence
+    weights: BundleMember
+    configuration: dict[str, JsonValue] | None
+    inference_runtime: InferenceRuntime
+
+
 class PublicationSpec(StrictModel):
     kind: Literal["publication"] = "publication"
     model_version_id: Identifier
@@ -274,12 +293,14 @@ class TrainingRunName(StrictModel):
 class AdminRunRecord(StrictModel):
     run_id: UUID
     operation: Operation
-    spec: AdminSpec
+    spec: AdminSpec | ImportedTrainingSpec
     output: dict[str, JsonValue] | None = None
     display_name: DisplayName | None = None
     name_revision: Annotated[int, Field(ge=0)] = 0
     weights_deletion_id: UUID | None = None
     archived_at: AwareDatetime | None = None
+    external_evaluations: tuple[ExternalEvaluation, ...] = ()
+    external_latency: ExternalLatencyEvidence | None = None
 
     @model_validator(mode="after")
     def same_operation(self) -> Self:
@@ -287,6 +308,8 @@ class AdminRunRecord(StrictModel):
             raise ValueError("administrative run identity and kind must match its operation")
         if (self.operation.state == "succeeded") != (self.output is not None):
             raise ValueError("only a successful administrative run has committed output")
+        if isinstance(self.spec, ImportedTrainingSpec) != (self.operation.stage == "imported"):
+            raise ValueError("imported training provenance requires a completed import")
         return self
 
 

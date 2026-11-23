@@ -44,7 +44,7 @@ from regimex.admin_contracts import (
 )
 from regimex.application.admin_service import AdminService
 from regimex.application.benchmark_service import BenchmarkService
-from regimex.application.service import AnalysisService
+from regimex.application.service import AnalysisService, materialize_bundle
 from regimex.data_catalog import Partition, ReferencePayload, seal_reference_set
 from regimex.directions import (
     DEFAULT_ANALYSIS_PROFILE,
@@ -54,6 +54,7 @@ from regimex.directions import (
     DirectionInterval,
     summarize_interval,
 )
+from regimex.external_evaluations import ExternalEvaluation
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectCapacityError, ObjectInfo
@@ -245,6 +246,7 @@ def prepared_references(
 def test_generic_candidate_evaluate_publish_and_saved_analysis(
     admin: tuple[AdminService, Principal],
     architecture: str,
+    tmp_path: Path,
 ) -> None:
     service, principal = admin
     dataset, validation = prepared_references(service, principal)
@@ -287,6 +289,36 @@ def test_generic_candidate_evaluate_publish_and_saved_analysis(
     assert service.analysis_service.repository.get_active_model() is None
     candidate = service.analysis_service.repository.get_model(f"fixture-trained-{architecture}")
     assert candidate.quality_status == "validation_only"
+    native_run = service.get_run(principal, training.run_id)
+    external_score = ExternalEvaluation(
+        kind="native_final",
+        bundle_sha256=candidate.bundle_sha256,
+        report_sha256="a" * 64,
+        protocol_sha256="b" * 64,
+        freeze_sha256="c" * 64,
+        candidate="fixture",
+        sample_count=3,
+        interval_macro_f1=0.5,
+        passed=False,
+    )
+    bundle = tmp_path / "exported-candidate"
+    materialize_bundle(service.analysis_service.store, candidate, bundle)
+    reimported = service.analysis_service.register_bundle(
+        principal,
+        bundle,
+        manifest_sha256=candidate.bundle_sha256,
+        inference_runtime=candidate.inference_runtime,
+        record_training=True,
+        external_evaluations=(external_score,),
+    )
+    assert reimported == candidate
+    (original,) = service.list_runs(principal, kind="training")
+    assert original == native_run.model_copy(update={"external_evaluations": (external_score,)})
+    from regimex.admin_api import _run
+
+    native_view = _run(original)
+    assert native_view.external_evaluations == (external_score,)
+    assert native_view.training == training.spec and isinstance(native_view.training, TrainingSpec)
     evaluation = service.submit_evaluation(
         principal,
         EvaluationSpec(

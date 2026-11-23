@@ -11,6 +11,7 @@ from uuid import UUID
 import typer
 
 from regimex import __version__
+from regimex.activity_cli import app as activity_app
 from regimex.contracts import MAX_STEPS, StrictModel
 from regimex.service_cli import app as service_app
 from regimex.storage import json_bytes, output_directory, write_new_file
@@ -21,6 +22,7 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 app.add_typer(service_app, name="service")
+app.add_typer(activity_app, name="activity")
 
 
 def _show_version(value: bool) -> None:
@@ -150,9 +152,14 @@ def analyze_command(
     idempotency_key: Annotated[
         UUID | None, typer.Option(help="Reuse the printed key when retrying a submission.")
     ] = None,
-    origin: Annotated[str, typer.Option(help="Regimex service origin.")] = "http://127.0.0.1:8000",
+    origin: Annotated[
+        str, typer.Option(envvar="REGIMEX_CLI_ORIGIN", help="Regimex service origin.")
+    ] = "http://127.0.0.1:8000",
     token_file: Annotated[
-        Path, typer.Option(help="File containing your user access token.")
+        Path,
+        typer.Option(
+            envvar="REGIMEX_CLI_TOKEN_FILE", help="File containing your user access token."
+        ),
     ] = Path("var/credentials/user.token"),
     timeout: Annotated[int, typer.Option(min=1, help="Total wait in seconds.")] = 300,
 ) -> None:
@@ -177,6 +184,37 @@ def analyze_command(
         )
         label = "Report" if output_format == "html" else "Result"
         typer.echo(f"{label}: {output}")
+
+    _execute(action)
+
+
+@app.command("submit-training")
+def submit_training_command(
+    input_path: InputPath,
+    origin: Annotated[
+        str, typer.Option(envvar="REGIMEX_CLI_ORIGIN", help="Regimex service origin.")
+    ] = "http://127.0.0.1:8000",
+    token_file: Annotated[
+        Path, typer.Option(envvar="REGIMEX_CLI_TOKEN_FILE", help="Administrator token file.")
+    ] = Path("var/credentials/admin.token"),
+    idempotency_key: Annotated[
+        UUID | None, typer.Option(help="Reuse the printed key to retry the same submission.")
+    ] = None,
+) -> None:
+    """Submit a JSON training request and print its browser link."""
+    from regimex.training_client import submit_training
+
+    def action() -> None:
+        logging.getLogger("httpx2").setLevel(logging.WARNING)
+        asyncio.run(
+            submit_training(
+                input_path,
+                origin=origin,
+                token_file=token_file,
+                idempotency_key=idempotency_key,
+                progress=typer.echo,
+            )
+        )
 
     _execute(action)
 

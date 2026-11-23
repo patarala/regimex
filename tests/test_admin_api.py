@@ -28,7 +28,7 @@ from regimex.admin_api import (
     AutomaticReferenceRequest,
     TrainingRunRequest,
 )
-from regimex.admin_contracts import ReferenceGenerationSpec, RequestFingerprint
+from regimex.admin_contracts import ReferenceGenerationSpec, RequestFingerprint, TrainingSpec
 from regimex.api import AnalysisAPIService, create_app
 from regimex.application.admin_service import AdminService
 from regimex.application.benchmark_service import BenchmarkService
@@ -893,7 +893,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     response = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert response.status_code == 202, response.text
     run = AdminRunView.model_validate_json(response.content)
-    assert run.training is not None and run.training.dataset_id == dataset_id
+    assert isinstance(run.training, TrainingSpec) and run.training.dataset_id == dataset_id
     assert run.statistics is not None and run.statistics.running_seconds == 0
     assert run.statistics.queued_seconds == run.statistics.elapsed_seconds
     assert run.statistics.fit_seconds is None

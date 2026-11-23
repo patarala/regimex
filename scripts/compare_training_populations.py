@@ -28,6 +28,7 @@ from regimex.market_export import sample_snapshot
 from regimex.market_identity import market_seed_group
 from regimex.model_registry import ArchitectureRegistry, FixedUpdatePolicy, TrainingRuntime
 from regimex.storage import json_bytes, output_directory
+from regimex.terminal_training import register_completed_bundle
 
 ARMS = ("short-96", "mixed-96", "short-192", "mixed-192", "mixed-192-double", "mixed-96-enriched")
 EXTRA = {256: 48, 512: 48, 1024: 64}
@@ -309,6 +310,7 @@ def fit_candidate(directory, name, candidate, plan, registry, destination):
             "fit_statistics": stats.model_dump(mode="json"),
         }
         write(stage / "summary.json", summary)
+    register_completed_bundle(destination / "bundle", fitting.manifest_sha256)
     return summary
 
 

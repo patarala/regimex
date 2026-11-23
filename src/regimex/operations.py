@@ -120,7 +120,10 @@ class Operation(StrictModel):
             raise ValueError("only a successful operation has a committed result")
         if (self.state == "failed") != (self.failure is not None):
             raise ValueError("only a failed operation has a terminal failure")
-        if self.state in {"succeeded", "failed"} and self.attempt == 0:
+        if self.stage == "imported":
+            if (self.kind, self.state, self.attempt) != ("training", "succeeded", 0):
+                raise ValueError("an imported training result has no service worker attempts")
+        elif self.state in {"succeeded", "failed"} and self.attempt == 0:
             raise ValueError("a successful or failed operation requires a recorded attempt")
         return self
 

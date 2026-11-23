@@ -24,6 +24,22 @@ imports. Retry with the same body and key to receive the original resource,
 including the profile and model selected when the request was accepted. Reusing
 that key for different content under the same owner and operation returns `409`.
 
+## Record a local activity
+
+User and administrator accounts can record locally executed work under
+`/terminal-activities`. **Activity** in the browser reads these same records.
+
+| Request | Result |
+| --- | --- |
+| `POST /terminal-activities` | Create an entry with a client-generated `activity_id` (UUID), `title` and optional `note` and `started_at`. |
+| `POST /terminal-activities/{id}/finish` | Record `status` (`succeeded`, `failed` or `interrupted`), `exit_code` and optional `finished_at` and `result_text`. |
+| `GET /terminal-activities?limit=20&offset=0` | List your entries, newest first. |
+| `GET /terminal-activities/{id}` | Read one entry and its attached text. |
+
+Replaying the same start or finish recovers the existing entry. Conflicting
+values return `409`. The local client runs the process and can replay its
+original timestamps from a receipt. [Terminal activity](usage.md#show-a-local-command-in-activity)
+
 ## Manage platform connections
 
 Administrator routes under `/admin/integrations` manage platform connections:
@@ -351,6 +367,15 @@ current run. Archiving keeps the run URL, weights and publication status.
 
 Newly completed training jobs include `validation_segment_macro_f1` in their
 `output`. Use the validation-score endpoint for an older completed run.
+
+A verified bundle registered from the terminal appears in the same training
+list. Its `training.origin` is `external`, its stage is `imported`, and
+its timestamp records the import. The detail includes bundle evidence,
+saved configuration, weight identity and any attached offline evaluation
+and latency reports. External training has no worker attempts or queue time.
+Registering the exact bundle from a worker run attaches any offline
+measurements to that original run. On worker runs these optional fields are
+`external_evaluations` and `external_latency` on the run object.
 
 Training list and detail responses include a `statistics` object. All
 durations are wall-clock seconds. For active jobs, the values are current as

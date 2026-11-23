@@ -18,7 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from subprocess import Popen
 from threading import Event
-from typing import Any, cast
+from typing import Any, Never, cast
 from uuid import uuid4
 
 import pytest
@@ -794,6 +794,162 @@ def test_registration_replay_uses_verified_existing_objects(
     )
     assert repeated == existing
     assert service.list_models(admin) == (existing,)
+
+
+@pytest.mark.parametrize("already_registered", (False, True))
+def test_verified_external_fit_is_visible_in_training_and_replays_without_uploads(
+    service: AnalysisService,
+    tmp_path: Path,
+    already_registered: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("httpx2")
+    from fastapi.testclient import TestClient
+
+    from regimex.api import create_app
+    from regimex.application.admin_service import AdminService
+    from regimex.external_evaluations import ExternalEvaluation
+    from regimex.external_latency import ExternalLatencyEvidence, LatencyAtLength
+    from regimex.infrastructure.admin_repository import AdminRepository
+    from regimex.service_contracts import Conflict
+
+    database = service.repository
+    token = database.create_token("researcher", "admin")
+    admin = database.authenticate(token)
+    other = principal(database, "another-researcher", "admin")
+    admin_repository = AdminRepository(database)
+    runs = AdminService(
+        service, admin_repository, ServiceSettings(database_dsn=SecretStr(database._dsn))
+    )
+    _, fit, _, checksum = bundle(tmp_path)
+    runtime = InferenceRuntime(threads=1)
+    root = tmp_path / "bundle"
+    if already_registered:
+        service.register_bundle(admin, root, manifest_sha256=checksum, inference_runtime=runtime)
+    else:
+
+        def fail_metrics(*_args: object) -> Never:
+            raise RuntimeError("Interrupted while recording history")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                "regimex.infrastructure.admin_repository.store_training_metrics", fail_metrics
+            )
+            with pytest.raises(RuntimeError, match="recording history"):
+                service.register_bundle(
+                    admin,
+                    root,
+                    manifest_sha256=checksum,
+                    inference_runtime=runtime,
+                    record_training=True,
+                )
+        assert runs.list_runs(admin, kind="training") == () and service.list_models(admin) == ()
+    model = service.register_bundle(
+        admin,
+        root,
+        manifest_sha256=checksum,
+        inference_runtime=runtime,
+        record_training=True,
+        display_name="Offline baseline",
+    )
+    (run,) = runs.list_runs(admin, kind="training")
+    assert run.operation.attempt == 0 and run.operation.stage == "imported"
+    assert admin_repository.get_training_run_for_model(other, model.model_version_id) is None
+    assert runs.list_datasets(admin) == ()
+    assert runs.preview_weight_deletion(admin, run.run_id).blockers == ()
+    with database.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM regimex_deliveries").fetchone() == (0,)
+    evidence = ExternalEvaluation(
+        kind="native_final",
+        bundle_sha256=checksum,
+        report_sha256="b" * 64,
+        freeze_sha256="a" * 64,
+        protocol_sha256="c" * 64,
+        candidate="offline",
+        sample_count=12,
+        interval_macro_f1=0.5,
+        passed=False,
+    )
+    latency = ExternalLatencyEvidence(
+        manifest_sha256=checksum,
+        report_sha256="d" * 64,
+        timings=(LatencyAtLength(steps=64, predict_decode_ms=3.0),),
+    )
+    inventory = service.store.inventory()
+    service.register_bundle(
+        admin,
+        root,
+        manifest_sha256=checksum,
+        inference_runtime=runtime,
+        record_training=True,
+        external_evaluations=(evidence,),
+        external_latency=latency,
+    )
+    assert (
+        service.register_bundle(
+            admin,
+            root,
+            manifest_sha256=checksum,
+            inference_runtime=runtime,
+            record_training=True,
+        )
+        == model
+    )
+    assert service.store.inventory() == inventory
+    with pytest.raises(Conflict, match="external report"):
+        service.register_bundle(
+            admin,
+            root,
+            manifest_sha256=checksum,
+            inference_runtime=runtime,
+            record_training=True,
+            external_evaluations=(evidence.model_copy(update={"interval_macro_f1": 0.8}),),
+        )
+    with pytest.raises(NotFound):
+        service.register_bundle(
+            other,
+            root,
+            manifest_sha256=checksum,
+            inference_runtime=runtime,
+            record_training=True,
+        )
+    with TestClient(create_app(service, admin_service=runs)) as client:
+        headers = {"Authorization": f"Bearer {token}"}
+        path = f"/api/v1/training-runs/{run.run_id}"
+        (item,) = client.get("/api/v1/training-runs", headers=headers).json()["items"]
+        assert item == client.get(path, headers=headers).json()
+        assert item["display_name"] == "Offline baseline" and "statistics" not in item
+        training = item["training"]
+        assert training["origin"] == "external" and training["evidence"]["run_id"] == "fixture-run"
+        assert training["weights"]["sha256"] == model.members[training["weights"]["path"]].sha256
+        assert training["external_evaluations"] == [evidence.model_dump(mode="json")]
+        assert training["external_latency"] == latency.model_dump(mode="json")
+        metrics = client.get(path + "/metrics", headers=headers).json()
+        assert metrics["validation_segment_macro_f1"] == fit.validation_score
+        assert metrics["history"] and metrics["selected_seed"] == fit.selected_seed
+    if already_registered:
+        assert (
+            service.activate_model(admin, model.model_version_id, expected_previous=None) == model
+        )
+        assert any(
+            b.code == "published_model"
+            for b in runs.preview_weight_deletion(admin, run.run_id).blockers
+        )
+    else:
+        from regimex.application.deletion import DeletionService
+        from regimex.infrastructure.deletion_repository import DeletionRepository
+
+        preview = runs.preview_weight_deletion(admin, run.run_id)
+        DeletionService(DeletionRepository(database), service.store).apply(
+            admin,
+            preview.plan_id,
+            expected_sha256=preview.sha256,
+            archive_run=True,
+        )
+        (archived,) = runs.list_runs(admin, kind="training", archive="archived")
+        assert archived.external_evaluations == (evidence,) and archived.external_latency == latency
+        assert archived.weights_deletion_id == preview.plan_id
+        assert runs.training_metrics(admin, run.run_id).model_dump(mode="json") == metrics
 
 
 def test_child_process_death_is_fenced_before_real_queue_redelivery(

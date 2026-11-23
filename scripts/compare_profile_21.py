@@ -48,6 +48,7 @@ from regimex.model_registry import (
 )
 from regimex.segmentation import DECODER_VERSION, annotate
 from regimex.storage import json_bytes
+from regimex.terminal_training import register_completed_bundle
 
 LENGTHS = (256, 512, 1024)
 ARCHITECTURES = ("baseline", "tcn")
@@ -239,6 +240,7 @@ def fit(output):
             registry=ArchitectureRegistry.discover(),
             worker_id="offline-comparison",
         )
+        register_completed_bundle(output / name, result.manifest_sha256)
         manifests[name] = result.manifest_sha256
         write(output / f"{name}-validation.json", result.model_dump(mode="json"))
         print(

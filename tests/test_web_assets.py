@@ -94,12 +94,20 @@ def test_workspace_deep_links_serve_the_app_shell_only_on_known_routes() -> None
             f"/training/{resource_id}?view=archived",
             "/connections",
             f"/connections/{resource_id}",
+            "/activity",
+            f"/activity/{resource_id}",
         ):
             page = client.get(path, follow_redirects=False)
             assert page.status_code == 200, path
             assert page.content == home.content
             assert page.headers["content-security-policy"] == policy
-        for path in ("/training/not-a-run", "/connections/new", "/missing", "/api/v1/missing"):
+        for path in (
+            "/training/not-a-run",
+            "/connections/new",
+            "/activity/unknown",
+            "/missing",
+            "/api/v1/missing",
+        ):
             assert client.get(path).status_code == 404, path
 
 

@@ -16,6 +16,7 @@ from regimex.data_catalog import DatasetManifest, RawTrainingData, load_training
 from regimex.directions import AnalysisConfig
 from regimex.model_registry import ArchitectureRegistry, FixedUpdatePolicy, TrainingRuntime
 from regimex.storage import json_bytes
+from regimex.terminal_training import register_completed_bundle
 
 WIDTHS = (16, 32, 48, 64)
 PROFILE = AnalysisConfig(version="2.2")
@@ -105,6 +106,7 @@ def baseline_reference(
     result = train_candidate(
         data, request, model_dir, registry=registry, worker_id="tcn-width-comparison"
     )
+    register_completed_bundle(model_dir, result.manifest_sha256)
     model = (
         BaselineBackend()
         .load_bundle(model_dir, manifest_sha256=result.manifest_sha256, runtime=RUNTIME)
@@ -162,6 +164,7 @@ def compare(output: Path) -> None:
             registry=registry,
             worker_id="tcn-width-comparison",
         )
+        register_completed_bundle(output / identifier, fitted.manifest_sha256)
         predictor = TCNBackend().load_bundle(
             output / identifier, manifest_sha256=fitted.manifest_sha256, runtime=RUNTIME
         )

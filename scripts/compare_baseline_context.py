@@ -30,6 +30,7 @@ from regimex.exports import load_export_v2
 from regimex.model_registry import ArchitectureRegistry, SummaryMode
 from regimex.segmentation import annotate, decode
 from regimex.storage import json_bytes
+from regimex.terminal_training import register_completed_bundle
 
 ORIGINAL = SummaryMode.LOCAL_AND_GLOBAL
 GENERATION = GenerationSpec(
@@ -229,6 +230,7 @@ def fit(corpus_path, output):
                 worker_id="baseline-comparison",
             )
             manifest = fitted.manifest_sha256
+            register_completed_bundle(output / mode, manifest)
         model = BaselineBackend().load_bundle(
             model_path(mode, corpus_path, output), manifest_sha256=manifest, runtime=RUNTIME
         )

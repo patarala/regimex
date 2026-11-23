@@ -24,7 +24,12 @@ from regimex.exports import (
     SourceIdentity,
     parse_export_v2,
 )
-from regimex.history_contracts import ExperimentName, ExperimentNameUpdate, ExperimentSummary
+from regimex.history_contracts import (
+    ExperimentName,
+    ExperimentNameUpdate,
+    ExperimentSummary,
+    validate_display_name,
+)
 from regimex.infrastructure.history_repository import HistoryRepository
 from regimex.infrastructure.object_store import (
     ObjectCapacityError,
@@ -36,6 +41,7 @@ from regimex.infrastructure.resource_lifecycle import (
     owner_payload_lock,
     require_object_key,
 )
+from regimex.infrastructure.terminal_activity import TerminalActivityRepository
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle, verify_model_bundle
 from regimex.model_registry import ArchitectureInfo, ArchitectureRegistry, InferenceRuntime
 from regimex.operations import Operation, ResolvedModel
@@ -59,6 +65,8 @@ from regimex.storage_contracts import StorageUsage
 if TYPE_CHECKING:
     import psycopg
 
+    from regimex.external_evaluations import ExternalEvaluation
+    from regimex.external_latency import ExternalLatencyEvidence
     from regimex.infrastructure.database import DatabaseRepository
     from regimex.service_contracts import AnalysisSummary
 
@@ -231,6 +239,7 @@ class AnalysisService:
         ):
             raise ValueError("pending quota and heartbeat interval must be positive")
         self.repository = repository
+        self.terminal_activities = TerminalActivityRepository(repository)
         self.store = store
         self.registry = registry
         self.work_root = work_root
@@ -718,6 +727,10 @@ class AnalysisService:
         activate: bool = False,
         expected_previous: str | None = None,
         worker_id: str = "registration",
+        record_training: bool = False,
+        display_name: str | None = None,
+        external_evaluations: tuple[ExternalEvaluation, ...] = (),
+        external_latency: ExternalLatencyEvidence | None = None,
     ) -> ModelRecord:
         """Explicit administrator bootstrap; verify actual saved backend restoration.
 
@@ -726,6 +739,9 @@ class AnalysisService:
         """
         if principal.role != "admin":
             raise Forbidden()
+        display_name = validate_display_name(display_name)
+        if not record_training and (display_name or external_evaluations or external_latency):
+            raise ValueError("Training names and external reports require recording the run.")
         manifest_path = root / "manifest.json"
         root_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
@@ -761,39 +777,53 @@ class AnalysisService:
                 policy_sha256,
             ):
                 raise Conflict("The model version already has another immutable bundle or policy.")
-            from regimex.application.analysis import load_registered_predictor
-
-            load_registered_predictor(self, existing, worker_id=worker_id)
-            if activate:
-                return self.activate_model(
-                    principal, existing.model_version_id, expected_previous=expected_previous
-                )
-            return existing
-        prefix = f"models/{uuid4()}"
-        manifest_object = self.store.put(
-            f"{prefix}/manifest.json", manifest_path, expected_sha256=manifest_sha256
-        )
-        members = {
-            member.path: self.store.put(
-                f"{prefix}/{member.path}", root / member.path, expected_sha256=member.sha256
+            record = existing
+            if record_training:
+                for info in (record.manifest, *record.members.values()):
+                    if self.store.stat(info.key) != info:
+                        raise ObjectIntegrityError(
+                            "model storage differs from its committed generation"
+                        )
+        else:
+            # Concurrent imports and retries reuse the same uploaded object generations.
+            prefix = f"models/{manifest_sha256}"
+            manifest_object = self.store.put(
+                f"{prefix}/manifest.json", manifest_path, expected_sha256=manifest_sha256
             )
-            for member in manifest.members
-        }
-        record = ModelRecord(
-            model_version_id=manifest.model_version_id,
-            architecture_id=manifest.architecture_id,
-            bundle_sha256=manifest_sha256,
-            manifest=manifest_object,
-            members=members,
-            inference_runtime=inference_runtime,
-            inference_policy_sha256=policy_sha256,
-            created_at=datetime.now(UTC),
-        )
+            members = {
+                member.path: self.store.put(
+                    f"{prefix}/{member.path}", root / member.path, expected_sha256=member.sha256
+                )
+                for member in manifest.members
+            }
+            record = ModelRecord(
+                model_version_id=manifest.model_version_id,
+                architecture_id=manifest.architecture_id,
+                bundle_sha256=manifest_sha256,
+                manifest=manifest_object,
+                members=members,
+                inference_runtime=inference_runtime,
+                inference_policy_sha256=policy_sha256,
+                created_at=datetime.now(UTC),
+            )
         # Imported only in the dedicated operational computation process.
         from regimex.application.analysis import load_registered_predictor
 
-        load_registered_predictor(self, record, worker_id=worker_id)
-        self.repository.register_model(principal, record)
+        _, verified = load_registered_predictor(self, record, worker_id=worker_id)
+        if record_training:
+            from regimex.application.external_training import record_external_training
+
+            record = record_external_training(
+                self,
+                principal,
+                record,
+                verified,
+                display_name,
+                external_evaluations,
+                external_latency,
+            )
+        elif existing is None:
+            record = self.repository.register_model(principal, record)
         if activate:
             return self.activate_model(
                 principal, record.model_version_id, expected_previous=expected_previous

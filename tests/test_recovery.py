@@ -160,6 +160,81 @@ def restore(
     )
 
 
+def test_recovery_preserves_external_training_provenance_and_metrics(
+    databases: DatabaseFactory, tools: PostgresTools, tmp_path: Path
+) -> None:
+    from test_baseline_backend import bundle
+
+    from regimex.external_evaluations import ExternalEvaluation
+    from regimex.infrastructure.admin_repository import AdminRepository
+    from regimex.model_registry import InferenceRuntime
+    from regimex.terminal_activity import ActivityFinish, ActivityStart
+
+    source = databases("external_recovery")
+    source.migrate()
+    token = source.create_token("offline-training", "admin")
+    principal = source.authenticate(token)
+    store = local(tmp_path / "source")
+    service = analysis_service(source, store, tmp_path / "work")
+    activity_id = uuid4()
+    service.terminal_activities.start(
+        principal, ActivityStart(activity_id=activity_id, title="Fit")
+    )
+    receipt = service.terminal_activities.finish(
+        principal, activity_id, ActivityFinish(status="succeeded", exit_code=0, result_text="ready")
+    )
+    _, _, _, checksum = bundle(tmp_path)
+    evidence = ExternalEvaluation(
+        kind="controlled_transfer",
+        bundle_sha256=checksum,
+        report_sha256="a" * 64,
+        protocol_sha256="b" * 64,
+        freeze_sha256="c" * 64,
+        candidate="fixture",
+        sample_count=10,
+        interval_macro_f1=0.5,
+        passed=False,
+    )
+    model = service.register_bundle(
+        principal,
+        tmp_path / "bundle",
+        manifest_sha256=checksum,
+        inference_runtime=InferenceRuntime(threads=1),
+        record_training=True,
+        external_evaluations=(evidence,),
+    )
+    original = AdminRepository(source)
+    (run,) = original.list_runs(principal, kind="training")
+    metrics = original.get_training_metrics(principal, run.run_id)
+    directory = tmp_path / "backup"
+    backup = recovery.backup_service(
+        SecretStr(source._dsn), source.schema, store, directory, tools=tools, attestation=stopped()
+    )
+    target = databases(source.schema)
+    restored_store = local(tmp_path / "restored")
+    recovery.restore_service(
+        SecretStr(target._dsn),
+        restored_store,
+        directory,
+        expected_manifest_sha256=backup.manifest_sha256,
+        tools=tools,
+        attestation=stopped(),
+    )
+    restored = AdminRepository(target)
+    assert (
+        analysis_service(
+            target, restored_store, tmp_path / "restored-work"
+        ).terminal_activities.get(principal, activity_id)
+        == receipt
+    )
+    assert restored.get_run(target.authenticate(token), run.run_id) == run
+    assert metrics is not None and restored.get_training_metrics(principal, run.run_id) == metrics
+    restored_model = target.get_model(model.model_version_id)
+    for path, member in restored_model.members.items():
+        assert restored_store.stat(member.key) == member
+        assert member.sha256 == model.members[path].sha256
+
+
 def test_custom_schema_recovery_preserves_identity_and_rotates_storage(
     minimal: MinimalBackup,
     databases: DatabaseFactory,
@@ -319,6 +394,8 @@ def test_restore_object_larger_than_compose_tmpfs(
         "0010_evaluation_reuse",
         "0011_training_progress",
         "0012_training_metrics",
+        "0013_training_archive",
+        "0014_external_training",
     ],
 )
 def test_previous_schema_backup_can_be_restored_then_migrated(
@@ -330,7 +407,17 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
     revision: str,
 ) -> None:
     with minimal.source.connection() as connection:
-        connection.execute("ALTER TABLE regimex_training_runs DROP COLUMN archived_at")
+        connection.execute("DROP TABLE regimex_terminal_activities")
+        if revision < "0014_external_training":
+            connection.execute(
+                "ALTER TABLE regimex_training_runs DROP CONSTRAINT regimex_training_input_origin, "
+                "DROP COLUMN external, DROP COLUMN external_evaluations, "
+                "DROP COLUMN external_latency, "
+                "ALTER COLUMN dataset_id SET NOT NULL, ALTER COLUMN labels_reference_set_id "
+                "SET NOT NULL, ALTER COLUMN validation_reference_set_id SET NOT NULL"
+            )
+        if revision < "0013_training_archive":
+            connection.execute("ALTER TABLE regimex_training_runs DROP COLUMN archived_at")
         if revision < "0012_training_metrics":
             connection.execute("DROP TABLE regimex_training_metrics")
             connection.execute("ALTER TABLE regimex_models DROP COLUMN weights_deletion_id")

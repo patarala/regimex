@@ -35,6 +35,7 @@ from regimex.model_registry import ArchitectureRegistry, TCNParameters
 from regimex.operations import Sha256
 from regimex.segmentation import annotate, decode
 from regimex.storage import json_bytes
+from regimex.terminal_training import register_completed_bundle
 
 MODES = ("centered", "with-side-slopes")
 ROOT = Path(__file__).resolve().parents[1]
@@ -262,6 +263,7 @@ def fit(output: Path, corpus: Corpus) -> None:
         registry=ArchitectureRegistry.discover(),
         worker_id="tcn-slope-comparison",
     )
+    register_completed_bundle(output / MODES[1], fitted.manifest_sha256)
     manifests = {MODES[0]: plan["centered_manifest"], MODES[1]: fitted.manifest_sha256}
     models = load_models(output, corpus, manifests)
     for name, model in models.items():

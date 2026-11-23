@@ -11,6 +11,7 @@ from compare_profile_21 import RUNTIME
 from regimex.backends.adaptive import AdaptiveBackend
 from regimex.data_catalog import DatasetManifest
 from regimex.storage import digest, json_bytes, write_new_file
+from regimex.terminal_training import register_frozen_selection
 
 GROUPS = {
     "validation": range(3_961_177_300, 3_961_177_332),
@@ -128,6 +129,9 @@ def score(phase, output, data, comparison, control, native_bundle):
             }
         ),
     )
+
+    if phase == "test":
+        register_frozen_selection(comparison, controlled_final=result)
 
 
 if __name__ == "__main__":

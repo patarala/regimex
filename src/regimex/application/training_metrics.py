@@ -6,7 +6,12 @@ from collections.abc import Callable
 
 from pydantic import JsonValue
 
-from regimex.admin_contracts import RepeatOutcome, TrainingMetrics, TrainingSpec
+from regimex.admin_contracts import (
+    ImportedTrainingSpec,
+    RepeatOutcome,
+    TrainingMetrics,
+    TrainingSpec,
+)
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.object_store import ObjectIntegrityError
 from regimex.model_bundles import BundleMember, ModelBundle
@@ -14,7 +19,10 @@ from regimex.model_registry import FixedUpdatePolicy, SingleFitPolicy
 
 
 def build_training_metrics(
-    spec: TrainingSpec, manifest: ModelBundle, *, read_history: Callable[[BundleMember], bytes]
+    spec: TrainingSpec | ImportedTrainingSpec,
+    manifest: ModelBundle,
+    *,
+    read_history: Callable[[BundleMember], bytes],
 ) -> TrainingMetrics:
     member = next(item for item in manifest.members if item.role == "history")
     history: JsonValue = None
@@ -33,7 +41,7 @@ def build_training_metrics(
         validation_segment_macro_f1=manifest.training.validation_segment_macro_f1,
         history=history,
         history_note=note,
-        repeat_outcomes=_repeat_outcomes(spec, history),
+        repeat_outcomes=_repeat_outcomes(spec, history) if isinstance(spec, TrainingSpec) else (),
     )
 
 

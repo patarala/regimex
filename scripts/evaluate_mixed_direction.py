@@ -6,6 +6,7 @@ from shutil import copytree
 
 import evaluate_large_direction as native
 from check_adaptive_gap_transfer import GATES, gate
+from direction_candidate_bundles import package_candidates
 
 from regimex.backends.adaptive import AdaptiveBackend, fit_result_from_forest
 from regimex.backends.adaptive_forest import DirectionContextModel
@@ -263,6 +264,7 @@ def freeze(data, output, controlled, control, v1bundle):
             stage / "freeze.json",
             {**decision, "bundle_sha256": sha, "round_trip_on_validation": verified},
         )
+    package_candidates(data, output, mixed=True)
     print(
         f"{name} selected; eligible on joint validation: {decision['eligible_on_validation']}",
         flush=True,
@@ -288,14 +290,18 @@ def score(data, output, controlled, control, v1bundle):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("register", "validate", "freeze", "score"))
+    parser.add_argument(
+        "command", choices=("register", "validate", "freeze", "score", "package-candidates")
+    )
     parser.add_argument("--data", type=Path, default=DATA)
     parser.add_argument("--output", type=Path, default=OUTPUT)
     parser.add_argument("--controlled", type=Path, default=CONTROLLED)
     parser.add_argument("--control", type=Path, default=native.BUNDLE)
     parser.add_argument("--v1-bundle", type=Path, default=V1_BUNDLE)
     args = parser.parse_args()
-    if args.command == "register":
+    if args.command == "package-candidates":
+        package_candidates(args.data, args.output, mixed=True, explicit=True)
+    elif args.command == "register":
         write_new_file(args.output / "protocol.json", json_bytes(protocol()))
     elif args.command == "validate":
         validate(args.data, args.output, args.control, args.v1_bundle)

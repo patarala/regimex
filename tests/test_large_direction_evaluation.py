@@ -16,6 +16,28 @@ def trial(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return import_module("evaluate_large_direction")
 
 
+def test_offline_candidate_replay_verifies_saved_inputs_before_packaging(
+    trial: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("REGIMEX_TRAINING_TOKEN_FILE", raising=False)
+    trial.package_candidates(tmp_path, tmp_path, mixed=False)
+    assert list(tmp_path.iterdir()) == []
+    selection = tmp_path / "selection"
+    selection.mkdir()
+    write_json(tmp_path / "protocol.json", {"protocol": "frozen"})
+    write_json(
+        selection / "freeze.json",
+        {
+            "inputs": {"fitted/forest.npz": "0" * 64},
+            "protocol_sha256": digest(tmp_path / "protocol.json"),
+        },
+    )
+    monkeypatch.setattr(trial, "evidence_files", lambda _: {"fitted/forest.npz": "1" * 64})
+    with pytest.raises(ValueError, match="weights or protocol differ"):
+        trial.package_candidates(tmp_path, tmp_path, mixed=False, explicit=True)
+    assert not (tmp_path / "training-candidates").exists()
+
+
 def test_frozen_challenger_can_be_measured_when_release_wins_validation(
     trial: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -14,6 +14,7 @@ from regimex.data_catalog import analysis_profile_hash, content_hash
 from regimex.model_bundles import ModelBundle, ParentModelEvidence, TrainingEvidence
 from regimex.model_contracts import BundleProvenance
 from regimex.storage import digest, json_bytes, output_directory, write_json, write_new_file
+from regimex.terminal_training import register_frozen_selection
 
 DATA = Path("var/verification/direction-ensemble-v3")
 OUTPUT = Path("var/verification/direction-ensemble-evaluation-v3")
@@ -231,6 +232,7 @@ def freeze(data, output, controlled, control, native_bundle):
                 native_bundle,
             )
         write_json(stage / "freeze.json", result)
+    register_frozen_selection(output)
     print(f"Joint validation choice: {result['validation_winner']}", flush=True)
 
 

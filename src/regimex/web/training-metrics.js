@@ -344,6 +344,7 @@ function chartSeries(history, selected) {
 
 function repeatEnding(reason, step, policy) {
   if (reason === "early_stopping") {
+    if (!policy?.epochs || !policy?.patience) return "Stopped early at epoch " + step + ".";
     const checks = policy.patience === 1 ? "1 validation check" : policy.patience + " consecutive validation checks";
     return `Stopped early at epoch ${step} of ${policy.epochs}. Interval macro-F1 did not improve for ${checks}.`;
   }
@@ -389,7 +390,7 @@ export function createTrainingMetrics() {
     if (!records?.length) {
       for (const view of figures.values()) view.inspector.hide();
       figures.clear();
-      if (policy?.budget === "fit" && validated && !result?.history_note) charts.replaceChildren();
+      if ((policy?.budget === "fit" || fit) && validated && !result?.history_note) charts.replaceChildren();
       else charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
       ending.hidden = seedLabel.hidden = true;
       return;

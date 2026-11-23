@@ -59,7 +59,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0013_training_archive"
+_REVISION = "0015_terminal_activity"
 
 
 def _read_operation(document: object) -> Operation:
@@ -586,7 +586,7 @@ class DatabaseRepository:
         self._admin(principal)
         with self.connection() as connection:
             candidate = connection.execute(
-                "SELECT 1 FROM regimex_training_runs WHERE model_version_id=%s",
+                "SELECT 1 FROM regimex_training_runs WHERE model_version_id=%s AND NOT external",
                 (model_version_id,),
             ).fetchone()
             if candidate is not None:

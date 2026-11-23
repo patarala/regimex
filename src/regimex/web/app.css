@@ -304,6 +304,56 @@ p {
 #connections .section-heading h1 {
   margin: 0;
 }
+#activity {
+  max-width: 56rem;
+}
+#activity .section-heading h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+#activity-back {
+  display: inline-block;
+  margin-bottom: 18px;
+}
+#activity-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+#activity-list li {
+  border-bottom: 1px solid var(--border);
+}
+#activity-list a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(5rem, auto);
+  align-items: baseline;
+  gap: 4px 20px;
+  padding: 12px 4px;
+  text-decoration: none;
+  color: var(--ink);
+}
+#activity-list a:hover strong {
+  text-decoration: underline;
+}
+#activity-list strong, #activity-empty {
+  overflow-wrap: anywhere;
+}
+#activity-list :is(time, span) {
+  font-size: 13px;
+  color: var(--muted);
+}
+#activity-note, #activity-result {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 580px) {
+  #activity-list a {
+    grid-template-columns: 1fr auto;
+  }
+  #activity-list strong {
+    grid-column: 1 / -1;
+  }
+}
 .connection-list,
 .connection-records {
   list-style: none;

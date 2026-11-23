@@ -59,6 +59,8 @@ def install_web_routes(app: FastAPI) -> None:
         "/training/{run_id:uuid}",
         "/connections",
         "/connections/{integration_id:uuid}",
+        "/activity",
+        "/activity/{activity_id:uuid}",
     ):
         app.add_api_route(path, standalone, methods=["GET"], include_in_schema=False)
 

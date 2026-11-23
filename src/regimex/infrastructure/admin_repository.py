@@ -24,6 +24,7 @@ from regimex.admin_contracts import (
     EvaluationSpec,
     GenerationSpec,
     HistorySeries,
+    ImportedTrainingSpec,
     ProgressPoint,
     PublicationSpec,
     ReferenceGenerationSpec,
@@ -39,6 +40,8 @@ from regimex.admin_contracts import (
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.data_catalog import validate_reference_membership
 from regimex.directions import DIRECTION_POLICY
+from regimex.external_evaluations import ExternalEvaluation
+from regimex.external_latency import ExternalLatencyEvidence
 from regimex.history_contracts import DisplayNameUpdate, validate_display_name
 from regimex.infrastructure.database import DatabaseRepository, _read_operation
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
@@ -60,6 +63,8 @@ from regimex.storage import json_bytes
 from regimex.training_statistics import TrainingFitStatistics
 
 _SPEC = RootModel[AdminSpec]
+_RECORDED_SPEC = RootModel[AdminSpec | ImportedTrainingSpec]
+_EXTERNAL_EVALUATIONS = TypeAdapter(tuple[ExternalEvaluation, ...])
 _POINT = RootModel[ProgressPoint]
 _JSON = TypeAdapter(dict[str, JsonValue])
 _CHART_FIELDS = {
@@ -76,7 +81,8 @@ _CHART_FIELDS = {
 Connection = psycopg.Connection[tuple[object, ...]]
 _RUN_SELECT = (
     "SELECT r.operation_id,r.request,r.output,o.document,t.display_name,"
-    "COALESCE(t.name_revision,0),m.weights_deletion_id,t.archived_at FROM regimex_admin_runs r "
+    "COALESCE(t.name_revision,0),m.weights_deletion_id,t.archived_at,t.external_evaluations,"
+    "t.external_latency FROM regimex_admin_runs r "
     "JOIN regimex_operations o ON r.operation_id=o.operation_id "
     "LEFT JOIN regimex_training_runs t ON t.operation_id=r.operation_id "
     "LEFT JOIN regimex_models m ON m.model_version_id=t.committed_model_version_id"
@@ -98,17 +104,25 @@ def _read_run(row: tuple[object, ...]) -> AdminRunRecord:
         name_revision,
         weights_deletion_id,
         archived_at,
+        external_evaluations,
+        external_latency,
     ) = row
     operation = _read_operation(document)
     result = AdminRunRecord(
         run_id=cast(UUID, run_id),
         operation=operation,
-        spec=_SPEC.model_validate_json(json_bytes(request)).root,
+        spec=_RECORDED_SPEC.model_validate_json(json_bytes(request)).root,
         output=None if output is None else _JSON.validate_python(output, strict=True),
         display_name=cast(str | None, display_name),
         name_revision=cast(int, name_revision),
         weights_deletion_id=cast(UUID | None, weights_deletion_id),
         archived_at=cast(datetime | None, archived_at),
+        external_evaluations=_EXTERNAL_EVALUATIONS.validate_json(json_bytes(external_evaluations))
+        if external_evaluations
+        else (),
+        external_latency=ExternalLatencyEvidence.model_validate_json(json_bytes(external_latency))
+        if external_latency is not None
+        else None,
     )
     if (
         result.output is not None
@@ -679,7 +693,7 @@ class AdminRepository:
     ) -> TrainingMetrics:
         with self.database.connection() as connection:
             run = self._run(connection, run_id, principal=principal)
-            if not isinstance(run.spec, TrainingSpec):
+            if not isinstance(run.spec, (TrainingSpec, ImportedTrainingSpec)):
                 raise NotFound()
             if (
                 run.output is None
@@ -813,7 +827,7 @@ class AdminRepository:
         principal: Principal,
         *,
         kind: AdminKind | None = None,
-        training: TrainingSpec | None = None,
+        training: TrainingSpec | ImportedTrainingSpec | None = None,
         archive: TrainingArchiveFilter = "all",
         limit: int = 100,
         offset: int = 0,
@@ -834,16 +848,15 @@ class AdminRepository:
                 query += (
                     " AND r.request->>'model_version_id'=%s AND (r.kind='publication' OR "
                     "(r.kind='evaluation' AND r.request->>'benchmark_id' IS NULL "
-                    "AND COALESCE(r.request->>'partition','validation')='validation' "
-                    "AND r.request->>'dataset_id'=%s AND r.request->>'reference_set_id'=%s))"
+                    "AND COALESCE(r.request->>'partition','validation')='validation'"
                 )
-                values.extend(
-                    (
-                        training.model_version_id,
-                        training.dataset_id,
-                        training.validation_reference_set_id,
+                values.append(training.model_version_id)
+                if isinstance(training, TrainingSpec):
+                    query += (
+                        " AND r.request->>'dataset_id'=%s AND r.request->>'reference_set_id'=%s"
                     )
-                )
+                    values.extend((training.dataset_id, training.validation_reference_set_id))
+                query += "))"
             rows = connection.execute(
                 query + " ORDER BY (o.document->>'created_at')::timestamptz DESC, "
                 "r.operation_id DESC LIMIT %s OFFSET %s",
@@ -922,7 +935,7 @@ class AdminRepository:
             else:
                 origin = connection.execute(
                     "SELECT dataset_id FROM regimex_training_runs "
-                    "WHERE committed_model_version_id=%s",
+                    "WHERE committed_model_version_id=%s AND NOT external",
                     (model.model_version_id,),
                 ).fetchone()
                 if origin is not None and origin[0] != dataset.dataset_id:
@@ -1352,3 +1365,148 @@ class AdminRepository:
                 (model_version_id, principal.owner_id),
             ).fetchone()
             return None if row is None else self._run(connection, cast(UUID, row[0]))
+
+    def register_external_training(
+        self,
+        principal: Principal,
+        model: ModelRecord,
+        spec: ImportedTrainingSpec,
+        metrics: TrainingMetrics,
+        *,
+        display_name: str | None,
+        evaluations: tuple[ExternalEvaluation, ...],
+        latency: ExternalLatencyEvidence | None,
+    ) -> ModelRecord:
+        self.database._admin(principal)
+        display_name = validate_display_name(display_name)
+        if (
+            spec.model_version_id != model.model_version_id
+            or spec.architecture_id != model.architecture_id
+            or spec.inference_runtime != model.inference_runtime
+            or spec.model_version_id != metrics.model_version_id
+            or any(item.bundle_sha256 != model.bundle_sha256 for item in evaluations)
+            or (latency is not None and latency.manifest_sha256 != model.bundle_sha256)
+        ):
+            raise Conflict("Imported training evidence belongs to another model or policy.")
+        with self.database.connection() as connection:
+            self.database.lock_catalog_identity(connection, "model", model.model_version_id)
+            row = connection.execute(
+                "SELECT operation_id,committed_model_version_id FROM regimex_training_runs "
+                "WHERE model_version_id=%s",
+                (model.model_version_id,),
+            ).fetchone()
+            if row is not None and row[1] != model.model_version_id:
+                raise Conflict("This model version is reserved by an administrative training run.")
+            # The same registration may finish on another host during object upload.
+            # Keep its verified object generations and immutable inference policy.
+            try:
+                registered = self.database._model(connection, model.model_version_id, lock=True)
+            except NotFound:
+                self.database._require_unreserved_version(connection, model.model_version_id)
+                registered = self.database._register_model(connection, model)
+            if (registered.bundle_sha256, registered.inference_policy_sha256) != (
+                model.bundle_sha256,
+                model.inference_policy_sha256,
+            ):
+                raise Conflict("The model version already has another immutable bundle or policy.")
+            if row is None:
+                run = self._insert_external_training(
+                    connection, principal.owner_id, registered, spec, metrics, display_name
+                )
+            else:
+                run = self._run(connection, cast(UUID, row[0]), principal=principal)
+                if isinstance(run.spec, TrainingSpec):
+                    if spec.evidence.run_id != str(run.run_id):
+                        raise Conflict("The bundle does not identify its training run.")
+                elif run.spec != spec:
+                    raise Conflict("The training run already records different bundle evidence.")
+            self._save_external_reports(connection, run, evaluations, latency)
+            return registered
+
+    def _insert_external_training(
+        self,
+        connection: Connection,
+        owner_id: str,
+        model: ModelRecord,
+        spec: ImportedTrainingSpec,
+        metrics: TrainingMetrics,
+        display_name: str | None,
+    ) -> AdminRunRecord:
+        now = datetime.now(UTC)
+        run_id = uuid4()
+        request = spec.model_dump(mode="json")
+        output: dict[str, JsonValue] = {
+            "model_version_id": model.model_version_id,
+            "bundle_sha256": model.bundle_sha256,
+            "quality_status": model.quality_status,
+            "validation_segment_macro_f1": metrics.validation_segment_macro_f1,
+        }
+        operation = Operation(
+            operation_id=run_id,
+            kind="training",
+            owner_id=owner_id,
+            resource_id=str(run_id),
+            idempotency_key=str(run_id),
+            request_sha256=hashlib.sha256(json_bytes(request)).hexdigest(),
+            result_sha256=hashlib.sha256(json_bytes(output)).hexdigest(),
+            state="succeeded",
+            stage="imported",
+            created_at=now,
+            updated_at=now,
+        )
+        connection.execute(
+            "INSERT INTO regimex_operations (operation_id,owner_id,kind,idempotency_key,"
+            "request_sha256,state,document) VALUES (%s,%s,'training',%s,%s,'succeeded',%s)",
+            (
+                run_id,
+                owner_id,
+                operation.idempotency_key,
+                operation.request_sha256,
+                Jsonb(operation.model_dump(mode="json")),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO regimex_admin_runs (operation_id,kind,request,output) "
+            "VALUES (%s,'training',%s,%s)",
+            (run_id, Json(request), Json(output)),
+        )
+        connection.execute(
+            "INSERT INTO regimex_training_runs (operation_id,external,model_version_id,"
+            "committed_model_version_id,display_name) VALUES (%s,true,%s,%s,%s)",
+            (run_id, model.model_version_id, model.model_version_id, display_name),
+        )
+        run = AdminRunRecord(
+            run_id=run_id, operation=operation, spec=spec, output=output, display_name=display_name
+        )
+        store_training_metrics(connection, run, metrics)
+        return run
+
+    @staticmethod
+    def _save_external_reports(
+        connection: Connection,
+        run: AdminRunRecord,
+        evaluations: tuple[ExternalEvaluation, ...],
+        latency: ExternalLatencyEvidence | None,
+    ) -> None:
+        merged = {(item.kind, item.freeze_sha256): item for item in run.external_evaluations}
+        for item in evaluations:
+            if merged.setdefault((item.kind, item.freeze_sha256), item) != item:
+                raise Conflict(
+                    "A different external report is already recorded for this selection."
+                )
+        if latency is not None and run.external_latency not in (None, latency):
+            raise Conflict("A different external latency report is already recorded.")
+        if len(merged) > 64:
+            raise CapacityExceeded("A training run supports up to 64 external evaluation reports.")
+        if len(merged) != len(run.external_evaluations) or (
+            latency is not None and run.external_latency is None
+        ):
+            connection.execute(
+                "UPDATE regimex_training_runs SET external_evaluations=%s,"
+                "external_latency=COALESCE(external_latency,%s) WHERE operation_id=%s",
+                (
+                    Json([item.model_dump(mode="json") for item in merged.values()]),
+                    Json(latency.model_dump(mode="json")) if latency is not None else None,
+                    run.run_id,
+                ),
+            )

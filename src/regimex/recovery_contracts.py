@@ -21,8 +21,10 @@ RecoveryRevision = Literal[
     "0011_training_progress",
     "0012_training_metrics",
     "0013_training_archive",
+    "0014_external_training",
+    "0015_terminal_activity",
 ]
-RECOVERY_REVISION: RecoveryRevision = "0013_training_archive"
+RECOVERY_REVISION: RecoveryRevision = "0015_terminal_activity"
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
 
 

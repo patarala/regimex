@@ -13,6 +13,7 @@ from prepare_large_direction import TRANSFER_SEEDS
 from regimex.backends.adaptive import AdaptiveBackend
 from regimex.data_catalog import DatasetManifest
 from regimex.storage import digest, json_bytes, write_new_file
+from regimex.terminal_training import register_frozen_selection
 
 GROUPS = tuple(TRANSFER_SEEDS)
 TRANSFER = Path("var/verification/large-direction-transfer-v1")
@@ -90,6 +91,7 @@ def score(output, comparison, data, control):
         "passed": checks["pooled"] and checks["stability"] and all(checks["per_class"].values()),
     }
     write_new_file(output / "results.json", json_bytes(result))
+    register_frozen_selection(comparison, controlled_final=output / "results.json")
     print(f"{name} passed transfer checks: {result['passed']}", flush=True)
 
 

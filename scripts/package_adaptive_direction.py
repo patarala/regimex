@@ -29,6 +29,7 @@ from regimex.model_bundles import TrainingEvidence
 from regimex.model_contracts import BundleProvenance
 from regimex.model_registry import AdaptiveParameters, SingleFitPolicy, TrainingRuntime
 from regimex.storage import digest, json_bytes, output_directory, write_new_file
+from regimex.terminal_training import register_completed_bundle
 
 PUBLISHED_RESULT = "c198dcb7f354f6cb56a67e096b71187528d6b4260f38c9a88facf8f0439d23db"
 TRANSFER_RESULT = "d353c430c806ce4f801e82c386b1f30949f2f92b6c768b211b413ea2be96caf8"
@@ -256,6 +257,7 @@ def package(comparison, transfer, train_path, source_path, destination):
                 }
             ),
         )
+    register_completed_bundle(destination / "bundle", manifest)
     return manifest
 
 

@@ -13,7 +13,7 @@ import pytest
 from support.report_fixtures import prediction_for
 from typer.testing import CliRunner
 
-from regimex import analysis_client
+from regimex import analysis_client, service_client
 from regimex.cli import app
 from regimex.exports import load_export_v2
 
@@ -96,6 +96,7 @@ def test_submit_wait_and_save(
     )
     assert result.exit_code == 0, result.output
     assert key in result.output and ANALYSIS_ID in result.output
+    assert f"http://127.0.0.1:8000/?analysis={ANALYSIS_ID}" in result.output
     assert calls == [
         "/api/v1/snapshots",
         "/api/v1/analyses",
@@ -103,6 +104,41 @@ def test_submit_wait_and_save(
         f"/api/v1/analyses/{ANALYSIS_ID}/report",
     ]
     assert (tmp_path / "report.html").read_bytes() == HTML
+
+
+def test_submit_training_links_the_accepted_run_and_preserves_request_bytes(
+    tmp_path: Path, token_file: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "training.json"
+    path.write_bytes(b'{"display_name":"Forest", "parameters":{"threshold":1.0}}')
+    key, run_id = uuid4(), uuid4()
+
+    def service(request: httpx2.Request) -> httpx2.Response:
+        assert str(request.url) == "https://regimex.example/api/v1/training-runs"
+        assert request.method == "POST" and request.content == path.read_bytes()
+        assert request.headers["Idempotency-Key"] == str(key)
+        assert request.headers["Authorization"] == "Bearer test-client-token"
+        return reply(202, {"run_id": str(run_id), "polling_url": "https://unrelated.example/"})
+
+    mock_http(monkeypatch, service)
+    monkeypatch.setenv("REGIMEX_CLI_ORIGIN", "https://unrelated.example")
+    monkeypatch.setenv("REGIMEX_CLI_TOKEN_FILE", str(token_file))
+    result = CliRunner().invoke(
+        app,
+        [
+            "submit-training",
+            "--input",
+            str(path),
+            "--origin",
+            "https://regimex.example",
+            "--idempotency-key",
+            str(key),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert str(key) in result.output
+    assert f"https://regimex.example/training/{run_id}" in result.output
+    assert "unrelated" not in result.output
 
 
 @pytest.mark.parametrize("resume", [False, True])
@@ -331,7 +367,7 @@ def test_retry_after_date_uses_the_remaining_delay(
     value: str, delay: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(time, "time", lambda: 1445412475)
-    assert analysis_client._retry_delay(value, minimum=2) == delay
+    assert service_client._retry_delay(value, minimum=2) == delay
 
 
 @pytest.mark.parametrize(("status", "expected_calls"), [(404, 1), (503, 3)])

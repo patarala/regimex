@@ -375,6 +375,83 @@ def persistent_api(tmp_path: Path) -> Iterator[PersistentAPI]:
             )
 
 
+def test_terminal_activity_replays_and_is_private_to_its_owner(
+    persistent_api: PersistentAPI,
+) -> None:
+    api = persistent_api
+    path = "/api/v1/terminal-activities"
+    identity = str(uuid4())
+    detail = f"{path}/{identity}"
+    start = {"activity_id": identity, "title": "Offline fit", "started_at": "2026-04-12T07:30:00Z"}
+    finish = {
+        "status": "failed",
+        "exit_code": 7,
+        "finished_at": "2026-04-12T07:31:00Z",
+        "result_text": "Fit failed on input\nline 7.",
+    }
+    created = api.client.post(path, json=start, headers=api.headers())
+    assert created.status_code == 201 and created.headers["Location"] == detail
+    assert created.json()["status"] == "running"
+    assert created.json() == api.client.post(path, json=start, headers=api.headers()).json()
+    assert (
+        api.client.post(path, json={**start, "note": "changed"}, headers=api.headers()).status_code
+        == 409
+    )
+    assert api.client.get(path, headers=api.headers("bob")).json()["items"] == []
+    for other in ("bob", "admin"):
+        assert api.client.get(detail, headers=api.headers(other)).status_code == 404
+        assert (
+            api.client.post(detail + "/finish", json=finish, headers=api.headers(other)).status_code
+            == 404
+        )
+    for method in ("GET", "POST"):
+        response = api.client.request(
+            method,
+            path,
+            headers=api.headers("integration"),
+            json=start if method == "POST" else None,
+        )
+        assert response.status_code == 403
+    before_start = {**finish, "finished_at": "2026-04-12T07:00:00Z"}
+    assert (
+        api.client.post(detail + "/finish", json=before_start, headers=api.headers()).status_code
+        == 409
+    )
+    completed = api.client.post(detail + "/finish", json=finish, headers=api.headers())
+    assert completed.status_code == 200
+    expected = {**start, **finish, "note": None}
+    assert completed.json() == expected
+    assert api.client.post(path, json=start, headers=api.headers()).json() == expected
+    assert (
+        api.client.post(detail + "/finish", json=finish, headers=api.headers()).json() == expected
+    )
+    assert api.client.get(detail, headers=api.headers()).json() == expected
+    assert api.client.get(path, headers=api.headers()).json()["items"] == [
+        {key: value for key, value in expected.items() if key != "result_text"}
+    ]
+    assert api.client.get(path + "?offset=1", headers=api.headers()).json()["items"] == []
+    assert (
+        api.client.post(
+            detail + "/finish", json={**finish, "result_text": "changed"}, headers=api.headers()
+        ).status_code
+        == 409
+    )
+    assert (
+        api.client.post(
+            detail + "/finish", json={**finish, "result_text": "x" * 16001}, headers=api.headers()
+        ).status_code
+        == 422
+    )
+    assert (
+        api.client.post(
+            detail + "/finish", json={"status": "succeeded", "exit_code": 1}, headers=api.headers()
+        ).status_code
+        == 422
+    )
+    with api.repository.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM regimex_operations").fetchone() == (0,)
+
+
 def register_metadata(api: PersistentAPI, version: str = "http-fixture") -> ModelRecord:
     # These deliberately non-executable records exercise HTTP persistence only.
     # Actual baseline restoration/computation is tested by the service workflow.

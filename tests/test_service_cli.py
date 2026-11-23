@@ -44,12 +44,14 @@ def test_register_model_inference_runtime(
 ) -> None:
     pytest.importorskip("psycopg")
     from regimex import service_bootstrap
+    from regimex.infrastructure.admin_repository import AdminRepository
     from regimex.model_registry import InferenceRuntime
 
     token = tmp_path / "admin.token"
     token.write_text("fixture")
     service = Mock()
     monkeypatch.setattr(service_bootstrap, "create_service", lambda settings: service)
+    monkeypatch.setattr(AdminRepository, "get_training_run_for_model", Mock(return_value=None))
     options = [
         "service",
         "register-model",
@@ -79,7 +81,73 @@ def test_register_model_inference_runtime(
         service.register_bundle.assert_not_called()
     else:
         assert result.exit_code == 0, result.output
-        assert service.register_bundle.call_args.kwargs["inference_runtime"] == expected
+        registration = service.register_bundle.call_args.kwargs
+        assert registration["inference_runtime"] == expected
+        assert registration["record_training"] is True
+        assert registration["activate"] is False
+        assert registration["external_evaluations"] == ()
+
+
+def test_register_model_imports_selected_final_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("psycopg")
+    from regimex import service_bootstrap
+    from regimex.infrastructure.admin_repository import AdminRepository
+    from regimex.storage import digest, write_json
+
+    token = tmp_path / "admin.token"
+    token.write_text("fixture")
+    sha = "1" * 64
+    freeze = tmp_path / "freeze.json"
+    native = tmp_path / "native.json"
+    write_json(freeze, {"challenger": "forest", "bundle_sha256": sha, "protocol_sha256": "2" * 64})
+    write_json(
+        native,
+        {
+            "challenger": "forest",
+            "freeze_sha256": digest(freeze),
+            "experiments": 384,
+            "native_qualified": True,
+            "scores": {"forest": {"interval_macro_f1": 0.93, "point_macro_f1": 0.97}},
+        },
+    )
+    service = Mock()
+    monkeypatch.setattr(service_bootstrap, "create_service", lambda settings: service)
+    find_run = Mock(return_value=Mock(run_id="f6aea2bc-ef47-46c9-b39a-1a80ba058e31"))
+    monkeypatch.setattr(AdminRepository, "get_training_run_for_model", find_run)
+    args = [
+        "service",
+        "register-model",
+        "--bundle",
+        str(tmp_path),
+        "--token-file",
+        str(token),
+        "--manifest-sha256",
+        sha,
+        "--selection-file",
+        str(freeze),
+        "--native-final",
+        str(native),
+        "--name",
+        "Offline forest",
+    ]
+    env = {"REGIMEX_DATABASE_DSN": "dbname=not_connected"}
+    result = CliRunner().invoke(app, args, env=env)
+    assert result.exit_code == 0, result.output
+    assert "/training/f6aea2bc-ef47-46c9-b39a-1a80ba058e31" in result.stdout
+    find_run.assert_called_once_with(
+        service.authenticate.return_value, service.register_bundle.return_value.model_version_id
+    )
+    registration = service.register_bundle.call_args.kwargs
+    assert registration["display_name"] == "Offline forest"
+    (report,) = registration["external_evaluations"]
+    assert report.kind == "native_final" and report.sample_count == 384
+    assert report.report_sha256 == digest(native) and report.interval_macro_f1 == 0.93
+    write_json(freeze, {"challenger": "other", "bundle_sha256": sha, "protocol_sha256": "2" * 64})
+    result = CliRunner().invoke(app, args, env=env)
+    assert result.exit_code == 1 and "different selection" in result.output
+    service.register_bundle.assert_called_once()
 
 
 def test_database_failure_does_not_print_connection_credentials() -> None:
