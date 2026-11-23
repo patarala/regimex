@@ -2,6 +2,7 @@
 
 import math
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import pairwise
 from pathlib import Path
@@ -114,7 +115,25 @@ def _describe(values: Floats, scale: float) -> tuple[float, ...]:
     )
 
 
-def features(rows: tuple[Observation, ...], config: AnalysisConfig) -> Floats:
+type PartitionRule = Callable[[Floats, int, AnalysisConfig, float], tuple[list[int], ...]]
+
+
+def _greedy_partitions(
+    prefix: Floats, start: int, config: AnalysisConfig, noise_variance: float
+) -> tuple[list[int], ...]:
+    size = len(prefix) - 1
+    return tuple(
+        _partition(prefix, size, config.min_duration, multiplier * np.log1p(size) * noise_variance)
+        for multiplier in _PENALTIES
+    )
+
+
+def features(
+    rows: tuple[Observation, ...],
+    config: AnalysisConfig,
+    *,
+    partition: PartitionRule = _greedy_partitions,
+) -> Floats:
     """Extract a row at each original step, keeping each available block independent."""
     result = np.zeros((len(rows), _WIDTH))
     for start, stop, status in observation_blocks(rows, config):
@@ -134,10 +153,7 @@ def features(rows: tuple[Observation, ...], config: AnalysisConfig) -> Floats:
         noise = config.noise_floor
         if len(diff):
             noise = max(noise, 1.4826 * float(np.median(np.abs(diff - np.median(diff)))))
-        for level, multiplier in enumerate(_PENALTIES):
-            cuts = _partition(
-                prefix, size, config.min_duration, multiplier * np.log1p(size) * noise**2
-            )
+        for level, cuts in enumerate(partition(prefix, start, config, noise**2)):
             pieces = [
                 _describe(log_price[a:b], np.log1p(config.minimum_relative_change))
                 for a, b in pairwise(cuts)
