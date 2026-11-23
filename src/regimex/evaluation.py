@@ -141,30 +141,23 @@ def interval_iou(expected: DirectionInterval, actual: DirectionInterval) -> floa
 def matched_interval_indices(
     reference: list[DirectionInterval], predicted: list[DirectionInterval]
 ) -> dict[int, int]:
-    """Map reference indexes to predictions within a single direction and instrument."""
-    edges = [
-        [
-            index
-            for index, actual in enumerate(predicted)
-            if interval_iou(expected, actual) >= IOU_THRESHOLD
-        ]
-        for expected in reference
-    ]
-    assigned: dict[int, int] = {}
-
-    def augment(reference_index: int, visited: set[int]) -> bool:
-        for predicted_index in edges[reference_index]:
-            if predicted_index in visited:
-                continue
-            visited.add(predicted_index)
-            if predicted_index not in assigned or augment(assigned[predicted_index], visited):
-                assigned[predicted_index] = reference_index
-                return True
-        return False
-
-    for index in range(len(reference)):
-        augment(index, set())
-    return {expected: actual for actual, expected in assigned.items()}
+    """Match two ordered, disjoint interval lists for one instrument and direction."""
+    matches: dict[int, int] = {}
+    left = right = 0
+    while left < len(reference) and right < len(predicted):
+        expected, actual = reference[left], predicted[right]
+        # Overlaps cannot cross: matching this pair can replace either interval's
+        # later match without reducing the maximum number of pairs.
+        if interval_iou(expected, actual) >= IOU_THRESHOLD:
+            matches[left] = right
+            left += 1
+            right += 1
+        elif expected.stop <= actual.stop:
+            # The earlier end cannot overlap the other list's next item.
+            left += 1
+        else:
+            right += 1
+    return matches
 
 
 def _segment_counts(
@@ -213,46 +206,38 @@ def _boundary_matches(reference: list[int], predicted: list[int]) -> int:
     return matched
 
 
-def _aligned_lags(reference: list[int], predicted: list[int], tolerance: int | None) -> list[int]:
-    """Match ordered transitions by maximum count, then minimum absolute lag.
+def _aligned_lags(reference: list[int], predicted: list[int]) -> list[int]:
+    """Pair as many transitions as possible, then minimize total absolute lag without a cutoff.
 
     Transitions supplied here have the same type and common available block.
     An optimal absolute-distance assignment can be ordered without crossings.
-    Two score rows bound working memory; byte choices permit deterministic replay.
+    Every transition in the shorter list therefore gets a pair.
     """
     if not reference or not predicted:
         return []
-    choices = np.zeros((len(reference) + 1, len(predicted) + 1), dtype=np.uint8)
-    previous_count = np.zeros(len(predicted) + 1, dtype=np.int64)
-    previous_cost = np.zeros(len(predicted) + 1, dtype=np.int64)
-    for i, expected in enumerate(reference, 1):
-        counts = np.zeros_like(previous_count)
-        costs = np.zeros_like(previous_cost)
-        for j, actual in enumerate(predicted, 1):
-            # On equal count/cost, prefer a pair, then skip the current prediction.
-            options = [
-                (-int(previous_count[j]), int(previous_cost[j]), 2),
-                (-int(counts[j - 1]), int(costs[j - 1]), 1),
-            ]
-            lag = actual - expected
-            if tolerance is None or abs(lag) <= tolerance:
-                options.append(
-                    (-int(previous_count[j - 1]) - 1, int(previous_cost[j - 1]) + abs(lag), 0)
-                )
-            count, cost, choice = min(options)
-            counts[j], costs[j], choices[i, j] = -count, cost, choice
-        previous_count, previous_cost = counts, costs
+    if len(reference) == len(predicted):
+        # Pairing every transition in order is the only full ordered assignment.
+        return [b - a for a, b in zip(reference, predicted, strict=True)]
+    if len(reference) < len(predicted):
+        shorter, longer, sign = reference, predicted, 1
+    else:
+        shorter, longer, sign = predicted, reference, -1
+    surplus = len(longer) - len(shorter)
+    steps = np.asarray(longer, dtype=np.int64)
+    best = np.zeros(surplus + 1, dtype=np.int64)
+    paired = np.empty((len(shorter), surplus + 1), dtype=np.bool_)
+    for index, step in enumerate(shorter):
+        # Column k allows k skips in the longer prefix. Either pair its last
+        # step here or skip it and keep the best cost from an earlier column.
+        costs = best + np.abs(steps[index : index + surplus + 1] - step)
+        best = np.minimum.accumulate(costs)
+        paired[index] = costs == best  # Prefer the latest pair on equal cost.
     lags = []
-    i, j = len(reference), len(predicted)
-    while i and j:
-        choice = choices[i, j]
-        if choice == 0:
-            lags.append(predicted[j - 1] - reference[i - 1])
-            i, j = i - 1, j - 1
-        elif choice == 1:
-            j -= 1
-        else:
-            i -= 1
+    skipped = surplus
+    for index in reversed(range(len(shorter))):
+        while not paired[index, skipped]:
+            skipped -= 1
+        lags.append(sign * (longer[index + skipped] - shorter[index]))
     return list(reversed(lags))
 
 
@@ -283,8 +268,8 @@ def _typed_boundary_counts(
     matched = 0
     lags = []
     for expected, actual in groups.values():
-        matched += len(_aligned_lags(expected, actual, BOUNDARY_TOLERANCE))
-        lags.extend(_aligned_lags(expected, actual, None))
+        matched += _boundary_matches(expected, actual)
+        lags.extend(_aligned_lags(expected, actual))
     return np.asarray([matched, totals[1] - matched, totals[0] - matched], dtype=np.int64), lags
 
 

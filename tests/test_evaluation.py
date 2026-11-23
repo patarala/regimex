@@ -9,7 +9,7 @@ from regimex.contracts import Observation
 from regimex.directions import Direction, DirectionInterval, summarize_interval
 
 np = pytest.importorskip("numpy")
-from regimex.evaluation import ExperimentCounts, dense_labels
+from regimex.evaluation import ExperimentCounts, dense_labels, interval_iou
 from regimex.features import IntArray
 from regimex.prediction_inputs import PredictionSequenceInfo
 
@@ -148,6 +148,41 @@ def test_one_reference_cannot_match_two_predicted_halves() -> None:
     assert metrics["recall"] == 1
     assert metrics["f1"] == pytest.approx(2 / 3)
     assert result["segment_macro_f1"] == pytest.approx(2 / 9)
+
+
+def test_interval_matching_resolves_half_overlap_ties_without_scanning_all_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observations = rows(320)
+    reference: list[DirectionInterval] = []
+    predicted: list[DirectionInterval] = []
+    expected = {}
+    for start in range(0, len(observations), 10):
+        index = len(reference)
+        # One prediction merges the first two intervals. Two predictions split the third.
+        for target, spans in (
+            (reference, ((0, 2), (2, 4), (5, 9))),
+            (predicted, ((0, 4), (5, 7), (7, 9))),
+        ):
+            target.extend(
+                intervals(
+                    observations,
+                    [(start + a, start + b, Direction.GROWTH) for a, b in spans],
+                )
+            )
+        expected[index] = index
+        expected[index + 2] = index + 1
+
+    calls = 0
+
+    def count_iou(left: DirectionInterval, right: DirectionInterval) -> float:
+        nonlocal calls
+        calls += 1
+        return interval_iou(left, right)
+
+    monkeypatch.setattr(evaluation, "interval_iou", count_iou)
+    assert evaluation.matched_interval_indices(reference, predicted) == expected
+    assert calls <= len(reference) + len(predicted)
 
 
 def test_boundary_tolerance_is_inclusive_and_matching_one_to_one() -> None:
@@ -341,11 +376,18 @@ def test_typed_boundary_matching_cannot_cross_reference_or_prediction_gaps() -> 
 
 
 def test_typed_alignment_maximizes_count_before_minimizing_absolute_lag() -> None:
-    assert evaluation._aligned_lags([10, 14], [13, 18], 4) == [3, 4]
-    assert evaluation._aligned_lags([10, 14], [13], 4) == [-1]
-    assert evaluation._aligned_lags([10, 14], [13], None) == [-1]
-    assert evaluation._aligned_lags([10], [14], 4) == [4]
-    assert evaluation._aligned_lags([10], [15], 4) == []
+    assert evaluation._aligned_lags([10, 14], [13, 18]) == [3, 4]
+    assert evaluation._aligned_lags([10, 14], [13]) == [-1]
+    assert evaluation._aligned_lags([13], [10, 14]) == [1]
+    assert evaluation._aligned_lags([10, 20], [1, 11]) == [-9, -9]
+    assert evaluation._boundary_matches([10, 20], [1, 11]) == 1
+
+
+def test_alignment_preserves_global_cost_and_tie_order_when_skipping_transitions() -> None:
+    assert evaluation._aligned_lags([5, 6], [1, 5, 20]) == [-4, -1]
+    shorter, longer = [4, 12, 20], [0, 2, 6, 10, 14, 18, 22, 30]
+    assert evaluation._aligned_lags(shorter, longer) == [2, 2, 2]
+    assert evaluation._aligned_lags(longer, shorter) == [-2, -2, -2]
 
 
 def test_redundant_same_direction_intervals_are_not_typed_transitions() -> None:

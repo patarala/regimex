@@ -113,10 +113,15 @@ missing shorter intervals.
 ### Boundary sensitivity
 
 A typed boundary records both directions of a transition, such as growth to
-decline. The evaluator pairs predicted and reference transitions of the same
-type one-to-one within a continuous classified block. Intervals marked
-`no_trades` or `insufficient_data` separate blocks. The model produced 414
-transitions against 454 references.
+decline. The evaluator pairs transitions of the same type within blocks where
+both the reference and the prediction have a direction. Typed boundary F1
+counts the largest number of one-to-one pairs within the allowed displacement
+(four steps in a standard evaluation). The separate lag summary pairs as many
+transitions as possible without a distance cutoff, minimizing their total
+absolute lag. A positive lag means the prediction was late.
+
+The model produced 414 transitions against 454 references. Varying the allowed
+displacement on these same transitions gave the following scores.
 
 | Allowed displacement, steps | Typed boundary F1 |
 | --- | ---: |
