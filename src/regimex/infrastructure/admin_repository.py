@@ -274,9 +274,12 @@ class AdminRepository:
         generation_run_id: UUID | None = None,
     ) -> DatasetRecord:
         record = DatasetRecord.model_validate_json(record.model_dump_json())
+        self.database.lock_catalog_identity(connection, "dataset", record.dataset_id)
         reservation = connection.execute(
-            "SELECT operation_id FROM regimex_generation_targets WHERE dataset_id=%s",
-            (record.dataset_id,),
+            "SELECT t.operation_id FROM regimex_generation_targets t WHERE t.dataset_id=%s "
+            "AND NOT EXISTS (SELECT 1 FROM regimex_datasets d "
+            "WHERE d.dataset_id=t.dataset_id AND d.owner_id=%s)",
+            (record.dataset_id, record.owner_id),
         ).fetchone()
         if reservation is not None and reservation[0] != generation_run_id:
             raise Conflict("The dataset identity is reserved by a generation run.")
@@ -432,9 +435,14 @@ class AdminRepository:
         record = ReferenceSetRecord.model_validate_json(record.model_dump_json())
         dataset = self._dataset(connection, record.owner_id, record.dataset_id)
         validate_reference_membership(dataset.manifest, record.references)
+        self.database.lock_catalog_identity(
+            connection, "reference", record.references.reference_set_id
+        )
         reservation = connection.execute(
-            "SELECT operation_id FROM regimex_reference_targets WHERE reference_set_id=%s",
-            (record.references.reference_set_id,),
+            "SELECT t.operation_id FROM regimex_reference_targets t WHERE t.reference_set_id=%s "
+            "AND NOT EXISTS (SELECT 1 FROM regimex_reference_sets r "
+            "WHERE r.reference_set_id=t.reference_set_id AND r.owner_id=%s)",
+            (record.references.reference_set_id, record.owner_id),
         ).fetchone()
         if reservation is not None and reservation[0] != reference_run_id:
             raise Conflict("This reference identity is reserved by a generation run.")
@@ -847,6 +855,7 @@ class AdminRepository:
         self, connection: Connection, owner_id: str, spec: AdminSpec
     ) -> ResolvedModel | None:
         if isinstance(spec, GenerationSpec):
+            self.database.lock_catalog_identity(connection, "dataset", spec.dataset_id)
             exists = connection.execute(
                 "SELECT 1 FROM regimex_datasets WHERE dataset_id=%s", (spec.dataset_id,)
             ).fetchone()
@@ -855,6 +864,13 @@ class AdminRepository:
             return None
         if isinstance(spec, ReferenceGenerationSpec):
             self._dataset(connection, owner_id, spec.dataset_id)
+            self.database.lock_catalog_identity(connection, "reference", spec.reference_set_id)
+            exists = connection.execute(
+                "SELECT 1 FROM regimex_reference_sets WHERE reference_set_id=%s",
+                (spec.reference_set_id,),
+            ).fetchone()
+            if exists is not None:
+                raise Conflict("Generation requires a new immutable reference-set identity.")
             return None
         if isinstance(spec, TrainingSpec):
             dataset = self._dataset(connection, owner_id, spec.dataset_id)
@@ -879,6 +895,7 @@ class AdminRepository:
             BenchmarkRepository.validate_selection(
                 connection, owner_id, spec, dataset, training_semantics=labels.references.semantics
             )
+            self.database.lock_catalog_identity(connection, "model", spec.model_version_id)
             exists = connection.execute(
                 "SELECT 1 FROM regimex_models WHERE model_version_id=%s", (spec.model_version_id,)
             ).fetchone()

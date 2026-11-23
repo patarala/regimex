@@ -10,9 +10,11 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Never
 from uuid import UUID, uuid4
@@ -773,6 +775,59 @@ def test_reference_sets_are_independent_immutable_and_test_access_is_closed(
         repository.get_reference_set(principal(admin=False), "references-test", allow_test=True)
     with pytest.raises(NotFound):
         repository.get_reference_set(principal("different-admin"), "references-train")
+
+
+@pytest.mark.parametrize("kind", ["dataset", "reference", "model"])
+def test_import_and_job_cannot_both_claim_one_catalog_identity(
+    repository: AdminRepository, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    from psycopg.errors import LockNotAvailable
+
+    database = repository.database
+    admin = principal()
+    spec: GenerationSpec | ReferenceGenerationSpec | TrainingSpec
+    import_resource: Callable[[], object]
+    if kind == "dataset":
+        record, snapshots, bindings = dataset_records()
+        for snapshot in snapshots:
+            database.add_snapshot(snapshot)
+        import_resource = partial(repository.add_dataset, admin, record, bindings=bindings)
+        spec = GenerationSpec(
+            dataset_id=record.dataset_id,
+            plan=RawGenerationPlan(seed=1, experiment_count=3, step_count=64),
+        )
+    elif kind == "reference":
+        dataset = admitted_dataset(repository)
+        references = reference_record(dataset, "train")
+        import_resource = partial(repository.add_reference_set, admin, references)
+        spec = ReferenceGenerationSpec(
+            dataset_id=dataset.dataset_id,
+            reference_set_id=references.references.reference_set_id,
+            partition="train",
+        )
+    else:
+        _, spec = ready_training(repository)
+        import_resource = partial(database.register_model, admin, candidate(spec))
+
+    # Hold the import open to exercise the interval before its row is visible.
+    with database.connection() as importing:
+        with monkeypatch.context() as patch:
+            patch.setattr(database, "connection", lambda: nullcontext(importing))
+            registered = import_resource()
+        with pytest.raises(LockNotAvailable), database.connection() as submitting:
+            submitting.execute("SET LOCAL lock_timeout = '250ms'")
+            with monkeypatch.context() as patch:
+                patch.setattr(database, "connection", lambda: nullcontext(submitting))
+                repository.submit(admin, spec, idempotency_key="generation")
+
+    with pytest.raises(Conflict, match="requires a new immutable"):
+        repository.submit(admin, spec, idempotency_key="generation")
+    assert repository.list_runs(admin) == ()
+    # An older installation can already have both an import and a reservation.
+    with monkeypatch.context() as patch:
+        patch.setattr(repository, "_validate_spec", lambda *_: None)
+        repository.submit(admin, spec, idempotency_key="old-reservation")
+    assert import_resource() == registered
 
 
 def test_previous_reference_policy_returns_private_conflict_without_rewriting(

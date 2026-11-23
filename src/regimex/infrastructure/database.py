@@ -12,7 +12,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Literal, cast
 from uuid import UUID, uuid4
 
 import procrastinate
@@ -437,6 +437,7 @@ class DatabaseRepository:
     def register_model(self, principal: Principal, record: ModelRecord) -> ModelRecord:
         self._admin(principal)
         with self.connection() as connection:
+            self.lock_catalog_identity(connection, "model", record.model_version_id)
             self._require_unreserved_version(connection, record.model_version_id)
             return self._register_model(connection, record)
 
@@ -444,8 +445,13 @@ class DatabaseRepository:
     def _require_unreserved_version(
         connection: psycopg.Connection[tuple[object, ...]], model_version_id: str
     ) -> None:
+        # A completed fit still owns its version after weight deletion. A stale
+        # reservation alongside an independent import can replay that exact import.
         reserved = connection.execute(
-            "SELECT 1 FROM regimex_training_runs WHERE model_version_id=%s", (model_version_id,)
+            "SELECT 1 FROM regimex_training_runs t WHERE t.model_version_id=%s "
+            "AND (t.committed_model_version_id IS NOT NULL OR NOT EXISTS "
+            "(SELECT 1 FROM regimex_models m WHERE m.model_version_id=t.model_version_id))",
+            (model_version_id,),
         ).fetchone()
         if reserved is not None:
             raise Conflict("This model version is reserved by an administrative training run.")
@@ -628,6 +634,16 @@ class DatabaseRepository:
             "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
             (f"regimex:{self.schema}:{scope}",),
         )
+
+    def lock_catalog_identity(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        kind: Literal["dataset", "reference", "model"],
+        identifier: str,
+    ) -> None:
+        # Job reservations and imported resources occupy separate tables. Both
+        # writers must lock their common identity before checking the other table.
+        self._lock(connection, f"catalog:{kind}:{identifier}")
 
     def _enqueue(
         self, connection: psycopg.Connection[tuple[object, ...]], operation: Operation
