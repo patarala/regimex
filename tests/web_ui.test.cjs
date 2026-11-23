@@ -52,7 +52,7 @@ function response(value, status = 200) {
   return {ok: status >= 200 && status < 300, status, json: async () => structuredClone(await value)};
 }
 
-async function loadWorkspace(context) {
+async function loadWorkspace(context, entryFile = "app.js") {
   const directory = path.join(root, "src/regimex/web");
   const sandbox = vm.createContext(context);
   const modules = new Map();
@@ -65,10 +65,86 @@ async function loadWorkspace(context) {
     }
     return modules.get(filename);
   }
-  const entry = load(path.join(directory, "app.js"));
+  const entry = load(path.join(directory, entryFile));
   await entry.link((specifier, parent) => load(path.resolve(path.dirname(parent.identifier), specifier)));
   await entry.evaluate();
+  return entry.namespace;
 }
+
+test("preparation keeps unsaved job progress and dismissal until another tab changes the draft", async () => {
+  const elements = new Map();
+  const get = (id) => {
+    if (!elements.has(id)) elements.set(id, new Element());
+    return elements.get(id);
+  };
+  const disk = new Map();
+  let writable = true;
+  const localStorage = {
+    getItem: (key) => disk.get(key) ?? null,
+    setItem(key, value) {
+      if (!writable) throw new Error("Quota exceeded");
+      disk.set(key, value);
+    },
+    removeItem(key) {
+      if (!writable) throw new Error("Storage unavailable");
+      disk.delete(key);
+    },
+  };
+  const window = Object.assign(new Element(), {confirm: () => true});
+  const {createDataPreparation} = await loadWorkspace({
+    document: {getElementById: get}, window, localStorage, navigator: {},
+    crypto: require("node:crypto").webcrypto, setTimeout, clearTimeout,
+  }, "training-preparation.js");
+  const principal = {owner_id: "alice", role: "admin"};
+  const requests = [];
+  const session = {value: {principal}, async json(url, options) {
+    requests.push([url, options?.headers?.["Idempotency-Key"]]);
+    if (requests.length === 1) {
+      writable = false;
+      return {run_id: "job-1", job: {state: "queued"}};
+    }
+    if (url.endsWith("/job-1")) return {job: {state: "failed"}};
+    throw new Error("Connection lost");
+  }};
+  const preparation = createDataPreparation({session});
+  const submit = () => get("data-preparation-form").emit("submit", {preventDefault() {}});
+  const key = "regimex.training-preparation.v1.alice";
+
+  preparation.open();
+  await submit();
+  const initial = JSON.parse(disk.get(key));
+  assert.equal(initial.job, undefined);
+  principal.owner_id = "bob";
+  preparation.open();
+  assert.equal(get("data-preparation").open, false);
+  principal.owner_id = "alice";
+  preparation.open();
+  assert.match(get("preparation-status").textContent, /only while this page stays open/);
+  await submit();
+  preparation.close();
+  preparation.open();
+  await submit();
+  assert.deepEqual(requests, [
+    ["/api/v1/datasets", initial.id + ":development:0"],
+    ["/api/v1/admin-runs/job-1", undefined],
+    ["/api/v1/datasets", initial.id + ":development:1"],
+  ]);
+
+  await get("preparation-forget").click();
+  preparation.close();
+  preparation.open();
+  await window.emit("storage", {key});
+  assert.equal(get("data-preparation").open, false);
+  assert.match(get("preparation-status").textContent, /may return after a reload/);
+  disk.set(key, JSON.stringify({...initial, steps: 512}));
+  await window.emit("storage", {key});
+  assert.equal(get("preparation-steps").value, 512);
+  assert.equal(get("data-preparation").open, true);
+  disk.clear();
+  await window.emit("storage", {key: null});
+  assert.equal(get("data-preparation").open, false);
+  assert.equal(requests.length, 3);
+});
 
 async function workspace(count = 45, {href = "http://localhost/", holdHistory = false} = {}) {
   const elements = new Map();

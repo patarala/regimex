@@ -26,9 +26,9 @@ export function createDataPreparation({session, onUse}) {
   const action = $("preparation-action");
   const status = $("preparation-status");
   const check = $("preparation-attest");
-  let plan = null, key = "", revision = 0, timer, busy = false, inventory = null, storageAvailable = true;
+  let plan = null, key = "", revision = 0, timer, busy = false, inventory = null;
   let retryDelay = 1500;
-  const inMemory = new Map();
+  const drafts = new Map();
   function fields() {
     return Object.fromEntries(["development", "final", "steps"].map(id =>
       [id, $("preparation-" + id).valueAsNumber]));
@@ -41,22 +41,29 @@ export function createDataPreparation({session, onUse}) {
       ? `${train} training and ${validation} validation experiments. ${final - 2} separate experiments are reserved for final testing.`
       : "";
   }
-  function read() {
+  function read(storageChanged = false) {
+    const draft = drafts.get(key);
     try {
       const stored = localStorage.getItem(key);
-      return stored ? JSON.parse(stored) : !storageAvailable ? inMemory.get(key) : null;
+      // After a failed write or removal, the old stored value still belongs to this draft.
+      const neverRead = draft?.pending && draft.stored === undefined;
+      if (draft && (draft.stored === stored || (neverRead && !storageChanged))) return draft.plan;
+      const savedPlan = stored === null ? null : JSON.parse(stored);
+      drafts.set(key, {plan: savedPlan, stored});
+      return savedPlan;
     } catch {
-      return inMemory.get(key) ?? null;
+      return draft?.plan ?? null;
     }
   }
   function save() {
-    if (plan) inMemory.set(key, plan);
-    else inMemory.delete(key);
     try {
-      if (plan) localStorage.setItem(key, JSON.stringify(plan));
+      const stored = plan ? JSON.stringify(plan) : null;
+      if (plan) localStorage.setItem(key, stored);
       else localStorage.removeItem(key);
-      storageAvailable = true;
-    } catch { storageAvailable = false; }
+      drafts.set(key, {plan, stored});
+    } catch {
+      drafts.set(key, {plan, stored: drafts.get(key)?.stored, pending: true});
+    }
   }
   function show(message = "", error = false) {
     const ready = Boolean(plan?.benchmark);
@@ -74,8 +81,11 @@ export function createDataPreparation({session, onUse}) {
       busy ? "Preparing…" : plan ? "Continue preparation" : "Generate datasets";
     const forget = $("preparation-forget");
     forget.hidden = !plan || busy;
-    status.textContent = [message, !storageAvailable && plan ? "Progress is available only while this page stays open." : ""]
-      .filter(Boolean).join(" ");
+    const messages = [message];
+    if (drafts.get(key)?.pending) messages.push(plan
+      ? "Progress is available only while this page stays open."
+      : "The saved setup could not be removed from this browser. It may return after a reload.");
+    status.textContent = messages.filter(Boolean).join(" ");
     status.hidden = !status.textContent;
     status.classList.toggle("error", error);
   }
@@ -221,10 +231,7 @@ export function createDataPreparation({session, onUse}) {
   }
   form.addEventListener("submit", submit);
   window.addEventListener("storage", event => {
-    if (key && event.key === key) {
-      inMemory.delete(key);
-      open();
-    }
+    if (key && (event.key === key || event.key === null) && read(true) !== plan) open();
   });
   $("preparation-size").addEventListener("input", counts);
   check.addEventListener("change", () => { action.disabled = !check.checked; });
