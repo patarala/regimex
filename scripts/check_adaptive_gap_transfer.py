@@ -229,6 +229,10 @@ def score(output, comparison, bundle):
         read_freeze,
     )
 
+    freeze = read_freeze(comparison)
+    winner = freeze["winner"]
+    if winner == CONTROL:
+        raise ValueError("The release won validation; the transfer groups remain reserved")
     plan = output / "plan.json"
     design = read(plan)
     if (
@@ -237,14 +241,12 @@ def score(output, comparison, bundle):
         or design["disjoint_from"] != seed_audit(comparison, checked_reservation(comparison))
     ):
         raise ValueError("Transfer design or population changed")
-    freeze = read_freeze(comparison)
-    winner = freeze["winner"]
     opening = {
         "plan_sha256": digest(plan),
         "freeze_sha256": digest(comparison / "freeze.json"),
         "winner": winner,
     }
-    names = tuple(dict.fromkeys((CONTROL, winner)))
+    names = (CONTROL, winner)
     predict = load_predictors(comparison, names, bundle)
     write_new_file(output / "opened.json", json_bytes(opening))
     totals = {name: Totals() for name in names}

@@ -80,3 +80,13 @@ def test_transfer_requires_interval_quality_and_stability(replay: ModuleType) ->
         and not regressed["stability"]
         and not regressed["per_class"]["sideways"]
     )
+
+
+def test_release_winning_validation_keeps_transfer_unopened(
+    replay: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    native = import_module("compare_adaptive_intervals")
+    monkeypatch.setattr(native, "read_freeze", lambda _: {"winner": native.CONTROL})
+    with pytest.raises(ValueError, match="remain reserved"):
+        replay.score(tmp_path, tmp_path, tmp_path)
+    assert not (tmp_path / "opened.json").exists()
