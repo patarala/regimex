@@ -116,11 +116,11 @@ function rememberComparison(id, replace = false) {
 }
 
 function restoreComparison(url) {
-  const active = () => session.value && screen === "analyses" && location.href === url.href &&
+  const active = () => session.value && screen === "analyses" && !document.hidden && location.href === url.href &&
     analysis.current?.id === url.searchParams.get("analysis");
   const other = url.searchParams.get("compare");
   const id = other && uuid.test(other) ? other : null;
-  if (active() && comparison.comparedId !== id) return comparison.restore(id, active);
+  if (active()) return comparison.restore(id, active);
 }
 
 async function restoreLocation() {
@@ -147,6 +147,7 @@ async function restoreLocation() {
   const previous = screen;
   if (previous !== section) {
     if (previous === "analyses" || previous === "training") deletion.close();
+    if (previous === "analyses") comparison.cancelRestore();
     if (previous === "training") training.close();
     if (previous === "connections") integrations.reset();
   }
@@ -203,7 +204,10 @@ window.addEventListener("click", event => {
 window.addEventListener("popstate", restoreLocation);
 window.addEventListener("hashchange", restoreLocation);
 document.addEventListener("visibilitychange", () => {
-  void analysis.setVisible(screen === "analyses" && !document.hidden);
+  const visible = screen === "analyses" && !document.hidden;
+  const resumed = analysis.setVisible(visible);
+  if (!visible) comparison.cancelRestore();
+  else if (!resumed && analysis.current?.metadata?.result_available) void restoreComparison(new URL(location.href));
 });
 restoreBookmark(new URL(location.href));
 void session.start();

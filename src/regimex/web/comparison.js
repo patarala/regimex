@@ -1,17 +1,25 @@
 import {$, notice, option, setPreview} from "./ui.js";
+import {canRetryRead} from "./session.js";
 
 const COMPARISON_PAGE_SIZE = 20;
+const RETRY_NOTICE = "Reconnecting to the comparison…";
 
 export function createComparison({session, getSelection, rememberComparison}) {
   let comparisonGeneration = 0;
-  let restoreGeneration = 0;
-  let comparedId = null, restoringId = null;
+  let comparedId = null, restoring = null;
   let comparisonOffset = 0;
   let comparisonHasMore = false;
   let comparisonItems = [];
+  function cancelRestore() {
+    if (!restoring) return;
+    clearTimeout(restoring.timer);
+    restoring.controller.abort();
+    restoring = null;
+    if ($("notice").textContent === RETRY_NOTICE) notice();
+  }
+
   function reset() {
-    restoreGeneration++;
-    restoringId = null;
+    cancelRestore();
     clearComparison();
     $("comparison-controls").hidden = true;
     $("comparison-controls").open = false;
@@ -108,8 +116,7 @@ export function createComparison({session, getSelection, rememberComparison}) {
 
   function show(selection, other) {
     if (display(selection, other)) {
-      restoreGeneration++;
-      restoringId = null;
+      cancelRestore();
       rememberComparison(other.analysis_id);
     }
   }
@@ -122,9 +129,8 @@ export function createComparison({session, getSelection, rememberComparison}) {
   function forgetAnalysis(id) {
     const selection = getSelection();
     if (!selection?.metadata?.result_available) return;
-    if (id === comparedId || id === restoringId) {
-      restoreGeneration++;
-      restoringId = null;
+    if (id === comparedId || id === restoring?.id) {
+      cancelRestore();
       showReport();
       rememberComparison(null, true);
     }
@@ -135,25 +141,40 @@ export function createComparison({session, getSelection, rememberComparison}) {
   }
 
   async function restore(id, isCurrent) {
-    const generation = ++restoreGeneration;
-    restoringId = null;
-    const epoch = session.epoch;
+    if (!isCurrent() || restoring?.id === id) return;
+    cancelRestore();
+    if (id === comparedId) return;
     const selection = getSelection();
-    const active = () => generation === restoreGeneration && epoch === session.epoch
-      && selection === getSelection() && isCurrent();
-    if (!active() || id === comparedId) return;
     showReport();
     if (!id || !selection?.metadata) return;
-    restoringId = id;
-    try {
-      const other = await session.json("/api/v1/analyses/" + encodeURIComponent(id));
-      if (active() && (other.analysis_id !== id || !display(selection, other)))
+    const request = {id, controller: new AbortController(), timer: null};
+    restoring = request;
+    const active = () => restoring === request && selection === getSelection() && isCurrent();
+    let delay = 1000;
+    async function readTarget() {
+      if (!active()) return;
+      let other;
+      try {
+        other = await session.json("/api/v1/analyses/" + encodeURIComponent(id),
+          {signal: request.controller.signal});
+      } catch (error) {
+        if (!active()) return;
+        if (!canRetryRead(error)) {
+          cancelRestore();
+          notice(error.message, true);
+          return;
+        }
+        notice(RETRY_NOTICE);
+        request.timer = setTimeout(readTarget, delay);
+        delay = Math.min(30000, delay * 2);
+        return;
+      }
+      if (!active()) return;
+      cancelRestore();
+      if (other?.analysis_id !== id || !display(selection, other))
         notice("Choose another completed analysis of this experiment to compare.", true);
-    } catch (error) {
-      if (active()) notice(error.message, true);
-    } finally {
-      if (generation === restoreGeneration) restoringId = null;
     }
+    return readTarget();
   }
   $("comparison-controls").addEventListener("toggle", () => {
     if ($("comparison-controls").open && !getSelection()?.comparisonLoaded) return comparisonPage();
@@ -168,10 +189,9 @@ export function createComparison({session, getSelection, rememberComparison}) {
   $("comparison-refresh").addEventListener("click", () => comparisonPage());
   $("compare").addEventListener("click", compare);
   $("close-comparison").addEventListener("click", () => {
-    restoreGeneration++;
-    restoringId = null;
+    cancelRestore();
     showReport();
     rememberComparison(null);
   });
-  return {reset, show, restore, forgetAnalysis, get comparedId() { return comparedId; }};
+  return {reset, show, restore, cancelRestore, forgetAnalysis};
 }
