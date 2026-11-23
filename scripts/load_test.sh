@@ -10,6 +10,9 @@ case "${1:-}" in
     --sustained|"") ;;
     *) echo "Usage: sh scripts/load_test.sh [--stand [OPTIONS] | --sustained]" >&2; exit 2 ;;
 esac
+case "${REGIMEX_LOAD_MODEL:-}" in
+    ""|active) echo "Set REGIMEX_LOAD_MODEL to an immutable model version." >&2; exit 2 ;;
+esac
 command -v k6 >/dev/null || { echo "Install Grafana k6 and add it to PATH." >&2; exit 1; }
 token_file=${REGIMEX_LOAD_TOKEN_FILE:-var/load-instance/credentials/user.token}
 token=$(cat "$token_file")

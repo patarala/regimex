@@ -16,7 +16,8 @@ if (scheme !== "http" && scheme !== "https") throw new Error("REGIMEX_LOAD_SCHEM
 const port = integer("REGIMEX_LOAD_PORT", scheme === "https" ? 8443 : 8001, 65535);
 const host = scheme === "https" ? "localhost" : "127.0.0.1";
 const api = `${scheme}://${host}:${port}/api/v1`;
-const model = __ENV.REGIMEX_LOAD_MODEL || "tcn-0.2.0";
+const model = __ENV.REGIMEX_LOAD_MODEL;
+if (!model || model === "active") throw new Error("Set REGIMEX_LOAD_MODEL to an immutable model version");
 const expectedBundle = __ENV.REGIMEX_LOAD_EXPECTED_BUNDLE_SHA256;
 const expectedPolicy = __ENV.REGIMEX_LOAD_EXPECTED_POLICY_SHA256;
 for (const digest of [expectedBundle, expectedPolicy]) {
@@ -137,7 +138,7 @@ export function setup() {
     const history = request("snapshot history", path, 200).json();
     return {
       id: snapshot.snapshot_id, digest: input.content_sha256, grid: input.time_grid,
-      instruments: input.instruments.map(instrument => instrument.instrument_id),
+      source: input.source, instruments: input.instruments,
       lastCreatedAt: history.items.length ? Date.parse(history.items[0].job.created_at) : null,
     };
   });
@@ -176,6 +177,14 @@ const classNames = ["sideways", "growth", "decline"];
 
 function validDigest(value) {
   return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+}
+
+function sameMetadata(expected, actual) {
+  if (expected === actual) return true;
+  if (expected === null || actual === null || typeof expected !== "object" || typeof actual !== "object" ||
+    Array.isArray(expected) !== Array.isArray(actual)) return false;
+  const keys = Object.keys(expected);
+  return keys.length === Object.keys(actual).length && keys.every(key => sameMetadata(expected[key], actual[key]));
 }
 
 function checkSequence(sequence, instrument, steps) {
@@ -217,15 +226,13 @@ function checkResult(result, id, snapshot, resolved) {
     !classNames.every((name, index) => name === result.class_names[index])) {
     fail("Invalid direction classes");
   }
-  const gridMatches = Object.entries(snapshot.grid).every(([key, value]) => result.time_grid[key] === value);
-  if (!gridMatches || !Array.isArray(result.instruments) || !Array.isArray(result.sequences) ||
-    result.instruments.length !== snapshot.instruments.length ||
-    result.sequences.length !== snapshot.instruments.length) {
-    fail("Result differs from the input instrument or time grid");
+  if (!sameMetadata(snapshot.source, result.source)) fail("Result source differs from input");
+  if (!sameMetadata(snapshot.grid, result.time_grid) || !sameMetadata(snapshot.instruments, result.instruments) ||
+    !Array.isArray(result.sequences) || result.sequences.length !== snapshot.instruments.length) {
+    fail("Result differs from the input instruments or time grid");
   }
   snapshot.instruments.forEach((instrument, index) => {
-    if (result.instruments[index].instrument_id !== instrument) fail("Result instrument differs from input");
-    checkSequence(result.sequences[index], instrument, snapshot.grid.step_count);
+    checkSequence(result.sequences[index], instrument.instrument_id, snapshot.grid.step_count);
   });
 }
 

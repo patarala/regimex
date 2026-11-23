@@ -18,7 +18,8 @@ async function loadClient(env = {}) {
 
   const context = vm.createContext({
     Date: { now: () => clock.now(), parse: Date.parse }, console: { log() {} },
-    __ENV: { REGIMEX_LOAD_PHASE: "sustained", REGIMEX_LOAD_DURATION_SECONDS: "10", ...env },
+    __ENV: { REGIMEX_LOAD_PHASE: "sustained", REGIMEX_LOAD_DURATION_SECONDS: "10",
+      REGIMEX_LOAD_MODEL: "fixture-model", ...env },
     open: () => "{}", crypto: { randomUUID: () => "fixture-key" },
   });
   const dependencies = {
@@ -60,6 +61,12 @@ test("load requests stay on loopback for the HTTP stand and HTTPS Compose servic
   await assert.rejects(loadClient({ REGIMEX_LOAD_SCHEME: "ftp" }), /must be http or https/);
 });
 
+test("the client requires an explicit immutable model before setup", async () => {
+  for (const model of [undefined, "", "active"]) {
+    await assert.rejects(loadClient({ REGIMEX_LOAD_MODEL: model }), /REGIMEX_LOAD_MODEL/);
+  }
+});
+
 test("sustained queue thresholds require completed polls in both intake halves and after drain", async () => {
   const { client, http, clock, metrics } = await loadClient();
   let time = 0;
@@ -92,13 +99,20 @@ test("a verified result needs the resolved model and a complete classification o
     REGIMEX_LOAD_EXPECTED_BUNDLE_SHA256: "12".repeat(32),
     REGIMEX_LOAD_EXPECTED_POLICY_SHA256: "34".repeat(32),
   });
+  const instrument = { instrument_id: "ETH/USD", base_asset: "ETH", quote_asset: "USD",
+    initial_price: 100, units: { price_unit: "quote_asset_per_base_asset", volume_unit: "base_asset",
+      price_decimal_places: 2, volume_decimal_places: 4 } };
   const snapshot = { id: "snapshot", digest: "ab".repeat(32), grid: { step_count: 2 },
-    instruments: ["ETH/USD"], lastCreatedAt: null };
+    source: { source_id: "exchange", source_version: "1", configuration_id: "config", run_id: "run-1",
+      snapshot_id: "close", state_revision: "1", run_status: "completed", consistency: "atomic_completed_snapshot" },
+    instruments: [instrument], lastCreatedAt: null };
   const interval = { instrument_id: "ETH/USD", start: 0, stop: 2, status: "observed", direction: "sideways" };
   const valid = {
     result_version: "2.0", analysis_id: "analysis", snapshot_id: snapshot.id, snapshot_sha256: snapshot.digest,
-    model: { model_version_id: "tcn-0.2.0", bundle_sha256: "12".repeat(32), inference_policy_sha256: "34".repeat(32) },
-    time_grid: snapshot.grid, class_names: ["sideways", "growth", "decline"], instruments: [{ instrument_id: "ETH/USD" }],
+    model: { model_version_id: "fixture-model", bundle_sha256: "12".repeat(32), inference_policy_sha256: "34".repeat(32) },
+    time_grid: snapshot.grid, source: Object.fromEntries(Object.entries(snapshot.source).reverse()),
+    class_names: ["sideways", "growth", "decline"],
+    instruments: [{ ...instrument }],
     sequences: [{ instrument_id: "ETH/USD", probabilities: [[1, 0, 0], [0.5, 0.2, 0.3]], intervals: [interval] }],
   };
   function verify(result) {
@@ -124,6 +138,11 @@ test("a verified result needs the resolved model and a complete classification o
     result => { result.model.inference_policy_sha256 = "aa".repeat(32); },
     result => { result.result_version = "1"; },
     result => { result.class_names.reverse(); },
+    result => { delete result.source; },
+    result => { result.source.run_id = "another-run"; },
+    result => { result.source.state_revision = "2"; },
+    result => { result.instruments[0].quote_asset = "EUR"; },
+    result => { result.instruments[0].units.price_decimal_places = 8; },
     result => { result.instruments[0].instrument_id = "other"; },
     result => { result.sequences[0].probabilities = "xx"; },
     result => { result.sequences[0].probabilities[0] = [0.5, 0.5]; },

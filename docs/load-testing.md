@@ -33,7 +33,7 @@ The default command runs both profiles. Use `--profile matrix` for the four capa
 
 The generator writes four two-instrument markets per size, using seeds 42 through 45. Every worker configuration at that size reuses the same files byte for byte. All clients request the same pinned version. Snapshot upload and the single warm-up job precede the timed submissions. A single warm-up can populate only one worker’s local model cache in the two-worker cells. The other worker may pay the first-use download and validation cost in the measured batch. Pass `--runtime-file PATH` to compare an alternate inference policy. For example, a JSON file containing `{"threads":1,"max_batch_size":8}` uses a single inference thread with a maximum batch size of eight. The driver validates the file, expands defaults and freezes its contents in `run.json`. It supplies that snapshot to every registration and checks the accepted bundle and policy digests. The registered backends currently support CPU inference.
 
-The runner checks each downloaded result's analysis, snapshot and model identities. For each instrument, it verifies normalized probabilities on every step and full interval coverage. Observed intervals must carry a direction class. Intervals marked `no_trades` or `insufficient_data` must carry a null direction.
+The runner checks each downloaded result against the submitted export, including the source run and revision, time grid, instrument order, currencies and units. It also checks the analysis ID and the model and policy digests recorded at submission. For each instrument, it verifies normalized probabilities on every step and full interval coverage. Observed intervals must carry a direction class. Intervals marked `no_trades` or `insufficient_data` must carry a null direction.
 
 Each comparison cell runs in its own cgroup. By default it has two logical CPUs, a CPU quota of 200%, a total memory limit of 3 GiB and zero swap. The API, database, workers, computation subprocesses and k6 share those limits. All cells use the same CPU IDs. The driver verifies the effective affinity and kernel settings before starting the workload. Use `--cpus` and `--memory-mib` to select other limits. Host contention and page-cache state can vary between runs.
 
@@ -47,6 +47,8 @@ sh scripts/load_test.sh --stand --profile sustained --rate-per-minute 12 \
 ```
 
 Choose a whole number of arrivals (`rate × seconds / 60`), up to 100. A documented quota refusal counts separately from a verified result. An exhausted k6 client pool, unexpected HTTP response, incomplete drain, result mismatch or missed threshold fails the run. Compare queue samples from the two halves of the arrival window. Finishing all admitted work during the drain can coexist with a growing queue during arrivals.
+
+k6 counts a failed status check or download on its first attempt. The user-facing CLI retries temporary read failures, so it can recover from an interruption that fails the load test.
 
 ## Results and cleanup
 
@@ -65,7 +67,7 @@ The driver exits nonzero on failure. A partial comparison shows how many cells r
 
 Use a dedicated loopback instance with an analysis worker, a published model and an idle test owner. This mode needs k6 and uv and uses the deployment's own resource limits. It submits one warm-up, four serial and four parallel 512-step analyses. The sustained option runs the warm-up and fixed-arrival workload. These analyses and their outputs persist in that installation.
 
-Set the token file and the exact published model version to test. Both setup guides write the user token to `var/credentials/user.token`. If you registered the TCN from a local asset pack, read its version from the same manifest you imported. For a model published through **Training**, use its **Model version** instead.
+Set the token file and a concrete published model version. The runner requires `REGIMEX_LOAD_MODEL` for this mode and rejects the moving alias `active`. Both setup guides write the user token to `var/credentials/user.token`. If you registered the TCN from a local asset pack, read its version from the same manifest you imported. For a model published through **Training**, use its **Model version** instead.
 
 ```sh
 export REGIMEX_LOAD_TOKEN_FILE=var/credentials/user.token
