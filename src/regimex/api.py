@@ -35,6 +35,7 @@ from regimex.history_contracts import (
 from regimex.infrastructure.object_store import ObjectIntegrityError
 from regimex.model_registry import ArchitectureInfo
 from regimex.operations import (
+    LaunchSource,
     Operation,
     OperationFailure,
     OperationKind,
@@ -56,12 +57,6 @@ from regimex.service_contracts import (
 )
 from regimex.storage import json_bytes
 from regimex.storage_contracts import StorageUsage
-from regimex.terminal_activity import (
-    ActivityFinish,
-    ActivityStart,
-    TerminalActivity,
-    TerminalActivityPage,
-)
 from regimex.web.report_runtime import preview_html
 
 if TYPE_CHECKING:
@@ -69,13 +64,10 @@ if TYPE_CHECKING:
     from regimex.application.auth import AuthService
     from regimex.benchmark_api import BenchmarkAPIService
     from regimex.deletion_api import DeletionAPIService
-    from regimex.infrastructure.terminal_activity import TerminalActivityRepository
 
 
 class AnalysisAPIService(Protocol):
     """The HTTP boundary depends on application operations, never SQL or models."""
-
-    terminal_activities: TerminalActivityRepository
 
     def authenticate(self, raw_token: str) -> Principal: ...
 
@@ -102,6 +94,7 @@ class AnalysisAPIService(Protocol):
         *,
         model_version_id: str = "active",
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         retry_of: UUID | None = None,
     ) -> AnalysisRecord: ...
 
@@ -188,6 +181,7 @@ class SnapshotView(StrictModel):
 class OperationView(StrictModel):
     operation_id: UUID
     kind: OperationKind
+    launch_source: LaunchSource | None = None
     resource_id: str
     state: OperationState
     stage: str
@@ -413,6 +407,24 @@ def _snapshot(record: SnapshotRecord, *, prefix: str = "/api/v1") -> SnapshotVie
     )
 
 
+def _launch_source(
+    request: Request,
+    identity: Principal,
+    *,
+    command: Literal["regimex analyze", "regimex submit-training"] | None = None,
+) -> LaunchSource:
+    """Label an authenticated submission. The optional client marker grants no permissions."""
+    if identity.role == "integration":
+        return LaunchSource(channel="integration")
+    if "authorization" not in request.headers:
+        return LaunchSource(channel="web")
+    if command and request.headers.getlist("x-regimex-command") == [
+        command.removeprefix("regimex ")
+    ]:
+        return LaunchSource(channel="cli", command=command)
+    return LaunchSource(channel="api")
+
+
 def _operation(operation: Operation, *, prefix: str = "/api/v1") -> OperationView:
     # Fencing tokens and request/idempotency material remain internal to workers.
     return OperationView(
@@ -429,6 +441,7 @@ def _operation(operation: Operation, *, prefix: str = "/api/v1") -> OperationVie
         heartbeat_at=operation.heartbeat_at,
         failure=operation.failure,
         polling_url=f"{prefix}/jobs/{operation.operation_id}",
+        launch_source=operation.launch_source,
     )
 
 
@@ -540,8 +553,6 @@ def create_app(
         ExportV2,
         AnalysisRequest,
         ExperimentNameUpdate,
-        ActivityStart,
-        ActivityFinish,
     )
     bearer = HTTPBearer(auto_error=False)
     integration_limits = None if auth_service is None else auth_service.integration_limits
@@ -666,8 +677,6 @@ def create_app(
     Export = Annotated[ExportV2, Depends(_json_dependency(ExportV2))]
     Intake = Annotated[AnalysisRequest, Depends(_json_dependency(AnalysisRequest))]
     NameUpdate = Annotated[ExperimentNameUpdate, Depends(_json_dependency(ExperimentNameUpdate))]
-    StartActivity = Annotated[ActivityStart, Depends(_json_dependency(ActivityStart))]
-    FinishActivity = Annotated[ActivityFinish, Depends(_json_dependency(ActivityFinish))]
     Limit = Annotated[int, Query(ge=1, le=100)]
     Offset = Annotated[int, Query(ge=0, le=1_000_000)]
 
@@ -744,6 +753,7 @@ def create_app(
             identity,
             intake.snapshot_id,
             model_version_id=intake.model_version_id,
+            launch_source=_launch_source(request, identity, command="regimex analyze"),
             idempotency_key=idempotency_key,
         )
         request.state.operation_id = record.operation.operation_id
@@ -771,39 +781,6 @@ def create_app(
             limit=limit,
             offset=offset,
         )
-
-    @app.get("/api/v1/terminal-activities")
-    def list_terminal_activities(
-        identity: Identity, limit: Limit = 100, offset: Offset = 0
-    ) -> TerminalActivityPage:
-        return TerminalActivityPage(
-            items=service.terminal_activities.list(identity, limit=limit, offset=offset),
-            limit=limit,
-            offset=offset,
-        )
-
-    @app.post(
-        "/api/v1/terminal-activities", status_code=201, openapi_extra=_request_body(ActivityStart)
-    )
-    def start_terminal_activity(
-        identity: Identity, data: StartActivity, response: Response
-    ) -> TerminalActivity:
-        record = service.terminal_activities.start(identity, data)
-        response.headers["Location"] = f"/api/v1/terminal-activities/{record.activity_id}"
-        return record
-
-    @app.get("/api/v1/terminal-activities/{activity_id}")
-    def get_terminal_activity(activity_id: UUID, identity: Identity) -> TerminalActivity:
-        return service.terminal_activities.get(identity, activity_id)
-
-    @app.post(
-        "/api/v1/terminal-activities/{activity_id}/finish",
-        openapi_extra=_request_body(ActivityFinish),
-    )
-    def finish_terminal_activity(
-        activity_id: UUID, identity: Identity, data: FinishActivity
-    ) -> TerminalActivity:
-        return service.terminal_activities.finish(identity, activity_id, data)
 
     @app.get("/api/v1/experiments")
     def list_experiments(
@@ -979,7 +956,11 @@ def create_app(
         ) -> AnalysisIntakeView:
             snapshot = service.create_snapshot(identity, export)
             record = service.submit_analysis(
-                identity, snapshot.snapshot_id, idempotency_key=idempotency_key, retry_of=retry_of
+                identity,
+                snapshot.snapshot_id,
+                idempotency_key=idempotency_key,
+                retry_of=retry_of,
+                launch_source=_launch_source(request, identity),
             )
             request.state.operation_id = record.operation.operation_id
             prefix = _prefix(identity)

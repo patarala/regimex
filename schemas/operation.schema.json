@@ -1,5 +1,43 @@
 {
   "$defs": {
+    "LaunchSource": {
+      "additionalProperties": false,
+      "description": "How the original job or imported bundle entered the workspace.",
+      "properties": {
+        "channel": {
+          "enum": [
+            "web",
+            "cli",
+            "api",
+            "integration"
+          ],
+          "title": "Channel",
+          "type": "string"
+        },
+        "command": {
+          "anyOf": [
+            {
+              "enum": [
+                "regimex analyze",
+                "regimex submit-training",
+                "regimex service register-model"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        }
+      },
+      "required": [
+        "channel"
+      ],
+      "title": "LaunchSource",
+      "type": "object"
+    },
     "OperationFailure": {
       "additionalProperties": false,
       "properties": {
@@ -142,6 +180,17 @@
       ],
       "title": "Kind",
       "type": "string"
+    },
+    "launch_source": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LaunchSource"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "max_attempts": {
       "default": 3,

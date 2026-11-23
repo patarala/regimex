@@ -138,8 +138,9 @@ def test_single_request_intake_respects_the_subject_rate_limit(context: Integrat
 def test_analysis_intake_replays_and_checks_historical_retry(context: IntegrationContext) -> None:
     payload = export().model_dump(mode="json")
     url = PREFIX + "/analysis-intake"
-    headers = {**context.headers(), "Idempotency-Key": "first"}
+    headers = {**context.headers(), "Idempotency-Key": "first", "X-Regimex-Command": "analyze"}
     first = context.client.post(url, json=payload, headers=headers).json()["analysis"]
+    assert first["job"]["launch_source"] == {"channel": "integration", "command": None}
     assert context.client.post(url, json=payload, headers=headers).json()["analysis"] == first
     params = {"retry_of": first["analysis_id"]}
     headers["Idempotency-Key"] = "retry"
@@ -583,9 +584,12 @@ def test_cookie_authentication_guards_real_api_upload_submit_and_cancel(
         == 403
     )
     queued = context.client.post(
-        "/api/v1/analyses", json=intake, headers={**csrf, "Idempotency-Key": "browser"}
+        "/api/v1/analyses",
+        json=intake,
+        headers={**csrf, "Idempotency-Key": "browser", "X-Regimex-Command": "analyze"},
     )
     assert queued.status_code == 202
+    assert queued.json()["job"]["launch_source"] == {"channel": "web", "command": None}
     job = queued.json()["job"]["operation_id"]
     assert context.client.get(f"/api/v1/jobs/{job}").status_code == 200
     assert context.client.post(f"/api/v1/jobs/{job}/cancel").status_code == 403

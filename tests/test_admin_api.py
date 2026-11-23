@@ -715,6 +715,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         )
         assert response.status_code == 202, response.text
         queued = AdminRunView.model_validate_json(response.content)
+        assert response.json()["job"]["launch_source"] == {"channel": "api", "command": None}
         result = context.service.run_admin(queued.run_id)
         assert result is not None
         assert result.operation.state == "succeeded", result.operation.model_dump_json()
@@ -890,8 +891,14 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         )
         assert rejected.status_code == error_status, rejected.text
         assert rejected.json()["error"]["code"] == error_code
-    response = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
+    response = context.client.post(
+        "/api/v1/training-runs",
+        json=training,
+        headers={**training_headers, "X-Regimex-Command": "submit-training"},
+    )
     assert response.status_code == 202, response.text
+    cli_source = {"channel": "cli", "command": "regimex submit-training"}
+    assert response.json()["job"]["launch_source"] == cli_source
     run = AdminRunView.model_validate_json(response.content)
     assert isinstance(run.training, TrainingSpec) and run.training.dataset_id == dataset_id
     assert run.statistics is not None and run.statistics.running_seconds == 0
@@ -1057,6 +1064,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     replay = context.client.post("/api/v1/training-runs", json=training, headers=training_headers)
     assert replay.status_code == 202 and replay.json()["run_id"] == str(run.run_id)
     assert replay.json()["display_name"] == "Published candidate"
+    assert replay.json()["job"]["launch_source"] == cli_source
     unopened = context.client.post(
         "/api/v1/benchmarks/evaluations",
         params=benchmark_query,
@@ -1086,6 +1094,10 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         json={"model_version_id": model_id},
     )
     assert final_evaluation_response.status_code == 202, final_evaluation_response.text
+    assert final_evaluation_response.json()["job"]["launch_source"] == {
+        "channel": "api",
+        "command": None,
+    }
     final_evaluation = AdminRunView.model_validate_json(final_evaluation_response.content)
     final_completed = context.service.run_admin(final_evaluation.run_id)
     assert final_completed is not None and final_completed.operation.state == "succeeded", (

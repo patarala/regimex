@@ -243,6 +243,7 @@ def register_model(
         from regimex.external_latency import read_latency_evidence
         from regimex.infrastructure.admin_repository import AdminRepository
         from regimex.model_registry import InferenceRuntime, read_inference_runtime
+        from regimex.operations import LaunchSource
         from regimex.service_bootstrap import create_service
 
         if runtime_file is None:
@@ -275,6 +276,7 @@ def register_model(
             activate=activate,
             expected_previous=expected_previous,
             record_training=True,
+            launch_source=LaunchSource(channel="cli", command="regimex service register-model"),
             display_name=name,
             external_evaluations=evaluations,
             external_latency=latency,

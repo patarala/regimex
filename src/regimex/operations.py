@@ -47,11 +47,28 @@ class OperationFailure(StrictModel):
         return self
 
 
+class LaunchSource(StrictModel):
+    """How the original job or imported bundle entered the workspace."""
+
+    channel: Literal["web", "cli", "api", "integration"]
+    command: (
+        Literal["regimex analyze", "regimex submit-training", "regimex service register-model"]
+        | None
+    ) = None
+
+    @model_validator(mode="after")
+    def command_matches_channel(self) -> Self:
+        if (self.channel == "cli") != (self.command is not None):
+            raise ValueError("Only a CLI launch has a command name")
+        return self
+
+
 class Operation(StrictModel):
     version: Literal["1.2"] = OPERATION_VERSION
     operation_id: UUID
     owner_id: Identifier
     kind: OperationKind
+    launch_source: LaunchSource | None = Field(default=None, exclude_if=lambda value: value is None)
     resource_id: Identifier
     request_sha256: Sha256
     idempotency_key: Identifier

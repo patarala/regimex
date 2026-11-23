@@ -46,7 +46,7 @@ from regimex.history_contracts import DisplayNameUpdate, validate_display_name
 from regimex.infrastructure.database import DatabaseRepository, _read_operation
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
 from regimex.infrastructure.training_metrics import read_training_metrics, store_training_metrics
-from regimex.operations import TERMINAL_STATES, Operation, ResolvedModel, succeed
+from regimex.operations import TERMINAL_STATES, LaunchSource, Operation, ResolvedModel, succeed
 from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.service_contracts import (
     CapacityExceeded,
@@ -964,6 +964,7 @@ class AdminRepository:
         spec: AdminSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: RequestDigest | None = None,
         max_pending: int = 8,
         display_name: str | None = None,
@@ -1005,6 +1006,7 @@ class AdminRepository:
                 operation_id=run_id,
                 owner_id=principal.owner_id,
                 kind=spec.kind,
+                launch_source=launch_source,
                 resource_id=str(run_id),
                 request_sha256=request.digest,
                 idempotency_key=idempotency_key,
@@ -1376,6 +1378,7 @@ class AdminRepository:
         display_name: str | None,
         evaluations: tuple[ExternalEvaluation, ...],
         latency: ExternalLatencyEvidence | None,
+        launch_source: LaunchSource | None = None,
     ) -> ModelRecord:
         self.database._admin(principal)
         display_name = validate_display_name(display_name)
@@ -1411,7 +1414,13 @@ class AdminRepository:
                 raise Conflict("The model version already has another immutable bundle or policy.")
             if row is None:
                 run = self._insert_external_training(
-                    connection, principal.owner_id, registered, spec, metrics, display_name
+                    connection,
+                    principal.owner_id,
+                    registered,
+                    spec,
+                    metrics,
+                    display_name,
+                    launch_source,
                 )
             else:
                 run = self._run(connection, cast(UUID, row[0]), principal=principal)
@@ -1431,6 +1440,7 @@ class AdminRepository:
         spec: ImportedTrainingSpec,
         metrics: TrainingMetrics,
         display_name: str | None,
+        launch_source: LaunchSource | None,
     ) -> AdminRunRecord:
         now = datetime.now(UTC)
         run_id = uuid4()
@@ -1451,6 +1461,7 @@ class AdminRepository:
             result_sha256=hashlib.sha256(json_bytes(output)).hexdigest(),
             state="succeeded",
             stage="imported",
+            launch_source=launch_source,
             created_at=now,
             updated_at=now,
         )

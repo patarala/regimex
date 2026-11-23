@@ -1,4 +1,4 @@
-import {$, analysisStateLabel, notice, setPreview} from "./ui.js";
+import {$, analysisStateLabel, launchSourceLabel, notice, setPreview} from "./ui.js";
 import {createQueueStatus} from "./queue-status.js";
 import {isTransientRequestError} from "./session.js";
 import {createBatch, readExport, requestAnalysis} from "./uploads.js";
@@ -304,7 +304,8 @@ export function createAnalysis({session, models, history, comparison, onStorageC
         ? value.instrument_ids.join(", ") : "Analysis";
       $("analysis-identity").textContent =
         `${id} · Model ${job.model?.model_version_id || "pending"}` +
-        (value.run_id ? ` · Run ${value.run_id}` : "");
+        (value.run_id ? ` · Run ${value.run_id}` : "") +
+        ` · Launch source: ${launchSourceLabel(job.launch_source)}`;
       $("job-state").textContent = analysisStateLabel(job.state);
       $("job-state").dataset.state = job.state;
       const pending = ["queued", "running", "cancel_requested"].includes(job.state);

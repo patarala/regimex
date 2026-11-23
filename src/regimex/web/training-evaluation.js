@@ -1,4 +1,4 @@
-import {analysisStateLabel, element, shortDate} from "./ui.js";
+import {analysisStateLabel, element, launchSourceLabel, shortDate} from "./ui.js";
 
 const number = new Intl.NumberFormat(undefined, {maximumFractionDigits: 5});
 const percent = new Intl.NumberFormat(undefined, {style: "percent", maximumFractionDigits: 1});
@@ -115,6 +115,9 @@ function actionRow(session, row) {
     const action = row.job.kind === "evaluation" ? "Evaluation" : "Publication";
     item.append(element("span", action + " · " + analysisStateLabel(row.job.state)), " ", time);
     if (row.job.failure?.message) item.append(element("p", row.job.failure.message));
+  }
+  if (row.job.launch_source) {
+    item.append(element("p", "Launch source: " + launchSourceLabel(row.job.launch_source), "hint"));
   }
   return item;
 }

@@ -26,6 +26,7 @@ from regimex.infrastructure.history_repository import analysis_filters, analysis
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.operations import (
     OPERATION_VERSION,
+    LaunchSource,
     Operation,
     OperationFailure,
     OperationKind,
@@ -684,6 +685,7 @@ class DatabaseRepository:
         *,
         model_version_id: str = "active",
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str,
         max_pending: int = 8,
         integration_max_pending: int = 32,
@@ -769,6 +771,7 @@ class DatabaseRepository:
                 operation_id=operation_id,
                 owner_id=principal.owner_id,
                 kind="analysis",
+                launch_source=launch_source,
                 resource_id=str(operation_id),
                 request_sha256=request_sha256,
                 idempotency_key=idempotency_key,

@@ -1,4 +1,4 @@
-import {$, analysisStateLabel, bindTooltip, element, shortDate} from "./ui.js";
+import {$, analysisStateLabel, bindTooltip, element, launchSourceLabel, shortDate} from "./ui.js";
 import {showTrainingActions} from "./training-evaluation.js";
 import {createTrainingMetrics} from "./training-metrics.js";
 import {createTrainingProgress} from "./training-progress.js";
@@ -456,6 +456,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     showTiming(imported ? null : stats);
     const entries = imported ? importedFacts(run) : [["Run", run.run_id], ["Dataset", spec.dataset_id],
       ["Selection benchmark", spec.benchmark_selection_id], ["Model version", spec.model_version_id]];
+    entries.unshift([imported ? "Imported via" : "Started via", launchSourceLabel(run.job.launch_source)]);
     if (!imported && run.job.attempt > 0) entries.push(["Attempts", String(run.job.attempt)]);
     if (stats?.fit_seconds != null) entries.push(["Model fit time", duration(stats.fit_seconds)]);
     if (stats?.train_rows != null) entries.push(["Training rows", stats.train_rows.toLocaleString()]);

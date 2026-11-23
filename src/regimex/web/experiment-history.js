@@ -144,6 +144,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
     }
   }
   function renderRuns() {
+    const focused = list.contains(document.activeElement) ? document.activeElement : null;
     list.replaceChildren();
     items.forEach((item) => {
       const row = element("li", "experiment-run");
@@ -167,6 +168,9 @@ export function createExperimentHistory({session, experiment, filters, isActive,
       entry.addEventListener("click", () => openAnalysis(item.analysis_id));
       row.append(checkbox, entry);
       list.append(row);
+      if (focused?.dataset.analysisId === item.analysis_id) {
+        (focused.tagName === "INPUT" ? checkbox : entry).focus({preventScroll: true});
+      }
     });
     updateComparison();
     markSelected();

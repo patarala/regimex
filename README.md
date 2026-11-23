@@ -58,7 +58,7 @@ and 0.920 respectively. [Comparison and model import](docs/large-direction-fores
 | --- | --- |
 | Understand the data flow and design choices | [Architecture](docs/architecture.md) |
 | Train, evaluate and publish a model | [Training screen](docs/usage.md#train-a-model) |
-| Train locally or track a terminal command in the browser | [Local and worker training](docs/usage.md#choose-where-training-runs) · [Activity journal](docs/usage.md#show-a-local-command-in-activity) |
+| Train locally and find CLI results in the workspace | [Local and worker training](docs/usage.md#choose-where-training-runs) · [Finding a run](docs/usage.md#find-a-run-started-in-the-terminal) |
 | Automate analysis or model training | [API workflows](docs/api.md) |
 | Connect a simulator and manage its keys | [Integration protocol](docs/integration.md) · [Platform access](docs/access.md) |
 | Configure storage, back up data or recover an installation | [Storage and recovery](docs/storage.md) |

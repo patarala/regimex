@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal, Protocol, Self
 from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Header, Query, Response
+from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, RootModel, field_validator
 
 from regimex import __version__
@@ -38,7 +38,7 @@ from regimex.admin_contracts import (
     TrainingRunName,
     TrainingSpec,
 )
-from regimex.api import OperationView, _json_dependency, _operation, _request_body
+from regimex.api import OperationView, _json_dependency, _launch_source, _operation, _request_body
 from regimex.contracts import Identifier, StrictModel
 from regimex.data_catalog import (
     CURRENT_TRAINING_SEMANTICS,
@@ -63,6 +63,7 @@ from regimex.model_registry import (
     configured_parameter_count,
     resolve_training_policy,
 )
+from regimex.operations import LaunchSource
 from regimex.service_contracts import NotFound, Principal
 from regimex.storage import json_bytes
 from regimex.training_statistics import TrainingRunStatistics
@@ -105,6 +106,7 @@ class AdminAPIService(Protocol):
         model_version_id: str,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
     ) -> AdminRunRecord: ...
 
     def submit_generation(
@@ -113,6 +115,7 @@ class AdminAPIService(Protocol):
         spec: GenerationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str | None = None,
     ) -> AdminRunRecord: ...
 
@@ -131,6 +134,7 @@ class AdminAPIService(Protocol):
         spec: ReferenceGenerationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: RequestDigest | None = None,
     ) -> AdminRunRecord: ...
 
@@ -149,6 +153,7 @@ class AdminAPIService(Protocol):
         spec: TrainingSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: RequestDigest | None = None,
         display_name: str | None = None,
     ) -> AdminRunRecord: ...
@@ -159,6 +164,7 @@ class AdminAPIService(Protocol):
         spec: EvaluationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str | None = None,
     ) -> AdminRunRecord: ...
 
@@ -168,6 +174,7 @@ class AdminAPIService(Protocol):
         spec: PublicationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str | None = None,
     ) -> AdminRunRecord: ...
 
@@ -528,6 +535,7 @@ def install_admin_routes(
     def create_dataset(
         identity: Identity,
         intake: DatasetBody,
+        http_request: Request,
         response: Response,
         idempotency_key: Key,
     ) -> AdminRunView | DatasetView:
@@ -540,6 +548,7 @@ def install_admin_routes(
                     dataset_id=f"dataset-{uuid4().hex}", plan=request.plan, splits=request.splits
                 ),
                 idempotency_key=idempotency_key,
+                launch_source=_launch_source(http_request, identity),
                 request_sha256=digest,
             )
             response.status_code = 202
@@ -588,6 +597,7 @@ def install_admin_routes(
     def create_references(
         identity: Identity,
         intake: ReferenceBody,
+        http_request: Request,
         response: Response,
         idempotency_key: Key,
     ) -> AdminRunView | ReferenceView:
@@ -604,6 +614,7 @@ def install_admin_routes(
                     analysis_profile_id=request.analysis_profile_id,
                 ),
                 idempotency_key=idempotency_key,
+                launch_source=_launch_source(http_request, identity),
                 request_sha256=fingerprint,
             )
             response.status_code = 202
@@ -665,7 +676,11 @@ def install_admin_routes(
         "/api/v1/training-runs", status_code=202, openapi_extra=_request_body(TrainingRunRequest)
     )
     def train(
-        identity: Identity, intake: TrainingBody, response: Response, idempotency_key: Key
+        identity: Identity,
+        intake: TrainingBody,
+        http_request: Request,
+        response: Response,
+        idempotency_key: Key,
     ) -> AdminRunView:
         resolved, fingerprint = intake.resolve()
         record = service.submit_training(
@@ -678,6 +693,7 @@ def install_admin_routes(
             idempotency_key=idempotency_key,
             request_sha256=fingerprint,
             display_name=intake.display_name,
+            launch_source=_launch_source(http_request, identity, command="regimex submit-training"),
         )
         response.headers["Location"] = f"/api/v1/training-runs/{record.run_id}"
         return _run(record)
@@ -686,10 +702,17 @@ def install_admin_routes(
         "/api/v1/evaluations", status_code=202, openapi_extra=_request_body(EvaluationRequest)
     )
     def evaluate(
-        identity: Identity, intake: EvaluationBody, response: Response, idempotency_key: Key
+        identity: Identity,
+        intake: EvaluationBody,
+        http_request: Request,
+        response: Response,
+        idempotency_key: Key,
     ) -> AdminRunView:
         record = service.submit_evaluation(
-            identity, EvaluationSpec(**intake.model_dump()), idempotency_key=idempotency_key
+            identity,
+            EvaluationSpec(**intake.model_dump()),
+            idempotency_key=idempotency_key,
+            launch_source=_launch_source(http_request, identity),
         )
         response.headers["Location"] = f"/api/v1/evaluations/{record.run_id}"
         return _run(record)
@@ -703,11 +726,17 @@ def install_admin_routes(
         model_version_id: Identifier,
         identity: Identity,
         intake: PublicationBody,
+        http_request: Request,
         response: Response,
         idempotency_key: Key,
     ) -> AdminRunView:
         spec = PublicationSpec(model_version_id=model_version_id, **intake.model_dump())
-        record = service.submit_publication(identity, spec, idempotency_key=idempotency_key)
+        record = service.submit_publication(
+            identity,
+            spec,
+            idempotency_key=idempotency_key,
+            launch_source=_launch_source(http_request, identity),
+        )
         response.headers["Location"] = f"/api/v1/admin-runs/{record.run_id}"
         return _run(record)
 

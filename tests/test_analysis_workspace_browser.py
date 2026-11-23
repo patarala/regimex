@@ -29,14 +29,16 @@ def test_set_up_saved_experiment_and_open_its_result(browser: Any, width: int) -
             "created_at": created,
             "state": "succeeded",
             "model": {"model_version_id": PREVIOUS},
+            "launch_source": {"channel": "web"},
         },
         "result_available": True,
         "report_available": False,
     }
     posts: list[dict[str, str]] = []
+    runs: list[dict[str, Any]] = []
 
     def history(route: Any) -> None:
-        count = len(posts)
+        count = len(runs)
         route.fulfill(
             json={
                 "items": [
@@ -45,7 +47,7 @@ def test_set_up_saved_experiment_and_open_its_result(browser: Any, width: int) -
                         "analysis_count": count,
                         "successful_analysis_count": count,
                         "matching_analysis_count": count,
-                        "latest_analysis": analysis if count else None,
+                        "latest_analysis": runs[0] if count else None,
                     }
                 ]
             }
@@ -53,6 +55,7 @@ def test_set_up_saved_experiment_and_open_its_result(browser: Any, width: int) -
 
     def start(route: Any) -> None:
         posts.append(route.request.post_data_json)
+        runs.append(analysis)
         assert route.request.headers["x-csrf-token"] == "test"
         assert route.request.headers["idempotency-key"]
         route.fulfill(status=202, json={"analysis_id": analysis_id})
@@ -61,6 +64,7 @@ def test_set_up_saved_experiment_and_open_its_result(browser: Any, width: int) -
     page.route(ORIGIN + "/**", TrainingAPI(role="user").dispatch)
     page.route("**/api/v1/experiments?*", history)
     page.route("**/api/v1/analyses", start)
+    page.route("**/api/v1/analyses?*", lambda route: route.fulfill(json={"items": runs}))
     page.route(f"**/api/v1/analyses/{analysis_id}", lambda route: route.fulfill(json=analysis))
     try:
         page.goto(ORIGIN)
@@ -79,6 +83,8 @@ def test_set_up_saved_experiment_and_open_its_result(browser: Any, width: int) -
         expect(title).to_be_focused()
         expect(title).to_be_in_viewport()
         expect(page).to_have_url(f"{ORIGIN}/?analysis={analysis_id}")
+        page.get_by_text("Details", exact=True).click()
+        expect(page.locator("#analysis-identity")).to_contain_text("Launch source: Web interface")
         assert posts == [{"snapshot_id": snapshot_id, "model_version_id": PREVIOUS}]
         latest = page.get_by_role("button", name="Open latest analysis of Morning market")
         expect(latest).to_be_visible()
@@ -88,6 +94,16 @@ def test_set_up_saved_experiment_and_open_its_result(browser: Any, width: int) -
         latest.press("Enter")
         expect(title).to_be_focused()
         expect(title).to_be_in_viewport()
+        page.get_by_role("button", name="Show 1 analysis").click()
+        selected = page.locator(f'.experiment-run button[data-analysis-id="{analysis_id}"]')
+        selected.focus()
+        other = str(UUID(int=13))
+        runs.insert(0, {**analysis, "analysis_id": other})
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+        expect(page.get_by_role("button", name="Hide 2 analyses")).to_be_visible()
+        expect(page.locator(f'.experiment-run button[data-analysis-id="{other}"]')).to_be_visible()
+        expect(selected).to_be_focused()
+        expect(page).to_have_url(f"{ORIGIN}/?analysis={analysis_id}")
     finally:
         page.close()
 
@@ -114,6 +130,7 @@ def test_status_resumes_after_leaving_analyses_during_a_temporary_error(browser:
                     "stage": "predicting",
                     "operation_id": analysis_id,
                     "model": {"model_version_id": PREVIOUS},
+                    "launch_source": {"channel": "cli", "command": "regimex analyze"},
                 },
                 "result_available": state == "succeeded",
                 "report_available": False,
@@ -134,6 +151,8 @@ def test_status_resumes_after_leaving_analyses_during_a_temporary_error(browser:
         assert len(attempts) == reads
         page.go_back()
         expect(page.locator("#job-state")).to_have_text("Running")
+        page.get_by_text("Details", exact=True).click()
+        expect(page.locator("#analysis-identity")).to_contain_text("Launch source: regimex analyze")
         expect(page.locator("#job-guidance")).to_be_hidden()
         state = "succeeded"
         page.clock.fast_forward(1500)

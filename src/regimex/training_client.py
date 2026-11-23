@@ -34,6 +34,7 @@ async def submit_training(
             "training-runs",
             content=payload,
             key=key,
+            command="submit-training",
             expected_status=202,
             limit=MAX_INPUT_BYTES + 64 * 1024,
         )

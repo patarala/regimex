@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -118,6 +119,7 @@ async def request(
     expected_status: int = 200,
     content: bytes | None = None,
     key: UUID | None = None,
+    command: Literal["analyze", "submit-training"] | None = None,
     media_type: str = "application/json",
     limit: int = _JSON_LIMIT,
 ) -> bytes:
@@ -126,6 +128,8 @@ async def request(
         headers["Content-Type"] = "application/json"
     if key is not None:
         headers["Idempotency-Key"] = str(key)
+    if command is not None:
+        headers["X-Regimex-Command"] = command
     method = "GET" if content is None else "POST"
     attempt = 0
     while True:

@@ -53,7 +53,12 @@ async def _submit(
     body = {"snapshot_id": str(saved.snapshot_id), "model_version_id": model_version}
     analysis = _Analysis.model_validate_json(
         await request(
-            client, "analyses", content=json.dumps(body).encode(), key=key, expected_status=202
+            client,
+            "analyses",
+            content=json.dumps(body).encode(),
+            key=key,
+            expected_status=202,
+            command="analyze",
         )
     )
     if analysis.snapshot_id != saved.snapshot_id:

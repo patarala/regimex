@@ -37,8 +37,9 @@ its database transaction commits.
   seeds and generator settings out of prediction inputs. [Evaluation protocol and results](docs/quality.md)
 - **Terminal workflows.** Keep local fits runnable offline. When a fit writes
   a verified bundle, use the shared optional registration hook to make its
-  actual settings and evidence available in Training. For other local work a
-  user wants in the workspace, record it with the [activity CLI](docs/usage.md#show-a-local-command-in-activity).
+  settings and evidence available in Training. Record the submission channel on
+  the original operation. Only a known command name belongs in its metadata.
+  [Terminal and browser runs](docs/usage.md#find-a-run-started-in-the-terminal)
 - **Jobs.** Pin the model version at intake. Commit the operation and queue task
   together. Scope idempotency by owner and operation. Renew the lease during
   I/O, verify output objects before publication, and check the attempt token and

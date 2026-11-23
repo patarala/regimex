@@ -43,7 +43,7 @@ from regimex.infrastructure.resource_lifecycle import (
 )
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle, verify_model_bundle
 from regimex.model_registry import ArchitectureInfo, ArchitectureRegistry, InferenceRuntime
-from regimex.operations import Operation, ResolvedModel
+from regimex.operations import LaunchSource, Operation, ResolvedModel
 from regimex.report_contracts import MAX_REPORT_BYTES, AnalysisReportRecord
 from regimex.service_contracts import (
     AnalysisRecord,
@@ -223,8 +223,6 @@ class AnalysisService:
         max_owner_storage_bytes: int = 1024**3,
         max_integration_storage_bytes: int = 2 * 1024**3,
     ) -> None:
-        from regimex.infrastructure.terminal_activity import TerminalActivityRepository
-
         if (
             max_pending < 1
             or not 1 <= integration_max_pending <= 1000
@@ -240,7 +238,6 @@ class AnalysisService:
         ):
             raise ValueError("pending quota and heartbeat interval must be positive")
         self.repository = repository
-        self.terminal_activities = TerminalActivityRepository(repository)
         self.store = store
         self.registry = registry
         self.work_root = work_root
@@ -476,6 +473,7 @@ class AnalysisService:
         *,
         model_version_id: str = "active",
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         retry_of: UUID | None = None,
     ) -> AnalysisRecord:
         # Hash the requested alias, not today's active resolution: a replay must
@@ -495,6 +493,7 @@ class AnalysisService:
             max_pending=self.max_pending,
             integration_max_pending=self.integration_max_pending,
             retry_of=retry_of,
+            launch_source=launch_source,
         )
 
     def list_analyses(
@@ -729,6 +728,7 @@ class AnalysisService:
         expected_previous: str | None = None,
         worker_id: str = "registration",
         record_training: bool = False,
+        launch_source: LaunchSource | None = None,
         display_name: str | None = None,
         external_evaluations: tuple[ExternalEvaluation, ...] = (),
         external_latency: ExternalLatencyEvidence | None = None,
@@ -822,6 +822,7 @@ class AnalysisService:
                 display_name,
                 external_evaluations,
                 external_latency,
+                launch_source,
             )
         elif existing is None:
             record = self.repository.register_model(principal, record)

@@ -333,38 +333,25 @@ identity. For the forest comparisons you can also attach the
 Repeating registration recovers the same run. Use `--activate` only when
 you intend to change the default model.
 
-### Show a local command in Activity
+### Find a run started in the terminal
 
-Run commands directly for terminal-only work. To share a named execution
-with your own web workspace, wrap it with `regimex activity run`. Arguments
-after `--` run on your machine. For example, record the validation of an export:
+Open the link printed by `regimex submit-training` or `regimex analyze`, or
+sign in as the same owner and open **Training** or **Analyses**. In the
+training run, open **Run details and settings → Started via**. In an analysis,
+open **Details → Launch source**. The source identifies the web interface, an
+API call, a simulator integration or the name of the CLI command. Opening
+the job from another client keeps its original source. Older runs may have
+no recorded source.
 
-```sh
-uv run --locked regimex activity run --title "Validate the two-instrument export" \
-  --token-file var/credentials/user.token -- \
-  uv run --locked regimex validate --input tests/fixtures/experiment-v2.json
-```
+For an offline model, **Imported via** identifies the command that registered
+the saved bundle. The training settings and validation score come from the
+bundle. Direct local commands such as `regimex generate`, `validate`
+and `report` work without a service. To use a generated experiment in the
+workspace, submit its export for analysis.
 
-Open the printed URL or choose **Activity** while signed in as the same
-owner. The entry shows start and finish times, status and exit code.
-Set `REGIMEX_CLI_ORIGIN` and `REGIMEX_CLI_TOKEN_FILE` in your shell to
-reuse a service and account for activity, analysis and training submissions.
+Use `REGIMEX_CLI_ORIGIN` and `REGIMEX_CLI_TOKEN_FILE` to select the service
+and account for analysis and training submissions in your shell.
 Explicit `--origin` and `--token-file` options take precedence.
-Use `--note` for context or `--result-file PATH` to attach a UTF-8 text
-result of up to 16,000 characters after the process exits. Command arguments,
-environment variables and terminal output stay local.
-
-If the service is unreachable, the command still runs. The CLI saves a private
-receipt in `var/terminal-activity/`. Replay it against the same origin and
-account when the service is available. The original command runs once.
-
-```sh
-uv run --locked regimex activity sync --receipt var/terminal-activity/ACTIVITY_UUID.json \
-  --token-file var/credentials/user.token
-```
-
-If the wrapper was killed before it could record the outcome, add
-`--interrupted` after checking that the local job has stopped.
 
 ### Generate and analyze an experiment
 

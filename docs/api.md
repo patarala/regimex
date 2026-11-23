@@ -24,21 +24,21 @@ imports. Retry with the same body and key to receive the original resource,
 including the profile and model selected when the request was accepted. Reusing
 that key for different content under the same owner and operation returns `409`.
 
-## Record a local activity
+### Job launch source
 
-User and administrator accounts can record locally executed work under
-`/terminal-activities`. **Activity** in the browser reads these same records.
+Job responses include `launch_source`. Its `channel` is `web` for a browser
+session, `integration` for an integration credential, and `api` for an
+ordinary bearer API request. In each case `command` is null.
+The Regimex CLI identifies its submitting command
+with `X-Regimex-Command: analyze` on analysis intake or
+`X-Regimex-Command: submit-training` on training intake. A matching command
+produces, for example, `{"channel":"cli","command":"regimex analyze"}`.
+This marker supplies display metadata. Authentication and ownership still
+come from the credential. An idempotent retry keeps the original source.
 
-| Request | Result |
-| --- | --- |
-| `POST /terminal-activities` | Create an entry with a client-generated `activity_id` (UUID), `title` and optional `note` and `started_at`. |
-| `POST /terminal-activities/{id}/finish` | Record `status` (`succeeded`, `failed` or `interrupted`), `exit_code` and optional `finished_at` and `result_text`. |
-| `GET /terminal-activities?limit=20&offset=0` | List your entries, newest first. |
-| `GET /terminal-activities/{id}` | Read one entry and its attached text. |
-
-Replaying the same start or finish recovers the existing entry. Conflicting
-values return `409`. The local client runs the process and can replay its
-original timestamps from a receipt. [Terminal activity](usage.md#show-a-local-command-in-activity)
+Verified imports made by `regimex service register-model` record that command
+as the import source. Earlier jobs can omit the field or return null.
+[Finding a run](usage.md#find-a-run-started-in-the-terminal)
 
 ## Manage platform connections
 

@@ -627,7 +627,13 @@ test("hiding the document suspends status reads and ignores an earlier response 
   first.reply(metadata("job-A", "running"));
   await flush();
   assert.equal(ui.get("job-state").textContent, "Cancelled");
-  assert.equal(ui.timers.size, 0);
+  const historyReads = () => ui.calls.filter(call => call.url.startsWith("/api/v1/experiments?")).length;
+  const before = historyReads();
+  assert.equal(ui.timers.size, 1);
+  ui.timers.values().next().value();
+  await flush();
+  assert.equal(historyReads(), before + 1);
+  assert.equal(ui.calls.filter(call => call.url === path).length, 2);
   ui.document.hidden = true;
   await ui.document.emit("visibilitychange");
   ui.document.hidden = false;

@@ -141,10 +141,11 @@ export function createHistory({session, getSelection, openAnalysis, chooseExperi
     renderHistory();
     return load();
   }
-  $("refresh-history").addEventListener("click", () => {
+  function refresh() {
     const expandedPages = Array.from(records.values(), (record) => record.refreshRuns());
     return Promise.all([load(), ...expandedPages]);
-  });
+  }
+  $("refresh-history").addEventListener("click", refresh);
   $("history-filters").addEventListener("submit", applyHistoryFilters);
   $("history-state").addEventListener("change", applyHistoryFilters);
   $("history-clear").addEventListener("click", () => {
@@ -157,6 +158,6 @@ export function createHistory({session, getSelection, openAnalysis, chooseExperi
   $("history-next").addEventListener("click", () =>
     load(historyOffset + HISTORY_PAGE_SIZE),
   );
-  return {reset, load, update: updateHistory, markSelected: markSelectedHistory,
+  return {reset, load, refresh, update: updateHistory, markSelected: markSelectedHistory,
     refreshAfterDeletion};
 }

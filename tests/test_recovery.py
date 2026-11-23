@@ -168,7 +168,6 @@ def test_recovery_preserves_external_training_provenance_and_metrics(
     from regimex.external_evaluations import ExternalEvaluation
     from regimex.infrastructure.admin_repository import AdminRepository
     from regimex.model_registry import InferenceRuntime
-    from regimex.terminal_activity import ActivityFinish, ActivityStart
 
     source = databases("external_recovery")
     source.migrate()
@@ -177,12 +176,15 @@ def test_recovery_preserves_external_training_provenance_and_metrics(
     store = local(tmp_path / "source")
     service = analysis_service(source, store, tmp_path / "work")
     activity_id = uuid4()
-    service.terminal_activities.start(
-        principal, ActivityStart(activity_id=activity_id, title="Fit")
-    )
-    receipt = service.terminal_activities.finish(
-        principal, activity_id, ActivityFinish(status="succeeded", exit_code=0, result_text="ready")
-    )
+    # Existing installations can have terminal receipts in their backup inventory.
+    with source.connection() as connection:
+        receipt = connection.execute(
+            "INSERT INTO regimex_terminal_activities "
+            "(owner_id,activity_id,title,status,started_at,finished_at,exit_code,result_text) "
+            "VALUES (%s,%s,'Fit','succeeded',now(),now(),0,'ready') RETURNING *",
+            (principal.owner_id, activity_id),
+        ).fetchone()
+    assert receipt is not None
     _, _, _, checksum = bundle(tmp_path)
     evidence = ExternalEvaluation(
         kind="controlled_transfer",
@@ -221,12 +223,14 @@ def test_recovery_preserves_external_training_provenance_and_metrics(
         attestation=stopped(),
     )
     restored = AdminRepository(target)
-    assert (
-        analysis_service(
-            target, restored_store, tmp_path / "restored-work"
-        ).terminal_activities.get(principal, activity_id)
-        == receipt
-    )
+    with target.connection() as connection:
+        assert (
+            connection.execute(
+                "SELECT * FROM regimex_terminal_activities WHERE owner_id=%s AND activity_id=%s",
+                (principal.owner_id, activity_id),
+            ).fetchone()
+            == receipt
+        )
     assert restored.get_run(target.authenticate(token), run.run_id) == run
     assert metrics is not None and restored.get_training_metrics(principal, run.run_id) == metrics
     restored_model = target.get_model(model.model_version_id)

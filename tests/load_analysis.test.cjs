@@ -115,11 +115,17 @@ test("a verified result needs the resolved model and a complete classification o
     instruments: [{ ...instrument }],
     sequences: [{ instrument_id: "ETH/USD", probabilities: [[1, 0, 0], [0.5, 0.2, 0.3]], intervals: [interval] }],
   };
-  function verify(result) {
-    http.request = (method, url) => url.endsWith("/result")
-      ? { status: 200, json: () => result }
-      : { status: 202, json: () => ({ analysis_id: "analysis", snapshot_id: snapshot.id, result_available: true,
-        job: { model: result.model, created_at: "2026-01-01T00:00:00Z", state: "succeeded" } }) };
+  const apiSource = { channel: "api", command: null };
+  function verify(result, intakeSource = apiSource, pollSource = apiSource) {
+    http.request = (method, url) => {
+      if (url.endsWith("/result")) return { status: 200, json: () => result };
+      const intake = method === "POST";
+      const job = { model: result.model, created_at: "2026-01-01T00:00:00Z",
+        state: intake ? "queued" : "succeeded", launch_source: intake ? intakeSource : pollSource };
+      return { status: intake ? 202 : 200, json: () => ({
+        analysis_id: "analysis", snapshot_id: snapshot.id, result_available: !intake, job,
+      }) };
+    };
     client.default([snapshot]);
   }
   const classifications = [
@@ -168,6 +174,12 @@ test("a verified result needs the resolved model and a complete classification o
     result.sequences[0].intervals = [{ instrument_id: "ETH/USD", start: 0, stop: 2, ...classification }];
     assert.throws(() => verify(result), /interval/);
   }
+  const invalidSources = [null, { channel: "web", command: null }, { channel: "api", command: "regimex" }];
+  for (const source of invalidSources) {
+    assert.throws(() => verify(valid, source, apiSource), /launch source/);
+    assert.throws(() => verify(valid, apiSource, source), /launch source/);
+  }
   assert.deepEqual(metrics.get("analyses_verified"), classifications.map(() => 1));
-  assert.equal(metrics.get("analyses_failed").length, invalid.length + invalidClassifications.length);
+  assert.equal(metrics.get("analyses_failed").length,
+    invalid.length + invalidClassifications.length + 2 * invalidSources.length);
 });

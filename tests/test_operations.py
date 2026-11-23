@@ -44,6 +44,14 @@ def queued(**changes: object) -> Operation:
     )
 
 
+def test_historical_operation_preserves_missing_launch_source() -> None:
+    historical = queued().model_dump_json()
+    assert "launch_source" not in historical
+    restored = Operation.model_validate_json(historical)
+    assert restored.launch_source is None
+    assert "launch_source" not in start_attempt(restored, uuid4(), NOW).model_dump()
+
+
 def test_cancel_before_completion_prevents_publication() -> None:
     token = uuid4()
     operation = start_attempt(queued(), token, NOW)

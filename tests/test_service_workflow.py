@@ -811,6 +811,7 @@ def test_verified_external_fit_is_visible_in_training_and_replays_without_upload
     from regimex.external_evaluations import ExternalEvaluation
     from regimex.external_latency import ExternalLatencyEvidence, LatencyAtLength
     from regimex.infrastructure.admin_repository import AdminRepository
+    from regimex.operations import LaunchSource
     from regimex.service_contracts import Conflict
 
     database = service.repository
@@ -844,6 +845,8 @@ def test_verified_external_fit_is_visible_in_training_and_replays_without_upload
                     record_training=True,
                 )
         assert runs.list_runs(admin, kind="training") == () and service.list_models(admin) == ()
+    registration = LaunchSource(channel="cli", command="regimex service register-model")
+    first_source = None if already_registered else registration
     model = service.register_bundle(
         admin,
         root,
@@ -851,6 +854,7 @@ def test_verified_external_fit_is_visible_in_training_and_replays_without_upload
         inference_runtime=runtime,
         record_training=True,
         display_name="Offline baseline",
+        launch_source=first_source,
     )
     (run,) = runs.list_runs(admin, kind="training")
     assert run.operation.attempt == 0 and run.operation.stage == "imported"
@@ -882,6 +886,7 @@ def test_verified_external_fit_is_visible_in_training_and_replays_without_upload
         manifest_sha256=checksum,
         inference_runtime=runtime,
         record_training=True,
+        launch_source=registration,
         external_evaluations=(evidence,),
         external_latency=latency,
     )
@@ -918,6 +923,7 @@ def test_verified_external_fit_is_visible_in_training_and_replays_without_upload
         path = f"/api/v1/training-runs/{run.run_id}"
         (item,) = client.get("/api/v1/training-runs", headers=headers).json()["items"]
         assert item == client.get(path, headers=headers).json()
+        assert item["job"]["launch_source"] == (first_source.model_dump() if first_source else None)
         assert item["display_name"] == "Offline baseline" and "statistics" not in item
         training = item["training"]
         assert training["origin"] == "external" and training["evidence"]["run_id"] == "fixture-run"

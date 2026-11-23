@@ -84,6 +84,10 @@ def test_register_model_inference_runtime(
         registration = service.register_bundle.call_args.kwargs
         assert registration["inference_runtime"] == expected
         assert registration["record_training"] is True
+        assert registration["launch_source"].model_dump() == {
+            "channel": "cli",
+            "command": "regimex service register-model",
+        }
         assert registration["activate"] is False
         assert registration["external_evaluations"] == ()
 

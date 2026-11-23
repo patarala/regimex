@@ -12,6 +12,7 @@ from regimex.external_evaluations import ExternalEvaluation
 from regimex.external_latency import ExternalLatencyEvidence
 from regimex.infrastructure.admin_repository import AdminRepository
 from regimex.model_bundles import BundleMember, ModelBundle
+from regimex.operations import LaunchSource
 from regimex.service_contracts import ModelRecord, Principal
 
 
@@ -23,6 +24,7 @@ def record_external_training(
     display_name: str | None,
     evaluations: tuple[ExternalEvaluation, ...],
     latency: ExternalLatencyEvidence | None,
+    launch_source: LaunchSource | None,
 ) -> ModelRecord:
     members = {member.role: member for member in manifest.members}
     with tempfile.TemporaryDirectory(dir=service.work_root) as tmp:
@@ -60,4 +62,5 @@ def record_external_training(
         display_name=display_name,
         evaluations=evaluations,
         latency=latency,
+        launch_source=launch_source,
     )

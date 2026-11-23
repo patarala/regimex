@@ -246,6 +246,12 @@ function rejectionCode(response) {
   return "unknown";
 }
 
+function checkLaunchSource(job) {
+  if (job?.launch_source?.channel !== "api" || job.launch_source.command !== null) {
+    fail("Direct API submission has an unexpected launch source");
+  }
+}
+
 function submitAndVerify(snapshot) {
   const body = JSON.stringify({ snapshot_id: snapshot.id, model_version_id: model });
   const start = Date.now();
@@ -265,6 +271,7 @@ function submitAndVerify(snapshot) {
   const id = analysis.analysis_id;
   if (!id) fail("Accepted analysis has no ID");
   console.log(`REGIMEX_ACCEPTED ${JSON.stringify({ phase, analysis_id: id })}`);
+  checkLaunchSource(analysis.job);
   const resolved = analysis.job.model;
   if (analysis.snapshot_id !== snapshot.id || resolved.model_version_id !== model ||
     !validDigest(resolved.bundle_sha256) || !validDigest(resolved.inference_policy_sha256) ||
@@ -285,6 +292,7 @@ function submitAndVerify(snapshot) {
     sleep(0.5);
     analysis = request("poll analysis", path, 200).json();
     if (analysis.analysis_id !== id) fail("Status belongs to a different analysis");
+    checkLaunchSource(analysis.job);
   }
   if (!analysis.result_available) fail("Successful analysis has no result");
   const result = request("download result", path + "/result", 200);

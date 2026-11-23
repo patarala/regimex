@@ -90,7 +90,7 @@ from regimex.infrastructure.object_store import (
 from regimex.market_identity import imported_seed_group
 from regimex.model_bundles import BundleMember, ModelBundle
 from regimex.model_registry import FixedUpdatePolicy, RegistryError, TrainingPolicy
-from regimex.operations import OperationFailure
+from regimex.operations import LaunchSource, OperationFailure
 from regimex.service_contracts import (
     CapacityExceeded,
     Conflict,
@@ -170,6 +170,7 @@ class AdminService:
         spec: AdminSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: RequestDigest | None = None,
         display_name: str | None = None,
         _final_grant: FinalEvaluationGrant | None = None,
@@ -201,6 +202,7 @@ class AdminService:
             principal,
             spec,
             idempotency_key=idempotency_key,
+            launch_source=launch_source,
             request_sha256=checksum,
             max_pending=self.settings.max_admin_pending_per_owner,
             display_name=display_name,
@@ -306,10 +308,15 @@ class AdminService:
         spec: GenerationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str | None = None,
     ) -> AdminRunRecord:
         return self._submit(
-            principal, spec, idempotency_key=idempotency_key, request_sha256=request_sha256
+            principal,
+            spec,
+            idempotency_key=idempotency_key,
+            launch_source=launch_source,
+            request_sha256=request_sha256,
         )
 
     def generate_references(
@@ -318,10 +325,15 @@ class AdminService:
         spec: ReferenceGenerationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: RequestDigest | None = None,
     ) -> AdminRunRecord:
         return self._submit(
-            principal, spec, idempotency_key=idempotency_key, request_sha256=request_sha256
+            principal,
+            spec,
+            idempotency_key=idempotency_key,
+            launch_source=launch_source,
+            request_sha256=request_sha256,
         )
 
     def submit_training(
@@ -330,6 +342,7 @@ class AdminService:
         spec: TrainingSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: RequestDigest | None = None,
         display_name: str | None = None,
     ) -> AdminRunRecord:
@@ -337,6 +350,7 @@ class AdminService:
             principal,
             spec,
             idempotency_key=idempotency_key,
+            launch_source=launch_source,
             request_sha256=request_sha256,
             display_name=validate_display_name(display_name),
         )
@@ -347,12 +361,17 @@ class AdminService:
         spec: EvaluationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str | None = None,
     ) -> AdminRunRecord:
         if spec.partition != "validation":
             raise Forbidden("Use the dedicated benchmark endpoint for final evaluation.")
         return self._submit(
-            principal, spec, idempotency_key=idempotency_key, request_sha256=request_sha256
+            principal,
+            spec,
+            idempotency_key=idempotency_key,
+            launch_source=launch_source,
+            request_sha256=request_sha256,
         )
 
     def submit_final_evaluation(
@@ -362,6 +381,7 @@ class AdminService:
         model_version_id: str,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str | None = None,
     ) -> AdminRunRecord:
         self._admin(principal)
@@ -385,6 +405,7 @@ class AdminService:
             principal,
             spec,
             idempotency_key=idempotency_key,
+            launch_source=launch_source,
             request_sha256=checksum,
             _final_grant=grant,
         )
@@ -395,10 +416,15 @@ class AdminService:
         spec: PublicationSpec,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
         request_sha256: str | None = None,
     ) -> AdminRunRecord:
         return self._submit(
-            principal, spec, idempotency_key=idempotency_key, request_sha256=request_sha256
+            principal,
+            spec,
+            idempotency_key=idempotency_key,
+            launch_source=launch_source,
+            request_sha256=request_sha256,
         )
 
     def get_run(self, principal: Principal, run_id: UUID) -> AdminRunRecord:

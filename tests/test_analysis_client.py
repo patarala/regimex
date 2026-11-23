@@ -76,16 +76,19 @@ def test_submit_wait_and_save(
         assert request.headers["Authorization"] == "Bearer test-client-token"
         if path == "/api/v1/snapshots":
             assert request.method == "POST" and request.content == EXPORT.read_bytes()
+            assert "X-Regimex-Command" not in request.headers
             digest = json.loads(request.content)["content_sha256"]
             return reply(201, {"snapshot_id": SNAPSHOT_ID, "content_sha256": digest})
         if path == "/api/v1/analyses":
             assert request.headers["Idempotency-Key"] == key
+            assert request.headers["X-Regimex-Command"] == "analyze"
             assert json.loads(request.content) == {
                 "snapshot_id": SNAPSHOT_ID,
                 "model_version_id": "chosen",
             }
             return reply(202, status_for("queued", polling_url="https://invalid.example/"))
         assert request.method == "GET"
+        assert "X-Regimex-Command" not in request.headers
         if path.endswith("/report"):
             return reply(200, HTML)
         return reply(200, status_for("succeeded", report_url="https://invalid.example/"))
@@ -117,6 +120,7 @@ def test_submit_training_links_the_accepted_run_and_preserves_request_bytes(
         assert str(request.url) == "https://regimex.example/api/v1/training-runs"
         assert request.method == "POST" and request.content == path.read_bytes()
         assert request.headers["Idempotency-Key"] == str(key)
+        assert request.headers["X-Regimex-Command"] == "submit-training"
         assert request.headers["Authorization"] == "Bearer test-client-token"
         return reply(202, {"run_id": str(run_id), "polling_url": "https://unrelated.example/"})
 

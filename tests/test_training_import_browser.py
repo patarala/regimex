@@ -32,7 +32,12 @@ def imported_run() -> dict[str, Any]:
         "run_id": IMPORTED,
         "name_revision": 0,
         "display_name": None,
-        "job": {"state": "succeeded", "stage": "imported", "created_at": "2026-01-02T10:00:00Z"},
+        "job": {
+            "state": "succeeded",
+            "stage": "imported",
+            "created_at": "2026-01-02T10:00:00Z",
+            "launch_source": {"channel": "cli", "command": "regimex service register-model"},
+        },
         "training": {
             "origin": "external",
             "model_version_id": "forest-v1",
@@ -116,6 +121,9 @@ def test_imported_model_keeps_its_evidence_and_existing_run_controls(browser: An
         expect(transfer).to_contain_text("6" * 64)
         page.get_by_text("Bundle, weights and settings", exact=True).click()
         expect(page.locator("#training-facts")).to_contain_text("weights.npz · 1 KiB · saved")
+        expect(page.get_by_text("Imported via", exact=True).locator("+ dd")).to_have_text(
+            "regimex service register-model"
+        )
         expect(page.locator("#training-settings")).to_contain_text("9007199254740993")
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
         assert not any(path.startswith(f"training-runs/{IMPORTED}/actions") for path in api.pages)

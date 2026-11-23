@@ -8,18 +8,17 @@ import {createIntegrations} from "./integrations.js";
 import {createStorage} from "./storage.js";
 import {createDeletion} from "./deletion.js";
 import {createTraining} from "./training.js";
-import {createActivity} from "./activity.js";
 
 const session = createSession({
   onActivate: restoreLocation,
   onReset: () => {
     analysesOpened = false;
+    refreshHistoryOnOpen = false;
     screen = null;
     lastLocation = null;
     $("open-analyses").href = "/";
     integrations.reset();
     training.reset();
-    activity.close();
     storage.reset();
     deletion.reset();
     history.reset();
@@ -57,10 +56,10 @@ const deletion = createDeletion({session, onApplied: (target, receipt) => {
 }});
 const integrations = createIntegrations({session, navigate});
 const training = createTraining({session, navigate, deletion, onPublication: () => models.load()});
-const activity = createActivity(session);
 
 const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 let screen = null, lastLocation = null, analysesOpened = false;
+let refreshHistoryOnOpen = false;
 
 function navigate(path, replace = false) {
   const url = new URL(path, location.href);
@@ -129,24 +128,23 @@ function restoreComparison(url) {
 async function restoreLocation() {
   let url = restoreBookmark(new URL(location.href));
   if (!session.value || lastLocation === url.href) return;
-  const match = /^\/(training|connections|activity)(?:\/([^/]+))?$/.exec(url.pathname);
+  const match = /^\/(training|connections)(?:\/([^/]+))?$/.exec(url.pathname);
   const admin = session.value.principal.role === "admin";
-  const allowed = match && (match[1] === "activity" || admin);
   if (match) {
     const home = new URL("/", url), state = window.history.state;
-    if (allowed && state?.reportQuery && (state.owner === null || state.owner === session.value.principal.owner_id)) {
+    if (admin && state?.reportQuery && (state.owner === null || state.owner === session.value.principal.owner_id)) {
       home.search = state.reportQuery;
       if (state.owner === null) window.history.replaceState(reportTabState(home), "", url);
     }
     $("open-analyses").href = home.href;
-    if (!allowed) {
+    if (!admin) {
       url = home;
       window.history.replaceState(null, "", url);
       notice((match[1] === "training" ? "Training" : "Connections") + " is available to administrators.");
     }
   }
   lastLocation = url.href;
-  const section = allowed ? match[1] : "analyses";
+  const section = admin && match ? match[1] : "analyses";
   const id = match?.[2] || null;
   const previous = screen;
   if (previous !== section) {
@@ -154,20 +152,18 @@ async function restoreLocation() {
     if (previous === "analyses") comparison.cancelRestore();
     if (previous === "training") training.close();
     if (previous === "connections") integrations.reset();
-    if (previous === "activity") activity.close();
   }
   screen = section;
   const resumed = analysis.setVisible(section === "analyses" && !document.hidden, url.searchParams.get("analysis"));
   document.title = {analyses: "Regimex — Market analysis", training: "Model training · Regimex",
-    connections: "Connections · Regimex", activity: "Terminal activity · Regimex"}[section];
+    connections: "Connections · Regimex"}[section];
   $("workspace").hidden = section !== "analyses";
-  for (const name of ["analyses", "training", "connections", "activity"]) {
+  for (const name of ["analyses", "training", "connections"]) {
     const link = $("open-" + name);
-    link.hidden = (name === "training" || name === "connections") && !admin;
+    link.hidden = name !== "analyses" && !admin;
     if (section === name) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
-  if (section === "activity") return activity.show(id, url.searchParams.get("offset"));
   if (section === "training" || section === "connections") {
     if (section === "connections") return integrations.show(id);
     const view = url.searchParams.get("view");
@@ -181,6 +177,9 @@ async function restoreLocation() {
     void deletion.load();
     void models.load();
     initialHistory = history.load();
+  } else if (refreshHistoryOnOpen) {
+    refreshHistoryOnOpen = false;
+    initialHistory = history.refresh();
   }
   $("open-analyses").href = url.href;
   if (previous && previous !== section) $("open-analyses").focus();
@@ -213,15 +212,15 @@ window.addEventListener("hashchange", restoreLocation);
 let returnTimer;
 function refreshOnReturn() {
   clearTimeout(returnTimer);
-  if (document.hidden || !["activity", "training"].includes(screen)) return;
+  if (document.hidden || !screen) return;
   returnTimer = setTimeout(() => {
-    if (screen === "activity") void activity.refresh();
+    if (screen === "analyses") void history.refresh();
+    else refreshHistoryOnOpen = analysesOpened;
     if (screen === "training") training.refreshAfterReturn();
   }, 80);
 }
 window.addEventListener("focus", refreshOnReturn);
 document.addEventListener("visibilitychange", () => {
-  if (screen === "activity" && document.hidden) void activity.refresh();
   refreshOnReturn();
   const visible = screen === "analyses" && !document.hidden;
   const resumed = analysis.setVisible(visible);

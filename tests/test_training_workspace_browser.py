@@ -247,6 +247,7 @@ class TrainingAPI:
         if path == "training-runs":
             if len(self.posts) == 1:
                 training = request.post_data_json.copy()
+                self.run["job"]["launch_source"] = {"channel": "web"}
                 self.run["display_name"] = training.pop("display_name", None)
                 self.run["training"].update(training)
                 self.runs.append(self.run)
@@ -313,6 +314,11 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
             expect(page.get_by_label("Run configuration (JSON)")).to_be_visible()
         start.press("Enter")
         expect(page.get_by_role("heading", name=title)).to_be_visible()
+        page.get_by_text("Run details and settings").click()
+        expect(page.get_by_text("Started via", exact=True).locator("+ dd")).to_have_text(
+            "Web interface"
+        )
+        page.get_by_text("Run details and settings").click()
         assert api.posts[0] == api.posts[1]
         assert api.posts[0][:2] == ("training-runs", expected_intake)
 
@@ -1394,6 +1400,9 @@ def test_run_names_survive_conflicts_and_older_list_responses(browser: Any) -> N
         expect(row.locator("strong")).to_have_text(default_title)
         page.get_by_text("Run details and settings").click()
         expect(page.locator("#training-facts")).to_contain_text(dataset_id)
+        expect(page.get_by_text("Started via", exact=True).locator("+ dd")).to_have_text(
+            "Not recorded"
+        )
 
         held: list[Any] = []
         page.route("**/training-runs?*", lambda route: held.append(route), times=1)
@@ -1569,6 +1578,7 @@ def test_unsuccessful_evaluation_can_be_retried(browser: Any, state: str) -> Non
     api = TrainingAPI()
     attempt = completed_run(str(UUID(int=4)), "evaluation")
     attempt["job"]["state"] = state
+    attempt["job"]["launch_source"] = {"channel": "api"}
     if state == "failed":
         attempt["job"]["failure"] = {"message": "Worker timed out."}
     api.actions.append(attempt)
@@ -1578,6 +1588,7 @@ def test_unsuccessful_evaluation_can_be_retried(browser: Any, state: str) -> Non
         page.goto(f"{ORIGIN}/training/{RUN_ID}")
         actions = page.locator("#training-actions")
         expect(actions).to_contain_text(state.capitalize())
+        expect(actions).to_contain_text("Launch source: API")
         if state == "failed":
             expect(actions).to_contain_text("Worker timed out.")
         page.get_by_role("button", name="Retry evaluation").press("Enter")

@@ -94,8 +94,6 @@ def test_workspace_deep_links_serve_the_app_shell_only_on_known_routes() -> None
             f"/training/{resource_id}?view=archived",
             "/connections",
             f"/connections/{resource_id}",
-            "/activity",
-            f"/activity/{resource_id}",
         ):
             page = client.get(path, follow_redirects=False)
             assert page.status_code == 200, path
@@ -104,7 +102,8 @@ def test_workspace_deep_links_serve_the_app_shell_only_on_known_routes() -> None
         for path in (
             "/training/not-a-run",
             "/connections/new",
-            "/activity/unknown",
+            "/activity",
+            f"/activity/{resource_id}",
             "/missing",
             "/api/v1/missing",
         ):

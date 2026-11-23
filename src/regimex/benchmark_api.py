@@ -5,7 +5,7 @@ from collections.abc import Callable
 from typing import Annotated, Literal, Protocol, Self
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, Header, Response
+from fastapi import Depends, FastAPI, Header, Request, Response
 from pydantic import Field, model_validator
 
 from regimex.admin_api import AdminRunView, ReferenceView, _reference, _run
@@ -17,7 +17,7 @@ from regimex.admin_contracts import (
     RequestDigest,
     RequestFingerprint,
 )
-from regimex.api import _json_dependency, _request_body
+from regimex.api import _json_dependency, _launch_source, _request_body
 from regimex.benchmark_contracts import (
     BenchmarkView,
     RegistryState,
@@ -27,6 +27,7 @@ from regimex.benchmark_contracts import (
 from regimex.benchmarks import DatasetHistory
 from regimex.contracts import Identifier, StrictModel
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
+from regimex.operations import LaunchSource
 from regimex.service_contracts import Principal
 from regimex.storage import json_bytes
 
@@ -84,6 +85,7 @@ class FinalEvaluationService(Protocol):
         model_version_id: str,
         *,
         idempotency_key: str,
+        launch_source: LaunchSource | None = None,
     ) -> AdminRunRecord: ...
 
 
@@ -279,10 +281,15 @@ def install_benchmark_routes(
         identity: Identity,
         intake: ModelBody,
         idempotency_key: Key,
+        http_request: Request,
         response: Response,
     ) -> AdminRunView:
         record = administration.submit_final_evaluation(
-            identity, benchmark_id, intake.model_version_id, idempotency_key=idempotency_key
+            identity,
+            benchmark_id,
+            intake.model_version_id,
+            idempotency_key=idempotency_key,
+            launch_source=_launch_source(http_request, identity),
         )
         response.headers["Location"] = f"/api/v1/evaluations/{record.run_id}"
         return _run(record)

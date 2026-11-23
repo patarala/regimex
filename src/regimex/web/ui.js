@@ -9,6 +9,16 @@ export function analysisStateLabel(state) {
   return analysisStates[state] || state;
 }
 
+export function launchSourceLabel(source) {
+  switch (source?.channel) {
+    case "web": return "Web interface";
+    case "cli": return source.command || "Command line";
+    case "api": return "API";
+    case "integration": return "Integration";
+    default: return "Not recorded";
+  }
+}
+
 export function shortDate(value) {
   return new Date(value).toLocaleString(undefined, {dateStyle: "medium", timeStyle: "short"});
 }

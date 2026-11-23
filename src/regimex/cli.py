@@ -11,7 +11,6 @@ from uuid import UUID
 import typer
 
 from regimex import __version__
-from regimex.activity_cli import app as activity_app
 from regimex.contracts import MAX_STEPS, StrictModel
 from regimex.service_cli import app as service_app
 from regimex.storage import json_bytes, output_directory, write_new_file
@@ -22,7 +21,6 @@ app = typer.Typer(
     pretty_exceptions_show_locals=False,
 )
 app.add_typer(service_app, name="service")
-app.add_typer(activity_app, name="activity")
 
 
 def _show_version(value: bool) -> None:
