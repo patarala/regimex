@@ -75,3 +75,25 @@ def test_numeric_forest_matches_fitted_trees_and_rejects_cycles(
     np.savez(corrupted, **members)
     with pytest.raises(ValueError, match="children"):
         adaptive.DirectionContextModel.load(corrupted)
+
+
+def test_forest_restores_repeated_feature_runs_to_the_original_grid(adaptive: ModuleType) -> None:
+    import numpy as np
+
+    rng = np.random.default_rng(31)
+    x = rng.normal(size=(120, len(adaptive.FEATURE_NAMES)))
+    model = adaptive.fit(x, np.digitize(x[:, 0], (-0.5, 0.5)), trees=5, max_depth=5)
+    expected = model.predict(x)
+    order = [7, 7, 2, 3, 3, 3, 7, 7, 8]
+    repeated = x[order]
+    # The estimator sees the same float32 row on both sides of this float64 change.
+    repeated[1] = np.nextafter(repeated[1], np.inf)
+    np.testing.assert_array_equal(repeated[0].astype("float32"), repeated[1].astype("float32"))
+    np.testing.assert_array_equal(model.predict(repeated), expected[order])
+    np.testing.assert_array_equal(model.predict(np.repeat(x[:1], 256, axis=0)), expected[[0] * 256])
+    assert model.predict(x[:0]).shape == (0, 3)
+    dense = rng.normal(size=(1025, x.shape[1]))
+    np.testing.assert_array_equal(
+        model.predict(dense),
+        np.concatenate([model.predict(chunk) for chunk in np.array_split(dense, 3)]),
+    )
