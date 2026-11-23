@@ -412,6 +412,7 @@ class TCNBackend:
         TrainingRuntime.model_validate(runtime.model_dump())
         AnalysisConfig.model_validate(analysis.model_dump())
         validate_tcn_policy(policy)
+        assert isinstance(policy, (TrainingPolicy, FixedUpdatePolicy))
         if {item.experiment_id for item in training.observations.info} & {
             item.experiment_id for item in validation.info
         }:

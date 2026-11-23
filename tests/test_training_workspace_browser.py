@@ -11,7 +11,12 @@ import pytest
 from test_offline_report_browser import browser as browser
 
 import regimex
-from regimex.model_registry import FixedUpdatePolicy, baseline_descriptor, tcn_descriptor
+from regimex.model_registry import (
+    FixedUpdatePolicy,
+    adaptive_descriptor,
+    baseline_descriptor,
+    tcn_descriptor,
+)
 
 ASSETS = Path(regimex.__file__).parent / "web"
 ORIGIN = "https://regimex.test"
@@ -2107,5 +2112,79 @@ def test_model_size_presets_edit_the_layout_and_identify_saved_runs(browser: Any
         updated = configuration.input_value()
         assert '"dropout": 0.0' in updated and '"smoothing": 0.10000000000000001' in updated
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    finally:
+        page.close()
+
+
+def test_adaptive_form_edits_forest_settings_and_round_trips_json(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page(viewport={"width": 360, "height": 800})
+    page.route(ORIGIN + "/**", api.dispatch)
+    adaptive = adaptive_descriptor().describe().model_dump(mode="json")
+    page.route(
+        ORIGIN + "/api/v1/architectures*", lambda r: r.fulfill(json={"items": [adaptive, TCN]})
+    )
+    try:
+        page.goto(ORIGIN + "/training")
+        page.get_by_role("button", name="New run", exact=True).click()
+        expect(page.get_by_label("Architecture")).to_have_value("adaptive")
+        trees = page.get_by_label("Number of trees", exact=True)
+        depth = page.get_by_label("Maximum tree depth", exact=True)
+        expect(trees).to_have_value("40")
+        expect(depth).to_have_value("12")
+        trees.fill("24")
+        depth.fill("8")
+        page.get_by_text("Training policy", exact=True).click()
+        expect(page.get_by_label("Maximum epochs")).to_have_count(0)
+        expect(page.get_by_label("Random seed", exact=True)).to_have_value("173")
+        edit = page.get_by_role("button", name="Edit JSON")
+        edit.click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        request = json.loads(editor.input_value())
+        assert request["parameters"] == {"trees": 24, "max_depth": 8}
+        assert request["policy"] == adaptive["default_training_policy"]
+        request["policy"] = {"optimizer": "extra_trees", "seeds": [123]}
+        request["parameters"] = {"max_depth": 7}
+        editor.fill(json.dumps(request))
+        page.get_by_role("button", name="Use form").click()
+        expect(trees).to_have_value("40")
+        expect(depth).to_have_value("7")
+        expect(page.get_by_label("Random seed", exact=True)).to_have_value("123")
+        page.get_by_role("button", name="Start training").click()
+        assert api.posts[0][:2] == ("training-runs", request)
+    finally:
+        page.close()
+
+
+def test_adaptive_single_validation_is_visible_while_running_and_after_completion(
+    browser: Any,
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["training"].update(
+        architecture_id="adaptive",
+        policy={"budget": "fit", "optimizer": "extra_trees", "seeds": [173]},
+    )
+    api.run["job"].update(state="running", stage="training", attempt=1)
+    api.progress_kind = "fits"
+    api.progress_rows = [
+        {"seed": 173, "trees": 40, "max_depth": 12, "validation_segment_macro_f1": 0.75}
+    ]
+    api.metrics.update(
+        selected_seed=173, validation_segment_macro_f1=0.75, history={"fits": api.progress_rows}
+    )
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        score = page.locator("#training-score")
+        expect(score).to_have_text("0.75 validation interval macro-F1 · seed 173")
+        expect(page.locator("#training-charts")).to_be_empty()
+        api.run["job"]["state"] = "succeeded"
+        page.get_by_role("button", name="Refresh", exact=True).click()
+        expect(page.locator("#training-state")).to_have_text("Complete")
+        expect(score).to_have_text("0.75 validation interval macro-F1 · seed 173")
+        expect(page.locator("#training-charts")).to_be_empty()
     finally:
         page.close()

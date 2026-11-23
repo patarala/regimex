@@ -16,6 +16,8 @@ from regimex.model_registry import (
     InferenceRuntime,
     TrainingPolicySpec,
     TrainingRuntime,
+    TreeCount,
+    TreeDepth,
 )
 from regimex.operations import Operation, Sha256
 
@@ -306,12 +308,20 @@ class TrainingMetrics(StrictModel):
 MAX_PROGRESS_BATCH = 512
 # The largest epoch schedule has 64 seeds with 1,000 epochs each.
 MAX_PROGRESS_POINTS = 64_000
-type HistorySeries = Literal["candidates", "epochs", "updates"]
+type HistorySeries = Literal["candidates", "epochs", "updates", "fits"]
 
 
 class CandidateProgress(StrictModel):
     series: ClassVar[HistorySeries] = "candidates"
     regularization: Annotated[float, Field(gt=0)]
+    validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
+
+
+class ForestFitProgress(StrictModel):
+    series: ClassVar[HistorySeries] = "fits"
+    seed: Seed
+    trees: TreeCount
+    max_depth: TreeDepth
     validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
 
 
@@ -339,7 +349,7 @@ class UpdateProgress(TemporalProgress):
     )
 
 
-type ProgressPoint = CandidateProgress | EpochProgress | UpdateProgress
+type ProgressPoint = CandidateProgress | EpochProgress | UpdateProgress | ForestFitProgress
 
 
 class TrainingProgress(StrictModel):

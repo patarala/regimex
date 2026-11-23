@@ -97,8 +97,11 @@ def test_architecture_catalog_reports_applicable_training_limits(
         catalog = client.get("/api/v1/architectures", headers=authorization())
         detail = client.get("/api/v1/architectures/tcn", headers=authorization())
     assert catalog.status_code == detail.status_code == 200
-    assert {item["max_training_seeds"] for item in catalog.json()["items"]} == {5}
     limits = {item["architecture_id"]: item for item in catalog.json()["items"]}
+    assert limits["adaptive"]["max_training_seeds"] == 1
+    assert limits["adaptive"]["max_training_epochs"] is None
+    assert limits["adaptive"]["max_training_updates"] is None
+    assert limits["tcn"]["max_training_seeds"] == limits["baseline"]["max_training_seeds"] == 5
     assert limits["tcn"] == detail.json()
     assert limits["tcn"]["max_training_epochs"] == 2
     assert limits["tcn"]["max_training_updates"] == 24

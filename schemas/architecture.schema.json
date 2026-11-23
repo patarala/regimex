@@ -30,10 +30,55 @@
       "title": "ModelSize",
       "type": "object"
     },
+    "SingleFitPolicy": {
+      "additionalProperties": false,
+      "description": "Score one fitted forest on the validation intervals.",
+      "properties": {
+        "budget": {
+          "const": "fit",
+          "default": "fit",
+          "title": "Budget",
+          "type": "string"
+        },
+        "optimizer": {
+          "const": "extra_trees",
+          "title": "Optimizer",
+          "type": "string"
+        },
+        "seeds": {
+          "default": [
+            173
+          ],
+          "maxItems": 1,
+          "minItems": 1,
+          "prefixItems": [
+            {
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "title": "Seeds",
+          "type": "array"
+        },
+        "selection_metric": {
+          "const": "validation_segment_macro_f1",
+          "default": "validation_segment_macro_f1",
+          "title": "Selection Metric",
+          "type": "string"
+        }
+      },
+      "required": [
+        "optimizer"
+      ],
+      "title": "SingleFitPolicy",
+      "type": "object"
+    },
     "TrainingBudget": {
       "enum": [
         "epochs",
-        "updates"
+        "updates",
+        "fit"
       ],
       "type": "string"
     },
@@ -135,7 +180,15 @@
       "title": "Availability Reason"
     },
     "default_training_policy": {
-      "$ref": "#/$defs/TrainingPolicy"
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TrainingPolicy"
+        },
+        {
+          "$ref": "#/$defs/SingleFitPolicy"
+        }
+      ],
+      "title": "Default Training Policy"
     },
     "dependency_modules": {
       "items": {
@@ -262,7 +315,8 @@
       "items": {
         "enum": [
           "lbfgs",
-          "adamw"
+          "adamw",
+          "extra_trees"
         ],
         "type": "string"
       },

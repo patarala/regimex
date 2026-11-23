@@ -6,10 +6,9 @@ import pytest
 
 
 @pytest.fixture
-def adaptive(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+def adaptive() -> ModuleType:
     pytest.importorskip("sklearn")
-    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
-    return import_module("adaptive_direction_model")
+    return import_module("regimex.backends.adaptive_forest")
 
 
 def test_adaptive_context_obeys_price_units_and_unavailable_blocks(adaptive: ModuleType) -> None:
@@ -48,8 +47,10 @@ def test_numeric_forest_matches_fitted_trees_and_rejects_cycles(
     import numpy as np
     from sklearn.ensemble import ExtraTreesClassifier  # type: ignore[import-untyped]
 
+    from regimex.resource_limits import ResourceBudgetExceeded
+
     estimator = ExtraTreesClassifier(n_estimators=3, max_depth=4, random_state=173)
-    monkeypatch.setattr(adaptive, "ExtraTreesClassifier", lambda **kwargs: estimator)
+    monkeypatch.setattr("sklearn.ensemble.ExtraTreesClassifier", lambda **kwargs: estimator)
     rng = np.random.default_rng(422)
     x = rng.normal(size=(120, adaptive._WIDTH))
     targets = np.digitize(x[:, 0], (-0.5, 0.4))
@@ -57,12 +58,20 @@ def test_numeric_forest_matches_fitted_trees_and_rejects_cycles(
     model = adaptive.fit(x, targets)
     bundle = tmp_path / "trees.npz"
     model.save(bundle)
-    restored = adaptive.DirectionContextModel.load(bundle)
+    restored = adaptive.DirectionContextModel.load(bundle, trees=3, max_depth=4)
     expected = estimator.predict_proba(x)
     np.testing.assert_allclose(restored.predict(x), expected, atol=1e-14)
     np.testing.assert_allclose(restored.predict(x[:9]), expected[:9], atol=1e-14)
-    restored.children[0, 0] = 0
+    with pytest.raises(ResourceBudgetExceeded):
+        adaptive.DirectionContextModel.load(bundle, max_bytes=restored.numeric_bytes - 1)
+    with pytest.raises(ValueError, match="depth"):
+        adaptive.DirectionContextModel.load(bundle, max_depth=1, trees=None)
+    with pytest.raises(ValueError, match="read-only"):
+        restored.children[0, 0] = 0
     corrupted = tmp_path / "cycle.npz"
-    restored.save(corrupted)
+    with np.load(bundle, allow_pickle=False) as archive:
+        members = dict(archive)
+    members["children"][0, 0] = 0
+    np.savez(corrupted, **members)
     with pytest.raises(ValueError, match="children"):
         adaptive.DirectionContextModel.load(corrupted)

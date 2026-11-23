@@ -1077,6 +1077,15 @@ def test_training_progress_pages_are_attempt_scoped_and_released(
     restarted = repository.training_progress(principal(), run_id, attempt=1, after=last.cursor)
     assert restarted.attempt == 2 and restarted.cursor == 1 and not restarted.has_more
     assert restarted.model_dump()["history"]["candidates"] == points[:1]
+    fit: dict[str, JsonValue] = {
+        "seed": 173,
+        "trees": 40,
+        "max_depth": 12,
+        "validation_segment_macro_f1": 0.74,
+    }
+    repository.append_training_progress(run_id, second, 2, [fit])
+    next_page = repository.training_progress(principal(), run_id, attempt=2, after=1)
+    assert next_page.cursor == 2 and next_page.model_dump()["history"] == {"fits": [fit]}
     repository.complete_training(run_id, second, candidate(spec), metrics=training_metrics(spec))
     assert not repository.training_progress(principal(), run_id, attempt=None, after=0).history
     with repository.database.connection() as connection:

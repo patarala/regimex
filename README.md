@@ -35,14 +35,14 @@ have different meanings. [Export contract](docs/integration.md#export-contract) 
 
 | Model | How it uses an instrument's history |
 | --- | --- |
+| [Adaptive direction forest](docs/direction-context.md) | Locates stretches with a consistent price slope and learns to classify each stretch using its own movement and its neighbors. |
 | [Logistic baseline](docs/baseline-context.md) | Classifies each step using summaries of price, trading activity and quotes over centered windows. |
 | [Temporal convolutional network (TCN)](docs/tcn.md) | Combines price and return features across several time scales with convolutions that look before and after each step. |
 
-Both models feed the same interval decoder. On 72 held-out synthetic
-experiments with profile `direction-32/2.1`, interval macro-F1 against automatic
-labels was 0.408 for the baseline and 0.669 for the TCN. The quality guide
-also reports how closely the reference TCN placed interval boundaries.
-[Model quality](docs/quality.md) · [TCN and Transformer comparison on profile 2.2](docs/temporal-comparison.md)
+All three use the same interval decoder. On 144 held-out synthetic experiments
+with automatic profile 2.2 references, the adaptive forest achieved interval
+macro-F1 of 0.786 and the published TCN 0.726. Point macro-F1 was 0.916 and
+0.915 respectively. [Results by direction and behavior on incomplete exports](docs/direction-context.md#results)
 
 ## Guides
 

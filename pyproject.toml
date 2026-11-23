@@ -40,6 +40,7 @@ viz = [
 regimex = "regimex.cli:app"
 
 [project.entry-points."regimex.models"]
+adaptive = "regimex.model_registry:adaptive_descriptor"
 baseline = "regimex.model_registry:baseline_descriptor"
 tcn = "regimex.model_registry:tcn_descriptor"
 
@@ -96,6 +97,7 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 "tests/test_market.py" = ["E402"]
 "tests/test_temporal.py" = ["E402"]
 "tests/test_baseline_backend.py" = ["E402"]
+"tests/test_adaptive_backend.py" = ["E402"]
 "tests/test_application_training.py" = ["E402"]
 "tests/test_training_plugin.py" = ["E402"]
 "tests/test_api.py" = ["E402"]

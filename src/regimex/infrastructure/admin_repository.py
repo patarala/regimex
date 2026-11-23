@@ -66,6 +66,8 @@ _CHART_FIELDS = {
     "epoch",
     "update",
     "regularization",
+    "trees",
+    "max_depth",
     "seed",
     "training_loss",
     "stop_reason",

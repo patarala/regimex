@@ -1,4 +1,4 @@
-import {$, option} from "./ui.js";
+import {$, addFieldHelp, element, option} from "./ui.js";
 import {setParameterOverrides} from "./training-json.js";
 
 export function parameterCountLabel(count) {
@@ -7,6 +7,7 @@ export function parameterCountLabel(count) {
 
 export function createSizePicker() {
   const container = $("training-size-field"), select = $("training-size"), parametersField = $("training-parameters");
+  const modelFields = $("training-model-fields"), controls = new Map();
   let sizes = [], properties = {}, layoutKeys = [];
   function readParameters() {
     const value = JSON.parse(parametersField.value.trim() || "{}");
@@ -21,6 +22,14 @@ export function createSizePicker() {
       JSON.stringify(setting(parameters, key)) === JSON.stringify(setting(preset.parameters, key)));
   }
   function refresh() {
+    if (controls.size) {
+      let parameters;
+      try { parameters = readParameters(); } catch { /* JSON editing can temporarily be incomplete. */ }
+      for (const [key, control] of controls) {
+        control.disabled = !parameters;
+        if (parameters) control.value = setting(parameters, key);
+      }
+    }
     if (!sizes.length) return;
     let index = -1;
     try {
@@ -55,10 +64,46 @@ export function createSizePicker() {
   });
   parametersField.addEventListener("input", refresh);
   return {
+    validate() {
+      for (const field of controls.values()) {
+        if (field.disabled || field.validity.valid) continue;
+        field.reportValidity();
+        field.focus();
+        throw new Error(field.validationMessage);
+      }
+    },
     selectArchitecture(architecture) {
       sizes = architecture?.sizes || [];
       properties = architecture?.parameter_schema?.properties || {};
       layoutKeys = [...new Set(sizes.flatMap(preset => Object.keys(preset.parameters)))];
+      controls.clear();
+      modelFields.replaceChildren();
+      if (architecture?.default_training_policy?.budget === "fit") {
+        for (const [key, field] of Object.entries(properties)) {
+          if (field.type !== "integer") continue;
+          const input = element("input"), label = element("label", field.title), wrapper = element("div");
+          input.type = "number";
+          input.id = "training-parameter-" + key;
+          input.required = true;
+          input.min = field.minimum;
+          input.max = field.maximum;
+          label.htmlFor = input.id;
+          wrapper.append(label, input);
+          if (field.description) addFieldHelp(label, input, field.description);
+          controls.set(key, input);
+          modelFields.append(wrapper);
+          input.addEventListener("input", () => {
+            if (!input.validity.valid) return;
+            const value = input.valueAsNumber;
+            parametersField.value = setParameterOverrides(parametersField.value, {
+              [key]: value === field.default ? undefined : value,
+            });
+            parametersField.dispatchEvent(new Event("input", {bubbles: true}));
+          });
+        }
+      }
+      modelFields.hidden = !controls.size;
+      refresh();
       container.hidden = !sizes.length;
       select.disabled = !sizes.length;
       if (!sizes.length) {

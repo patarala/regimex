@@ -1,10 +1,8 @@
 # Models and interval semantics
 
-Regimex labels sustained price direction in a completed experiment. Both models
-can use prices before and after the step they are classifying. This makes their
-intervals suitable for retrospective analysis. For the inputs and prediction
-path of each model, see the [logistic baseline](baseline-context.md) and the
-[temporal convolutional network](tcn.md).
+Regimex labels sustained price direction in a completed experiment. Its models
+can use prices before and after the step they are classifying. The
+[backend comparison](#learned-backends) describes how each model scores a step.
 
 ## Observations and intervals
 
@@ -106,12 +104,13 @@ The reference import uses that digest to match the completed draft to its snapsh
 
 ## Learned backends
 
-Both backends return one probability for each of the three directions at every
+Each backend returns one probability for each of the three directions at every
 original step. A shared decoder chooses intervals using the probabilities, a
 penalty for switching direction and the availability and duration rules above.
 
 | Backend | How it scores a step |
 | --- | --- |
+| Adaptive direction forest | Fits trends over price-dependent spans, then averages tree probabilities using the span and its neighboring trends. Fits each side of a sustained availability gap independently. |
 | Logistic baseline | Applies fitted linear weights to summaries of price, trades, orders, spread and missingness. [Window settings and gap behavior](baseline-context.md) |
 | Temporal convolutional network (TCN) | Learns price patterns from centered windows and whole-instrument statistics using dilated convolutions. [Inputs, network and training](tcn.md) |
 
@@ -122,39 +121,62 @@ even when the run and instrument IDs differ. Their references require one
 snapshot per source run, split group and generator-scoped seed. When a run has
 several revisions, choose the one to evaluate before registering its reference set.
 
-Both backends need all three directions in their training targets and fit their
-preprocessing on training data. Model selection requires at least one
-validation interval with a known direction. The decoded validation interval
+All three backends need every direction in their training targets. Learned
+weights and preprocessing use training data only. Model selection requires at
+least one validation interval with a known direction. The decoded validation interval
 macro-F1 selects the settings or checkpoint, with the first best score winning a
 tie. The administrative workflow covers benchmark reservation, freezing the
 model and final evaluation. [API guide](api.md#administration)
 
+### Adaptive direction forest
+
+Choose **Adaptive direction forest** in the training workspace. Each run fits
+one forest and reports its decoded validation interval macro-F1. The seed
+controls the randomized splits. The defaults are 40 trees, maximum depth 12
+and seed 173. These are the settings used in the [direction model comparison](direction-context.md).
+The number of split decisions in the fitted forest depends on the training data.
+
+For the API, set `architecture_id` to `adaptive`. The following fields configure
+the forest and its single fit:
+
+```json
+{"parameters":{"trees":40,"max_depth":12},"policy":{"optimizer":"extra_trees","seeds":[173]}}
+```
+
 ## Saved models
 
 When importing a bundle with `regimex service register-model`, use
-`--runtime-file PATH` to pin its inference settings. For example, this JSON
-runs the model on the CPU with one numerical thread and processes at most two
-sequences per batch:
+`--runtime-file PATH` to pin its inference settings. For the logistic baseline
+and TCN, this configuration limits numerical work to one CPU thread and each
+batch to two instrument sequences:
 
 ```json
 {"device": "cpu", "threads": 1, "max_batch_size": 2}
 ```
 
-Omitted fields use the runtime defaults, including a 512 MiB model cache
-budget. For a thread-count change alone, the CLI also accepts `--threads N`.
-Each saved analysis records the resolved policy. Registering the same model
-version with a different policy returns a conflict. Use a separate test
-installation to compare runtime settings for the same bundle.
+The adaptive forest fits its trees sequentially (`n_jobs=1`) and predicts one
+instrument at a time. A larger thread or batch limit keeps that execution order.
+For a thread-count change alone the CLI also accepts `--threads N`. Each saved
+analysis records its resolved inference policy. Registering an existing model
+version with a different policy returns a conflict.
+
+The inference setting `model_cache_budget_bytes` defaults to 512 MiB. Regimex
+checks the bundle size at registration. The forest also checks the size of its
+decoded tree arrays before inference. The service setting
+`REGIMEX_CACHE_BUDGET_BYTES` limits the combined size of bundles in the
+local cache and defaults to 512 MiB.
 
 Regimex discovers trusted backends through the `regimex.models` entry point.
 The API reads their descriptors. Workers load the scientific libraries and
-check device support. Both built-in backends run on CPU.
+check device support. All three built-in backends run on CPU.
 
 Each bundle contains weights, preprocessing, configuration, class order,
 validation evidence and training history. At the end of training Regimex
 reloads the bundle and checks that it reproduces the validation probabilities.
 Analyses use the published weights and preprocessing. The baseline stores
-numeric arrays. The TCN stores a restricted Torch state dictionary. Its
+its coefficients as numeric arrays. The forest stores tree splits, thresholds
+and class probabilities in a numeric NPZ file with a versioned preprocessing
+record. The TCN stores a restricted Torch state dictionary. Its
 `temporal-tcn/2.0` and `temporal-tcn/3.0` codecs share the same inference
 procedure and record training by epoch and optimizer update respectively.
 

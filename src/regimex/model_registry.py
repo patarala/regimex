@@ -25,7 +25,7 @@ from regimex.contracts import MAX_STEPS, Seed, StrictModel
 ENTRY_POINT_GROUP = "regimex.models"
 INTERFACE_VERSION: Literal["1.0"] = "1.0"
 Device = Literal["cpu"]
-Optimizer = Literal["lbfgs", "adamw"]
+Optimizer = Literal["lbfgs", "adamw", "extra_trees"]
 ObservationField = Literal[
     "last_price",
     "trade_count",
@@ -90,6 +90,25 @@ class LogisticParameters(StrictModel):
         return self
 
 
+TreeCount = Annotated[int, Field(ge=1, le=128)]
+TreeDepth = Annotated[int, Field(ge=1, le=16)]
+
+
+class AdaptiveParameters(StrictModel):
+    trees: TreeCount = Field(
+        default=40,
+        title="Number of trees",
+        description="Each tree votes on the direction. More trees can stabilize probabilities "
+        "and take longer to fit.",
+    )
+    max_depth: TreeDepth = Field(
+        default=12,
+        title="Maximum tree depth",
+        description="Limits the number of splits along each path. Shallower trees group "
+        "more observations together.",
+    )
+
+
 class TCNParameters(StrictModel):
     side_slopes: bool = False
     channels: Annotated[int, Field(ge=4, le=256)] = 32
@@ -127,7 +146,7 @@ def configured_parameter_count(
 
 
 class TrainingPolicy(StrictModel):
-    optimizer: Optimizer
+    optimizer: Literal["lbfgs", "adamw"]
     seeds: Annotated[tuple[Seed, ...], Field(min_length=1)] = (11, 23, 47)
     epochs: Annotated[int, Field(ge=1, le=1000)] = 30
     batch_size: Annotated[int, Field(ge=1, le=128)] = 16
@@ -173,8 +192,17 @@ class FixedUpdatePolicy(StrictModel):
         return self
 
 
-TrainingPolicySpec = TrainingPolicy | FixedUpdatePolicy
-type TrainingBudget = Literal["epochs", "updates"]
+class SingleFitPolicy(StrictModel):
+    """Score one fitted forest on the validation intervals."""
+
+    budget: Literal["fit"] = "fit"
+    optimizer: Literal["extra_trees"]
+    seeds: tuple[Seed] = (173,)
+    selection_metric: Literal["validation_segment_macro_f1"] = "validation_segment_macro_f1"
+
+
+TrainingPolicySpec = TrainingPolicy | FixedUpdatePolicy | SingleFitPolicy
+type TrainingBudget = Literal["epochs", "updates", "fit"]
 
 
 BASELINE_DEFAULT_POLICY = TrainingPolicy(optimizer="lbfgs", seeds=(11,))
@@ -217,8 +245,10 @@ def validate_baseline_policy(policy: TrainingPolicySpec) -> None:
 def validate_tcn_policy(policy: TrainingPolicySpec) -> None:
     if isinstance(policy, FixedUpdatePolicy):
         FixedUpdatePolicy.model_validate(policy.model_dump())
-    else:
+    elif isinstance(policy, TrainingPolicy):
         TrainingPolicy.model_validate(policy.model_dump())
+    else:
+        raise RegistryError("TCN supports only epoch or fixed-update training")
     if policy.optimizer != "adamw":
         raise RegistryError("TCN supports only the AdamW optimizer")
     if len(policy.seeds) > 32:
@@ -275,7 +305,7 @@ class ArchitectureInfo(StrictModel):
     interface_version: Literal["1.0"]
     parameter_schema: dict[str, JsonValue]
     sizes: tuple[ModelSize, ...] = ()
-    default_training_policy: TrainingPolicy
+    default_training_policy: TrainingPolicy | SingleFitPolicy
     max_training_seeds: Annotated[int, Field(ge=1)] | None = None
     max_training_epochs: Annotated[int, Field(ge=1)] | None = None
     max_training_updates: Annotated[int, Field(ge=1)] | None = None
@@ -310,7 +340,7 @@ class ArchitectureDescriptor(StrictModel):
     )
     trains_by_epoch: bool = True
     sizes: tuple[ModelSize, ...] = ()
-    default_training_policy: TrainingPolicy
+    default_training_policy: TrainingPolicy | SingleFitPolicy
     supported_optimizers: Annotated[tuple[Optimizer, ...], Field(min_length=1)]
     supported_training_budgets: Annotated[tuple[TrainingBudget, ...], Field(min_length=1)] = (
         "epochs",
@@ -359,7 +389,7 @@ class ArchitectureDescriptor(StrictModel):
         return self.parameters_model.model_validate_json(json.dumps(values, allow_nan=False))
 
     def validate_training_policy(self, policy: TrainingPolicySpec) -> None:
-        budget = "updates" if isinstance(policy, FixedUpdatePolicy) else "epochs"
+        budget = "epochs" if isinstance(policy, TrainingPolicy) else policy.budget
         if budget not in self.supported_training_budgets:
             raise RegistryError(
                 f"architecture {self.architecture_id!r} "
@@ -398,7 +428,9 @@ class ArchitectureDescriptor(StrictModel):
             parameter_schema=self.parameters_model.model_json_schema(),
             sizes=self.sizes,
             default_training_policy=self.default_training_policy,
-            max_training_seeds=max_training_seeds,
+            max_training_seeds=1
+            if isinstance(self.default_training_policy, SingleFitPolicy)
+            else max_training_seeds,
             max_training_epochs=max_training_epochs if self.trains_by_epoch else None,
             max_training_updates=max_training_updates
             if "updates" in self.supported_training_budgets
@@ -562,6 +594,22 @@ class ArchitectureRegistry:
             ) from cause
         assert factory is not None
         return factory
+
+
+def adaptive_descriptor() -> ArchitectureDescriptor:
+    return ArchitectureDescriptor(
+        architecture_id="adaptive",
+        implementation_version="0.1.0",
+        parameters_model=AdaptiveParameters,
+        default_training_policy=SingleFitPolicy(optimizer="extra_trees"),
+        trains_by_epoch=False,
+        supported_optimizers=("extra_trees",),
+        supported_training_budgets=("fit",),
+        required_observation_fields=("last_price",),
+        dependency_modules=("numpy", "sklearn"),
+        backend_factory="regimex.backends.adaptive:create_backend",
+        worker_probe="regimex.backends.adaptive:probe_runtime",
+    )
 
 
 def baseline_descriptor() -> ArchitectureDescriptor:

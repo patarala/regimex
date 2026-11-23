@@ -88,7 +88,7 @@ from regimex.infrastructure.object_store import (
 )
 from regimex.market_identity import imported_seed_group
 from regimex.model_bundles import BundleMember, ModelBundle
-from regimex.model_registry import FixedUpdatePolicy, RegistryError
+from regimex.model_registry import FixedUpdatePolicy, RegistryError, TrainingPolicy
 from regimex.operations import OperationFailure
 from regimex.service_contracts import (
     CapacityExceeded,
@@ -242,7 +242,8 @@ class AdminService:
             or (
                 spec.policy.updates > self.settings.max_training_updates
                 if isinstance(spec.policy, FixedUpdatePolicy)
-                else descriptor.trains_by_epoch
+                else isinstance(spec.policy, TrainingPolicy)
+                and descriptor.trains_by_epoch
                 and spec.policy.epochs > self.settings.max_training_epochs
             )
         ):

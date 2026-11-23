@@ -129,3 +129,25 @@ and selection digests and preserves instrument and step order.
 ```sh
 uv run --locked --extra ml python scripts/predict_direction_context.py "$trial" example.json var/predictions.json
 ```
+
+## Use the trained forest
+
+In the training workspace, choose **Adaptive direction forest** to fit a new
+model on your own dataset. The [model guide](models.md#learned-backends)
+describes its settings. To use the fitted model evaluated above, run the
+following in a checkout with the adaptive backend. Set `trial` and
+`transfer` to the completed comparison directories.
+
+```sh
+git show 7090f35:scripts/adaptive_direction_model.py > var/frozen-adaptive.py
+uv run --locked --extra ml python scripts/package_adaptive_direction.py \
+  "$trial" "$transfer" var/verification/training-populations/development/mixed-192 \
+  var/frozen-adaptive.py var/release/adaptive-0.1.0
+```
+
+Packaging checks the recorded model and gates, restores the native bundle,
+and compares every validation probability with the frozen implementation.
+Use the emitted manifest SHA-256 when registering the resulting `bundle/`
+with your configured service. Activate the version to make it available to
+workspace users. An already published version can still be selected by ID
+after another model becomes active. [Model registration and activation](deployment.md#start-the-service)

@@ -15,6 +15,7 @@ const api = "/api/v1/";
 
 export function architectureName(id, compact = false) {
   if (id === "tcn") return compact ? "TCN" : "Temporal convolutional network (TCN)";
+  if (id === "adaptive") return compact ? "Adaptive forest" : "Adaptive direction forest";
   if (id === "baseline") return compact ? "Baseline" : "Logistic baseline";
   return id;
 }
@@ -296,6 +297,7 @@ export function createTrainingForm({session, eachPage}) {
   for (const id of ["training-parameters", ...runtimes])
     $(id).addEventListener("input", () => $(id).removeAttribute("aria-invalid"));
   function formJSON() {
+    sizePicker.validate();
     const name = $("training-name").value;
     const policyFields = currentArchitecture ? policy.payload() : undefined;
     const originalPolicy = importedBody?.architecture === currentArchitecture &&

@@ -3,7 +3,7 @@ import {addFieldHelp, element, option} from "./ui.js";
 const maxSeed = 2 ** 32 - 1;
 const maxUpdates = 32000;
 const budgetNames = {epochs: "Epochs", updates: "Optimizer updates"};
-const optimizerNames = {lbfgs: "L-BFGS", adamw: "AdamW"};
+const optimizerNames = {lbfgs: "L-BFGS", adamw: "AdamW", extra_trees: "Extra Trees"};
 // A pasted API policy may omit fields. Their schema defaults can differ from the
 // architecture's suggested values for a new run.
 const numbers = {
@@ -39,8 +39,12 @@ class PolicyError extends Error {
   }
 }
 
+function singleSeed(architecture) {
+  return architecture.architecture_id === "baseline" || architecture.default_training_policy.budget === "fit";
+}
+
 function repeatLimit(architecture) {
-  if (architecture.architecture_id === "baseline") return 1;
+  if (singleSeed(architecture)) return 1;
   const workspaceLimit = architecture.max_training_seeds ?? 64;
   return architecture.architecture_id === "tcn" ? Math.min(32, workspaceLimit) : workspaceLimit;
 }
@@ -60,7 +64,7 @@ function fixedBudget(policy) {
 }
 
 function defaultSeeds(architecture) {
-  return architecture.architecture_id === "baseline" ? architecture.default_training_policy.seeds : [11, 23, 47];
+  return singleSeed(architecture) ? architecture.default_training_policy.seeds : [11, 23, 47];
 }
 
 export function validateTrainingLimits(architecture, policy) {
@@ -68,6 +72,7 @@ export function validateTrainingLimits(architecture, policy) {
   const maxRepeats = repeatLimit(architecture);
   if (Array.isArray(seeds) && seeds.length > maxRepeats)
     throw new PolicyError("seeds", `Choose at most ${maxRepeats} training repeat${maxRepeats === 1 ? "" : "s"}.`);
+  if (architecture.default_training_policy.budget === "fit") return;
   const key = fixedBudget(policy) ? "updates" : "epochs";
   const value = policy[key] ?? numbers[key].fallback, max = budgetLimit(architecture, key);
   if (typeof value === "number" && value > max) throw new PolicyError(key, budgetLimitMessage(key, max));
@@ -97,18 +102,22 @@ function validate(architecture, raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new PolicyError("budget", "Training policy must be a JSON object.");
   const fixed = fixedBudget(raw);
-  const budget = fixed ? "updates" : "epochs";
-  const numeric = [...(fixed ? ["updates"] : epochNumbers), ...commonNumbers];
+  const single = architecture.default_training_policy.budget === "fit";
+  const budget = single ? "fit" : fixed ? "updates" : "epochs";
+  const numeric = single ? [] : [...(fixed ? ["updates"] : epochNumbers), ...commonNumbers];
   const allowed = ["optimizer", "selection_metric", "seeds", ...numeric];
-  if (fixed) allowed.push("budget", "validation_updates");
+  if (single) allowed.push("budget");
+  else if (fixed) allowed.push("budget", "validation_updates");
   for (const key of Object.keys(raw))
     if (!allowed.includes(key))
       throw new PolicyError("budget", `Unknown field “${key}” for the ${budget} budget.`);
   if (!(architecture.supported_training_budgets || ["epochs"]).includes(budget))
     throw new PolicyError("budget", "This architecture does not support " + budget + " budgets.");
 
-  const budgetDefaults = fixed ? {budget: "updates", optimizer: "adamw"} : {};
+  const budgetDefaults = single ? {budget: "fit"} : fixed ? {budget: "updates", optimizer: "adamw"} : {};
   const policy = {seeds: defaultSeeds(architecture), selection_metric: selectionMetric, ...budgetDefaults, ...raw};
+  if (single && policy.budget !== "fit")
+    throw new PolicyError("budget", "This architecture fits once per run.");
   if (fixed && (policy.budget !== "updates" || policy.optimizer !== "adamw"))
     throw new PolicyError("budget", "A fixed-update policy requires the updates budget and the AdamW optimizer.");
   const optimizers = architecture.supported_optimizers || [architecture.default_training_policy.optimizer];
@@ -206,6 +215,8 @@ export function createTrainingPolicy(container) {
       hint += " " + budgetLimitMessage(key, Number(field.max));
     if (key === "seeds" && architecture.architecture_id === "baseline")
       hint = "The logistic baseline records one seed and fits once for each regularization setting.";
+    if (key === "seeds" && architecture.default_training_policy.budget === "fit")
+      hint = "The seed controls how the forest chooses splits. Reuse it to reproduce a fit.";
     if (key === "validation_interval" && architecture.architecture_id === "tcn")
       hint = "With a value of 2, the TCN scores validation intervals at epochs 1, 2, 4, 6 and so on. It also scores the final epoch if reached.";
     if (hint) addFieldHelp(label, field, hint);
@@ -274,7 +285,7 @@ export function createTrainingPolicy(container) {
     container.replaceChildren();
     fields.clear();
     if (!architecture) return;
-    if (architecture.architecture_id === "baseline") {
+    if (singleSeed(architecture)) {
       seedControls(true);
       return;
     }
@@ -306,8 +317,9 @@ export function createTrainingPolicy(container) {
     architecture = next;
     const defaults = architecture?.default_training_policy;
     const seeds = defaults?.seeds.slice(0, repeatLimit(next));
-    values = defaults ? {...defaults, epochs: Math.min(defaults.epochs, budgetLimit(next, "epochs")),
-      seeds: seeds.join(", "), repeats: seeds.length, budget: "epochs", ...draft} : {};
+    values = defaults ? {...defaults, seeds: seeds.join(", "), repeats: seeds.length,
+      ...(defaults.budget === "fit" ? {} : {budget: "epochs", epochs: Math.min(defaults.epochs, budgetLimit(next, "epochs"))}),
+      ...draft} : {};
     render();
   }
 
@@ -317,7 +329,7 @@ export function createTrainingPolicy(container) {
       if (!field.validity.valid) reject(field, field.validationMessage);
     const defaults = architecture.default_training_policy;
     const seedField = fields.get("seeds");
-    if (architecture.architecture_id === "baseline")
+    if (singleSeed(architecture))
       return {...defaults, seeds: [seedField.valueAsNumber]};
     const seeds = integerList(seedField.value);
     const fixed = values.budget === "updates";

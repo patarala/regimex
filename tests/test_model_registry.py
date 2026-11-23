@@ -15,16 +15,19 @@ from pydantic import ConfigDict, JsonValue, ValidationError
 
 from regimex.contracts import StrictModel
 from regimex.model_registry import (
+    AdaptiveParameters,
     ArchitectureDescriptor,
     ArchitectureInfo,
     ArchitectureRegistry,
     InferenceRuntime,
     LogisticParameters,
     RegistryError,
+    SingleFitPolicy,
     TCNParameters,
     TrainingPolicy,
     TrainingRuntime,
     WorkerCapability,
+    adaptive_descriptor,
     baseline_descriptor,
     read_inference_runtime,
     tcn_descriptor,
@@ -172,7 +175,10 @@ class RejectScientificImports(importlib.abc.MetaPathFinder):
 
 
 sys.meta_path.insert(0, RejectScientificImports())
-from regimex.model_registry import ArchitectureRegistry, baseline_descriptor, tcn_descriptor
+from regimex.model_registry import (
+    ArchitectureRegistry, adaptive_descriptor, baseline_descriptor, tcn_descriptor,
+)
+assert adaptive_descriptor().describe().executable is None
 assert baseline_descriptor().describe().executable is None
 assert tcn_descriptor().describe().executable is None
 registry = ArchitectureRegistry.discover()
@@ -489,3 +495,41 @@ def test_worker_rejects_noncallable_factory(installed_plugin: Path) -> None:
     )
     assert not result.executable
     assert "is not callable" in result.reasons[0]
+
+
+def test_adaptive_policy_represents_one_cpu_forest_fit() -> None:
+    descriptor = adaptive_descriptor()
+    info = descriptor.describe(max_training_seeds=10, max_training_epochs=2)
+    assert info.default_training_policy == SingleFitPolicy(optimizer="extra_trees")
+    assert info.default_training_policy.model_dump(mode="json") == {
+        "budget": "fit",
+        "optimizer": "extra_trees",
+        "seeds": [173],
+        "selection_metric": "validation_segment_macro_f1",
+    }
+    assert info.supported_training_budgets == ("fit",) and info.supported_devices == ("cpu",)
+    assert info.max_training_epochs is None and info.max_training_seeds == 1
+    assert descriptor.validate_parameters({}) == AdaptiveParameters(trees=40, max_depth=12)
+    assert descriptor.validate_parameters({"trees": 1, "max_depth": 16}) == AdaptiveParameters(
+        trees=1, max_depth=16
+    )
+    assert ArchitectureInfo.model_validate_json(info.model_dump_json()) == info
+    descriptor.validate_training_policy(SingleFitPolicy(optimizer="extra_trees", seeds=(0,)))
+    for other in (baseline_descriptor(), tcn_descriptor()):
+        with pytest.raises(RegistryError, match="does not support"):
+            descriptor.validate_training_policy(other.default_training_policy)
+        with pytest.raises(RegistryError, match="does not support"):
+            other.validate_training_policy(info.default_training_policy)
+    invalid_parameters: tuple[dict[str, JsonValue], ...] = ({"trees": 129}, {"max_depth": 0})
+    for configuration in invalid_parameters:
+        with pytest.raises(ValidationError):
+            descriptor.validate_parameters(configuration)
+    invalid_policies: tuple[dict[str, JsonValue], ...] = (
+        {"epochs": 1},
+        {"trees": 20},
+        {"seeds": []},
+        {"seeds": [0, 1]},
+    )
+    for invalid in invalid_policies:
+        with pytest.raises(ValidationError):
+            SingleFitPolicy.model_validate_json(json.dumps({"optimizer": "extra_trees", **invalid}))

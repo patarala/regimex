@@ -377,16 +377,20 @@ export function createTrainingMetrics() {
     const rows = history && historyData[history.rows];
     const records = rows?.filter(row => row && Number.isFinite(row[history.field]));
     section.hidden = false;
-    score.hidden = !result;
-    if (result) {
-      const selection = history?.rows === "candidates" ? "selected settings" : "seed " + result.selected_seed;
-      score.replaceChildren(element("strong", format(result.validation_segment_macro_f1)),
+    const fit = historyData?.fits?.at(-1);
+    const validated = result || (fit && {selected_seed: fit.seed,
+      validation_segment_macro_f1: fit.validation_segment_macro_f1});
+    score.hidden = !validated;
+    if (validated) {
+      const selection = history?.rows === "candidates" ? "selected settings" : "seed " + validated.selected_seed;
+      score.replaceChildren(element("strong", format(validated.validation_segment_macro_f1)),
         " validation interval macro-F1 · " + selection);
     }
     if (!records?.length) {
       for (const view of figures.values()) view.inspector.hide();
       figures.clear();
-      charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
+      if (policy?.budget === "fit" && validated && !result?.history_note) charts.replaceChildren();
+      else charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
       ending.hidden = seedLabel.hidden = true;
       return;
     }

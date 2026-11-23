@@ -10,7 +10,7 @@ from regimex.admin_contracts import RepeatOutcome, TrainingMetrics, TrainingSpec
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.object_store import ObjectIntegrityError
 from regimex.model_bundles import BundleMember, ModelBundle
-from regimex.model_registry import FixedUpdatePolicy
+from regimex.model_registry import FixedUpdatePolicy, SingleFitPolicy
 
 
 def build_training_metrics(
@@ -48,6 +48,8 @@ def _repeat_outcomes(spec: TrainingSpec, history: JsonValue) -> tuple[RepeatOutc
     if spec.architecture_id != "tcn" or not isinstance(history, dict):
         return ()
     policy = spec.policy
+    if isinstance(policy, SingleFitPolicy):
+        return ()
     unit = "update" if isinstance(policy, FixedUpdatePolicy) else "epoch"
     rows = history.get(unit + "s")
     if not isinstance(rows, list):
