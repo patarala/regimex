@@ -41,7 +41,6 @@ from regimex.infrastructure.resource_lifecycle import (
     owner_payload_lock,
     require_object_key,
 )
-from regimex.infrastructure.terminal_activity import TerminalActivityRepository
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle, verify_model_bundle
 from regimex.model_registry import ArchitectureInfo, ArchitectureRegistry, InferenceRuntime
 from regimex.operations import Operation, ResolvedModel
@@ -224,6 +223,8 @@ class AnalysisService:
         max_owner_storage_bytes: int = 1024**3,
         max_integration_storage_bytes: int = 2 * 1024**3,
     ) -> None:
+        from regimex.infrastructure.terminal_activity import TerminalActivityRepository
+
         if (
             max_pending < 1
             or not 1 <= integration_max_pending <= 1000

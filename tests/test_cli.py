@@ -59,13 +59,15 @@ def test_removed_workflow_commands_are_rejected(command: str) -> None:
     assert "No such command" in result.output
 
 
-def test_cli_does_not_import_scientific_dependencies() -> None:
+def test_offline_cli_and_saved_results_do_not_import_optional_dependencies() -> None:
     subprocess.run(
         [
             sys.executable,
             "-c",
             "import sys; import regimex.cli; "
-            "assert not {'numpy', 'sklearn', 'torch', 'matplotlib', 'plotly'} & sys.modules.keys()",
+            "from regimex.application.service import AnalysisResult; "
+            "assert not {'numpy', 'sklearn', 'torch', 'matplotlib', 'plotly', 'psycopg', "
+            "'fastapi'} & sys.modules.keys()",
         ],
         check=True,
     )
