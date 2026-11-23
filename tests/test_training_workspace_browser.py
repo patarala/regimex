@@ -2196,10 +2196,11 @@ def test_model_size_presets_edit_the_layout_and_identify_saved_runs(browser: Any
         page.close()
 
 
-def test_adaptive_form_edits_forest_settings_and_round_trips_json(browser: Any) -> None:
+@pytest.mark.parametrize("width", [360, 1280], ids=["phone", "desktop"])
+def test_adaptive_form_edits_forest_settings_and_round_trips_json(browser: Any, width: int) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
-    page = browser.new_page(viewport={"width": 360, "height": 800})
+    page = browser.new_page(viewport={"width": width, "height": 800})
     page.route(ORIGIN + "/**", api.dispatch)
     adaptive = adaptive_descriptor().describe().model_dump(mode="json")
     page.route(
@@ -2217,6 +2218,14 @@ def test_adaptive_form_edits_forest_settings_and_round_trips_json(browser: Any) 
         expect(depth).to_have_value("12")
         expect(features).to_have_value("greedy")
         expect(weights).to_have_value("per_step")
+        gap, row_gap = page.locator("#training-model-fields").evaluate(
+            """grid => {
+                const field = document.querySelector('#training-architecture');
+                const gap = grid.getBoundingClientRect().top - field.getBoundingClientRect().bottom;
+                return [gap, parseFloat(getComputedStyle(grid).rowGap)];
+            }"""
+        )
+        assert gap == pytest.approx(row_gap) and gap > 0
         features.select_option("multiscale")
         weights.select_option("interval")
         trees.fill("24")

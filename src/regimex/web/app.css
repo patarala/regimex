@@ -1321,7 +1321,8 @@ iframe {
   padding: 0;
   border: 0;
 }
-#training-size-field {
+#training-size-field,
+#training-model-fields {
   margin-top: 14px;
 }
 #data-preparation {

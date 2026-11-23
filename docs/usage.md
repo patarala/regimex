@@ -146,11 +146,16 @@ To use imported snapshots or externally prepared data, use the API.
    **Advanced settings** holds the architecture parameters and CPU runtime
    overrides.
 
-   The **Adaptive direction forest** fits once. Set **Number of trees** and
-   **Maximum tree depth** directly in the form. The **Logistic baseline**
-   fits once per regularization setting. Both take one seed and offer
-   **Generate seed** for a fresh value. For the **Temporal convolutional
-   network (TCN)**, set **Training repeats** to the number of models to train.
+   The **Adaptive direction forest** fits once. Selecting it shows **Price
+   features**, **Training weights**, **Number of trees** and **Maximum tree
+   depth** below the architecture selector. To train the multiscale forest
+   with extra weight on short intervals, choose **Multiscale** and **Interval**.
+   [Forest settings](models.md#adaptive-direction-forest)
+
+   The **Logistic baseline** fits once per regularization setting. The forest
+   and baseline each take one seed and offer **Generate seed** for a fresh
+   value. For the **Temporal convolutional network (TCN)**, set
+   **Training repeats** to the number of models to train.
    The form fills in one seed per repeat. Choose **Generate seeds** for a fresh
    set, or paste the seeds from an earlier run to reuse them. You'll find the
    saved list under `policy.seeds` in **Run details and settings**.
