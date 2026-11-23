@@ -531,6 +531,7 @@ def test_delivery_distinguishes_successful_analysis_without_html(
     operation = context.database.claim_operation(analysis_id)
     assert operation is not None and operation.attempt_token is not None
     result = analysis_result_fixture(export(), snapshot_id, operation).model_dump(mode="json")
+    result["sequences"][0]["probabilities"][0] = [1, 0, 0]
     # A successful analysis created before report publication has only its JSON.
     with context.database.connection() as connection:
         context.database._save(
@@ -552,7 +553,11 @@ def test_delivery_distinguishes_successful_analysis_without_html(
     response = context.client.get(url, headers=context.headers())
     assert response.status_code == 200
     with ZipFile(BytesIO(response.content)) as archive:
-        assert archive.read("result.json") == json_bytes(result)
+        direct = context.client.get(
+            PREFIX + f"/analyses/{analysis_id}/result", headers=context.headers()
+        )
+        assert direct.status_code == 200
+        assert direct.content == archive.read("result.json") == json_bytes(result)
 
 
 def test_cookie_authentication_guards_real_api_upload_submit_and_cancel(

@@ -214,7 +214,6 @@ def report_command(
             raise ValueError("Blind review does not accept model results")
         if not blind and not result_paths:
             raise ValueError("Prediction reports require --result for every input snapshot")
-        from regimex.application.service import AnalysisResult
         from regimex.contracts import MAX_INPUT_BYTES
         from regimex.data_catalog import SourceSnapshot, SplitGroup
         from regimex.exports import ExportV2
@@ -250,7 +249,7 @@ def report_command(
                     data = stream.read(MAX_INPUT_BYTES + 1)
                 if len(data) > MAX_INPUT_BYTES:
                     raise ValueError(f"{path.name} exceeds its result size limit")
-                results.append(AnalysisResult.model_validate_json(data))
+                results.append(data)
             render_snapshot_report(
                 tuple(snapshots), output, results=tuple(results), sample_count=samples
             )

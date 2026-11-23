@@ -17,6 +17,7 @@ from regimex.inspection import (
     REPORT_VERSION,
     Inspection,
     inspect_snapshots,
+    result_document,
 )
 from regimex.report_assets import report_assets
 from regimex.report_licenses import license_notices
@@ -82,7 +83,7 @@ def render_snapshot_report(
     snapshots: tuple[SourceSnapshot, ...],
     output: Path,
     *,
-    results: tuple[AnalysisResult, ...],
+    results: tuple[AnalysisResult | bytes, ...],
     dataset: DatasetManifest | None = None,
     sample_count: int = 12,
     experiment_id: str | None = None,
@@ -114,7 +115,7 @@ def render_snapshot_report(
         write_json(target / "summary.json", inspection.summary)
         write_json(target / "examples.json", payload["samples"])
         write_json(target / "snapshots.json", [item.model_dump(mode="json") for item in snapshots])
-        write_json(target / "results.json", [item.model_dump(mode="json") for item in results])
+        write_json(target / "results.json", [result_document(item) for item in results])
         _write_manifest(
             target,
             kind="snapshot-predictions",

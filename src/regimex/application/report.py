@@ -134,7 +134,7 @@ def _provenance(export: ExportV2, result: AnalysisResult, result_sha256: str) ->
 
 
 def validate_analysis_result(
-    export: ExportV2, result: AnalysisResult, *, result_sha256: str
+    export: ExportV2, result: AnalysisResult | bytes, *, result_sha256: str
 ) -> tuple[ExportV2, AnalysisResult]:
     """Validate a saved prediction against its exact original observations.
 
@@ -146,7 +146,10 @@ def validate_analysis_result(
     from regimex.application.service import AnalysisResult
 
     export_bytes = json_bytes(export.model_dump(mode="json"))
-    result_bytes = json_bytes(result.model_dump(mode="json"))
+    # A committed digest covers the stored numeric spelling, including integer probabilities.
+    result_bytes = (
+        result if isinstance(result, bytes) else json_bytes(result.model_dump(mode="json"))
+    )
     if len(export_bytes) > MAX_INPUT_BYTES or len(result_bytes) > MAX_INPUT_BYTES:
         raise ObjectCapacityError("analysis report inputs exceed their accepted size limits")
     export = parse_export_v2(export_bytes)

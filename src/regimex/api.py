@@ -109,7 +109,7 @@ class AnalysisAPIService(Protocol):
 
     def get_analysis_summary(self, principal: Principal, analysis_id: UUID) -> AnalysisSummary: ...
 
-    def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]: ...
+    def read_result(self, principal: Principal, analysis_id: UUID) -> bytes: ...
 
     def read_report(self, principal: Principal, analysis_id: UUID) -> bytes: ...
 
@@ -796,12 +796,16 @@ def create_app(
             service.get_analysis_summary(identity, analysis_id), prefix=_prefix(identity)
         )
 
-    @app.get("/api/v1/analyses/{analysis_id}/result")
-    def get_result(
-        analysis_id: UUID, identity: Identity, response: Response
-    ) -> dict[str, JsonValue]:
-        response.headers["Content-Disposition"] = f'attachment; filename="{analysis_id}.json"'
-        return service.get_result(identity, analysis_id)
+    @app.get("/api/v1/analyses/{analysis_id}/result", response_model=dict[str, JsonValue])
+    def get_result(analysis_id: UUID, identity: Identity) -> Response:
+        return Response(
+            service.read_result(identity, analysis_id),
+            media_type="application/json",
+            headers={
+                "Cache-Control": "private, no-store",
+                "Content-Disposition": f'attachment; filename="{analysis_id}.json"',
+            },
+        )
 
     @app.get("/api/v1/analyses/{analysis_id}/report")
     def get_report(analysis_id: UUID, identity: Identity) -> Response:

@@ -85,8 +85,8 @@ def _metadata(result: AnalysisResult, result_sha256: str) -> dict[str, object]:
 
 def render_analysis_comparison(
     export: ExportV2,
-    first: AnalysisResult,
-    second: AnalysisResult,
+    first: AnalysisResult | bytes,
+    second: AnalysisResult | bytes,
     *,
     first_sha256: str,
     second_sha256: str,

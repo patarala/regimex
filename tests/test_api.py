@@ -871,6 +871,7 @@ def test_committed_result_survives_application_recreation_and_download_is_privat
     export = export_fixture()
     result = analysis_result_fixture(export, snapshot_id, claimed)
     result_payload = result.model_dump(mode="json")
+    result_payload["sequences"][0]["probabilities"][0] = [1, 0, 0]
     assert result_payload["result_version"] == "2.0"
     for previous_shape in (
         {**result_payload, "result_version": "1.0"},
@@ -896,6 +897,7 @@ def test_committed_result_survives_application_recreation_and_download_is_privat
         response = restarted.get(accepted["result_url"], headers=api.headers())
         assert response.status_code == 200
         assert AnalysisResult.model_validate_json(response.content) == result
+        assert response.content == json_bytes(result_payload)
         assert response.headers["Cache-Control"] == "private, no-store"
         assert "attachment" in response.headers["Content-Disposition"]
         assert restarted.get(accepted["result_url"], headers=api.headers("bob")).status_code == 404
@@ -923,6 +925,7 @@ def test_comparison_authorizes_both_saved_analyses_and_serves_offline_html(
         expected_previous=None,
     )
     saved = []
+    digests = []
     for key in ("first-comparison", "second-comparison"):
         response = api.client.post(
             "/api/v1/analyses",
@@ -935,6 +938,8 @@ def test_comparison_authorizes_both_saved_analyses_and_serves_offline_html(
         assert operation is not None and operation.attempt_token is not None
         result = analysis_result_fixture(export_fixture(), snapshot_id, operation)
         payload = result.model_dump(mode="json")
+        if key == "second-comparison":
+            payload["sequences"][0]["probabilities"][0] = [1, 0, 0]
         report = report_metadata_fixture(
             api,
             tmp_path,
@@ -947,10 +952,12 @@ def test_comparison_authorizes_both_saved_analyses_and_serves_offline_html(
             analysis_id, operation.attempt_token, payload, report=report
         )
         saved.append(analysis_id)
+        digests.append(report.result_sha256)
     path = f"/api/v1/analyses/{saved[0]}/comparison"
     download = api.client.get(path, params={"other": str(saved[1])}, headers=api.headers())
     assert download.status_code == 200, download.text
     assert "Analysis comparison" in download.text
+    assert all(digest in download.text for digest in digests)
     assert all(str(item) in download.text for item in saved)
     assert download.headers["Content-Type"].startswith("text/html")
     assert download.headers["Cache-Control"] == "private, no-store"

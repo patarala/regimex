@@ -1,5 +1,7 @@
 """Observation checks and saved predictions for current immutable source snapshots."""
 
+import hashlib
+import json
 import math
 from collections import Counter
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from regimex.data_catalog import (
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval
 from regimex.exports import ExportObservation, ExportV2
 from regimex.observation_availability import known_no_executions
+from regimex.storage import json_bytes
 
 REPORT_VERSION = "6.4"
 OBSERVABLE_FIELDS = tuple(
@@ -101,11 +104,17 @@ def validate_series(series: Series) -> None:
             )
 
 
+def result_document(result: AnalysisResult | bytes) -> object:
+    # A saved file may use integer probabilities. Its digest and offline copy must preserve them.
+    return json.loads(result) if isinstance(result, bytes) else result.model_dump(mode="json")
+
+
 def observed_series(
-    export: ExportV2, prediction: AnalysisResult, experiment_id: str
+    export: ExportV2, prediction: AnalysisResult | bytes, experiment_id: str
 ) -> tuple[Series, ...]:
-    result_sha256 = content_hash(prediction.model_dump(mode="json"))
-    export, prediction = validate_analysis_result(export, prediction, result_sha256=result_sha256)
+    payload = json_bytes(result_document(prediction))
+    result_sha256 = hashlib.sha256(payload).hexdigest()
+    export, prediction = validate_analysis_result(export, payload, result_sha256=result_sha256)
     series = []
     for instrument, sequence in zip(export.instruments, prediction.sequences, strict=True):
         rows = tuple(
@@ -190,7 +199,7 @@ def _select_samples(names: list[str], count: int, requested: str | None) -> list
 def inspect_snapshots(
     snapshots: tuple[SourceSnapshot, ...],
     *,
-    results: tuple[AnalysisResult, ...],
+    results: tuple[AnalysisResult | bytes, ...],
     dataset: DatasetManifest | None = None,
     sample_count: int = 12,
     experiment_id: str | None = None,
@@ -226,9 +235,14 @@ def inspect_snapshots(
         ):
             raise ValueError("report snapshots differ from ordered dataset membership")
     predictions = tuple(
-        AnalysisResult.model_validate_json(item.model_dump_json()) for item in results
+        AnalysisResult.model_validate_json(
+            item if isinstance(item, bytes) else item.model_dump_json()
+        )
+        for item in results
     )
-    by_hash = {item.snapshot_sha256: item for item in predictions}
+    by_hash = {
+        item.snapshot_sha256: original for item, original in zip(predictions, results, strict=True)
+    }
     if (
         len(predictions) != len(checked)
         or len(by_hash) != len(predictions)
@@ -247,14 +261,16 @@ def inspect_snapshots(
     groups = {}
     prediction_identities: list[dict[str, JsonValue]] = []
     for name, source in zip(names, checked, strict=True):
-        prediction = by_hash[source.export.content_sha256]
-        groups[name] = observed_series(source.export, prediction, name)
+        instrument_series = observed_series(
+            source.export, by_hash[source.export.content_sha256], name
+        )
+        groups[name] = instrument_series
         prediction_identities.append(
             {
                 "snapshot_id": source.export.source.snapshot_id,
                 "snapshot_sha256": source.export.content_sha256,
-                "analysis_id": str(prediction.analysis_id),
-                "result_sha256": content_hash(prediction.model_dump(mode="json")),
+                "analysis_id": instrument_series[0].prediction["analysis_id"],
+                "result_sha256": instrument_series[0].prediction["result_sha256"],
             }
         )
     totals: Counter[str] = Counter()

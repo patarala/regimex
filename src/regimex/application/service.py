@@ -1,6 +1,7 @@
 """Authorized service workflows without scientific imports in the HTTP process."""
 
 import hashlib
+import json
 import math
 import os
 import stat
@@ -8,7 +9,7 @@ import tempfile
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 from uuid import UUID, uuid4
 
 from pydantic import Field, JsonValue, ValidationError, model_validator
@@ -522,12 +523,8 @@ class AnalysisService:
         if not first.result_available or not second.result_available:
             raise Conflict("Both analyses must have successful saved results.")
         export = self.read_snapshot(principal, first.snapshot_id)
-        first_result = AnalysisResult.model_validate_json(
-            json_bytes(self.get_result(principal, first_id))
-        )
-        second_result = AnalysisResult.model_validate_json(
-            json_bytes(self.get_result(principal, second_id))
-        )
+        first_result = self.read_result(principal, first_id)
+        second_result = self.read_result(principal, second_id)
         assert first.operation.result_sha256 is not None
         assert second.operation.result_sha256 is not None
         from regimex.application.analysis_comparison import render_analysis_comparison
@@ -591,8 +588,10 @@ class AnalysisService:
         return payload, result
 
     def get_result(self, principal: Principal, analysis_id: UUID) -> dict[str, JsonValue]:
-        result = self._verified_result(principal, analysis_id)[1]
-        return result.model_dump(mode="json")
+        return cast(dict[str, JsonValue], json.loads(self.read_result(principal, analysis_id)))
+
+    def read_result(self, principal: Principal, analysis_id: UUID) -> bytes:
+        return self._verified_result(principal, analysis_id)[0]
 
     def get_report_metadata(
         self, principal: Principal, analysis_id: UUID

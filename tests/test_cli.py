@@ -12,6 +12,7 @@ from support.report_fixtures import prediction_for
 from typer.testing import CliRunner
 
 from regimex.cli import app
+from regimex.data_catalog import content_hash
 from regimex.exports import ExportPayloadV2, ExportV2, seal_export
 from regimex.market_identity import imported_seed_group, market_seed_group
 
@@ -217,6 +218,29 @@ def test_report_requires_saved_predictions_and_blind_review_rejects_them(tmp_pat
     rejected = runner.invoke(app, [*arguments, "--blind", "--result", str(saved)])
     assert rejected.exit_code == 1 and "does not accept model results" in rejected.output
     assert not output.exists()
+
+
+def test_offline_report_preserves_the_saved_result_digest(tmp_path: Path) -> None:
+    pytest.importorskip("plotly")
+    source = Path(__file__).parent / "fixtures" / "experiment-v2.json"
+    document = prediction_for(ExportV2.model_validate_json(source.read_bytes())).model_dump(
+        mode="json"
+    )
+    for sequence in document["sequences"]:
+        sequence["probabilities"] = [[0, 1, 0] for _ in sequence["probabilities"]]
+    saved = tmp_path / "result.json"
+    saved.write_text(json.dumps(document, indent=2))
+    output = tmp_path / "report"
+    result = runner.invoke(
+        app, ["report", "--input", str(source), "--result", str(saved), "--output", str(output)]
+    )
+    assert result.exit_code == 0, result.output
+    digest = content_hash(document)
+    summary = json.loads((output / "summary.json").read_bytes())
+    assert summary["results"][0]["result_sha256"] == digest
+    assert content_hash(json.loads((output / "results.json").read_bytes())[0]) == digest
+    examples = json.loads((output / "examples.json").read_bytes())
+    assert examples[0]["prediction"]["result_sha256"] == digest
 
 
 def test_rendering_saved_results_does_not_import_training_or_image_libraries(
