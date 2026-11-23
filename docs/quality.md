@@ -21,6 +21,8 @@ The [pause overlay comparison](pause-precision.md) measures how often the
 report highlights a genuine price pause or a continuing trend.
 The [direction classifier comparison](direction-context.md) tests whether measuring
 price movement on either side of a level change improves the three predicted directions.
+The [adaptive forest evaluation](adaptive-intervals.md) examines short sideways
+intervals and the effect of missing observations on their neighbors.
 
 ## Baseline and TCN on direction-32/2.1
 
