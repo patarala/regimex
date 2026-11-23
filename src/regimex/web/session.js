@@ -1,6 +1,6 @@
 import {$, notice} from "./ui.js";
 
-export function canRetryRead(error) {
+export function isTransientRequestError(error) {
   return !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
 }
 
@@ -132,7 +132,7 @@ export function createSession({onActivate, onReset}) {
       next = await json("/api/v1/session");
     } catch (error) {
       if (workspace !== epoch) return;
-      if (canRetryRead(error)) {
+      if (isTransientRequestError(error)) {
         $("login-panel").hidden = true;
         notice("Reconnecting to the service…");
         restoreTimer = setTimeout(() => void start(Math.min(30000, retryDelay * 2)), retryDelay);

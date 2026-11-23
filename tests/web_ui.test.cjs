@@ -1058,6 +1058,39 @@ test("saved experiments rerun without upload and deliberate runs have distinct i
   assert.notEqual(first.options.headers["Idempotency-Key"], second.options.headers["Idempotency-Key"]);
 });
 
+test("Analyze recovers an unconfirmed request even after visiting another analysis", async () => {
+  const ui = await workspace();
+  await flush();
+  void ui.get("export-file").emit("change", {target: {files: [batchFile("experiment.json")]}});
+  await flush();
+  ui.pending("/api/v1/validate").reply({step_count: 12, instrument_ids: ["BTC/USD"]});
+  await flush();
+  void ui.get("classify").click();
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2000)});
+  await flush();
+  const original = ui.pending("/api/v1/analyses");
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  assert.equal(ui.get("classify").disabled, true);
+  await ui.get("classify").click();
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/analyses").length, 1);
+  original.reply({error: {message: "Response timed out."}}, 504);
+  await flush();
+  void ui.get("classify").click();
+  const recovered = ui.pending("/api/v1/analyses");
+  assert.equal(recovered.options.headers["Idempotency-Key"], original.options.headers["Idempotency-Key"]);
+  assert.equal(recovered.options.body, original.options.body);
+  recovered.reply({analysis_id: id(3000)}, 202);
+  await flush();
+  ui.pending(`/api/v1/analyses/${id(3000)}`).reply(metadata("new-job", "queued"));
+  await flush();
+  void ui.get("classify").click();
+  const next = ui.pending("/api/v1/analyses");
+  assert.notEqual(next.options.headers["Idempotency-Key"], recovered.options.headers["Idempotency-Key"]);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/snapshots").length, 1);
+});
+
 test("the active model is captured as an immutable version before submission", async () => {
   const ui = await workspace();
   await flush();
@@ -1906,6 +1939,23 @@ test("batch resumes an ambiguous admission with its original key, then waits for
   assert.equal(afterCapacity.options.headers["Idempotency-Key"], denied.options.headers["Idempotency-Key"]);
   assert.equal(afterCapacity.options.body, denied.options.body);
   assert.equal(ui.calls.filter(call => call.url === "/api/v1/snapshots").length, 2);
+});
+
+test("a batch can resume a submission after a request timeout", async () => {
+  const ui = await workspace();
+  await flush();
+  await startBatch(ui, [batchFile("a.json"), batchFile("b.json")]);
+  ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2100)});
+  await flush();
+  const original = ui.pending("/api/v1/analyses");
+  original.reply({error: {message: "Request timed out."}}, 408);
+  await flush();
+  assert.equal(ui.get("batch-resume").hidden, false);
+  void ui.get("batch-resume").click();
+  const resumed = ui.pending("/api/v1/analyses");
+  assert.equal(resumed.options.body, original.options.body);
+  assert.equal(resumed.options.headers["Idempotency-Key"], original.options.headers["Idempotency-Key"]);
+  assert.equal(ui.calls.filter(call => call.url === "/api/v1/snapshots").length, 1);
 });
 
 test("retrying one failed file leaves the other failed analysis available", async () => {

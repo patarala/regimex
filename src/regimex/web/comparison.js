@@ -1,5 +1,5 @@
 import {$, notice, option, setPreview} from "./ui.js";
-import {canRetryRead} from "./session.js";
+import {isTransientRequestError} from "./session.js";
 
 const COMPARISON_PAGE_SIZE = 20;
 const RETRY_NOTICE = "Reconnecting to the comparison…";
@@ -159,7 +159,7 @@ export function createComparison({session, getSelection, rememberComparison}) {
           {signal: request.controller.signal});
       } catch (error) {
         if (!active()) return;
-        if (!canRetryRead(error)) {
+        if (!isTransientRequestError(error)) {
           cancelRestore();
           notice(error.message, true);
           return;

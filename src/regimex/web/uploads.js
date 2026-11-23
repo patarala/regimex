@@ -1,5 +1,5 @@
 import {$, analysisStateLabel} from "./ui.js";
-import {canRetryRead} from "./session.js";
+import {isTransientRequestError} from "./session.js";
 
 const MAX_BYTES = 16 * 1024 * 1024;
 const ACTIVE_LIMIT = 2;
@@ -154,7 +154,7 @@ export function createBatch({session, openAnalysis, updateActions, refreshHistor
         changed ||= Boolean(row.snapshotId);
       } catch (error) {
         row.detail.textContent = error.message;
-        if (!error.status || error.status === 429 || error.status >= 500) {
+        if (isTransientRequestError(error)) {
           // The server may already have accepted an unconfirmed request. Keep its key.
           pause(batch, error, error.status === 429 && Boolean(row.snapshotId));
         } else row.phase = "invalid";
@@ -188,7 +188,7 @@ export function createBatch({session, openAnalysis, updateActions, refreshHistor
       } catch (error) {
         if (current !== batch || controller.signal.aborted) return changed;
         row.detail.textContent = error.message;
-        if (canRetryRead(error)) {
+        if (isTransientRequestError(error)) {
           row.detail.textContent += " Retrying automatically…";
           unavailable = true;
         } else {

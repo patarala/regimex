@@ -9,7 +9,7 @@ import {createTrainingComparison} from "./training-comparison.js";
 import {createRunNameEditor} from "./training-name.js";
 import {parameterCountLabel} from "./training-size.js";
 import {queuedStageLabel} from "./queue-status.js";
-import {canRetryRead} from "./session.js";
+import {isTransientRequestError} from "./session.js";
 
 const api = "/api/v1/";
 const pageSize = 12;
@@ -525,7 +525,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   function handleRunReadError(error, retry) {
-    if (!canRetryRead(error)) {
+    if (!isTransientRequestError(error)) {
       $("training-sync").hidden = true;
       message(error.message, true);
       return;
@@ -566,7 +566,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
         waiting = actions.value;
         if (charts.status === "rejected") {
           const error = charts.reason;
-          if (canRetryRead(error)) throw error;
+          if (isTransientRequestError(error)) throw error;
           setText($("training-metric-error"), "Could not load training metrics. " + error.message);
           $("training-metric-error").hidden = false;
         }

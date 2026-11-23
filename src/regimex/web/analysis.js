@@ -1,6 +1,6 @@
 import {$, analysisStateLabel, notice, setPreview} from "./ui.js";
 import {createQueueStatus} from "./queue-status.js";
-import {canRetryRead} from "./session.js";
+import {isTransientRequestError} from "./session.js";
 import {createBatch, readExport, requestAnalysis} from "./uploads.js";
 
 const stages = {
@@ -34,6 +34,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   let retryAction = null;
   let busy = false;
   let fileEpoch = 0;
+  const unconfirmedKeys = new Map();
   const queue = createQueueStatus({session, getSelection: () => current});
   const batch = createBatch({session, openAnalysis, updateActions: models.updateActions,
     refreshHistory: () => { void history.load(); onStorageChange(); }});
@@ -67,6 +68,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     clearCancellation();
     clearFailure();
     queue.reset();
+    unconfirmedKeys.clear();
     current = snapshot = result = exportText = retryAction = null;
     batch.clear();
     busy = false;
@@ -179,6 +181,24 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     });
   }
 
+  async function admitAnalysis({snapshotId, model, key}) {
+    // Analyze and Retry must recover the same job after a lost response, even after navigation.
+    const identity = `${snapshotId}/${model}`;
+    const requestKey = unconfirmedKeys.get(identity) ?? key;
+    unconfirmedKeys.set(identity, requestKey);
+    function releaseKey() {
+      if (unconfirmedKeys.get(identity) === requestKey) unconfirmedKeys.delete(identity);
+    }
+    try {
+      const accepted = await requestAnalysis(session, snapshotId, model, requestKey);
+      releaseKey();
+      return accepted;
+    } catch (error) {
+      if (!isTransientRequestError(error)) releaseKey();
+      throw error;
+    }
+  }
+
   async function submitRequest(submission) {
     if (busy || !session.value || submission.workspace !== session.epoch) return;
     busy = true;
@@ -211,7 +231,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
         if (workspace === session.epoch && exportText === submission.exportText) snapshot = uploaded;
       }
       if (workspace !== session.epoch) return;
-      const analysis = await requestAnalysis(session, submission.snapshotId, submission.model, submission.key);
+      const analysis = await admitAnalysis(submission);
       if (current === selection) await openAnalysis(analysis.analysis_id, {focus: false});
       if (workspace === session.epoch) await history.load();
     } catch (error) {
@@ -220,7 +240,6 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       $("job-detail").textContent = "The request was not confirmed. Retry to check or continue it.";
       $("job-guidance").textContent = error.message;
       $("job-guidance").hidden = false;
-      // A retry must send the same model version and idempotency key.
       retry(() => submitRequest(submission));
     } finally {
       if (workspace === session.epoch) {
@@ -332,7 +351,7 @@ export function createAnalysis({session, models, history, comparison, onStorageC
       if (!active()) return;
       $("progress").hidden = true;
       if (!selection.metadata) $("job-detail").textContent = "";
-      selection.follow = canRetryRead(error);
+      selection.follow = isTransientRequestError(error);
       $("job-guidance").textContent = error.message + (selection.follow ? " Retrying automatically…" : "");
       $("job-guidance").hidden = false;
       retry(() => poll(selection));
