@@ -327,9 +327,11 @@ installed schema, queue schema and restore state from the new image before
 replacing a container. It preserves the current replica count of each selected
 role, including workers scaled with `--scale`. PostgreSQL keeps serving traffic.
 Compose recreates roles whose image or configuration changed, and waits up to
-three minutes for health before moving on. Repeating the command with the same
-image and configuration keeps healthy containers running. The singleton API can briefly drop requests, and queued work can wait while
-its workers restart.
+three minutes for health. Before each replacement the helper checks the replica
+counts again and verifies that roles updated earlier are still healthy. Repeating
+the command with the same image and configuration keeps healthy containers
+running. The singleton API can briefly drop requests, and queued work can wait
+while its workers restart.
 
 The analysis worker publishes saved HTML reports. For a new report format, update
 the API and the backup/restore image before the writer. Training and maintenance
@@ -344,8 +346,10 @@ On failure, inspect `docker compose --profile service ps --all` and
 `docker compose logs --tail 100 SERVICE` for the affected role. A failed build or
 schema probe leaves the current containers running. If a health check fails after
 replacement, earlier roles can already be on the new image. Correct the failure
-before continuing. Rolling back a reader requires that it can open every record
-the updated writer has already saved.
+and repeat the command. Docker may be restarting a failed container while the
+helper builds its replacement. For a role you explicitly stopped or paused,
+restore its intended running state first. Rolling back a reader requires that it
+can open every record the updated writer has already saved.
 
 ### Upgrade an existing deployment
 

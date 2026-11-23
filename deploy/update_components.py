@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import sys
 from collections import Counter
+from collections.abc import Sequence
 
 # Readers must be ready before an analysis worker can publish a newer report.
 BUILDERS = {
@@ -23,20 +24,25 @@ def run(*args: str) -> None:
     subprocess.run([*COMPOSE, *args], check=True)
 
 
-def replicas(roles: list[str]) -> Counter[str]:
+def replicas(roles: list[str], *, updated: Sequence[str] = ()) -> Counter[str]:
     ids = subprocess.check_output([*COMPOSE, "ps", "--all", "--quiet", *roles], text=True).split()
     counts: Counter[str] = Counter()
     if ids:
         fields = (
             '{{index .Config.Labels "com.docker.compose.service"}} '
-            '{{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}}'
+            '{{index .Config.Labels "com.docker.compose.oneoff"}} {{.State.Status}} '
+            "{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}"
         )
         states = subprocess.check_output(["docker", "inspect", "--format", fields, *ids], text=True)
         for state in states.splitlines():
-            role, oneoff, status = state.split()
+            role, oneoff, status, health = state.split()
             if oneoff.lower() == "true":
                 continue
-            if status != "running":
+            if role in updated and (status != "running" or health != "healthy"):
+                raise ValueError(
+                    f"Updated {role} is no longer healthy. Check the deployment first."
+                )
+            if status not in {"running", "restarting"}:
                 raise ValueError(f"{role} has a {status} container. Check the deployment first.")
             counts[role] += 1
     for role in roles:
@@ -52,9 +58,11 @@ def update(roles: list[str]) -> None:
     run("build", *builders)
     for role in selected:
         run("run", "--rm", "--no-deps", "-T", role, "service", "health", "--component", "database")
-    if replicas(selected) != counts:
-        raise ValueError("Replica counts changed during the build. Repeat with the current scale.")
-    for role in selected:
+    for index, role in enumerate(selected):
+        if replicas(selected, updated=selected[:index]) != counts:
+            raise ValueError(
+                "Replica counts changed during the update. Repeat with the current scale."
+            )
         run(
             "up",
             "--no-deps",
@@ -72,7 +80,7 @@ def update(roles: list[str]) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("roles", nargs="+", choices=BUILDERS, help="Running services to replace")
+    parser.add_argument("roles", nargs="+", choices=BUILDERS, help="Service roles to update")
     try:
         update(parser.parse_args().roles)
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:

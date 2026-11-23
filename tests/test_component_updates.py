@@ -13,7 +13,13 @@ ROLES = ["api", "analysis-worker", "admin-worker", "maintenance-worker"]
 
 
 def rollout(
-    tmp_path: Path, roles: list[str], *, states: str, fail: str = "", next_states: str = ""
+    tmp_path: Path,
+    roles: list[str],
+    *,
+    states: str,
+    fail: str = "",
+    next_states: str = "",
+    states_after_up: str = "",
 ) -> tuple[subprocess.CompletedProcess[str], list[list[str]]]:
     docker = tmp_path / "docker"
     docker.write_text(
@@ -25,7 +31,9 @@ def rollout(
         "if args[0] == 'inspect':\n"
         "    prior = open('calls.jsonl').read()\n"
         "    changed = os.environ['NEXT_STATES'] if '\"inspect\"' in prior else ''\n"
-        "    print(changed or os.environ['STATES'])\n"
+        "    if '\"up\"' in prior: changed = os.environ['STATES_AFTER_UP'] or changed\n"
+        "    for state in (changed or os.environ['STATES']).splitlines():\n"
+        "        print(state if len(state.split()) == 4 else state + ' healthy')\n"
         "else:\n"
         "    assert args[:3] == ['compose', '--profile', 'service']\n"
         "    args = args[3:]\n"
@@ -42,6 +50,7 @@ def rollout(
         COMPOSE_PROJECT_NAME="lab",
         STATES=states,
         NEXT_STATES=next_states,
+        STATES_AFTER_UP=states_after_up,
         FAIL=fail,
     )
     result = subprocess.run(
@@ -127,6 +136,36 @@ def test_concurrent_resize_stops_before_replacement(tmp_path: Path) -> None:
     )
     assert result.returncode and "Replica counts changed" in result.stderr
     assert all(args[0] != "up" for args in calls)
+
+
+def test_scale_change_while_waiting_for_api_health_keeps_new_worker_count(tmp_path: Path) -> None:
+    worker = "analysis-worker False running"
+    initial = f"api False running\n{worker}"
+    result, calls = rollout(
+        tmp_path, ["api", "analysis-worker"], states=initial, states_after_up=f"{initial}\n{worker}"
+    )
+    assert result.returncode and "Replica counts changed" in result.stderr
+    assert [args[-1] for args in calls if args[0] == "up"] == ["api"]
+
+
+def test_repaired_image_can_replace_a_restart_looping_worker(tmp_path: Path) -> None:
+    result, calls = rollout(tmp_path, ["admin-worker"], states="admin-worker False restarting")
+    assert result.returncode == 0, result.stderr
+    assert [args[-3:] for args in calls if args[0] == "up"] == [
+        ["--scale", "admin-worker=1", "admin-worker"]
+    ]
+
+
+def test_api_losing_readiness_stops_the_report_writer_update(tmp_path: Path) -> None:
+    worker = "analysis-worker False running"
+    result, calls = rollout(
+        tmp_path,
+        ["api", "analysis-worker"],
+        states=f"api False running\n{worker}",
+        states_after_up=f"api False running unhealthy\n{worker}",
+    )
+    assert result.returncode and "api is no longer healthy" in result.stderr
+    assert [args[-1] for args in calls if args[0] == "up"] == ["api"]
 
 
 @pytest.mark.parametrize(
