@@ -97,6 +97,79 @@ sha256sum direction-quality-mixture-v2/manifest.json
 python direction-quality-mixture-v2/predict.py market-export.json --output directions.json
 ```
 
+### Direction persistence across adjacent price segments
+
+Three neural candidates used the same decoder and complete, ordered observations
+for one instrument. The first fitted a slope on each price segment, allowing a
+one-time shift in price level, and learned how much movement to accumulate across
+consecutive segments with the same slope sign. Its second head weighs this
+exchange specialist against a network trained on known drift. A gap resets the
+window. The other candidates used a sign-symmetric multilayer perceptron and
+a learned choice between existing specialists based on local price windows.
+[Persistence architecture](../src/regimex/backends/price_persistence.py)
+
+An already opened panel of 192 exchange experiments and 96 drift seeds served
+as the final **selection** set. The rule maximized the smaller of the candidate's
+two margins over the best of three forests in each population.
+
+| Candidate | Exchange automatic reference | Known drift |
+| --- | ---: | ---: |
+| Direction persistence | 0.9474 | 0.9749 |
+| Sign-symmetric network mixed with the previous model | 0.9037 | 0.9778 |
+| Learned choice based on local windows | 0.9296 | 0.9743 |
+| Best forest on each population | 0.9411 | 0.9577 |
+
+The selected model and all comparison models were then scored on 288 new
+exchange experiments and 144 new drift seeds (four schedules per seed, with
+complete and masked views). The table shows decoded interval macro-F1 at
+IoU ≥ 0.50, averaged equally across lengths and, for drift, across views.
+
+| Model on independent groups | Exchange automatic reference | Known drift |
+| --- | ---: | ---: |
+| Direction persistence | 0.9360 | 0.9729 |
+| Large interval forest | 0.9419 | 0.7930 |
+| Expanded native forest | 0.9418 | 0.7952 |
+| Mixed-supervision window forest | 0.9276 | 0.9397 |
+| Previous price-conditioned neural mixture | 0.9159 | 0.9629 |
+| Previous block-level neural mixture | 0.9198 | 0.9816 |
+
+The acceptance rule required positive one-sided simultaneous 95% lower bounds
+against all three forests in both populations. Paired resampling used 20,000
+draws of whole seed groups with a Bonferroni correction for six contrasts.
+All three drift contrasts passed. Against its strongest forest the drift gain
+was +0.0332 (adjusted lower bound +0.0172). None of the exchange contrasts
+passed. Against the large interval forest the difference was −0.0059
+(lower bound −0.0396). The largest exchange deficit was at 512 steps, with
+growth F1 of 0.890 versus 0.933 for the large forest. At 1,024 exchange steps
+the network scored 0.9368 overall versus 0.9268 for that forest.
+
+On 120 exchange training groups, after matching the independent panel's
+instrument-count mix, the network scored 0.9598. The estimated training
+advantage was +0.0238 (independent group bootstrap 95% interval −0.0225 to
++0.0674). The known-drift training generator uses different schedules and noise
+from the independent panel. These measurements only cover simulated prices.
+
+The model remains available for offline use. Its CPU inference bundle has
+manifest SHA-256 `f427e2b3c638facf901c5a55ffcaec02395b9a5dfac914661b01fecd4aa937d3`.
+To classify an export, unpack the bundle in `var/release/direction-persistence`
+and run the following command.
+
+```sh
+uv run --locked --extra ml python var/release/direction-persistence/predict.py \
+  market-export.json --output intervals.json
+```
+
+The command writes a new file containing intervals per instrument, the export
+digest and the model digest. To reuse the weights in one Python process, add
+the bundle directory to the import path and call
+`accumulation_direction.load_predictor()` once.
+
+With warm weights and one CPU thread, median prediction and decoding time was
+51, 89 and 180 ms per instrument at 256, 512 and 1,024 steps. The expanded
+forest took 19, 48 and 102 ms. These timings include feature extraction. They
+use three alternating repeats on each of 12 exchange development series per
+length and exclude service queueing, file I/O, report rendering and model load.
+
 ## Baseline and TCN on direction-32/2.1
 
 | Steps | Baseline interval F1 | TCN interval F1 | Baseline point F1 | TCN point F1 | Classifiable steps / all steps |
