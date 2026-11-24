@@ -198,3 +198,83 @@ backend uses filesystem locks, and S3 writers also share a local coordination
 directory for capacity checks and deletion. To put writers on multiple hosts,
 first replace this coordination with shared, fenced reservations and test
 worker loss during writes, cleanup and restore. See [storage guarantees](storage.md).
+
+### Planning for more users
+
+Size a deployment by accepted analyses per minute, input length and simultaneous
+uploads. Browser sessions also produce status reads. Measure time waiting for a
+worker separately from worker occupancy and HTTP latency. Three historical
+single-host runs used one owner, two workers, already uploaded 512-step inputs
+and `tcn-0.2.0`. The entire stand shared a two-CPU, 3 GiB resource budget.
+The timer ends when the result download returns. The client then verifies it.
+[Fixed-arrival workload](load-testing.md#workloads)
+
+| Scheduled analyses/min | Arrival window | Verified / scheduled | Refused at owner quota | Median queue wait | p95 submission to download |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 12 | 90 s | 18 / 18 | 0 | 0.03 s | 6.56 s |
+| 24 | 90 s | 36 / 36 | 0 | 2.16 s | 12.33 s |
+| 24 | 240 s | 75 / 96 | 21 | 16.15 s | 34.58 s |
+
+In the longest run the median model load took 2.63 s and the backend prediction
+took 0.20 s. The runs used different revisions. Repeat them with the intended
+model, users and traffic mix before sizing a deployment.
+[Timing definitions](analysis-timings.md)
+
+1. **Scale workers on the current host.** Compare worker counts at a fixed CPU
+   and memory budget. Track queue age, refusals, completions and p95 latency,
+   including requests from a second owner while the first has long jobs queued.
+   If model restoration still dominates worker time, benchmark keeping a verified
+   model resident across jobs with the same model digest and runtime policy.
+   Test cancellation, per-job resource limits and isolation between users
+   against the current one-process-per-job implementation.
+2. **Make S3 writes safe across hosts.** PostgreSQL already tracks owner and
+   integration quotas. A design to test is a reservation for total bytes and
+   inventory entries across the storage prefix. Give every upload a write token,
+   including snapshot uploads and model imports. Reserve before uploading,
+   record the verified provider version and check the token on publication.
+   Jobs also check their current attempt. Reconcile abandoned uploads, retained
+   versions and delete markers before releasing capacity. Exercise two hosts
+   racing for the last free bytes, a lost connection after upload, a late worker,
+   a download concurrent with cleanup, and offline restore. Verify capacity and
+   that each accepted analysis publishes at most one result.
+3. **Replicate the API and workers independently.** Once storage passes those
+   checks, use one public origin behind a TCP pass-through load balancer, shared
+   PostgreSQL and object storage, and private scratch space and caches per
+   worker. Exercise login, upload, polling, cancellation and download across
+   different API replicas. Include host loss during an analysis. Budget database
+   connections across all replicas. The repository currently opens a connection
+   per context. If connection setup becomes a bottleneck, benchmark a bounded
+   pool while preserving restore readiness checks and worker heartbeats.
+   Test PostgreSQL failover by interrupting a submission near commit.
+   Retry its idempotency key and verify that exactly one operation and its
+   result survive. Include worker reconnection and lease renewal in that drill.
+
+Keep JSON for the public simulator and browser contracts. The snapshot digest
+binds its validated contents using the project's [export encoding](integration.md#export-contract).
+An offline size comparison used four two-instrument exports at each length.
+The prototype kept the metadata in JSON and encoded observation rows as typed
+Protobuf messages with optional numeric fields, enum states and instrument
+indices. Both readers reconstructed identical JSON values and numeric types
+for all eight exports. Sizes below are summed bytes with gzip level 6.
+
+| Steps per instrument | JSON | JSON + gzip | Prototype | Prototype + gzip |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 1,196,480 | 93,757 | 290,036 | 79,342 |
+| 4,096 | 9,555,637 | 570,734 | 2,297,222 | 456,804 |
+
+The API and integration client currently require uncompressed bodies. If
+bandwidth becomes a constraint, prototype bounded compression first. The binary
+prototype saved another 20% on the compressed 4,096-step files. Median CPU time
+to decompress and produce a digest-verified export was 318 ms for JSON and
+342 ms for the Python Protobuf adapter on these files (three timed reads per
+file). Measure peak memory and end-to-end latency with realistic traffic.
+Enforce the decoded size limit during decompression.
+
+If parsing the observation rows still dominates, compare a typed Protobuf
+message with compressed JSON for transport, or Arrow for repeated column scans
+during training. Preserve missing values, observed zeros, decimal precision
+and the original grid. Verify that both readers reconstruct the same export
+digest and intervals before adding an encoding to the simulator adapter.
+Deterministic Protobuf output alone does not define a canonical content hash.
+[Protobuf serialization](https://protobuf.dev/programming-guides/serialization-not-canonical/) ·
+[Arrow columnar layout](https://arrow.apache.org/docs/format/Columnar.html)
