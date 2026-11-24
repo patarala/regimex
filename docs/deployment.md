@@ -9,8 +9,8 @@ The Dockerfile builds one wheel for all three application images. The API
 image serves requests and runs maintenance, the worker image adds the CPU model
 and report dependencies, and the ops image adds PostgreSQL backup and restore
 tools. Python, uv and PostgreSQL are pinned by digest. BuildKit caches locked
-dependencies across builds, so source or README edits only rebuild the wheel
-and its installation.
+dependencies across builds. To deploy independent API and worker hosts with
+external PostgreSQL and S3, follow the [multi-node guide](multi-host.md).
 
 ## Secrets and TLS
 
@@ -134,7 +134,7 @@ docker compose --profile ops run --rm --no-deps -v "$RELEASE_ROOT/release/models
 
 When replacing an active model, pass its current version ID as
 `--expected-previous` with `--activate`. To train and publish a candidate in
-this installation, use the [Training screen](usage.md#train-a-model) or the
+this installation, use the [Training screen](training.md) or the
 [administrative API](api.md#administration).
 
 ## Move an existing installation to Compose
@@ -278,8 +278,8 @@ export COMPOSE_FILE=compose.yaml:compose.s3.yaml
 With these variables set, follow [Start the service](#start-the-service).
 Keep `COMPOSE_FILE` set for every service and operator command in this installation.
 The endpoint has no credential, path or query component; the prefix has no leading
-or trailing slash. All writers share the `s3-coordination` volume at
-`/coordination` on one host and use the same namespace, byte limits and
+or trailing slash. In this single-host profile writers share the
+`s3-coordination` volume at `/coordination` and use the same namespace, byte limits and
 inventory limit. The extra storage network permits outbound HTTPS. The
 database migration needs only its DSN and schema. After rotating the credential
 file, recreate the storage clients' containers to remount the file and renew
@@ -288,7 +288,8 @@ See [storage](storage.md) for S3 settings, quotas and recovery.
 
 ## Health, shutdown and maintenance
 
-`/health/live` checks the API; `/health/ready` checks schema and restore readiness.
+`/health/live` checks the API process. `/health/ready` requires a writable
+database, the expected schema and a completed restore.
 `/health/models` checks active deployment metadata without testing inference.
 `service health --component worker --queue analysis` checks the registered local
 worker and fresh database heartbeat. A completed saved-model analysis is the
@@ -331,7 +332,9 @@ docker compose --profile ops build ops && python3 deploy/update_components.py ap
 ```
 
 Select any combination of `api`, `analysis-worker`, `admin-worker` and
-`maintenance-worker`. The helper builds each required image once and checks the
+`maintenance-worker` on a single-host deployment. For multiple nodes, use
+the [per-node rollout procedure](multi-host.md#route-and-verify-traffic).
+The helper builds each required image once and checks the
 installed schema, queue schema and restore state from the new image before
 replacing a container. It preserves the current replica count of each selected
 role, including workers scaled with `--scale`. PostgreSQL keeps serving traffic.

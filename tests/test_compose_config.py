@@ -104,3 +104,64 @@ def test_update_builders_match_compose_image_tags(compose: list[str]) -> None:
     for role, builder in builders.items():
         assert services[builder]["build"]["target"] == ("api" if builder == "api" else "worker")
         assert services[role]["image"] == services[builder]["image"]
+
+
+def test_cluster_roles_use_external_state_and_share_one_origin(compose: list[str]) -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith(("REGIMEX_", "COMPOSE_"))
+    }
+    env.update(
+        REGIMEX_PUBLIC_ORIGIN="https://regimex.example.org",
+        REGIMEX_S3_ENDPOINT_URL="https://storage.example.org",
+        REGIMEX_S3_BUCKET="regimex",
+        REGIMEX_S3_PREFIX="primary",
+    )
+    roles = {
+        "api": "api",
+        "analysis-worker": "analysis",
+        "admin-worker": "training",
+        "maintenance-worker": "maintenance",
+        "ops": "ops",
+        "migrate": "ops",
+    }
+    output = subprocess.check_output(
+        [
+            *compose,
+            "--env-file",
+            os.devnull,
+            "-f",
+            "compose.yaml",
+            "-f",
+            "compose.s3.yaml",
+            "-f",
+            "compose.cluster.yaml",
+            "--profile",
+            "*",
+            "config",
+            "--format",
+            "json",
+        ],
+        cwd=ROOT,
+        env=env,
+    )
+    services = json.loads(output)["services"]
+    assert set(services) == set(roles)
+    for name, service in services.items():
+        assert service["profiles"] == [roles[name]]
+        assert not service.get("depends_on")
+        assert "storage" in service["networks"]
+        assert "ports" not in service or name == "api"
+        secrets = {secret["source"] for secret in service.get("secrets", [])}
+        assert {"database_ca", "database_dsn"} <= secrets
+        settings = service["environment"]
+        assert settings["PGSSLMODE"] == "verify-full"
+        assert settings["PGSSLROOTCERT"] == "/run/secrets/database_ca"
+        if name != "migrate":
+            mounts = {v["target"]: v["source"] for v in service["volumes"]}
+            assert mounts["/coordination"] == "node-staging"
+            assert {"s3_ca", "s3_credentials"} <= secrets
+            assert settings["REGIMEX_OBJECT_BACKEND"] == "s3"
+            assert settings["REGIMEX_S3_COORDINATION"] == "postgres"
+            assert settings["REGIMEX_PUBLIC_ORIGIN"] == env["REGIMEX_PUBLIC_ORIGIN"]

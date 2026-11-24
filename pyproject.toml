@@ -81,6 +81,7 @@ include = [
   "/src", "/tests", "/schemas", "/docs", "/deploy", "/scripts",
   "/README.md", "/AGENTS.md", "/LICENSE", "/pyproject.toml", "/uv.lock",
   "/.python-version", "/Dockerfile", "/.dockerignore", "/compose.yaml", "/compose.s3.yaml",
+  "/compose.cluster.yaml",
 ]
 
 [tool.ruff]

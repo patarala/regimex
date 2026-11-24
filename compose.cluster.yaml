@@ -1,0 +1,54 @@
+# Merge after compose.yaml and compose.s3.yaml on each application node.
+x-database-tls: &database-tls
+  PGSSLMODE: verify-full
+  PGSSLROOTCERT: /run/secrets/database_ca
+
+x-node-environment: &node-environment
+  <<: *database-tls
+  REGIMEX_OBJECT_BACKEND: s3
+  REGIMEX_S3_COORDINATION: postgres
+  REGIMEX_PUBLIC_ORIGIN: ${REGIMEX_PUBLIC_ORIGIN:?Set the public HTTPS origin of the load balancer}
+
+x-node: &node
+  secrets: [database_ca]
+  environment: *node-environment
+
+services:
+  postgres: !reset null
+  migrate:
+    depends_on: !reset {}
+    profiles: !override [ops]
+    networks: !override [storage]
+    environment: *database-tls
+    secrets: [database_ca]
+  api:
+    <<: *node
+    depends_on: !reset {}
+    volumes: !override [node-staging:/coordination]
+    profiles: !override [api]
+  analysis-worker:
+    <<: *node
+    depends_on: !reset {}
+    volumes: !override [node-staging:/coordination]
+    profiles: !override [analysis]
+  admin-worker:
+    <<: *node
+    depends_on: !reset {}
+    volumes: !override [node-staging:/coordination]
+    profiles: !override [training]
+  maintenance-worker:
+    <<: *node
+    depends_on: !reset {}
+    volumes: !override [node-staging:/coordination]
+    profiles: !override [maintenance]
+  ops:
+    <<: *node
+    depends_on: !reset {}
+    volumes: !override [node-staging:/coordination, operator-output:/operator-output]
+
+secrets:
+  database_ca:
+    file: ${REGIMEX_SECRETS_DIR:-var/secrets}/database-ca.crt
+
+volumes:
+  node-staging:

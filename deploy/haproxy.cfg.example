@@ -1,0 +1,25 @@
+global
+    log stdout format raw local0
+
+defaults
+    mode tcp
+    log global
+    timeout connect 5s
+    timeout client 120s
+    timeout server 120s
+
+resolvers node_dns
+    parse-resolv-conf
+
+frontend public_https
+    bind :8443
+    default_backend regimex_api
+
+backend regimex_api
+    balance roundrobin
+    option httpchk
+    http-check send meth GET uri /health/ready ver HTTP/1.1 hdr Host regimex.example.org
+    http-check expect status 200
+    default-server inter 3s fall 2 rise 2 check-ssl check-sni regimex.example.org verify required verifyhost regimex.example.org ca-file /etc/haproxy/regimex-api-ca.crt
+    server api-a api-a.internal:8443 check resolvers node_dns init-addr none
+    server api-b api-b.internal:8443 check resolvers node_dns init-addr none

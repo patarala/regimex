@@ -33,6 +33,7 @@ SOURCE_FILES = {
     "README.md",
     "compose.yaml",
     "compose.s3.yaml",
+    "compose.cluster.yaml",
     "pyproject.toml",
     "uv.lock",
 }
