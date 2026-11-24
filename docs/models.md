@@ -160,7 +160,7 @@ checkpoint. Training shows the loss, validation interval macro-F1 and selected
 repeat. Saved weights support validation evaluation and publication through
 the same controls as the other backends.
 
-The [offline direction-persistence comparison](quality.md#direction-persistence-across-adjacent-price-segments)
+The [offline direction-persistence comparison](evaluations/neural-direction.md#direction-persistence-across-adjacent-price-segments)
 used a separate ensemble pretrained on known drift. Its benchmark scores apply
 only to that saved offline bundle. A workspace fit records its own scores.
 
@@ -286,4 +286,5 @@ and the training mean and scale for its block features. The TCN stores a restric
 `temporal-tcn/2.0` and `temporal-tcn/3.0` codecs share the same inference
 procedure and record training by epoch and optimizer update respectively.
 
-See the [evaluation report](quality.md) for measured agreement and boundary accuracy.
+The [reference TCN benchmark](evaluations/reference-releases.md#boundary-sensitivity)
+reports agreement with automatic labels at several boundary tolerances.

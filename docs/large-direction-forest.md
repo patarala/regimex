@@ -2,7 +2,7 @@
 
 This comparison tests whether more data and a different way of measuring
 price movement improve the interval predictions of the
-[released direction forest](direction-context.md). Every candidate predicts
+[reference forest `adaptive-0.1.0`](direction-context.md). Every candidate predicts
 sideways, growth and decline from observed prices. Seeds, simulator settings
 and reference intervals are excluded from its inputs.
 
@@ -43,14 +43,21 @@ noise. Each path is evaluated twice, with and without a gap.
 
 ## Results
 
-| Model | Validation interval macro-F1 | Final interval macro-F1 | Final point macro-F1 |
-| --- | ---: | ---: | ---: |
-| Released forest | 0.7887 | 0.7727 | 0.9323 |
-| Greedy | 0.7858 | | |
-| Multiscale | 0.9461 | | |
-| Multiscale with interval weights | 0.9533 | 0.9303 | 0.9798 |
+| Model on 192 validation experiments | Interval macro-F1 |
+| --- | ---: |
+| Reference forest (`adaptive-0.1.0`) | 0.7887 |
+| Greedy | 0.7858 |
+| Multiscale | 0.9461 |
+| Multiscale with interval weights | **0.9533** |
 
-Only the release and the validation winner entered the final comparison.
+The protocol advanced the reference forest and the highest-scoring challenger
+to the held-out comparison.
+
+| Model on 384 held-out experiments | Interval macro-F1 | Point macro-F1 |
+| --- | ---: | ---: |
+| Reference forest (`adaptive-0.1.0`) | 0.7727 | 0.9323 |
+| Multiscale with interval weights (`direction-multiscale-balanced-v1`) | 0.9303 | 0.9798 |
+
 The winner recovered 920 of 985 reference intervals and 118 of 130 short
 sideways intervals. The release recovered 717 and 46, respectively. The
 interval macro-F1 gain was 0.1576 (paired 95% interval 0.1261 to 0.1877).

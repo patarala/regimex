@@ -59,6 +59,8 @@ Start with the affected test file. For example, after a TCN backend change run
 `uv run --locked --extra ml pytest tests/test_tcn_backend.py`. For documentation,
 check changed links and headings, run changed command examples where possible,
 and verify model settings against the backend or the named release bundle.
+Report benchmark scores with the fitted model, evaluation population and split.
+Point readers to the service for the active version and its recorded evaluation.
 For a reproduction command that checks a digest, verify it against the
 specified source revision, bundle and input files. A rebuild from the current
 checkout can have a different manifest even when the weights match.

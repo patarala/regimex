@@ -33,11 +33,15 @@ independent experiments, including 19 intervals on 1,024-step runs. A difference
 of one or two matches is weak evidence for ranking configurations on this metric.
 All references were generated automatically.
 
-| Held-out length | Logistic baseline | TCN 32 | TCN 48 | Compact dilations | Patch Transformer |
-| ---: | ---: | ---: | ---: | ---: | ---: |
-| 256 | 0.5439 | 0.7301 | 0.8049 | 0.7621 | 0.7350 |
-| 512 | 0.3682 | 0.7307 | 0.7590 | 0.6398 | 0.7304 |
-| 1,024 | 0.2983 | 0.4771 | 0.5351 | 0.4449 | 0.4517 |
+| Held-out interval macro-F1 by model | 256 steps | 512 steps | 1,024 steps |
+| --- | ---: | ---: | ---: |
+| Logistic baseline | 0.5439 | 0.3682 | 0.2983 |
+| TCN 32 | 0.7301 | 0.7307 | 0.4771 |
+| TCN 48 | 0.8049 | 0.7590 | 0.5351 |
+| TCN 32, compact dilations | 0.7621 | 0.6398 | 0.4449 |
+| TCN 32, interval power 0.5 | 0.7524 | 0.6785 | 0.4797 |
+| TCN 32, interval power 1 | 0.7436 | 0.7068 | 0.5074 |
+| Patch Transformer | 0.7350 | 0.7304 | 0.4517 |
 
 Each length contributed 40 experiments. At 1,024 steps every configuration
 scored below its performance at 256 and 512 steps. The
@@ -47,8 +51,9 @@ experiments count as exposed for subsequent model selection.
 
 ## What changed between candidates
 
-All neural candidates received the same price, activity and quote features. The
-preprocessor was fitted on training observations only. Each candidate saw the
+All neural candidates used the same price-derived features and missing-value
+indicators. The shared decoder used price availability and trading activity.
+Preprocessing used training observations only. Each candidate saw the
 same batches of instrument sequences and used the same loss, optimizer and
 interval decoder, except for the loss weights in the two weighting variants.
 
@@ -65,7 +70,7 @@ The Transformer can use later observations because Regimex classifies a complete
 
 The development corpus contained 96 training and 30 validation experiments
 of 256 or 512 steps. We used the same development corpus as the
-[TCN width comparison](../tcn.md#comparing-model-widths). For each neural
+[TCN width comparison](tcn-widths.md). For each neural
 configuration we ran seeds 11, 23 and 47, with 96 optimizer updates per seed,
 eight sequences per batch and validation at updates 32, 64 and 96. The best
 decoded validation interval macro-F1 selected the checkpoint per seed. The
@@ -92,7 +97,7 @@ show how much checkpoint scores varied with the training seed.
 
 ## Reproduce
 
-With the [development corpus and baseline bundle](../tcn.md#comparing-model-widths)
+With the [development corpus and baseline bundle](tcn-widths.md)
 in `var/tcn-widths`, run the following phases in order. Choose a new output
 directory for each comparison. Add `--exposure-index PATH` to the reservation
 when a prior inventory of seeds and identity digests is available.

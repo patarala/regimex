@@ -15,5 +15,5 @@
 - [Architecture](architecture.md) traces a request from upload to report and maps its components to the code.
 - [API workflows](api.md) covers authentication, endpoints, idempotency and job states. The running service exposes its interactive schema at `/docs`.
 - [Data and model semantics](models.md) defines observations, availability, direction labels and the model bundle contract.
-- [Model quality](quality.md) explains how to interpret the metrics and compares models on independent data.
+- [Model quality](quality.md) shows where to find scores for a saved model and how to interpret them.
 - [Evaluation reports](evaluations/README.md) contains experiments, their data and the commands used to reproduce them.

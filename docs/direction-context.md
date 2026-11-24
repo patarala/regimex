@@ -40,10 +40,10 @@ reserved comparison with the TCNs.
 
 | Model on the same 144 held-out experiments | Interval macro-F1 | Sideways F1 | Growth F1 | Decline F1 | Point macro-F1 | Short sideways matches |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Adaptive forest | **0.7859** | **0.7317** | **0.8400** | **0.7861** | 0.9157 | 34 / 68 |
-| Published TCN 0.2.0 | 0.7259 | 0.6476 | 0.7786 | 0.7514 | 0.9153 | 32 / 68 |
-| TCN trained on the same 192 experiments | 0.6491 | 0.5633 | 0.7173 | 0.6667 | 0.8635 | 15 / 68 |
-| TCN 0.1.0 | 0.6272 | 0.5473 | 0.6975 | 0.6369 | 0.8662 | 9 / 68 |
+| Adaptive forest (`adaptive-0.1.0`) | **0.7859** | **0.7317** | **0.8400** | **0.7861** | 0.9157 | 34 / 68 |
+| `tcn-0.2.0` | 0.7259 | 0.6476 | 0.7786 | 0.7514 | 0.9153 | 32 / 68 |
+| Training-matched TCN (`mixed-192`) | 0.6491 | 0.5633 | 0.7173 | 0.6667 | 0.8635 | 15 / 68 |
+| `tcn-0.1.0` | 0.6272 | 0.5473 | 0.6975 | 0.6369 | 0.8662 | 9 / 68 |
 
 Short sideways intervals last fewer than 64 steps. Each model used its
 own decoder settings against the same automatic profile 2.2 references.
@@ -57,11 +57,14 @@ better with similar agreement on individual steps. The intervals come
 from 2,000 paired draws of whole experiments within each length group
 and describe these fitted weights.
 
-| Experiment length | Adaptive interval macro-F1 | Training-matched TCN interval macro-F1 |
-| --- | ---: | ---: |
-| 256 | 0.8741 | 0.7673 |
-| 512 | 0.7207 | 0.5699 |
-| 1,024 | 0.7860 | 0.6433 |
+The original held-out evaluation also recorded interval macro-F1 by length.
+The separate evaluation of `tcn-0.2.0` recorded pooled scores.
+
+| Frozen model | 256 steps | 512 steps | 1,024 steps |
+| --- | ---: | ---: | ---: |
+| `adaptive-0.1.0` | 0.8741 | 0.7207 | 0.7860 |
+| Training-matched TCN (`mixed-192`) | 0.7673 | 0.5699 | 0.6433 |
+| `tcn-0.1.0` | 0.7916 | 0.5745 | 0.5686 |
 
 Across 109,452 steps with a reference direction, the adaptive forest also
 reduced multiclass Brier score from 0.1964 to 0.1191 and log loss from

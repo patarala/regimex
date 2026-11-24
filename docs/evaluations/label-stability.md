@@ -7,7 +7,7 @@ published prices preserved 21 of the 22, including both endpoints. The small
 number of training examples makes short plateaus a candidate for targeted
 sampling. Stability measures agreement with the automatic rule under specific
 changes. Human agreement has yet to be measured.
-[Development corpus](../tcn.md#comparing-model-widths)
+[Development corpus](tcn-widths.md)
 
 ## What changes the labels?
 
@@ -90,11 +90,11 @@ the reference. Both suites record a trade and a price at every step.
 | Suite | Method | Interval macro-F1 | Short pauses matched | False trends on flat paths or level shifts | False sideways on trends or reversals |
 | --- | --- | ---: | ---: | ---: | ---: |
 | Original shapes, new draws | Current rule | 0.7573 | 54/128 | 4 | 20 |
-| | Lower split penalty | 0.7949 | 76/128 | 13 | 45 |
-| | Second pass | 0.8916 | 96/128 | 4 | 23 |
+| Original shapes, new draws | Lower split penalty | 0.7949 | 76/128 | 13 | 45 |
+| Original shapes, new draws | Second pass | 0.8916 | 96/128 | 4 | 23 |
 | Different lengths, shapes and noise | Current rule | 0.8802 | 129/192 | 8 | 17 |
-| | Lower split penalty | 0.8656 | 140/192 | 19 | 30 |
-| | Second pass | 0.9164 | 157/192 | 8 | 21 |
+| Different lengths, shapes and noise | Lower split penalty | 0.8656 | 140/192 | 19 | 30 |
+| Different lengths, shapes and noise | Second pass | 0.9164 | 157/192 | 8 | 21 |
 
 The second pass gained 0.1343 interval F1 on the first suite (paired 95%
 interval +0.1014 to +0.1685) and 0.0362 on the second (+0.0201 to +0.0534).
@@ -170,14 +170,15 @@ There were 1,536 paths and views across the stress and known-drift groups.
 The fresh observations had no exact price/trade-count matches among the
 3,328 earlier controlled paths checked.
 
-| Fresh diagnostic | Current 2.2 | Activity-scaled | 32-step pauses matched, current → scaled | 48-step pauses matched, current → scaled |
+| Stress condition | Profile 2.2 interval macro-F1 | Activity-scaled interval macro-F1 | 32-step pauses matched, original → scaled | 48-step pauses matched, original → scaled |
 | --- | ---: | ---: | ---: | ---: |
-| Known drift, six-cell mean | 0.7866 | 0.9358 | | |
-| Stress, every step traded | 0.8743 | 0.8743 | 16 → 16 of 32 | 20 → 20 of 32 |
-| Stress, 85% sampling | 0.8606 | 0.8832 | 15 → 15 of 32 | 22 → 21 of 32 |
-| Stress, 25% sampling | 0.7511 | 0.7673 | 10 → 1 of 32 | 18 → 9 of 32 |
+| Every step traded | 0.8743 | 0.8743 | 16 → 16 of 32 | 20 → 20 of 32 |
+| 85% sampling | 0.8606 | 0.8832 | 15 → 15 of 32 | 22 → 21 of 32 |
+| 25% sampling | 0.7511 | 0.7673 | 10 → 1 of 32 | 18 → 9 of 32 |
 
-The mean known-drift gain was 0.1492 (paired 95% interval 0.1014 to 0.1936).
+Across the six known-drift conditions, mean interval macro-F1 rose from
+0.7866 for profile 2.2 to 0.9358 with activity scaling (gain 0.1492, paired
+95% interval 0.1014 to 0.1936).
 At 25% sampling, the rule removed 10 false sideways intervals on slowdowns
 but lost 28.1 percentage points of 32-step pause recall (paired 95% interval
 −46.9 to −9.4 points). We had allowed up to a ten-point loss per sampling

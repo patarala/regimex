@@ -40,18 +40,18 @@ input to the baseline at every step. The TCN uses price-derived features.
 These measurements cover the specified gaps on synthetic markets and measure
 agreement with the automatic labeling rule. Accuracy on external markets and
 agreement with human judgments remain unmeasured. A separate
-[comparison of baseline windows](../baseline-context.md) tests which features
+[comparison of baseline windows](baseline-windows.md) tests which features
 make a price gap change directions elsewhere in the run.
 
 ## When does the service stop classifying?
 
-Both models use the same availability rules. The counts below cover the entire
-36,864-step grid. Lost and gained count steps that changed direction coverage
-relative to the pristine export, independent of their predicted direction.
+Both models use the same availability rules. On the pristine 36,864-step grid,
+29,399 steps had a direction, 7,463 had no trades and two had insufficient data.
+Lost and gained count steps where direction coverage changed relative to that
+export, regardless of which direction the model assigned.
 
 | Export | Has direction | No trades | Insufficient data | Lost | Gained |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Pristine | 29,399 | 7,463 | 2 | — | — |
 | Price gap | 25,722 | 7,463 | 3,679 | 3,677 | 0 |
 | Execution gap | 25,742 | 6,513 | 4,609 | 3,677 | 20 |
 | Price only | 29,399 | 7,463 | 2 | 0 | 0 |
@@ -72,7 +72,7 @@ the carried prices. [Availability rules](../models.md)
 ## Reproduce the measurements
 
 Start with the saved baseline and TCN bundles from the
-[direction-32/2.1 comparison](../evaluations/reference-releases.md#reproduce-the-comparison).
+[direction-32/2.1 comparison](reference-releases.md#reproduce-the-comparison).
 Run the following command from the checkout with a new output directory.
 
 ```sh

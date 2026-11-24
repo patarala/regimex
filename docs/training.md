@@ -50,8 +50,9 @@ compared when their recorded validation data, splits and references match.
 
 ## Evaluate and publish
 
-Under **Model evaluation**, choose **Evaluate model**. Once it finishes, inspect
-the interval and step scores and the results for each direction on the run page.
+Under **Model evaluation**, choose **Evaluate model** to score the saved weights
+against the run's validation references. Once it finishes, inspect the interval
+and step scores and the results for each direction on the run page.
 **All fields** opens the evaluation details. **Download JSON** saves them.
 **Use as default** publishes the evaluated model for new analyses after
 confirmation. Accepted analyses retain their original model version.

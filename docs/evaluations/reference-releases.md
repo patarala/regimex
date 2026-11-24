@@ -1,9 +1,13 @@
 # Reference release benchmarks
 
-These measurements use the label profile and saved weights named in each section.
-For current model comparisons see the [quality overview](../quality.md).
+These benchmarks cover the original 0.1.0 release, `tcn-0.2.0` and a separate
+pair of offline fits. To find the score attached to the version serving your
+installation, see [Model quality](../quality.md).
 
 ## Baseline and TCN on direction-32/2.1
+
+Two offline candidates were fitted for this comparison. The table reports their
+scores on 72 reserved experiments with automatic `direction-32/2.1` labels.
 
 | Steps | Baseline interval F1 | TCN interval F1 | Baseline point F1 | TCN point F1 | Classifiable steps / all steps |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -19,14 +23,14 @@ bootstrap interval 0.1752 to 0.3664). Resampling kept all instruments in each
 experiment together, using 1,000 draws and seed 1729. This interval describes
 uncertainty across experiments for these two fitted candidates. On 1,024-step
 runs the TCN's point F1 was 0.9127 while interval F1 fell to 0.5738.
-The [sideways interval breakdown](../evaluations/interval-errors.md) uses validation examples
+The [sideways interval breakdown](interval-errors.md) uses validation examples
 to show which periods the TCN merged, split or classified as a trend.
 
 Both candidates used the same 96 training experiments and 24 validation
 experiments. Each of the three lengths contributed 32 training, eight validation
 and 24 held-out experiments. Each experiment and its instruments stayed in one
 partition. The exchange generator recorded prices and trade aggregates at every
-step. The [incomplete-export evaluation](../evaluations/incomplete-exports.md) compares the
+step. The [incomplete-export evaluation](incomplete-exports.md) compares the
 same frozen models on paired full and masked exports from a separate population.
 
 Validation selected regularization 1 from 0.1, 1 and 10 for the baseline. The
