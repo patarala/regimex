@@ -115,6 +115,77 @@ are unknown. The candidate has a separate offline policy identifier.
 The [training target comparison](pause-supervision.md) measures what a TCN
 learns from the additional intervals.
 
+## Do carried prices warrant a different split penalty?
+
+A quiet order book can repeat one execution price for several steps. A median
+over grid steps then gives that price several votes. We compared a median over
+three consecutive execution prices, a split penalty adjusted for
+autocorrelated noise, and the two changes together. In the controlled data execution status is known. On general exports the filter
+also admits a known price when execution evidence is missing. The fit
+interpolates between filtered prices within each available block. The timeline, availability
+and interval statistics still come from the original observations.
+
+We selected the combined rule on 64 development seed groups. Its interval
+macro-F1 averaged 0.9344 across the six length/availability combinations and
+one stress suite. The execution filter alone scored 0.9152, the penalty alone
+0.9321 and the current rule 0.7957. We froze the choice and tested it on
+128 independent groups. The reference directions came from the clean paths
+before trade sampling, noise and price rounding.
+
+| Fresh diagnostic | Current 2.2 | Nine-step price median | Combined |
+| --- | ---: | ---: | ---: |
+| 256 steps, complete / missing block | 0.821 / 0.868 | 0.859 / 0.865 | 0.919 / 0.903 |
+| 512 steps, complete / missing block | 0.805 / 0.882 | 0.781 / 0.883 | 0.941 / 0.963 |
+| 1,024 steps, complete / missing block | 0.673 / 0.752 | 0.754 / 0.815 | 0.985 / 0.993 |
+| Eight stress shapes, every step traded | 0.888 | 0.863 | 0.849 |
+
+The mean gain across the six length/availability cells was 0.1504
+(paired 95% interval 0.1017 to 0.1948). The improvement on 256-step paths
+with a missing block alone was uncertain (−0.0078 to 0.0803). On the eight
+stress shapes the rule lost 0.0384, exceeding the 0.015 loss allowed before
+scoring. It removed six false sideways intervals on continuous slowdowns but
+matched only 10 of 32 short plateaus (current rule 18) and 18 of 32 longer
+plateaus (current rule 27). All uncertainty intervals resample whole noise
+groups, retaining their shapes and observation views together.
+
+On a separate 48 native simulator validation experiments (72 instrument
+series), the combined rule changed 3,036 of 36,983 classified steps (8.21%)
+and kept every unavailable interval. The direction interval count fell from
+149 to 110. These experiments have automatic references, so the difference
+measures churn. The controlled shapes test accuracy against a known direction.
+
+### Scaling the correction by trading activity
+
+We then scaled both corrections by the share of known-price steps confirmed
+to have no execution. Blocks with a trade on every step use the current rule.
+We tried three slopes on development groups. The least aggressive reached full
+strength when 80% of steps carried a price. All three missed the development
+threshold for short pauses, so we froze the one with the smallest threshold
+violation and checked it on a third, independent set of 128 seed groups.
+
+Each of the eight stress shapes now had three views of the same latent path:
+every step traded, or trades sampled with probability 85% or 25%. Sampled
+views also trade every 24th step to bound the distance between executions.
+There were 1,536 paths and views across the stress and known-drift groups.
+The fresh observations had no exact price/trade-count matches among the
+3,328 earlier controlled paths checked.
+
+| Fresh diagnostic | Current 2.2 | Activity-scaled | 32-step pauses matched, current → scaled | 48-step pauses matched, current → scaled |
+| --- | ---: | ---: | ---: | ---: |
+| Known drift, six-cell mean | 0.7866 | 0.9358 | | |
+| Stress, every step traded | 0.8743 | 0.8743 | 16 → 16 of 32 | 20 → 20 of 32 |
+| Stress, 85% sampling | 0.8606 | 0.8832 | 15 → 15 of 32 | 22 → 21 of 32 |
+| Stress, 25% sampling | 0.7511 | 0.7673 | 10 → 1 of 32 | 18 → 9 of 32 |
+
+The mean known-drift gain was 0.1492 (paired 95% interval 0.1014 to 0.1936).
+At 25% sampling, the rule removed 10 false sideways intervals on slowdowns
+but lost 28.1 percentage points of 32-step pause recall (paired 95% interval
+−46.9 to −9.4 points). We had allowed up to a ten-point loss per sampling
+level. On the same native experiments, the rule changed 117 of 36,983 steps
+(0.32%) and preserved every unavailable interval. These results support
+retaining the current training references. The two filters remain available
+for offline comparison.
+
 ## Reproduce
 
 Use `direction-32/2.2` on the locked synthetic corpus with 96 training and 30
@@ -149,4 +220,36 @@ uv run --locked --extra ml python scripts/confirm_trend_pauses.py reserve var/tr
 uv run --locked --extra ml python scripts/confirm_trend_pauses.py freeze var/trend-pauses
 uv run --locked --extra ml python scripts/confirm_trend_pauses.py score var/trend-pauses
 uv run --locked --extra ml python scripts/audit_pause_refinement.py var/populations/development/mixed-192 var/trend-pauses/exchange.json
+```
+
+To run the activity comparison, choose a new output directory. Each file
+contains the matched, extra and missed intervals for each direction, grouped
+by seed, shape and view. The comparison resamples the groups within each
+recording length and prints the paired differences.
+
+```sh
+out=var/label-comparison
+first=3585700000
+for steps in 256 512 1024; do
+  uv run --locked --extra ml python scripts/check_execution_label_quality.py \
+    "$out/$steps.json" --steps "$steps" --first-seed "$first" --groups 32 \
+    --methods current median9 combined activity-80
+  first=$((first + 1000))
+done
+uv run --locked --extra ml python scripts/check_execution_label_quality.py \
+  "$out/stress.json" --steps stress --crossed --first-seed 3585800000 --groups 32 \
+  --methods current median9 combined activity-80
+uv run --locked --extra ml python scripts/check_label_comparison.py \
+  "$out/256.json" "$out/512.json" "$out/1024.json" "$out/stress.json" \
+  --method activity-80 --reference current
+```
+
+For the first confirmation, start the length panels at `3585500000`, use
+`3585600000` for stress, omit `--crossed` and compare `combined` with
+`current` or `median9`. To inspect the intervals on an individual export,
+write them to a separate offline result file.
+
+```sh
+uv run --locked --extra ml python scripts/check_execution_labels.py \
+  tests/fixtures/experiment-v2.json var/label-example.json --method combined
 ```
