@@ -105,6 +105,9 @@ def test_architecture_catalog_reports_applicable_training_limits(
     assert limits["tcn"] == detail.json()
     assert limits["tcn"]["max_training_epochs"] == 2
     assert limits["tcn"]["max_training_updates"] == 24
+    assert limits["persistence"]["max_training_seeds"] == 5
+    assert limits["persistence"]["max_training_epochs"] == 2
+    assert limits["persistence"]["max_training_updates"] is None
     assert limits["baseline"]["max_training_epochs"] is None
     assert limits["baseline"]["max_training_updates"] is None
 

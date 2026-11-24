@@ -42,6 +42,7 @@ regimex = "regimex.cli:app"
 [project.entry-points."regimex.models"]
 adaptive = "regimex.model_registry:adaptive_descriptor"
 baseline = "regimex.model_registry:baseline_descriptor"
+persistence = "regimex.model_registry:persistence_descriptor"
 tcn = "regimex.model_registry:tcn_descriptor"
 
 [dependency-groups]

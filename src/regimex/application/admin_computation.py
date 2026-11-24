@@ -317,7 +317,9 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
             )
 
         def snapshot_reader(member: SnapshotMember) -> SourceSnapshot:
-            return sources[(member.source_namespace, member.snapshot_id)]
+            # The catalog loader verifies and copies each member once. Release the
+            # source as it is consumed to avoid retaining a second set of exports.
+            return sources.pop((member.source_namespace, member.snapshot_id))
 
         def reference_reader(
             references: ReferenceSet, member: ReferenceMember

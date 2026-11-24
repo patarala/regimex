@@ -123,6 +123,14 @@ class AdaptiveParameters(StrictModel):
     )
 
 
+class PersistenceParameters(StrictModel):
+    hidden_width: Annotated[int, Field(ge=4, le=128)] = Field(
+        default=32,
+        title="Context network width",
+        description="Number of hidden units in the network that reads neighboring price segments.",
+    )
+
+
 class TCNParameters(StrictModel):
     side_slopes: bool = False
     channels: Annotated[int, Field(ge=4, le=256)] = 32
@@ -149,6 +157,10 @@ def configured_parameter_count(
             return tcn_layout.trainable_parameter_count(
                 TCNParameters.model_validate_json(json.dumps(parameters))
             )
+        if architecture_id == "persistence":
+            width = PersistenceParameters.model_validate_json(json.dumps(parameters)).hidden_width
+            # Accumulation (133), block mixing (721), and a 36 -> width -> 3 context head.
+            return 133 + 721 + 40 * width + 3
         if architecture_id == "baseline":
             return baseline_layout.trainable_parameter_count(
                 LogisticParameters.model_validate_json(json.dumps(parameters))
@@ -672,4 +684,34 @@ def tcn_descriptor() -> ArchitectureDescriptor:
         dependency_modules=("numpy", "torch"),
         backend_factory="regimex.backends.tcn:create_backend",
         worker_probe="regimex.backends.tcn:probe_runtime",
+    )
+
+
+def validate_persistence_policy(policy: TrainingPolicySpec) -> None:
+    if not isinstance(policy, TrainingPolicy) or policy.optimizer != "adamw":
+        raise RegistryError("Direction persistence requires epoch training with AdamW")
+    if len(policy.seeds) > 32:
+        raise RegistryError("Direction persistence supports at most 32 search seeds")
+
+
+def persistence_descriptor() -> ArchitectureDescriptor:
+    return ArchitectureDescriptor(
+        architecture_id="persistence",
+        implementation_version="0.1.0",
+        parameters_model=PersistenceParameters,
+        default_training_policy=TrainingPolicy(
+            optimizer="adamw",
+            seeds=(11,),
+            epochs=24,
+            batch_size=32,
+            learning_rate=0.003,
+            validation_interval=1,
+            patience=6,
+        ),
+        policy_validator=validate_persistence_policy,
+        supported_optimizers=("adamw",),
+        required_observation_fields=("last_price",),
+        dependency_modules=("numpy", "torch"),
+        backend_factory="regimex.backends.persistence:create_backend",
+        worker_probe="regimex.backends.persistence:probe_runtime",
     )

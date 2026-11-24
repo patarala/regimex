@@ -123,6 +123,7 @@ penalty for switching direction and the availability and duration rules above.
 
 | Backend | How it scores a step |
 | --- | --- |
+| Direction persistence | Combines accumulated movement across consecutive price segments with a learned network that compares local slope and fit. |
 | Adaptive direction forest | Fits trends over price-dependent spans, then averages tree probabilities using the span and its neighboring trends. Fits each side of a sustained availability gap independently. |
 | Logistic baseline | Applies fitted linear weights to summaries of price, trades, orders, spread and missingness. [Window settings and gap behavior](baseline-context.md) |
 | Temporal convolutional network (TCN) | Learns price patterns from centered windows and whole-instrument statistics using dilated convolutions. [Inputs, network and training](tcn.md) |
@@ -134,13 +135,34 @@ even when the run and instrument IDs differ. Their references require one
 snapshot per source run, split group and generator-scoped seed. When a run has
 several revisions, choose the one to evaluate before registering its reference set.
 
-All three backends need every direction in their training targets. Learned
+The packaged backends need every direction in their training targets. Learned
 weights and preprocessing use training data only. Model selection requires at
 least one validation interval with a known direction. When a backend compares
 settings or checkpoints, it selects the highest decoded validation interval
 macro-F1 and breaks ties with the first result. The administrative workflow
 covers benchmark reservation, freezing the model and final evaluation.
 [API guide](api.md#administration)
+
+### Direction persistence
+
+Choose **Direction persistence** to fit a neural model on the selected
+development dataset. The model fits slopes on adjacent price segments and
+learns how much earlier and later movement supports the current direction.
+A second network compares the local slope patterns in both price directions.
+A learned weight combines their probabilities using the variability of price
+changes in the current observed block. Availability gaps reset both contexts.
+
+The worker initializes all three components from scratch and fits block
+standardization on training experiments. The default run uses a context width
+of 32, AdamW and up to 24 epochs, with one validation score per epoch. It stops
+after six validation checks without improvement and saves the highest-scoring
+checkpoint. Training shows the loss, validation interval macro-F1 and selected
+repeat. Saved weights support validation evaluation and publication through
+the same controls as the other backends.
+
+The [offline direction-persistence comparison](quality.md#direction-persistence-across-adjacent-price-segments)
+used a separate ensemble pretrained on known drift. Its benchmark scores apply
+only to that saved offline bundle. A workspace fit records its own scores.
 
 ### Adaptive direction forest
 
@@ -224,7 +246,7 @@ across all groups, computes its F1 and
 averages the three classes. An absent class contributes zero. A row with
 no reference intervals cannot be scored. When extending a report, include
 all previously submitted rows and the same protocol. Re-importing the
-same measurements preserves the original history. [Score a saved model](usage.md#compare-training-and-independent-scores)
+same measurements preserves the original history. [Score a saved model](cli.md#compare-training-and-independent-scores)
 
 ## Saved models
 
@@ -251,7 +273,7 @@ local cache and defaults to 512 MiB.
 
 Regimex discovers trusted backends through the `regimex.models` entry point.
 The API reads their descriptors. Workers load the scientific libraries and
-check device support. All three built-in backends run on CPU.
+check device support. The packaged backends run on CPU.
 
 Each bundle contains weights, preprocessing, configuration, class order,
 validation evidence and training history. At the end of training Regimex
@@ -259,7 +281,8 @@ reloads the bundle and checks that it reproduces the validation probabilities.
 Analyses use the published weights and preprocessing. The baseline stores
 its coefficients as numeric arrays. The forest stores tree splits, thresholds
 and class probabilities in a numeric NPZ file with a versioned preprocessing
-record. The TCN stores a restricted Torch state dictionary. Its
+record. Direction persistence stores a fixed layout of little-endian float32 weights
+and the training mean and scale for its block features. The TCN stores a restricted Torch state dictionary. Its
 `temporal-tcn/2.0` and `temporal-tcn/3.0` codecs share the same inference
 procedure and record training by epoch and optimizer update respectively.
 

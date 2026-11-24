@@ -1,4 +1,4 @@
-"""Price evidence and neural heads for the offline direction-persistence model."""
+"""Price evidence and neural heads shared by the direction-persistence models."""
 
 from itertools import pairwise
 from typing import cast
@@ -156,7 +156,7 @@ class Accumulation(nn.Module):
 
 
 class Gate(nn.Module):
-    """Return log odds for using the exchange specialist on an observed price block."""
+    """Return mixture log odds from the observed price block."""
 
     def __init__(self) -> None:
         super().__init__()

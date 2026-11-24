@@ -46,7 +46,7 @@ function singleSeed(architecture) {
 function repeatLimit(architecture) {
   if (singleSeed(architecture)) return 1;
   const workspaceLimit = architecture.max_training_seeds ?? 64;
-  return architecture.architecture_id === "tcn" ? Math.min(32, workspaceLimit) : workspaceLimit;
+  return ["tcn", "persistence"].includes(architecture.architecture_id) ? Math.min(32, workspaceLimit) : workspaceLimit;
 }
 
 function budgetLimit(architecture, key) {
@@ -217,8 +217,8 @@ export function createTrainingPolicy(container) {
       hint = "The logistic baseline records one seed and fits once for each regularization setting.";
     if (key === "seeds" && architecture.default_training_policy.budget === "fit")
       hint = "The seed controls how the forest chooses splits. Reuse it to reproduce a fit.";
-    if (key === "validation_interval" && architecture.architecture_id === "tcn")
-      hint = "With a value of 2, the TCN scores validation intervals at epochs 1, 2, 4, 6 and so on. It also scores the final epoch if reached.";
+    if (key === "validation_interval" && ["tcn", "persistence"].includes(architecture.architecture_id))
+      hint = "With a value of 2, the model scores validation intervals at epochs 1, 2, 4, 6 and so on. It also scores the final epoch if reached.";
     if (hint) addFieldHelp(label, field, hint);
     return field;
   }

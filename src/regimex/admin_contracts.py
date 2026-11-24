@@ -323,7 +323,7 @@ class RepeatOutcome(StrictModel):
 
     @classmethod
     def from_history(cls, spec: TrainingSpec, history: JsonValue) -> tuple[Self, ...]:
-        if spec.architecture_id != "tcn" or not isinstance(history, dict):
+        if spec.architecture_id not in ("tcn", "persistence") or not isinstance(history, dict):
             return ()
         policy = spec.policy
         if isinstance(policy, SingleFitPolicy):

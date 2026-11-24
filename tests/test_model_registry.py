@@ -176,10 +176,12 @@ class RejectScientificImports(importlib.abc.MetaPathFinder):
 
 sys.meta_path.insert(0, RejectScientificImports())
 from regimex.model_registry import (
-    ArchitectureRegistry, adaptive_descriptor, baseline_descriptor, tcn_descriptor,
+    ArchitectureRegistry, adaptive_descriptor, baseline_descriptor,
+    persistence_descriptor, tcn_descriptor,
 )
 assert adaptive_descriptor().describe().executable is None
 assert baseline_descriptor().describe().executable is None
+assert persistence_descriptor().describe().executable is None
 assert tcn_descriptor().describe().executable is None
 registry = ArchitectureRegistry.discover()
 assert registry.get("test-json").describe().executable is None
