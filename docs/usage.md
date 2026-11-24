@@ -352,7 +352,7 @@ report, **Interval macro-F1 by reference** shows the score and number of groups
 in each measured split. **Simulator agreement** compares predictions with
 automatic labels on simulator observations. **Known direction** compares them
 with the drift specified when generating controlled prices. Read across one
-row to compare training, validation and fresh groups under the same reference.
+row to compare training, validation and fresh groups using the same kind of reference.
 
 For a saved model with its original automatic reference sets, the following
 command scores the validation split offline. Set the paths to the files from

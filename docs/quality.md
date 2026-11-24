@@ -1,9 +1,10 @@
 # Model quality
 
-The evaluations below use automatic reference intervals from completed synthetic
-experiments. Each model sees observations only. The scores measure agreement
-with the labeling rule. Agreement with human judgments or on another simulator
-has yet to be measured. [Interval definitions](models.md)
+On synthetic exchange experiments, interval scores measure agreement with the
+automatic labeling rule. On controlled price paths, a separately recorded drift
+schedule provides the reference. Each model sees observations only. Agreement
+with human judgments or on another simulator has yet to be measured.
+[Interval definitions](models.md)
 
 Within one experiment and instrument, an interval matches a reference when
 the directions agree and their overlap covers at least half their union.
@@ -27,6 +28,74 @@ The [adaptive forest evaluation](adaptive-intervals.md) examines short sideways
 intervals and the effect of missing observations on their neighbors.
 The [1,536-experiment forest comparison](large-direction-forest.md) evaluates
 multiscale price features and interval weighting against the released forest.
+
+## How training labels affect the learned direction
+
+Two networks trained on the same 192 controlled price paths with the same
+initialization, features and optimization settings. One learned the automatic
+labels and the other learned the scheduled drift. On 96 fresh groups, the
+first network scored 0.7939 against the drift and the second scored 0.9690
+(pooled interval macro-F1, paired difference +0.1751, 95% interval +0.1275 to
++0.2199). Against automatic labels the scores were 0.9192 and 0.7686. In this
+generator the supervision alone changes which direction the model recovers.
+[Noise, trade frequency and short pauses](label-stability.md#scaling-the-correction-by-trading-activity)
+
+## Neural specialists for exchange prices and known drift
+
+One specialist learned automatic direction labels from exchange experiments
+and soft predictions from a forest trained on separate experiments. The other
+learned the drift schedule of 960 price paths before noise and price rounding.
+The mixture combines these specialists with earlier neural models. For each
+observed block, a small network chooses a mixing weight using price changes
+and expert confidence. Four-fold validation kept all views of a seed together.
+
+The weights were frozen before scoring 192 independent exchange experiments
+and 96 independent drift seeds. Each drift seed supplied four schedules with
+paired complete and masked observations. Scores are decoded interval macro-F1,
+averaged equally over 256, 512 and 1,024 steps and, for drift, both views.
+
+| Model | Exchange automatic reference | Known drift |
+| --- | ---: | ---: |
+| Previous price-conditioned neural mixture | 0.9275 | 0.9700 |
+| New neural mixture | 0.9215 | 0.9834 |
+| New mixture with hard native labels only | 0.9257 | 0.9836 |
+| Native neural specialist alone | 0.9436 | 0.7704 |
+| Drift neural specialist alone | 0.8075 | 0.9852 |
+| Expanded native forest | 0.9467 | 0.7795 |
+| Mixed-supervision window forest | 0.9367 | 0.9472 |
+
+Replacement required the lower bound of the paired 95% interval to exceed
+zero on exchange experiments and −0.015 on known drift. Compared with the
+previous mixture, the changes were −0.0060 [−0.0334, +0.0158] and +0.0133
+[+0.0052, +0.0220], respectively, from 5,000 group bootstrap draws. At 1,024
+exchange steps, decline F1 fell from 0.880 to 0.780. The native expert alone
+scored 0.905 for decline. The new mixture remains an offline candidate.
+
+On a sample of its exchange training groups the new mixture scored 0.9357.
+The estimated training advantage over the fresh exchange panel was 0.0142
+(95% interval −0.0359 to +0.0615). This sample leaves substantial uncertainty
+about the size of the generalization gap.
+
+A second experiment tested a constant mixture of the two specialists. The
+training groups selected 25% weight for the exchange specialist and 75% for
+the drift specialist. On a fresh panel of 192 exchange experiments and 96 drift
+seeds, this mixture scored 0.9092 and 0.9770. On those same groups the earlier
+price-conditioned mixture scored 0.9321 and 0.9741, and the new block-level
+router scored 0.9157 and 0.9837. The constant mixture's exchange score fell by
+0.0229 relative to the earlier mixture (paired 95% interval −0.0437 to −0.0032).
+
+If you have the generated `direction-quality-mixture-v2` package, copy the
+whole directory to a machine with Regimex and its ML dependencies installed.
+The package manifest SHA-256 is
+`457298f1f1387f1e8002759e611c46b83847fce6401bd55c358f79123fae3f96`.
+With the ML Python environment active, run these commands from the directory
+containing the package and your export. The predictor verifies its weights
+and writes a new JSON file containing the intervals for each instrument.
+
+```sh
+sha256sum direction-quality-mixture-v2/manifest.json
+python direction-quality-mixture-v2/predict.py market-export.json --output directions.json
+```
 
 ## Baseline and TCN on direction-32/2.1
 
@@ -86,6 +155,22 @@ digest is checked even when the historical index is unavailable. Include all
 | --- | --- |
 | Dataset manifest content | `682b79aa7915a2d864ec35b3f781c254f643570b38ba8e6b1e9630de3a29ec5e` |
 | Test-reference content | `f6f1630cf5dc73a56894935a59dd396e45ede28f9fac130c70104293535958be` |
+
+## Training gaps in the 0.1.0 release
+
+The published baseline and TCN used the same 512-step exchange experiments
+and automatic references. Rescoring the saved weights gives the following
+pooled interval macro-F1. The benchmark column reproduces the original
+published evaluation with the 64 groups held out at the time.
+
+| Model | Training (128 groups) | Validation (32) | Original benchmark (64) |
+| --- | ---: | ---: | ---: |
+| `baseline-0.1.0` | 0.7991 | 0.2652 | 0.4700 |
+| `tcn-0.1.0` | 0.6437 | 0.7160 | 0.6396 |
+
+The baseline scores 0.3291 higher on its training examples than on the
+benchmark. For the TCN this gap is 0.0041, while its validation score exceeds
+the benchmark score by 0.0764. The validation estimate uses only 32 experiments. [Compare scores in Training](usage.md#compare-training-and-independent-scores)
 
 ## Reference model on direction-32/2.0
 
