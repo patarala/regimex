@@ -7,8 +7,12 @@ case "${1:-}" in
         shift
         exec uv run --locked --extra service --extra ml --extra viz python scripts/load_stand.py "$@"
         ;;
+    --journeys)
+        shift
+        exec uv run --locked --extra ml python scripts/load_journeys.py "$@"
+        ;;
     --sustained|"") ;;
-    *) echo "Usage: sh scripts/load_test.sh [--stand [OPTIONS] | --sustained]" >&2; exit 2 ;;
+    *) echo "Usage: sh scripts/load_test.sh [--stand [OPTIONS] | --journeys [PROFILE] | --sustained]" >&2; exit 2 ;;
 esac
 case "${REGIMEX_LOAD_MODEL:-}" in
     ""|active) echo "Set REGIMEX_LOAD_MODEL to an immutable model version." >&2; exit 2 ;;

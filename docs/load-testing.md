@@ -1,6 +1,6 @@
 # Measuring the analysis service under load
 
-To measure a running Compose or source deployment, [point k6 at a dedicated test instance](#running-against-an-existing-test-installation). To compare worker counts at a fixed resource budget, run the disposable stand from a source checkout. It starts its own PostgreSQL cluster, API and workers, registers the model and verifies a warm-up prediction before measuring the workload.
+To measure a running Compose or source deployment, [point k6 at a dedicated test instance](#running-against-an-existing-test-installation). To compare worker counts at a fixed resource budget, run the disposable stand from a source checkout. It starts its own PostgreSQL cluster, API and workers, registers the model, and records completed analyses and queue timings.
 
 ## Prepare a resource-limited stand
 
@@ -24,21 +24,27 @@ sh scripts/load_test.sh --stand --cgroup-parent "$REGIMEX_LOAD_CGROUP_PARENT" --
 
 ## Workloads
 
-The default command runs both profiles. Use `--profile matrix` for the four capacity comparisons or `--profile sustained` for a single fixed-arrival run.
+The default stand runs the matrix and sustained profiles. Select `--profile matrix` to compare worker counts, `--profile sustained` for fixed arrivals, or `--profile journeys` for [two-owner workloads](#two-owner-workloads). Use `--profile all` to run all three.
 
 | Profile | Workload | Workers |
 |---|---|---:|
 | Matrix | Four simultaneous submissions, one per market. Repeat with 512 and 4,096 steps | 1 and 2 at each size |
 | Sustained | New 512-step submissions at 6/min for two minutes, then allow outstanding jobs to finish | 2 |
 
-The generator writes four two-instrument markets per size, using seeds 42 through 45. Every worker configuration at that size reuses the same files byte for byte. All clients request the same pinned version. Snapshot upload and the single warm-up job precede the timed submissions. A single warm-up can populate only one worker’s local model cache in the two-worker cells. The other worker may pay the first-use download and validation cost in the measured batch. Pass `--runtime-file PATH` to compare an alternate inference policy. For example, a JSON file containing `{"threads":1,"max_batch_size":8}` uses a single inference thread with a maximum batch size of eight. The driver validates the file, expands defaults and freezes its contents in `run.json`. It supplies that snapshot to every registration and checks the accepted bundle and policy digests. The registered backends currently support CPU inference.
+Matrix and sustained runs reuse four two-instrument exports (seeds 42–45) and an
+immutable model version. The timer starts after snapshot upload and one warm-up.
+With two workers, only one worker is guaranteed to have seen the model. Supply
+`--runtime-file PATH` to compare different thread counts or batch sizes.
 
-k6 submits through the API and checks that every status response preserves that launch source.
-The runner checks each downloaded result against the submitted export, including the source run and revision, time grid, instrument order, currencies and units. It also checks the analysis ID and the model and policy digests recorded at submission. For each instrument, it verifies normalized probabilities on every step and full interval coverage. Observed intervals must carry a direction class. Intervals marked `no_trades` or `insufficient_data` must carry a null direction.
+k6 checks the launch source, model digest, inference policy, snapshot, source
+revision, instruments, units and time grid. For every step it checks normalized
+class probabilities. Decoded intervals must cover the input and represent each
+unavailable interval with a null direction.
 
-Each comparison cell runs in its own cgroup. By default it has two logical CPUs, a CPU quota of 200%, a total memory limit of 3 GiB and zero swap. The API, database, workers, computation subprocesses and k6 share those limits. All cells use the same CPU IDs. The driver verifies the effective affinity and kernel settings before starting the workload. Use `--cpus` and `--memory-mib` to select other limits. Host contention and page-cache state can vary between runs.
-
-Use `--http-concurrency-limit` to vary how many active requests the private API can handle per process. The default is 8 and the minimum is 2. The stand records the value in `run.json` and leaves room for 24 additional connections, including idle keep-alive sockets.
+The whole stand, including PostgreSQL and k6, shares two CPU cores, 3 GiB of
+memory and zero swap by default. Use `--cpus`, `--memory-mib` and
+`--http-concurrency-limit` to change the budget. The API admits eight concurrent
+requests by default and allows 24 additional connections for idle sockets.
 
 The sustained executor schedules arrivals independently of completions. The default requests 12 analyses. To vary the arrival rate, window and client pool, run e.g.
 
@@ -51,24 +57,137 @@ Choose a whole number of arrivals (`rate × seconds / 60`), up to 100. A documen
 
 k6 counts a failed status check or download on its first attempt. The user-facing CLI retries temporary read failures, so it can recover from an interruption that fails the load test.
 
+## Two-owner workloads
+
+For a disposable installation, run the following command. Each scenario gets a fresh
+database, two idle user accounts, two analysis workers and the chosen resource budget.
+
+```sh
+sh scripts/load_test.sh --stand --profile journeys \
+  --cgroup-parent "$REGIMEX_LOAD_CGROUP_PARENT" --bundle release/models/tcn
+```
+
+To repeat a single scenario on a fresh stand, use its name as the profile,
+for example `--profile uploads`.
+
+| Scenario | Traffic and completion condition |
+| --- | --- |
+| `contention` | One owner uploads a 4,096-step, two-instrument export and submits four analyses. The second uploads a 256-step, single-instrument export and submits a short analysis. Poll all five, verify downloads and repeat with the owners swapped. |
+| `burst` | Both owners submit a simultaneous burst using fresh keys. Count explicit HTTP or queue capacity refusals, verify every accepted result, then submit a fresh job for each owner after the queue drains. |
+| `replay` | Repeat an upload, send two concurrent submissions with the same key, replay after completion and verify a single analysis in history. Reuse that key for different input and check the conflict. The second owner's key remains independent. |
+| `browse` | Prepare one complete analysis per owner. Two virtual users make 12 visits in total, loading experiment history, analysis details and the HTML report. |
+| `cancel` | Cancel a long analysis, check its terminal state and the absence of published output, and complete a short job for the other owner. A passing run must observe a cancellation. |
+| `uploads` | Concurrently upload a short and a long export for both owners. Repeat the four uploads, check ownership and stable snapshot IDs, then analyse two of the snapshots. |
+
+The runner generates new seeds for each scenario and records them in `inputs.json`.
+A burst defaults to four submissions per owner. The stand accepts
+`--burst-per-owner 2` through `12`. The two-owner scenarios use bounded
+iterations. Use the sustained profile to find the arrival rate a deployment can
+maintain over time.
+
+Against an existing **test** installation, use tokens for two dedicated idle
+owners and a published model version. The script checks that the same upload
+receives different snapshot IDs for the two accounts. The snapshots and
+analyses persist on the installation.
+
+```sh
+export REGIMEX_LOAD_TOKEN_FILE=var/load-instance/first-user.token
+export REGIMEX_LOAD_SECOND_TOKEN_FILE=var/load-instance/second-user.token
+export REGIMEX_LOAD_MODEL=tcn-0.1.0
+export REGIMEX_LOAD_PORT=8000
+sh scripts/load_test.sh --journeys contention
+```
+
+Use `--journeys all` to run the suite, or substitute a scenario name from the
+table. Set `REGIMEX_LOAD_BURST_PER_OWNER` to change burst size on an existing
+installation. For a multi-node test, direct traffic to the load balancer using
+`REGIMEX_LOAD_SCHEME=https`, `REGIMEX_LOAD_HOST`, and `REGIMEX_LOAD_PORT`.
+Use its certificate hostname and set `SSL_CERT_FILE` when it uses a private CA.
+
+Each scenario directory contains `journey.json` (outcome counts), `summary.json`
+(k6 thresholds and timings), and `points.jsonl` (individual samples).
+`journey_upload_ms` times the upload HTTP exchange. `journey_submit_to_result_ms`
+ends at the return of the result download. `journey_upload_to_result_ms` includes
+the initial upload in a contention round. Check the `owner` and `kind` tags to
+compare the delays for each participant. `long_jobs_active_at_short_intake`
+counts the submitted long jobs still active when the client queries the queue
+right after the short submission. The disposable stand also writes exact median
+queue wait by scenario, owner and input kind to `timings.json`. The client-only
+runner works without database access.
+
+### Observed results
+
+An isolated two-worker installation running `tcn-0.1.0` accepted 26
+analyses across contention, burst, replay, browse and cancel. k6 verified
+25 downloads, one cancellation and 12 history visits, with zero unexpected
+HTTP responses. The short analysis waited 12.84 s and 14.28 s in the queue
+in the two contention rounds. These five scenarios shared one test installation
+without a CPU or memory cap. A separate capped contention run during other
+CPU-intensive work timed out on a status request.
+
+The uploads scenario ran on a fresh stand limited to two CPU cores and 3 GiB
+of memory. All four simultaneous uploads and their retries retained the
+correct snapshot identities. Verified downloads took 5.35 s from submission
+for the short export and 7.78 s for the long one. Peak memory for the whole
+stand was 900 MiB. Use the sustained profile and repeated measurements to
+estimate capacity for a deployment.
+
 ## Results and cleanup
 
-The runner prints the artifact directory under `var/load-test/run-*`. Select a new directory with `--output`. A supervisor outside each cell enforces its deadline and watches for driver exit. During cleanup it stops the cell's descendants and waits for the kernel to confirm that the cgroup is empty before removing private credentials, database files and objects. If shutdown cannot be confirmed, it reports the cgroup and preserves the private directory for inspection.
+Open `comparison.md` in the printed output directory. It reports completed
+jobs, latency, peak memory and HTTP failures for each cell. The runner exits
+nonzero on a failed cell and keeps partial results. Use a new `--output DIR`
+to choose where the stand saves its artifacts.
 
-The driver exits nonzero on failure. A partial comparison shows how many cells reported, including k6 counters, latency samples, HTTP failures and available stage timings for accepted jobs. Missing measurements appear as unavailable.
+| File | What to inspect |
+| --- | --- |
+| `run.json`, cell `envelope.json` | Model and runtime digests, workload parameters, versions and actual CPU/memory limits. Matrix and sustained input hashes are in `run.json`. Journey seeds and hashes are in the cell's `inputs.json`. |
+| `comparison.json` | Machine-readable outcomes, queue samples and available stage timings. A missing measurement is reported as unavailable. |
+| Cell k6 summary and points | Per-request timings and HTTP statuses, including the failing route. Matrix and sustained files use the phase name, e.g. `sustained.json` and `sustained-points.jsonl`. Journey files are `summary.json` and `points.jsonl`. |
+| Cell `timings.json` | Queue wait, worker time, model loading, prediction and report generation. Use `jobs.jsonl` for matrix or sustained submissions and `verified.jsonl` for completed journey jobs. [Timing definitions](analysis-timings.md) |
 
-- `run.json` records the input file hashes, model manifest digest, tool versions, source revision when available, common resource budget and arrival configuration. Each cell's `envelope.json` records its applied kernel settings.
-- `comparison.md` and `comparison.json` compare completed jobs per minute, median and p95 submit-to-result latency, and peak memory. Matrix throughput counts verified downloads over the time from first measured submission to last verification. Sustained throughput divides the verified count by the full configured arrival window or the elapsed time up to the last verification or quota refusal, whichever is longer. The JSON records this denominator and the observed span to last verification separately. Both exclude upload and warm-up. The Markdown report also compares median stage durations.
-- Peak memory is the kernel's `memory.peak` in the cell's own cgroup from setup through its measured phase. It includes resident memory and charged cache for the whole stand. It is reported in MiB. Compare runs with the same included processes and workload.
-- In each cell, `warmup.json` and the measured `parallel.json` or `sustained.json` contain the k6 summaries. The corresponding `*-points.jsonl` holds timestamped samples. `*-console.log` includes the accepted analysis IDs and sustained queue samples. The sustained summary reports scheduled, started, accepted, verified, quota-refused, failed and dropped counts plus active jobs after drain.
-- When interruption leaves a truncated summary or timing file, the comparison identifies the unreadable artifact and retains evidence from intact files. HTTP failure samples can appear even when the summary count is unavailable.
-- `jobs.jsonl` maps phase names to accepted IDs. `timings.json` joins these IDs to database delivery events and worker stage timings. Inspect per-analysis records alongside phase medians for queue wait, worker occupancy, supervised child time, model loading, prediction and report creation. The backend predict call is part of overall prediction and includes backend input preparation. These intervals overlap. A four-job p95 summarizes this batch and has little resolution for estimating tail latency.
+A four-job p95 describes that batch. Use longer fixed-arrival runs to characterize
+tail latency. Peak memory includes page cache and setup. The supervisor stops
+each cell and waits for the cgroup to empty before removing credentials, database
+files and objects. If cleanup cannot verify shutdown, it reports the retained
+private directory and cgroup.
+
+## Measure the cost of a fresh inference process
+
+Run the offline comparison on a CPU with the release bundle installed.
+
+```sh
+uv run --locked --extra ml python scripts/benchmark_inference_process.py
+```
+
+The script generates four 512-step, two-instrument exports with seeds 42–45
+and verifies the pinned `tcn-0.1.0` bundle. Each export runs first in its own
+process, then all four run sequentially in a new process that loads the model
+once. Both modes use one inference thread. The command prints JSON only after
+the class probabilities match byte for byte on all four inputs.
+
+Compare `fresh_total_wall_ms` with `reused_process.wall_ms` for the whole
+batch, including interpreter startup. Each process also records bundle
+restoration, per-export parsing and backend prediction times. Linux also
+reports peak resident memory for each process. File reads
+can benefit from the operating system cache. To measure queueing, report
+rendering, network traffic and publication, use the service workloads above.
+
+In one run, four fresh processes took 10.88 s in total (2.68 s median per
+export). One process handled the same four exports in 2.59 s, including
+1.34 s for model restoration. Its first prediction took 55 ms and the next
+three took 20–22 ms. Peak memory was 271 MiB for the largest fresh process
+and 273 MiB for the reused one. All 4,096 rows had identical probability
+vectors. This measures four sequential CPU jobs. Per-job cancellation,
+memory growth over long runs and serving concurrent users require separate
+service-level tests.
 
 ## Running against an existing test installation
 
-Use a dedicated loopback instance with an analysis worker, a published model and an idle test owner. This mode needs k6 and uv and uses the deployment's own resource limits. It submits one warm-up, four serial and four parallel 512-step analyses. The sustained option runs the warm-up and fixed-arrival workload. These analyses and their outputs persist in that installation.
-
-Set the token file and a concrete published model version. The runner requires `REGIMEX_LOAD_MODEL` for this mode and rejects the moving alias `active`. Both setup guides write the user token to `var/credentials/user.token`. If you registered the TCN from a local asset pack, read its version from the same manifest you imported. For a model published through **Training**, use its **Model version** instead.
+For a single owner, use a dedicated idle test account with a published model
+and an analysis worker. The default command runs one warm-up, four serial
+analyses and four parallel analyses. These jobs persist in the installation.
+Supply the concrete version from **Training** or the imported bundle manifest.
 
 ```sh
 export REGIMEX_LOAD_TOKEN_FILE=var/credentials/user.token
@@ -83,7 +202,7 @@ REGIMEX_LOAD_SCHEME=https \
   SSL_CERT_FILE="$PWD/var/secrets/api-ca.crt" sh scripts/load_test.sh
 ```
 
-For a deployment started with the [source setup](usage.md#start-locally), use its HTTP port 8000.
+For a deployment started with the [source setup](development.md#start-locally), use its HTTP port 8000.
 
 ```sh
 export REGIMEX_LOAD_PORT=8000

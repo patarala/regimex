@@ -443,17 +443,20 @@ def run_cell(config_file, scratch, group, steps, workers, name):
         service = [*CLI, "service"]
         setup_log = cell / "setup.log"
         once([*service, "migrate"], env, setup_log)
-        for role in ("admin", "user"):
+        accounts = [("admin", "admin"), ("user", "user")]
+        if name.startswith("journey-"):
+            accounts.append(("second-user", "user"))
+        for account, role in accounts:
             once(
                 [
                     *service,
                     "token-create",
                     "--owner",
-                    role,
+                    account,
                     "--role",
                     role,
                     "--output",
-                    scratch / role,
+                    scratch / account,
                 ],
                 env,
                 setup_log,
@@ -515,12 +518,7 @@ def run_cell(config_file, scratch, group, steps, workers, name):
             REGIMEX_LOAD_DIR=str(out / "inputs" / str(steps)),
         )
 
-        def collect():
-            envelope["peak_bytes"] = int((group / "memory.peak").read_text())
-            save(cell / "envelope.json", envelope)
-            jobs = cell / "jobs.jsonl"
-            if not jobs.is_file() or not jobs.stat().st_size:
-                return
+        def collect_stages(jobs):
             once(
                 [
                     sys.executable,
@@ -534,6 +532,43 @@ def run_cell(config_file, scratch, group, steps, workers, name):
                 env,
                 cell / "timings.log",
             )
+
+        if name.startswith("journey-"):
+            from load_journeys import run_journey
+
+            env["REGIMEX_LOAD_SECOND_TOKEN"] = (scratch / "second-user").read_text().strip()
+            env["REGIMEX_LOAD_BURST_PER_OWNER"] = str(config["burst_per_owner"])
+            try:
+                outcome = run_journey(name.removeprefix("journey-"), cell, env, config["k6"])
+            finally:
+                envelope["peak_bytes"] = int((group / "memory.peak").read_text())
+                save(cell / "envelope.json", envelope)
+            collect_stages(cell / "verified.jsonl")
+            phases = json.loads((cell / "timings.json").read_bytes())["phases"]
+            save(
+                cell / "result.json",
+                {
+                    **outcome,
+                    "status": "passed",
+                    "phase": name,
+                    "steps": "mixed"
+                    if name in ("journey-contention", "journey-cancel", "journey-uploads")
+                    else 256,
+                    "workers": workers,
+                    "median_stage_ms": {},
+                    "stage_groups": {key: value["median_ms"] for key, value in phases.items()},
+                    "cgroup_peak_bytes": envelope["peak_bytes"],
+                },
+            )
+            return
+
+        def collect():
+            envelope["peak_bytes"] = int((group / "memory.peak").read_text())
+            save(cell / "envelope.json", envelope)
+            jobs = cell / "jobs.jsonl"
+            if not jobs.is_file() or not jobs.stat().st_size:
+                return
+            collect_stages(jobs)
 
         with finish_with(collect):
             phase(config, cell, env, "warmup")
@@ -588,9 +623,15 @@ def failed_cell(cell, planned_phase, steps, workers):
     row["cgroup_peak_bytes"] = read_artifact("envelope.json").get("peak_bytes")
     phases = read_artifact("timings.json").get("phases", {})
     row["median_stage_ms"] = phases.get(phase, {}).get("median_ms", {})
+    points = cell / f"{phase}-points.jsonl"
+    if planned_phase.startswith("journey-") and (cell / "k6.log").is_file():
+        from load_journeys import journey_summary
+
+        row.update(journey_summary(read_artifact("summary.json").get("metrics", {})))
+        row.update(phase=planned_phase, failure_stage="journey")
+        points = cell / "points.jsonl"
     if unreadable:
         row["unreadable_artifacts"] = unreadable
-    points = cell / f"{phase}-points.jsonl"
     if points.exists():
         failures = Counter()
         with points.open("rb") as stream:
@@ -684,7 +725,6 @@ def report(out, rows, total):
         ]
     )
     for row in rows:
-        stages = row["median_stage_ms"]
         fields = (
             "queue_wait",
             "worker_occupancy",
@@ -694,10 +734,12 @@ def report(out, rows, total):
             "backend_predict",
             "report",
         )
-        values = ["unavailable" if stages.get(k) is None else f"{stages[k]:.1f}" for k in fields]
-        lines.append(
-            f"| {row['phase']} | {row['steps']} | {row['workers']} | " + " | ".join(values) + " |"
-        )
+        groups = row.get("stage_groups", {row["phase"]: row["median_stage_ms"]})
+        for phase_name, stages in groups.items():
+            values = [display(stages.get(k), digits=1) for k in fields]
+            lines.append(
+                f"| {phase_name} | {row['steps']} | {row['workers']} | " + " | ".join(values) + " |"
+            )
     for row in rows:
         if row.get("status") == "failed":
             fields = (
@@ -841,8 +883,15 @@ def start_supervisor(config_file, config, steps, workers, name):
 
 
 def main():
+    from load_journeys import JOURNEYS
+
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--profile", choices=("matrix", "sustained", "all"), default="all")
+    parser.add_argument(
+        "--profile",
+        choices=("standard", "matrix", "sustained", "journeys", *JOURNEYS, "all"),
+        default="standard",
+        help="standard runs matrix and sustained. Choose a named journey, journeys or all for more",
+    )
     parser.add_argument("--bundle", type=Path, default=ROOT / "release/models/tcn")
     parser.add_argument("--runtime-file", type=Path, help="inference runtime JSON for all cells")
     parser.add_argument("--output", type=Path, help="new directory (default var/load-test/run-*)")
@@ -859,6 +908,7 @@ def main():
     parser.add_argument("--rate-per-minute", type=int, default=6)
     parser.add_argument("--duration-seconds", type=int, default=120)
     parser.add_argument("--max-vus", type=int, default=16)
+    parser.add_argument("--burst-per-owner", type=int, choices=range(2, 13), default=4)
     options = parser.parse_args()
     if options.http_concurrency_limit < 2:
         parser.error("--http-concurrency-limit must be at least 2")
@@ -911,6 +961,7 @@ def main():
         "rate_per_minute": options.rate_per_minute,
         "duration_seconds": options.duration_seconds,
         "max_vus": options.max_vus,
+        "burst_per_owner": options.burst_per_owner,
         "profile": options.profile,
         "k6": bin_path("k6"),
         "initdb": bin_path("initdb", pgdir),
@@ -926,16 +977,20 @@ def main():
         out = Path(tempfile.mkdtemp(prefix="run-", dir=parent))
     print(f"Load artifacts: {out}", flush=True)
     cells = []
-    if options.profile in ("all", "matrix"):
+    if options.profile in ("all", "standard", "matrix"):
         cells.extend(("parallel", steps, workers) for steps in (512, 4096) for workers in (1, 2))
-    if options.profile in ("all", "sustained"):
+    if options.profile in ("all", "standard", "sustained"):
         cells.append(("sustained", 512, 2))
+    if options.profile in ("all", "journeys"):
+        cells.extend((f"journey-{name}", 256, 2) for name in JOURNEYS)
+    elif options.profile in JOURNEYS:
+        cells.append((f"journey-{options.profile}", 256, 2))
     config_file = out / "run.json"
     config["planned_cells"] = [f"{name}-{steps}-{workers}w" for name, steps, workers in cells]
     rows = []
     report(out, rows, len(cells))
     config["inputs"] = {}
-    for steps in sorted({steps for _, steps, _ in cells}):
+    for steps in sorted({steps for phase, steps, _ in cells if not phase.startswith("journey-")}):
         inputs = out / "inputs" / str(steps)
         inputs.mkdir(parents=True)
         for seed in SEEDS:

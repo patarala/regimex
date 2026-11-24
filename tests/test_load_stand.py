@@ -352,3 +352,33 @@ def test_driver_cleans_owned_resources_after_supervisor_is_killed(
     assert failure.value.returncode == -9
     assert not Path((tmp_path / "started").read_text()).exists()
     assert not list(parent.iterdir())
+
+
+def test_failed_journey_preserves_partial_counts_and_http_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("psycopg")
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts))
+    stand = runpy.run_path(str(scripts / "load_stand.py"))
+    (tmp_path / "k6.log").touch()
+    metrics = {
+        "journey_jobs_requested": {"count": 5},
+        "journey_jobs_accepted": {"count": 4},
+        "journey_results_verified": {"count": 0},
+        "http_req_failed": {"passes": 1},
+    }
+    (tmp_path / "summary.json").write_text(json.dumps({"metrics": metrics}))
+    point = {
+        "type": "Point",
+        "metric": "http_req_failed",
+        "data": {"value": 1, "tags": {"name": "poll analysis", "status": "0"}},
+    }
+    (tmp_path / "points.jsonl").write_text(json.dumps(point) + "\n")
+    report = stand["failed_cell"](tmp_path, "journey-contention", 256, 2)
+    assert report["status"] == "failed" and report["phase"] == "journey-contention"
+    assert report["requested"] == 5 and report["accepted"] == 4 and report["completed"] == 0
+    assert report["result_median_ms"] is None and report["cancelled"] is None
+    assert report["http_failure_samples"] == [
+        {"request": "poll analysis", "status": "0", "count": 1}
+    ]

@@ -4,10 +4,11 @@ const path = require("node:path");
 const test = require("node:test");
 const vm = require("node:vm");
 
-async function loadClient(env = {}) {
+async function loadClient(env = {}, file = "load_analysis.js") {
   const metrics = new Map();
   const clock = { now: () => 0 };
   const http = { expectedStatuses() {} };
+  const execution = { scenario: { startTime: 0, iterationInTest: 0 } };
   class Metric {
     constructor(name) {
       this.values = [];
@@ -20,24 +21,35 @@ async function loadClient(env = {}) {
     Date: { now: () => clock.now(), parse: Date.parse }, console: { log() {} },
     __ENV: { REGIMEX_LOAD_PHASE: "sustained", REGIMEX_LOAD_DURATION_SECONDS: "10",
       REGIMEX_LOAD_MODEL: "fixture-model", ...env },
-    open: () => "{}", crypto: { randomUUID: () => "fixture-key" },
+    open: name => name.endsWith("/inputs.json") ? '{"anchor":{},"short":{},"long":{}}' : JSON.stringify({ content_sha256: "ab".repeat(32), instruments: [], time_grid: { step_count: 256 },
+      source: { run_id: name } }), crypto: { randomUUID: () => "fixture-key" },
   });
   const dependencies = {
     k6: { fail(message) { throw Error(message); }, sleep() {} },
     "k6/http": { default: http },
-    "k6/execution": { default: { scenario: { startTime: 0, iterationInTest: 0 } } },
+    "k6/execution": { default: execution },
     "k6/metrics": { Counter: Metric, Trend: Metric },
   };
-  const client = new vm.SourceTextModule(fs.readFileSync(
-    path.join(__dirname, "../scripts/load_analysis.js"), "utf8"), { context });
+  const modules = new Map();
+  function local(name) {
+    return new vm.SourceTextModule(fs.readFileSync(path.join(__dirname, "../scripts", name), "utf8"), { context });
+  }
+  const client = local(file);
   await client.link(name => {
-    const exports = dependencies[name];
-    return new vm.SyntheticModule(Object.keys(exports), function () {
-      for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
-    }, { context });
+    if (!modules.has(name)) {
+      if (name === "./load_checks.js") modules.set(name, local(name));
+      else {
+        const exports = dependencies[name];
+        modules.set(name, new vm.SyntheticModule(Object.keys(exports), function () {
+          for (const [key, value] of Object.entries(exports)) this.setExport(key, value);
+        }, { context }));
+      }
+    }
+    return modules.get(name);
   });
   await client.evaluate();
-  return { client: client.namespace, http, clock, metrics };
+  return { client: client.namespace, http, clock, metrics, execution };
+
 }
 
 test("load requests stay on loopback for the HTTP stand and HTTPS Compose service", async () => {
@@ -182,4 +194,77 @@ test("a verified result needs the resolved model and a complete classification o
   assert.deepEqual(metrics.get("analyses_verified"), classifications.map(() => 1));
   assert.equal(metrics.get("analyses_failed").length,
     invalid.length + invalidClassifications.length + 2 * invalidSources.length);
+});
+
+test("only HTTPS may carry a token to a named load balancer", async () => {
+  const {client, http} = await loadClient({ REGIMEX_LOAD_SCHEME: "https",
+    REGIMEX_LOAD_HOST: "test.example.org", REGIMEX_LOAD_PORT: "443" });
+  http.request = (_method, url) => {
+    assert.equal(new URL(url).origin, "https://test.example.org");
+    return { status: 200, json: () => [] };
+  };
+  client.sampleQueue();
+  await assert.rejects(loadClient({ REGIMEX_LOAD_HOST: "test.example.org" }), /requires HTTPS/);
+  for (const host of ["wrong:9443", "user@test.example.org", "a.example/x", "a.\nb"]) {
+    await assert.rejects(loadClient({ REGIMEX_LOAD_SCHEME: "https", REGIMEX_LOAD_HOST: host }), /hostname/);
+  }
+});
+
+function testJourney(name, values = {}) {
+  return loadClient({ REGIMEX_LOAD_JOURNEY: name, REGIMEX_LOAD_TOKEN: "test-first",
+    REGIMEX_LOAD_SECOND_TOKEN: "test-second", ...values }, "load_journeys.js");
+}
+
+test("two-owner journeys require distinct owners even when the tokens differ", async () => {
+  await assert.rejects(testJourney("contention", {REGIMEX_LOAD_SECOND_TOKEN: "test-first"}), /distinct|different/);
+  const { client, http } = await testJourney("contention");
+  let uploads = 0;
+  http.request = (method, url, _body, params) => {
+    if (method === "GET") return { status: 200, json: field => field === "items" ? [] : null };
+    assert.ok(url.endsWith("/snapshots"));
+    assert.equal(params.headers.Authorization, uploads++ === 0 ? "Bearer test-first" : "Bearer test-second");
+    return { status: 201, timings: { duration: 1 }, json: () => ({ snapshot_id: "same-snapshot", content_sha256: "ab".repeat(32) }) };
+  };
+  assert.throws(() => client.setup(), /same owner/);
+  assert.equal(uploads, 2);
+});
+
+test("a retry must return the original analysis and operation even with two HTTP 202s", async () => {
+  const { client, http } = await testJourney("replay");
+  const snap = { owner: "first", id: "first-anchor", kind: "anchor", digest: "ab".repeat(32) };
+  http.request = () => ({ status: 201, timings: { duration: 1 }, json: () => ({ snapshot_id: snap.id, content_sha256: snap.digest }) });
+  http.batch = requests => {
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].params.headers["Idempotency-Key"], requests[1].params.headers["Idempotency-Key"]);
+    return requests.map((_, index) => ({ status: 202, json: () => ({
+      analysis_id: "same", snapshot_id: snap.id, snapshot_sha256: snap.digest,
+      job: { operation_id: String(index), launch_source: { channel: "api", command: null },
+        model: {model_version_id:"fixture-model",bundle_sha256:"cd".repeat(32),inference_policy_sha256:"ef".repeat(32)} },
+    }) }));
+  };
+  assert.throws(() => client.default({ first: { anchor: snap }, second: {anchor:{...snap, owner:"second"}} }), /distinct operations/);
+});
+
+test("a journey thresholds all iterations and checks both owners after drain", async () => {
+  const {client, http, metrics} = await testJourney("browse");
+  assert.deepEqual(Array.from(client.options.thresholds.journeys_verified), ["count==12"]);
+  assert.deepEqual(Array.from(client.options.thresholds.idle_owners_after_journey), ["count==2"]);
+  http.request = (_method, _url, _body, params) => ({ status:200, json: () => params.tags.owner === "second" ? ["pending"] : [] });
+  assert.throws(() => client.teardown(), /second still has active jobs/);
+  assert.deepEqual(metrics.get("idle_owners_after_journey"), [1]);
+});
+
+test("concurrent uploads verify distinct owner/fixture IDs and stable IDs on replay", async () => {
+  const {client, http} = await testJourney("uploads");
+  let batches = 0;
+  http.batch = requests => {
+    assert.equal(requests.length, 4);
+    assert.deepEqual(Array.from(requests, r => r.params.tags.owner), ["first","first","second","second"]);
+    batches++;
+    return requests.map((_, i) => ({status:201, timings: {duration:4}, json: () => ({
+      snapshot_id: batches === 2 && i === 3 ? "incorrect-replay" : String(i), content_sha256:"ab".repeat(32),
+    })}));
+  };
+  assert.throws(() => client.default({}), /Repeated upload changed snapshot identity/);
+  assert.equal(batches, 2);
 });

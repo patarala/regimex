@@ -49,3 +49,21 @@ queue delivery and one matching child timing event. Retries, unfinished or
 missing events and inconsistent durations are flagged. Unavailable values
 are JSON `null`. The collector writes the report and exits with status 1
 when any submitted analysis has issues.
+
+## Reference workload
+
+These three measurements used one owner, two analysis workers and previously
+uploaded 512-step exports. The API, database and workers shared two CPUs and
+3 GiB of memory. Each request used `tcn-0.2.0`. The client timed submission
+through result download and verified the returned result. The measurements
+used different revisions, so repeat the workload before sizing a deployment.
+
+| Scheduled per minute | Arrival window | Verified / scheduled | Refused at owner quota | Median queue wait | p95 submission to download |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 12 | 90 s | 18 / 18 | 0 | 0.03 s | 6.56 s |
+| 24 | 90 s | 36 / 36 | 0 | 2.16 s | 12.33 s |
+| 24 | 240 s | 75 / 96 | 21 | 16.15 s | 34.58 s |
+
+In the four-minute run, the median child spent 2.63 s restoring the model
+and 0.20 s predicting. The [process benchmark](load-testing.md) measures the
+effect of restoring the same model once for a sequence of inputs.
