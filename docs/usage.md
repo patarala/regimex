@@ -345,6 +345,41 @@ with `--forest-validation-curve PATH`, using the bundle's original manifest
 digest and inference policy. The run displays these measurements as coming
 from saved weights. [Curve format](models.md#adaptive-direction-forest)
 
+### Compare training and independent scores
+
+Open a completed run in **Training**. When the run has a direction quality
+report, **Interval macro-F1 by reference** shows the score and number of groups
+in each measured split. **Simulator agreement** compares predictions with
+automatic labels on simulator observations. **Known direction** compares them
+with the drift specified when generating controlled prices. Read across one
+row to compare training, validation and fresh groups under the same reference.
+
+For a saved model with its original automatic reference sets, the following
+command scores the validation split offline. Set the paths to the files from
+the fit. The locations JSON maps each source namespace to its export path,
+relative to that JSON's directory. Add a second `--cohort` with the training
+references and locations to get both columns in one report.
+
+```sh
+uv run --locked --extra ml python scripts/measure_direction_quality.py \
+  --bundle "$BUNDLE" --manifest-sha256 "$BUNDLE_SHA256" --protocol "$PLAN" \
+  --cohort "$DATASET" "$VALIDATION_REFERENCES" "$LOCATIONS" --output var/quality.json
+```
+
+To display the report, run the following in the service's operator environment.
+For a bundle registered with a custom inference policy, also pass the original
+`--runtime-file`. The measurements appear on the existing run.
+
+```sh
+uv run --locked --extra ml --extra service regimex service register-model \
+  --bundle "$BUNDLE" --manifest-sha256 "$BUNDLE_SHA256" \
+  --token-file "$REGIMEX_TRAINING_TOKEN_FILE" --direction-quality var/quality.json
+```
+
+Independent measurements come from an evaluator using groups reserved outside
+training and selection. Keep its evaluation plan, reference manifest and full
+JSON report alongside the weights. [Direction quality report format](models.md#direction-quality-reports)
+
 ### Find a run started in the terminal
 
 Open the link printed by `regimex submit-training` or `regimex analyze`, or

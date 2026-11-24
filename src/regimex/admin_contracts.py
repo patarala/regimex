@@ -7,6 +7,7 @@ from pydantic import AwareDatetime, Field, JsonValue, model_validator
 
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
 from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup, content_hash
+from regimex.direction_quality import DirectionQualityEvidence
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
 from regimex.external_evaluations import ExternalEvaluation
 from regimex.external_latency import ExternalLatencyEvidence
@@ -16,7 +17,9 @@ from regimex.market_config import MarketConfig
 from regimex.model_bundles import BundleMember, TrainingEvidence
 from regimex.model_registry import (
     ArchitectureId,
+    FixedUpdatePolicy,
     InferenceRuntime,
+    SingleFitPolicy,
     TrainingPolicySpec,
     TrainingRuntime,
     TreeCount,
@@ -318,6 +321,44 @@ class RepeatOutcome(StrictModel):
     step: Annotated[int, Field(ge=1)]
     reason: Literal["early_stopping", "epoch_limit", "update_limit"]
 
+    @classmethod
+    def from_history(cls, spec: TrainingSpec, history: JsonValue) -> tuple[Self, ...]:
+        if spec.architecture_id != "tcn" or not isinstance(history, dict):
+            return ()
+        policy = spec.policy
+        if isinstance(policy, SingleFitPolicy):
+            return ()
+        unit = "update" if isinstance(policy, FixedUpdatePolicy) else "epoch"
+        rows = history.get(unit + "s")
+        if not isinstance(rows, list):
+            return ()
+        # The native codec verifies every seed's complete history before publication.
+        # An epoch repeat that finishes below its budget can only have exhausted patience.
+        last_step: dict[int, int] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                return ()
+            seed, step = row.get("seed"), row.get(unit)
+            if type(seed) is not int or type(step) is not int:
+                return ()
+            last_step[seed] = step
+        if tuple(last_step) != policy.seeds:
+            return ()
+        if isinstance(policy, FixedUpdatePolicy):
+            return tuple(
+                cls(seed=seed, step=step, reason="update_limit")
+                for seed, step in last_step.items()
+                if step == policy.updates
+            )
+        return tuple(
+            cls(
+                seed=seed,
+                step=step,
+                reason="epoch_limit" if step == policy.epochs else "early_stopping",
+            )
+            for seed, step in last_step.items()
+        )
+
 
 class ForestValidationPoint(StrictModel):
     trees: TreeCount
@@ -369,6 +410,9 @@ class TrainingMetrics(StrictModel):
     history: JsonValue
     history_note: str | None = None
     repeat_outcomes: tuple[RepeatOutcome, ...] = ()
+    direction_quality: DirectionQualityEvidence | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     forest_validation_curve: ForestValidationCurve | None = Field(
         default=None, exclude_if=lambda value: value is None
     )

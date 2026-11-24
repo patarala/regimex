@@ -15,6 +15,7 @@ def register_completed_bundle(
     selection_file: Path | None = None,
     native_final: Path | None = None,
     controlled_final: Path | None = None,
+    direction_quality: Path | None = None,
 ) -> None:
     token_file = os.environ.get("REGIMEX_TRAINING_TOKEN_FILE")
     if not token_file:
@@ -36,6 +37,7 @@ def register_completed_bundle(
         ("--selection-file", selection_file),
         ("--native-final", native_final),
         ("--controlled-final", controlled_final),
+        ("--direction-quality", direction_quality),
     ):
         if path is not None:
             command.extend((option, str(path)))

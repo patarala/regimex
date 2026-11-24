@@ -192,6 +192,40 @@ forest and the larger multiscale forest, then averages their class
 probabilities before decoding. Its bundle includes both parents' weights and
 training records. [Evaluation and import command](large-direction-forest.md#combining-two-trained-forests)
 
+## Direction quality reports
+
+The operator can attach interval scores to a completed run with
+`regimex service register-model --direction-quality FILE`. Each row covers
+one reference and one split. A controlled generator can supply its drift
+schedule as an independent reference even when the model trained entirely on
+automatic labels. A low score against that schedule can reveal errors that
+agreement with the training labeler hides.
+
+| JSON field | Value |
+| --- | --- |
+| `bundle_sha256` | SHA-256 of the model's verified `manifest.json`. |
+| `protocol_sha256` | SHA-256 of the plan defining groups, references, inference and matching. |
+| `metric`, `class_names` | `decoded_segment_macro_f1/iou-0.50` and `["sideways","growth","decline"]`. |
+| `rows[].reference`, `split` | `simulator` or `known_direction`, and `train`, `validation` or `independent`. |
+| `rows[].reference_sha256` | Identity of the reference set used for that measurement. Training and selection references must appear in the bundle's provenance. For independent data use a digest binding the actual reference labels or their reproducible schedule. |
+| `rows[].groups[]` | Each group has a stable `group_sha256` and a `counts` array of three `[true_positive,false_positive,false_negative]` triples in class order. |
+
+Match intervals within each instrument and view before pooling counts by
+dependence group. For simulator seeds the scoring script hashes the canonical
+JSON array `["seed", namespace, decimal_seed_string]`. For an external
+group without a seed it hashes `["group", namespace, group_id]`. Use the same
+identity across lengths, instruments and views of the same group. The service
+rejects group overlap between reported splits. The evaluator must also check
+exposure against datasets outside the report before calling a cohort independent.
+
+The row for the model's original validation reference set must reproduce the
+selection score recorded in the bundle. The service sums each class's counts
+across all groups, computes its F1 and
+averages the three classes. An absent class contributes zero. A row with
+no reference intervals cannot be scored. When extending a report, include
+all previously submitted rows and the same protocol. Re-importing the
+same measurements preserves the original history. [Score a saved model](usage.md#compare-training-and-independent-scores)
+
 ## Saved models
 
 When importing a bundle with `regimex service register-model`, use

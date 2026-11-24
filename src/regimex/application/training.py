@@ -80,23 +80,6 @@ class CandidateTrainingResult(StrictModel):
     fit_statistics: TrainingFitStatistics
 
 
-def _available_fields(item: LabeledSnapshot) -> set[str]:
-    """Recorded capabilities differ from an occasional missing value in a field."""
-    capabilities = item.export.capabilities
-    fields: set[str] = set()
-    if capabilities.execution_prices != "unavailable":
-        fields.add("last_price")
-    if capabilities.trade_aggregates != "unavailable":
-        fields.update(("trade_count", "trade_volume"))
-    if capabilities.accepted_order_aggregates != "unavailable":
-        fields.update(
-            ("buy_order_count", "buy_order_volume", "sell_order_count", "sell_order_volume")
-        )
-    if capabilities.historical_quotes.coverage != "unavailable":
-        fields.update(("best_bid", "best_ask"))
-    return fields
-
-
 def observation_inputs(snapshots: tuple[LabeledSnapshot, ...]) -> ObservationInputs:
     """Keep original observations, timing and units; backends construct their features."""
     info = []
@@ -255,7 +238,7 @@ def train_candidate(
     parameters = descriptor.validate_parameters(request.parameters)
     descriptor.validate_training_policy(request.policy)
     for item in (*data.train, *data.validation):
-        descriptor.validate_observation_fields(_available_fields(item))
+        descriptor.validate_observation_fields(item.export.capabilities.observation_fields())
     validation_references = _references(data.validation)
     if not any(
         interval.direction is not None

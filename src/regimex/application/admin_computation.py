@@ -22,7 +22,6 @@ from regimex.admin_contracts import (
 from regimex.application.training import (
     SharedSelectionEvaluator,
     TrainingRequest,
-    _available_fields,
     observation_inputs,
     train_candidate,
 )
@@ -368,7 +367,7 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
         predictor, manifest, model = _predictor(context, root)
         descriptor = ArchitectureRegistry.discover().get(model.architecture_id)
         for sample in samples:
-            descriptor.validate_observation_fields(_available_fields(sample))
+            descriptor.validate_observation_fields(sample.export.capabilities.observation_fields())
         if (
             (
                 spec.partition == "validation"

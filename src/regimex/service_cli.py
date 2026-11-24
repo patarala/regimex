@@ -243,11 +243,18 @@ def register_model(
             help="Tree-count scores on the bundle's original validation set.",
         ),
     ] = None,
+    direction_quality: Annotated[
+        Path | None,
+        typer.Option(
+            exists=True, dir_okay=False, help="Per-group interval counts by reference and split."
+        ),
+    ] = None,
 ) -> None:
     """Import a verified bundle into Training. Use --activate to serve it."""
 
     def action() -> None:
         from regimex.admin_contracts import ForestValidationCurve
+        from regimex.direction_quality import read_direction_quality
         from regimex.external_evaluations import read_external_evaluations
         from regimex.external_latency import read_latency_evidence
         from regimex.infrastructure.admin_repository import AdminRepository
@@ -297,6 +304,9 @@ def register_model(
                 if forest_validation_curve is not None
                 else None
             ),
+            direction_quality=read_direction_quality(direction_quality)
+            if direction_quality
+            else None,
         )
         typer.echo(f"Registered {model.model_version_id} ({model.bundle_sha256}).")
         run = AdminRepository(service.repository).get_training_run_for_model(

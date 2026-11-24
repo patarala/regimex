@@ -420,8 +420,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function refreshDetail() {
     if (target === "compare") return comparison.show(comparedIds, false);
     if (run) {
-      // A verified curve can be attached to a completed forest from another client.
-      if (run.training.architecture_id === "adaptive") metricsLoaded = false;
+      // Verified evidence can be attached after a run finishes.
+      if (run.job.state === "succeeded") metricsLoaded = false;
       return refresh(selection);
     }
     if (target && target !== "new") {

@@ -410,6 +410,12 @@ measured from its saved weights on the original validation data. Each point
 contains `trees` and `validation_segment_macro_f1`. The original `history`
 and final score are preserved.
 
+When an administrator attaches a direction quality report, the same endpoint
+returns `direction_quality` with the metric, bundle, protocol and report
+digests. Each row identifies its reference and split, group count, interval
+macro-F1, and digests of the cohort, reference and per-group measurements.
+Clients can omit the table when the field is absent. [Direction quality reports](models.md#direction-quality-reports)
+
 The optional `display_name` accepts up to 120 Unicode characters after trimming
 and NFC normalization. To rename a run later, send
 `{"display_name":"EUR/USD quiet sessions","expected_revision":0}` to its name

@@ -22,6 +22,8 @@ from regimex.application.admin_results import AdminResultCommitter
 from regimex.application.admin_service import AdminService
 from regimex.application.service import materialize_bundle
 from regimex.backends.adaptive import AdaptiveBackend
+from regimex.data_catalog import content_hash
+from regimex.direction_quality import DirectionQualityEvidence, MeasuredCohort
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE
 from regimex.model_registry import InferenceRuntime, SingleFitPolicy, TrainingRuntime
 from regimex.service_contracts import Conflict, ModelRecord, Principal
@@ -211,3 +213,104 @@ def test_attach_curve_to_worker_run_preserves_training_request_and_statistics(
     metrics = service.training_metrics(principal, submitted.run_id)
     assert json_bytes(metrics.history) == (root / "history.json").read_bytes()
     assert metrics.forest_validation_curve == curve
+
+
+def test_direction_evidence_extends_original_run_atomically(
+    admin: tuple[AdminService, Principal], tmp_path: Path
+) -> None:
+    from test_direction_quality import cohort, report
+
+    service, principal = admin
+    curve, register = forest_import(service, principal, tmp_path / "quality")
+    row = cohort()
+    independent = row.model_copy(
+        update={
+            "reference": "known_direction",
+            "split": "independent",
+            "reference_sha256": "c" * 64,
+            "groups": (row.groups[0].model_copy(update={"group_sha256": "d" * 64}),),
+        }
+    )
+
+    def evidence(*rows: MeasuredCohort) -> DirectionQualityEvidence:
+        raw = report(*rows, bundle=curve.bundle_sha256)
+        return raw.summarize(content_hash(raw.model_dump(mode="json")))
+
+    with pytest.raises(ValueError, match="another bundle"):
+        register(direction_quality=report(row).summarize("0" * 64))
+    assert service.list_runs(principal, kind="training") == ()
+    register(direction_quality=evidence(row))
+    (run,) = service.list_runs(principal, kind="training")
+    assert service.training_metrics(principal, run.run_id).direction_quality == evidence(row)
+    with pytest.raises(Conflict, match="previously recorded rows"):
+        register(forest_validation_curve=curve, direction_quality=evidence(independent))
+    assert service.training_metrics(principal, run.run_id).forest_validation_curve is None
+    full = evidence(row, independent)
+    register(forest_validation_curve=curve, direction_quality=full)
+    register(direction_quality=evidence(row))
+    saved = service.training_metrics(principal, run.run_id)
+    assert saved.direction_quality == full
+    assert saved.forest_validation_curve == curve
+    changed = row.model_copy(update={"groups": row.groups[:1]})
+    with pytest.raises(Conflict, match="different measurement"):
+        register(direction_quality=evidence(changed))
+    with pytest.raises(Conflict, match="different direction quality protocol"):
+        register(direction_quality=full.model_copy(update={"protocol_sha256": "8" * 64}))
+    assert service.training_metrics(principal, run.run_id) == saved
+    assert service.list_runs(principal, kind="training") == (run,)
+
+
+def test_attach_direction_evidence_to_worker_tcn_recovers_repeat_outcomes(
+    admin: tuple[AdminService, Principal], tmp_path: Path
+) -> None:
+    from test_direction_quality import cohort, report
+
+    from regimex.model_registry import TrainingPolicy
+
+    service, principal = admin
+    dataset, validation = prepared_references(service, principal)
+    training = service.submit_training(
+        principal,
+        TrainingSpec(
+            dataset_id=dataset.dataset_id,
+            labels_reference_set_id="fixture-labels",
+            validation_reference_set_id=validation.references.reference_set_id,
+            model_version_id="worker-tcn",
+            architecture_id="tcn",
+            parameters={"channels": 4, "dilations": [1, 2]},
+            policy=TrainingPolicy(
+                optimizer="adamw", seeds=(11,), epochs=1, batch_size=1, validation_interval=1
+            ),
+            training_runtime=TrainingRuntime(threads=1, time_budget_seconds=120),
+            inference_runtime=InferenceRuntime(threads=1),
+            analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
+            build_id="fixture-tcn",
+            benchmark_selection_id="fixture-final-benchmark",
+        ),
+        idempotency_key="worker-tcn",
+    )
+    completed(service, training.run_id)
+    original = service.training_metrics(principal, training.run_id)
+    assert len(original.repeat_outcomes) == 1
+    model = service.analysis_service.repository.get_model("worker-tcn")
+    root = tmp_path / "worker-tcn"
+    materialize_bundle(service.analysis_service.store, model, root)
+    row = cohort().model_copy(update={"split": "independent", "reference": "known_direction"})
+    raw = report(row, bundle=model.bundle_sha256)
+    measured = raw.summarize(content_hash(raw.model_dump(mode="json")))
+    with service.analysis_service.repository.connection() as database:
+        # Earlier worker runs can have their history only in the bundle.
+        database.execute(
+            "DELETE FROM regimex_training_metrics WHERE operation_id=%s", (training.run_id,)
+        )
+    for _ in range(2):
+        service.analysis_service.register_bundle(
+            principal,
+            root,
+            manifest_sha256=model.bundle_sha256,
+            inference_runtime=model.inference_runtime,
+            record_training=True,
+            direction_quality=measured,
+        )
+        recovered = service.training_metrics(principal, training.run_id)
+        assert recovered == original.model_copy(update={"direction_quality": measured})

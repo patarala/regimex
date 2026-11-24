@@ -1564,6 +1564,11 @@ iframe {
   margin-bottom: 6px;
   font-weight: 550;
 }
+#training-direction-quality small {
+  display: block;
+  color: var(--muted);
+  white-space: nowrap;
+}
 #training-seed-label {
   display: flex;
   align-items: center;

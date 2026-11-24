@@ -15,7 +15,7 @@ from regimex.evaluation import probabilities_valid
 from regimex.exports import ExportInstrument, ExportV2, parse_export_v2
 from regimex.model_bundles import ModelBundle, verify_model_bundle
 from regimex.model_contracts import LoadedPredictor, ModelBackend, ObservationInputs
-from regimex.model_registry import ArchitectureRegistry, RegistryError
+from regimex.model_registry import ArchitectureRegistry, InferenceRuntime, RegistryError
 from regimex.prediction_inputs import PredictionSequenceInfo
 from regimex.segmentation import DECODER_VERSION, decode
 from regimex.service_contracts import AnalysisRecord, ModelRecord, SnapshotRecord
@@ -25,34 +25,51 @@ from regimex.storage import json_bytes
 def restore_predictor(
     root: Path, model: ModelRecord, registry: ArchitectureRegistry, *, worker_id: str
 ) -> tuple[LoadedPredictor, ModelBundle]:
+    return restore_bundle(
+        root,
+        model.bundle_sha256,
+        model.model_version_id,
+        model.architecture_id,
+        model.inference_runtime,
+        registry,
+        worker_id=worker_id,
+    )
+
+
+def restore_bundle(
+    root: Path,
+    manifest_sha256: str,
+    model_version_id: str,
+    architecture_id: str,
+    runtime: InferenceRuntime,
+    registry: ArchitectureRegistry,
+    *,
+    worker_id: str,
+) -> tuple[LoadedPredictor, ModelBundle]:
     """Validate immutable bytes and let the installed backend restore its codec."""
-    descriptor = registry.get(model.architecture_id)
+    descriptor = registry.get(architecture_id)
     manifest = verify_model_bundle(
         root,
-        manifest_sha256=model.bundle_sha256,
+        manifest_sha256=manifest_sha256,
         architecture_id=descriptor.architecture_id,
         implementation_version=descriptor.implementation_version,
     )
     if (
-        manifest.model_version_id != model.model_version_id
+        manifest.model_version_id != model_version_id
         or manifest.decoder_version != DECODER_VERSION
         or manifest.class_names != DIRECTION_NAMES
     ):
         raise ValueError("registered bundle identity, class order or decoder is incompatible")
-    factory = registry.load_backend_factory_on_worker(
-        model.architecture_id, model.inference_runtime, worker_id=worker_id
-    )
+    factory = registry.load_backend_factory_on_worker(architecture_id, runtime, worker_id=worker_id)
     backend = factory()
     if not isinstance(backend, ModelBackend) or (
         backend.architecture_id,
         backend.implementation_version,
     ) != (descriptor.architecture_id, descriptor.implementation_version):
         raise RegistryError("installed factory does not implement its declared backend")
-    predictor = backend.load_bundle(
-        root, manifest_sha256=model.bundle_sha256, runtime=model.inference_runtime
-    )
+    predictor = backend.load_bundle(root, manifest_sha256=manifest_sha256, runtime=runtime)
     if (
-        predictor.architecture_id != model.architecture_id
+        predictor.architecture_id != architecture_id
         or predictor.implementation_version != descriptor.implementation_version
         or predictor.class_names != DIRECTION_NAMES
         or hashlib.sha256(json_bytes(predictor.analysis.model_dump(mode="json"))).hexdigest()
@@ -60,22 +77,6 @@ def restore_predictor(
     ):
         raise ValueError("restored predictor identity, class order or analysis differs")
     return predictor, manifest
-
-
-def _available_fields(export: ExportV2) -> set[str]:
-    capabilities = export.capabilities
-    fields: set[str] = set()
-    if capabilities.execution_prices != "unavailable":
-        fields.add("last_price")
-    if capabilities.trade_aggregates != "unavailable":
-        fields.update(("trade_count", "trade_volume"))
-    if capabilities.accepted_order_aggregates != "unavailable":
-        fields.update(
-            ("buy_order_count", "buy_order_volume", "sell_order_count", "sell_order_volume")
-        )
-    if capabilities.historical_quotes.coverage != "unavailable":
-        fields.update(("best_bid", "best_ask"))
-    return fields
 
 
 def snapshot_inputs(export: ExportV2) -> ObservationInputs:
@@ -205,7 +206,7 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
         or descriptor.parameters_model.model_json_schema() != payload["parameter_schema"]
     ):
         raise RegistryError("installed child metadata differs from the configured worker")
-    descriptor.validate_observation_fields(_available_fields(export))
+    descriptor.validate_observation_fields(export.capabilities.observation_fields())
     load_started = time.perf_counter_ns()
     predictor, manifest = restore_predictor(
         Path(bundle_path), model, registry, worker_id="analysis-child"

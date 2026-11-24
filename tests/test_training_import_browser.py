@@ -185,3 +185,68 @@ def test_import_comparison_checks_validation_evidence_and_preserves_exact_settin
         expect(page.get_by_role("row", name="Validation interval macro-F1")).to_have_count(0)
     finally:
         page.close()
+
+
+def test_direction_scores_follow_the_run_and_show_only_measured_splits(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.runs = [imported_run(), api.run]
+
+    def measurement(reference: str, split: str, f1: float, groups: int) -> dict[str, Any]:
+        return {
+            "reference": reference,
+            "split": split,
+            "interval_macro_f1": f1,
+            "group_count": groups,
+            "cohort_sha256": {"train": "1", "validation": "2", "independent": "3"}[split] * 64,
+            "reference_sha256": ("b" if split == "independent" else "a") * 64,
+            "measurement_sha256": {"train": "5", "validation": "6", "independent": "7"}[split] * 64,
+        }
+
+    report = {
+        "bundle_sha256": "9" * 64,
+        "protocol_sha256": "4" * 64,
+        "report_sha256": "a" * 64,
+        "metric": "decoded_segment_macro_f1/iou-0.50",
+        "rows": [
+            measurement("known_direction", "independent", 0.0, 1),
+            measurement("simulator", "validation", 0.57, 24),
+            measurement("simulator", "train", 0.85, 96),
+        ],
+    }
+    page = browser.new_page(viewport={"width": 320, "height": 760}, locale="en-US")
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        f"**/training-runs/{IMPORTED}/metrics",
+        lambda route: route.fulfill(json={**api.metrics, "direction_quality": report}),
+    )
+    try:
+        page.goto(f"{ORIGIN}/training/{IMPORTED}")
+        table = page.get_by_role("table", name="Interval macro-F1 by reference")
+        expect(table.get_by_role("columnheader")).to_have_text(
+            ["Reference", "Training", "Validation", "Independent"]
+        )
+        simulator = table.get_by_role("row", name="Simulator agreement")
+        known = table.get_by_role("row", name="Known direction")
+        expect(simulator.get_by_role("cell").nth(0)).to_have_accessible_name("0.85 96 groups")
+        expect(simulator.get_by_role("cell").nth(1)).to_have_accessible_name("0.57 24 groups")
+        expect(simulator.get_by_role("cell").nth(2)).to_have_accessible_name("Not measured")
+        expect(known.get_by_role("cell").nth(2)).to_have_accessible_name("0 1 group")
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+        page.get_by_role("button", name="Run history", exact=True).click()
+        page.locator(f'button[data-run-id="{RUN_ID}"]').click()
+        expect(page.get_by_role("img", name="Training loss by epoch")).to_be_visible()
+        expect(table).to_have_count(0)
+
+        api.metrics["direction_quality"] = {
+            **report,
+            "report_sha256": "b" * 64,
+            "rows": [measurement("known_direction", "independent", 0.62, 32)],
+        }
+        page.evaluate("window.dispatchEvent(new Event('focus'))")
+        expect(table.get_by_role("columnheader")).to_have_text(["Reference", "Independent"])
+        expect(table.get_by_role("rowheader")).to_have_text(["Known direction"])
+        expect(table.get_by_role("cell")).to_have_accessible_name("0.62 32 groups")
+    finally:
+        page.close()

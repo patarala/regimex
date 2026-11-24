@@ -372,17 +372,66 @@ function repeatEnding(reason, step, policy) {
   return "";
 }
 
+function directionQualityTable(rows) {
+  const table = element("table", undefined, "evaluation-directions");
+  table.createCaption().textContent = "Interval macro-F1 by reference";
+  const splits = [["train", "Training"], ["validation", "Validation"], ["independent", "Independent"]]
+    .filter(([split]) => rows.some(row => row.split === split));
+  const header = table.createTHead().insertRow();
+  for (const label of ["Reference", ...splits.map(([, label]) => label)]) {
+    const heading = element("th", label);
+    heading.scope = "col";
+    header.append(heading);
+  }
+  const body = table.createTBody();
+  for (const [reference, label] of [["simulator", "Simulator agreement"], ["known_direction", "Known direction"]]) {
+    const measurements = rows.filter(row => row.reference === reference);
+    if (!measurements.length) continue;
+    const row = body.insertRow();
+    const heading = element("th", label);
+    heading.scope = "row";
+    row.append(heading);
+    for (const [split] of splits) {
+      const cell = row.insertCell();
+      const measurement = measurements.find(item => item.split === split);
+      if (measurement) {
+        const groups = measurement.group_count;
+        cell.append(format(measurement.interval_macro_f1),
+          element("small", groups.toLocaleString() + (groups === 1 ? " group" : " groups")));
+      } else {
+        cell.textContent = "—";
+        cell.setAttribute("aria-label", "Not measured");
+      }
+    }
+  }
+  return table;
+}
+
 export function createTrainingMetrics() {
   const section = $("training-metrics"), charts = $("training-charts"), seed = $("training-seed");
   const score = $("training-score"), seedLabel = $("training-seed-label");
   const ending = $("training-repeat-end");
+  const quality = $("training-direction-quality");
   const figures = new Map();
   let chosenSeed = "", drawn = null;
+
+  function showQuality(report) {
+    if (quality.dataset.report === report?.report_sha256) return;
+    if (report) {
+      quality.replaceChildren(directionQualityTable(report.rows));
+      quality.dataset.report = report.report_sha256;
+    } else {
+      quality.replaceChildren();
+      delete quality.dataset.report;
+    }
+    quality.hidden = !report;
+  }
 
   function clear() {
     section.hidden = true;
     ending.hidden = seedLabel.hidden = score.hidden = true;
     score.replaceChildren();
+    showQuality();
     chosenSeed = "";
     drawn = null;
     for (const view of figures.values()) view.inspector.hide();
@@ -400,6 +449,7 @@ export function createTrainingMetrics() {
     const rows = history && data[history.rows];
     const records = rows?.filter(row => row && Number.isFinite(row[history.field]));
     section.hidden = false;
+    showQuality(result?.direction_quality);
     const fit = historyData?.fits?.at(-1);
     const validated = result || (fit && {selected_seed: fit.seed,
       validation_segment_macro_f1: fit.validation_segment_macro_f1});

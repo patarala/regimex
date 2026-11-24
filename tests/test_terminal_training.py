@@ -66,8 +66,10 @@ def test_unavailable_service_keeps_offline_results_and_prints_a_retry_command(
     monkeypatch.setattr("regimex.terminal_training.subprocess.run", run)
     bundle = tmp_path / "local bundle"
     bundle.mkdir()
-    register_completed_bundle(bundle, "1" * 64)
+    quality = tmp_path / "direction scores.json"
+    register_completed_bundle(bundle, "1" * 64, direction_quality=quality)
     error = capsys.readouterr().err
+    assert f"--direction-quality '{quality}'" in error
     assert bundle.is_dir() and str(bundle) in error
     assert "Retry" in error and f"--token-file '{token}'" in error
     assert "private example" not in error

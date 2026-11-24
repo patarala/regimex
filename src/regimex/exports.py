@@ -186,6 +186,21 @@ class SourceCapabilities(StrictModel):
     order_count_policy: Literal["accepted_submissions_including_immediate_fills"]
     rejected_order_policy: Literal["excluded"]
 
+    def observation_fields(self) -> set[str]:
+        """Recorded capabilities differ from an occasional missing value in a field."""
+        fields: set[str] = set()
+        if self.execution_prices != "unavailable":
+            fields.add("last_price")
+        if self.trade_aggregates != "unavailable":
+            fields.update(("trade_count", "trade_volume"))
+        if self.accepted_order_aggregates != "unavailable":
+            fields.update(
+                ("buy_order_count", "buy_order_volume", "sell_order_count", "sell_order_volume")
+            )
+        if self.historical_quotes.coverage != "unavailable":
+            fields.update(("best_bid", "best_ask"))
+        return fields
+
 
 class ExportPayloadV2(StrictModel):
     schema_version: Literal["2.1"]

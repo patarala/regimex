@@ -29,6 +29,7 @@ from regimex.admin_contracts import (
     PublicationSpec,
     ReferenceGenerationSpec,
     ReferenceSetRecord,
+    RepeatOutcome,
     RequestDigest,
     TrainingArchiveFilter,
     TrainingMetrics,
@@ -1437,7 +1438,15 @@ class AdminRepository:
                         raise Conflict("The bundle does not identify its training run.")
                 elif run.spec != spec:
                     raise Conflict("The training run already records different bundle evidence.")
-                if curve is not None:
+                if curve is not None or metrics.direction_quality is not None:
+                    if isinstance(run.spec, TrainingSpec):
+                        metrics = metrics.model_copy(
+                            update={
+                                "repeat_outcomes": RepeatOutcome.from_history(
+                                    run.spec, metrics.history
+                                )
+                            }
+                        )
                     store_training_metrics(connection, run, metrics)
             self._save_external_reports(connection, run, evaluations, latency)
             return registered

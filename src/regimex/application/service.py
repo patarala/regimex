@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     import psycopg
 
     from regimex.admin_contracts import ForestValidationCurve
+    from regimex.direction_quality import DirectionQualityEvidence
     from regimex.external_evaluations import ExternalEvaluation
     from regimex.external_latency import ExternalLatencyEvidence
     from regimex.infrastructure.database import DatabaseRepository
@@ -734,6 +735,7 @@ class AnalysisService:
         external_evaluations: tuple[ExternalEvaluation, ...] = (),
         external_latency: ExternalLatencyEvidence | None = None,
         forest_validation_curve: ForestValidationCurve | None = None,
+        direction_quality: DirectionQualityEvidence | None = None,
     ) -> ModelRecord:
         """Explicit administrator bootstrap; verify actual saved backend restoration.
 
@@ -744,7 +746,11 @@ class AnalysisService:
             raise Forbidden()
         display_name = validate_display_name(display_name)
         if not record_training and (
-            display_name or external_evaluations or external_latency or forest_validation_curve
+            display_name
+            or external_evaluations
+            or external_latency
+            or forest_validation_curve
+            or direction_quality
         ):
             raise ValueError("Training names and external reports require recording the run.")
         manifest_path = root / "manifest.json"
@@ -769,6 +775,8 @@ class AnalysisService:
             architecture_id=descriptor.architecture_id,
             implementation_version=descriptor.implementation_version,
         )
+        if direction_quality is not None:
+            direction_quality.validate_for(manifest_sha256, manifest.training)
         total_size = len(data) + sum(member.size_bytes for member in manifest.members)
         if total_size > inference_runtime.model_cache_budget_bytes:
             raise CapacityExceeded("Model bundle exceeds the inference cache budget.")
@@ -828,6 +836,7 @@ class AnalysisService:
                 external_latency,
                 launch_source,
                 forest_validation_curve,
+                direction_quality,
             )
         elif existing is None:
             record = self.repository.register_model(principal, record)
