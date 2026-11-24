@@ -2,7 +2,7 @@
 
 import ipaddress
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
 from pydantic import ConfigDict, Field, model_validator
@@ -20,6 +20,7 @@ class S3Config(StrictModel):
     bucket: Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$")]
     prefix: Annotated[str, Field(min_length=1, max_length=512)]
     lock_root: Path
+    coordination: Literal["local", "postgres"] = "local"
     allow_loopback_http: bool = False
     ca_bundle: Path | None = None
     credential_profile: Annotated[str, Field(min_length=1, max_length=128)] | None = None

@@ -77,16 +77,24 @@ def diagnose(settings: ServiceSettings) -> DiagnosticReport:
         with psycopg.connect(
             settings.database_dsn.get_secret_value(), connect_timeout=5
         ) as connection:
-            connection.execute("SELECT 1")
+            writable = connection.execute(
+                "SELECT current_setting('transaction_read_only')='off'"
+            ).fetchone() == (True,)
         connected = True
-        record("database", "passed", "PostgreSQL accepts connections.")
+        record(
+            "database",
+            "passed" if writable else "failed",
+            "PostgreSQL accepts writable transactions."
+            if writable
+            else "PostgreSQL is read-only. Connect the service to a writable primary.",
+        )
     except psycopg.Error, OSError:
         record(
             "database",
             "failed",
             "PostgreSQL is unavailable. Check the database service and credentials.",
         )
-    current_schema = connected and repository.readiness()
+    current_schema = connected and repository.readiness(require_writable=False)
     record(
         "schema",
         "passed" if current_schema else "failed" if connected else "skipped",

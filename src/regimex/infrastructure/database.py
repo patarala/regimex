@@ -60,7 +60,7 @@ from regimex.service_contracts import (
 from regimex.storage import json_bytes
 
 _RESULT = TypeAdapter(dict[str, JsonValue])
-_REVISION = "0015_terminal_activity"
+_REVISION = "0016_s3_coordination"
 
 
 def _read_operation(document: object) -> Operation:
@@ -185,12 +185,14 @@ class DatabaseRepository:
         finally:
             engine.dispose()
 
-    def readiness(self, *, require_model: bool = False) -> bool:
+    def readiness(self, *, require_model: bool = False, require_writable: bool = True) -> bool:
         try:
             with self.connection() as connection:
                 row = connection.execute(
                     "SELECT to_regclass('alembic_version'), to_regclass('regimex_operations'), "
-                    "to_regclass('procrastinate_jobs')"
+                    "to_regclass('procrastinate_jobs') "
+                    "WHERE NOT %s OR current_setting('transaction_read_only')='off'",
+                    (require_writable,),
                 ).fetchone()
                 if row is None or any(value is None for value in row):
                     return False

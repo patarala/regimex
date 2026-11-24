@@ -160,6 +160,35 @@ def restore(
     )
 
 
+def test_read_only_database_blocks_service_readiness_but_preserves_diagnostics(
+    databases: DatabaseFactory, tmp_path: Path
+) -> None:
+    from regimex.service_diagnostics import diagnose
+    from regimex.service_settings import ServiceSettings
+
+    database = databases("service_readiness")
+    database.migrate()
+    assert database.readiness()
+    with psycopg.connect(database._dsn, autocommit=True) as admin:
+        admin.execute(
+            sql.SQL("ALTER DATABASE {} SET default_transaction_read_only=on").format(
+                sql.Identifier(admin.info.dbname)
+            )
+        )
+    assert not database.readiness()
+    with database.connection() as connection:
+        assert connection.execute("SHOW transaction_read_only").fetchone() == ("on",)
+    settings = ServiceSettings(
+        database_dsn=SecretStr(database._dsn),
+        database_schema=database.schema,
+        object_root=tmp_path / "objects",
+        work_root=tmp_path / "work",
+    )
+    checks = {check.name: check for check in diagnose(settings).checks}
+    assert checks["database"].status == "failed" and "read-only" in checks["database"].message
+    assert checks["schema"].status == checks["storage"].status == "passed"
+
+
 def test_recovery_preserves_external_training_provenance_and_metrics(
     databases: DatabaseFactory, tools: PostgresTools, tmp_path: Path
 ) -> None:
@@ -400,6 +429,7 @@ def test_restore_object_larger_than_compose_tmpfs(
         "0012_training_metrics",
         "0013_training_archive",
         "0014_external_training",
+        "0015_terminal_activity",
     ],
 )
 def test_previous_schema_backup_can_be_restored_then_migrated(
@@ -411,7 +441,9 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
     revision: str,
 ) -> None:
     with minimal.source.connection() as connection:
-        connection.execute("DROP TABLE regimex_terminal_activities")
+        connection.execute("DROP TABLE regimex_s3_pending_writes,regimex_s3_namespaces")
+        if revision < "0015_terminal_activity":
+            connection.execute("DROP TABLE regimex_terminal_activities")
         if revision < "0014_external_training":
             connection.execute(
                 "ALTER TABLE regimex_training_runs DROP CONSTRAINT regimex_training_input_origin, "
@@ -729,20 +761,33 @@ def test_unrecognized_database_revision_blocks_backup_and_cannot_be_stamped_curr
     )
 
 
+@pytest.mark.parametrize("distributed", [False, True])
 def test_s3_backup_round_trip_into_new_local_storage(
     minimal: MinimalBackup,
     databases: DatabaseFactory,
     tools: PostgresTools,
     tmp_path: Path,
+    distributed: bool,
 ) -> None:
+    from regimex.infrastructure.s3_coordination import S3Coordinator
+
+    middle = databases(minimal.source.schema)
+    config = s3_configuration(tmp_path / "s3-coordination")
+    if distributed:
+        config = config.model_copy(update={"coordination": "postgres"})
     remote = S3ObjectStore(
-        s3_configuration(tmp_path / "s3-coordination"),
+        config,
+        coordinator=S3Coordinator(middle) if distributed else None,
         max_object_bytes=16 * 1024**2,
         max_total_bytes=128 * 1024**2,
     )
     try:
-        middle = databases(minimal.source.schema)
         first = restore(minimal, middle, remote, tools)
+        if distributed:
+            payload = tmp_path / "small-object"
+            payload.write_bytes(b"verified")
+            version = remote.put("roundtrip", payload, expected_sha256=digest(payload))
+            remote.delete(version)
         directory = tmp_path / "s3-source-backup"
         backup = recovery.backup_service(
             SecretStr(middle._dsn),
@@ -1343,7 +1388,7 @@ def scientific_backup(
     )
 
 
-@pytest.mark.parametrize("backend", ("local", "s3"))
+@pytest.mark.parametrize("backend", ("local", "s3", "s3-postgres"))
 def test_full_recovery_reloads_both_models_in_fresh_service_processes(
     scientific_backup: ScientificBackup,
     databases: DatabaseFactory,
@@ -1357,15 +1402,23 @@ def test_full_recovery_reloads_both_models_in_fresh_service_processes(
 
     original = scientific_backup
     target = databases(original.database.schema)
-    objects: LocalObjectStore | S3ObjectStore = (
-        local(tmp_path / "objects")
-        if backend == "local"
-        else S3ObjectStore(
-            s3_configuration(tmp_path / "s3-coordination"),
+    objects: LocalObjectStore | S3ObjectStore
+    if backend == "local":
+        objects = local(tmp_path / "objects")
+    else:
+        from regimex.infrastructure.s3_coordination import S3Coordinator
+
+        config = s3_configuration(tmp_path / "s3-coordination")
+        coordinator = None
+        if backend == "s3-postgres":
+            config = config.model_copy(update={"coordination": "postgres"})
+            coordinator = S3Coordinator(target)
+        objects = S3ObjectStore(
+            config,
+            coordinator=coordinator,
             max_object_bytes=16 * 1024**2,
             max_total_bytes=128 * 1024**2,
         )
-    )
     try:
         receipt = recovery.restore_service(
             SecretStr(target._dsn),

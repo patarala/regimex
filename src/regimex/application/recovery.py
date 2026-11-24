@@ -360,6 +360,11 @@ def _table_evidence(
         "WHERE applied_at IS NOT NULL AND completed_at IS NULL LIMIT 1"
     ).fetchone():
         raise Conflict("Complete pending resource deletions before backup or restoration.")
+    if (
+        expected_revision >= "0016_s3_coordination"
+        and connection.execute("SELECT 1 FROM regimex_s3_pending_writes LIMIT 1").fetchone()
+    ):
+        raise Conflict("Reconcile pending S3 writes before backup or restoration.")
     inconsistent = connection.execute(
         "WITH owned AS (SELECT object_key,owner_id,source_id FROM regimex_snapshots UNION "
         "SELECT r.object_key,r.owner_id,s.source_id FROM regimex_analysis_reports r "

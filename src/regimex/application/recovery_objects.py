@@ -197,6 +197,9 @@ def _worker() -> int:
             signal.setitimer(signal.ITIMER_REAL, max(1, request.deadline - time.monotonic() + 1))
         store = S3ObjectStore(
             request.config,
+            # Offline recovery holds the maintenance lock, quiesces every writer and
+            # restores into a fresh prefix before admitting database connections.
+            _offline_recovery=True,
             max_object_bytes=request.max_object_bytes,
             max_total_bytes=request.max_total_bytes,
         )

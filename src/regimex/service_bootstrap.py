@@ -19,8 +19,19 @@ def create_object_store(settings: ServiceSettings) -> LocalObjectStore | S3Objec
     if settings.s3 is not None:
         from regimex.infrastructure.s3_object_store import S3ObjectStore
 
+        coordinator = None
+        if settings.s3.coordination == "postgres":
+            from regimex.infrastructure.database import DatabaseRepository
+            from regimex.infrastructure.s3_coordination import S3Coordinator
+
+            coordinator = S3Coordinator(
+                DatabaseRepository(
+                    settings.database_dsn.get_secret_value(), schema=settings.database_schema
+                )
+            )
         return S3ObjectStore(
             settings.s3,
+            coordinator=coordinator,
             max_object_bytes=settings.max_object_bytes,
             max_total_bytes=settings.max_store_bytes,
         )

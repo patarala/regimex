@@ -134,7 +134,15 @@ def test_s3_environment_has_explicit_scope_limits_and_external_credentials(
     assert settings.object_backend == "s3" and settings.s3 is not None
     assert settings.s3.lock_root == tmp_path / "work" / "s3-coordination"
     assert settings.s3.read_timeout_seconds == 7
+    assert settings.s3.coordination == "local"
     assert "sdk-only-private-key" not in settings.model_dump_json()
+    monkeypatch.setenv("REGIMEX_S3_COORDINATION", "postgres")
+    assert ServiceSettings.from_env().s3 == settings.s3.model_copy(
+        update={"coordination": "postgres"}
+    )
+    monkeypatch.setenv("REGIMEX_S3_COORDINATION", "unknown")
+    with pytest.raises(ValueError, match="Invalid S3"):
+        ServiceSettings.from_env()
 
 
 @pytest.mark.parametrize(

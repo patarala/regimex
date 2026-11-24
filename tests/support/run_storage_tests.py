@@ -371,6 +371,7 @@ def main() -> int:
             "-q",
             "tests/test_object_store_contract.py",
             "tests/test_s3_object_store.py",
+            "tests/test_s3_cluster.py",
         ]
     previous = signal.signal(signal.SIGTERM, _interrupt)
     try:

@@ -66,20 +66,55 @@ def install_storage_commands(
             settings = ServiceSettings.from_env()
             store = create_object_store(settings)
             if isinstance(store, S3ObjectStore):
-                store.check()
-            versions = store.inventory()
+                counts = store.capacity_report()
+            else:
+                versions = store.inventory()
+                counts = dict(
+                    retained_versions=len(versions),
+                    retained_payload_bytes=sum(v.size_bytes for v in versions),
+                )
             typer.echo(
                 json.dumps(
                     {
                         "backend": settings.object_backend,
                         "scope_id": store.scope_id,
-                        "retained_versions": len(versions),
-                        "retained_payload_bytes": sum(item.size_bytes for item in versions),
+                        **counts,
                         "scope": "configuration_and_inventory",
                     },
                     sort_keys=True,
                 )
             )
+
+        execute(action)
+
+    @app.command("storage-reconcile-writes")
+    def reconcile_writes(
+        attestation_file: Annotated[Path, typer.Option(exists=True, dir_okay=False)],
+        provider_drained: Annotated[
+            bool,
+            typer.Option(help="Confirm all previous PUT requests have drained at the provider."),
+        ] = False,
+        after_key: Annotated[str | None, typer.Option(help="Continue from next_after.")] = None,
+    ) -> None:
+        """Verify uncertain S3 writes offline and report remaining reservations."""
+
+        def action() -> None:
+            from dataclasses import asdict
+
+            from regimex.infrastructure.s3_object_store import S3ObjectStore
+            from regimex.service_bootstrap import create_object_store
+
+            store = create_object_store(ServiceSettings.from_env())
+            if not isinstance(store, S3ObjectStore):
+                raise ValueError(
+                    "Write reconciliation requires the PostgreSQL-coordinated S3 store"
+                )
+            result = store.reconcile_pending_writes(
+                _attestation(attestation_file),
+                provider_drained=provider_drained,
+                after_key=after_key,
+            )
+            typer.echo(json.dumps(asdict(result)))
 
         execute(action)
 

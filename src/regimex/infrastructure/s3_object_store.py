@@ -1,10 +1,9 @@
 """Immutable S3 objects, initially verified against native SeaweedFS 4.48.
 
-Versioning must remain enabled. All compliant writers for a bucket/prefix must
-share this dedicated coordination directory on one host. The flock and current
-provider version inventory enforce total retained-payload capacity; neither a
-different coordination directory nor a second host shares that quota guarantee.
-Out-of-band writes, versioning changes and deletion are operational violations.
+Versioning must remain enabled. PostgreSQL-coordinated nodes share a durable
+reservation before issuing each tagged conditional PUT. A standalone adapter
+uses the local coordination directory and a current provider inventory.
+All writers require exclusive use of the configured bucket prefix.
 
 No method establishes application ownership or permission to delete. The caller
 must authorize ordinary deletion, orphan-version deletion and multipart cleanup
@@ -26,7 +25,7 @@ from datetime import UTC, datetime
 from importlib import import_module
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Protocol, cast
+from typing import TYPE_CHECKING, BinaryIO, Protocol, cast
 
 from regimex.infrastructure.object_store import (
     ObjectCapacityError,
@@ -47,15 +46,30 @@ from regimex.infrastructure.object_store import (
 )
 from regimex.infrastructure.s3_config import S3Config, S3MultipartUpload, S3ObjectVersion
 
+if TYPE_CHECKING:
+    from regimex.infrastructure.maintenance import Connection, ServicesStoppedAttestation
+    from regimex.infrastructure.s3_coordination import PendingWrite, S3Coordinator
+
 _CHUNK_BYTES = 1024 * 1024
 _MAX_OBJECT_BYTES = 512 * 1024**2
 _MAX_LIST_PAGES = 1000
+_RECONCILE_BATCH_SIZE = 1000
 _LOCK_NAME = ".regimex-lock"
 _BINDING_NAME = ".regimex-s3-binding.json"
 _LOCK_TIMEOUT_SECONDS = 5
 
 
+class _Events(Protocol):
+    def register(self, event_name: str, handler: Callable[..., None]) -> None: ...
+
+
+class _ClientMetadata(Protocol):
+    events: _Events
+
+
 class _Client(Protocol):
+    meta: _ClientMetadata
+
     def get_bucket_versioning(self, **values: object) -> dict[str, object]: ...
     def head_object(self, **values: object) -> dict[str, object]: ...
     def get_object(self, **values: object) -> dict[str, object]: ...
@@ -110,10 +124,25 @@ class _ConditionalConflict(ObjectConflictError):
     pass
 
 
+@dataclass(frozen=True)
+class WriteReconciliation:
+    verified: int
+    released_missing: int
+    pending: int
+    next_after: str | None
+
+
 def _mapping(value: object) -> dict[str, object]:
     if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
         raise ObjectIntegrityError("S3 returned invalid response metadata")
     return cast(dict[str, object], value)
+
+
+def _single_put_attempt(request: object, **_: object) -> None:
+    # Region redirects and custom retry handlers also create a new request.
+    context = _mapping(getattr(request, "context", None))
+    if _mapping(context.get("retries")).get("attempt") != 1:
+        raise OSError("S3 write token cannot be transmitted twice")
 
 
 def _rows(value: object) -> list[dict[str, object]]:
@@ -197,9 +226,22 @@ class _CheckedUpload(io.BufferedReader):
 
 
 class S3ObjectStore:
-    """One-host coordinated immutable payloads; SDK imports and I/O are lazy."""
+    """Version-pinned immutable payloads with explicit writer coordination."""
 
-    def __init__(self, config: S3Config, *, max_object_bytes: int, max_total_bytes: int) -> None:
+    def __init__(
+        self,
+        config: S3Config,
+        *,
+        max_object_bytes: int,
+        max_total_bytes: int,
+        coordinator: S3Coordinator | None = None,
+        _offline_recovery: bool = False,
+    ) -> None:
+        if not _offline_recovery and (config.coordination == "postgres") != (
+            coordinator is not None
+        ):
+            raise ValueError("PostgreSQL S3 coordination requires the service database")
+        self.coordinator = coordinator
         for limit in (max_object_bytes, max_total_bytes):
             if type(limit) is not int or limit < 0:
                 raise ValueError("object-store byte limits must be nonnegative integers")
@@ -219,19 +261,21 @@ class S3ObjectStore:
     @property
     def scope_id(self) -> str:
         """Stable nonsecret identity for plans bound to this exact provider namespace."""
-        identity = json.dumps(
-            {
-                "backend": "s3",
-                "endpoint": self.config.endpoint_origin,
-                "region": self.config.region,
-                "bucket": self.config.bucket,
-                "prefix": self.config.prefix,
-                "lock_root": str(self.root),
-                "lock_root_identity": self._root_identity,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
+        scope: dict[str, object] = {
+            "backend": "s3",
+            "endpoint": self.config.endpoint_origin,
+            "bucket": self.config.bucket,
+            "prefix": self.config.prefix,
+        }
+        if self.config.coordination == "postgres":
+            scope["coordination"] = "postgres"
+        else:
+            scope.update(
+                region=self.config.region,
+                lock_root=str(self.root),
+                lock_root_identity=self._root_identity,
+            )
+        identity = json.dumps(scope, sort_keys=True, separators=(",", ":")).encode()
         return "s3:" + hashlib.sha256(identity).hexdigest()
 
     def _full_key(self, key: str) -> str:
@@ -301,6 +345,30 @@ class S3ObjectStore:
         finally:
             os.close(anchor)
 
+    @contextmanager
+    def _access(
+        self,
+        *,
+        shared: bool = False,
+        key: str | None = None,
+        checkpoint: Callable[[], None] | None = None,
+        initialize: bool = False,
+    ) -> Iterator[tuple[int, Connection | None]]:
+        with self._locked_root(shared=shared, checkpoint=checkpoint) as root:
+            if self.coordinator is None:
+                yield root, None
+                return
+            limits = self.max_object_bytes, self.max_total_bytes, self.config.max_inventory_entries
+            with self.coordinator.session(
+                self.scope_id,
+                limits,
+                shared=shared,
+                key=key,
+                checkpoint=checkpoint,
+                verify_namespace=self._ready if initialize or key is not None else None,
+            ) as connection:
+                yield root, connection
+
     def _bind(self, root: int, *, create: bool) -> None:
         expected = json.dumps(
             {
@@ -310,6 +378,7 @@ class S3ObjectStore:
                 "prefix": self.config.prefix,
                 "max_object_bytes": self.max_object_bytes,
                 "max_total_bytes": self.max_total_bytes,
+                **({"coordination": "postgres"} if self.config.coordination == "postgres" else {}),
             },
             sort_keys=True,
         ).encode()
@@ -363,6 +432,8 @@ class S3ObjectStore:
                     s3={"addressing_style": "path"},
                 ),
             )
+            if self.config.coordination == "postgres":
+                client.meta.events.register("request-created.s3.PutObject", _single_put_attempt)
         except core_error:
             raise OSError("S3 client configuration or credentials are unavailable") from None
         self._sdk_value = _Sdk(
@@ -409,12 +480,29 @@ class S3ObjectStore:
 
     def check(self) -> None:
         """Probe configuration/versioning explicitly; construction performs no network I/O."""
-        with self._locked_root():
+        with self._access(shared=True):
             self._ready()
+
+    def capacity_report(self) -> dict[str, int]:
+        with self._access() as (_, db):
+            versions = self._inventory(self._ready())
+            counts = dict(
+                retained_versions=len(versions),
+                retained_payload_bytes=sum(v.size_bytes for v in versions),
+            )
+            if self.coordinator is not None:
+                assert db is not None
+                size, entries = self.coordinator.pending_usage(db, self.scope_id)
+                counts.update(pending_writes=entries, reserved_payload_bytes=size)
+            return counts
 
     def assert_empty_store(self) -> None:
         """Require a fresh namespace for an authorized, quiesced restore target."""
-        with self._locked_root() as root:
+        with self._access() as (root, db):
+            if self.coordinator is not None:
+                assert db is not None
+                if self.coordinator.pending_usage(db, self.scope_id)[1]:
+                    raise ObjectConflictError("Restore requires a prefix without pending S3 writes")
             with os.scandir(root) as entries:
                 if any(entry.name not in {_LOCK_NAME, _BINDING_NAME} for entry in entries):
                     raise ObjectConflictError("restore requires an empty S3 coordination directory")
@@ -508,7 +596,11 @@ class S3ObjectStore:
         if source.absolute().is_relative_to(self.root):
             raise ValueError("upload source must be outside the S3 coordination directory")
         with (
-            self._locked_root(checkpoint=checkpoint) as root,
+            self._access(
+                shared=self.coordinator is not None,
+                key=key,
+                checkpoint=checkpoint,
+            ) as (root, connection),
             _anonymous_temporary_file(root) as temporary,
         ):
             client = self._ready()
@@ -521,6 +613,11 @@ class S3ObjectStore:
                 )
             if digest != expected_sha256:
                 raise ObjectIntegrityError("upload source SHA-256 mismatch")
+            if self.coordinator is not None:
+                assert connection is not None
+                return self._put_reserved(
+                    connection, client, key, temporary, size, digest, checkpoint
+                )
             try:
                 existing = self._read(client, key, checkpoint=checkpoint)
             except FileNotFoundError:
@@ -543,6 +640,117 @@ class S3ObjectStore:
                         raise upload.failure from None
                     raise
 
+    def _verify_pending(
+        self,
+        client: _Client,
+        write: PendingWrite,
+        info: ObjectInfo,
+    ) -> None:
+        head = self._request(
+            lambda: client.head_object(
+                Bucket=self.config.bucket,
+                Key=self._full_key(write.key),
+                VersionId=info.version_id,
+            )
+        )
+        if (
+            _version(head.get("VersionId")) != info.version_id
+            or _mapping(head.get("Metadata")).get("regimex-write-id") != str(write.token)
+            or (info.sha256, info.size_bytes) != (write.digest, write.size)
+        ):
+            raise ObjectIntegrityError("S3 version differs from the pending write token or payload")
+
+    def _put_reserved(
+        self,
+        db: Connection,
+        client: _Client,
+        key: str,
+        temporary: int,
+        size: int,
+        digest: str,
+        checkpoint: Callable[[], None] | None,
+    ) -> ObjectInfo:
+        coordinator = self.coordinator
+        assert coordinator is not None
+        pending = coordinator.pending(db, self.scope_id, key)
+        try:
+            existing = self._read(client, key, checkpoint=checkpoint)
+        except FileNotFoundError:
+            existing = None
+        if pending is not None:
+            if existing is None:
+                raise ObjectConflictError(
+                    "An earlier S3 write is unconfirmed; reconcile it after the provider drains"
+                )
+            self._verify_pending(client, pending, existing)
+            coordinator.finish(db, self.scope_id, pending)
+        if existing is not None:
+            return self._same_payload(existing, size, digest)
+
+        def usage() -> tuple[int, int]:
+            versions = self._inventory(client, checkpoint=checkpoint)
+            return sum(item.size_bytes for item in versions), len(versions)
+
+        os.fsync(temporary)
+        with _CheckedUpload(temporary, checkpoint) as upload:
+            upload.seek(0)
+            upload.check()
+            write = coordinator.reserve(
+                db,
+                self.scope_id,
+                key,
+                digest,
+                size,
+                usage,
+                byte_limit=self.max_total_bytes,
+                entry_limit=self.config.max_inventory_entries,
+                checkpoint=checkpoint,
+            )
+            # Commit the admission before sending bytes. Never resend this token: once
+            # its version exists another node can conclusively recover a lost response.
+            try:
+                response = self._send_put(
+                    client,
+                    key,
+                    upload,
+                    size,
+                    digest,
+                    metadata={"regimex-write-id": str(write.token)},
+                )
+            except Exception:
+                if upload.failure is not None:
+                    raise upload.failure from None
+                raise
+            info = self._read(
+                client, key, version_id=_version(response.get("VersionId")), checkpoint=checkpoint
+            )
+            self._verify_pending(client, write, info)
+            coordinator.finish(db, self.scope_id, write)
+            return info
+
+    def _send_put(
+        self,
+        client: _Client,
+        key: str,
+        upload: BinaryIO,
+        size: int,
+        digest: str,
+        *,
+        metadata: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        return self._request(
+            lambda: client.put_object(
+                Bucket=self.config.bucket,
+                Key=self._full_key(key),
+                Body=upload,
+                ContentLength=size,
+                ContentType="application/octet-stream",
+                ChecksumSHA256=base64.b64encode(bytes.fromhex(digest)).decode("ascii"),
+                IfNoneMatch="*",
+                **({"Metadata": metadata} if metadata is not None else {}),
+            )
+        )
+
     @staticmethod
     def _same_payload(info: ObjectInfo, size: int, digest: str) -> ObjectInfo:
         if (info.size_bytes, info.sha256) != (size, digest):
@@ -559,27 +767,20 @@ class S3ObjectStore:
         *,
         checkpoint: Callable[[], None] | None = None,
     ) -> ObjectInfo:
-        for attempt in range(self.config.max_attempts):
+        # Offline restores to a distributed prefix have no database reservation.
+        # Sending once per key avoids a late retry recreating a deleted version.
+        attempts = 1 if self.config.coordination == "postgres" else self.config.max_attempts
+        for attempt in range(attempts):
             if checkpoint is not None:
                 checkpoint()
             upload.seek(0)
             try:
-                response = self._request(
-                    lambda: client.put_object(
-                        Bucket=self.config.bucket,
-                        Key=self._full_key(key),
-                        Body=upload,
-                        ContentLength=size,
-                        ContentType="application/octet-stream",
-                        ChecksumSHA256=base64.b64encode(bytes.fromhex(digest)).decode("ascii"),
-                        IfNoneMatch="*",
-                    )
-                )
+                response = self._send_put(client, key, upload, size, digest)
             except OSError, _PreconditionFailed, _ConditionalConflict:
                 try:
                     existing = self._read(client, key, checkpoint=checkpoint)
                 except FileNotFoundError:
-                    if attempt + 1 == self.config.max_attempts:
+                    if attempt + 1 == attempts:
                         raise OSError("S3 conditional upload did not complete") from None
                     continue
                 except OSError:
@@ -595,13 +796,13 @@ class S3ObjectStore:
 
     def stat(self, key: str, *, checkpoint: Callable[[], None] | None = None) -> ObjectInfo:
         self._full_key(key)
-        with self._locked_root(shared=True, checkpoint=checkpoint):
+        with self._access(shared=True, checkpoint=checkpoint):
             return self._read(self._ready(), key, checkpoint=checkpoint)
 
     def stat_version(self, key: str, version_id: str) -> ObjectInfo:
         self._full_key(key)
         _version(version_id)
-        with self._locked_root(shared=True):
+        with self._access(shared=True):
             return self._read(self._ready(), key, version_id=version_id)
 
     def materialize(
@@ -626,7 +827,7 @@ class S3ObjectStore:
                 "materialization destination must be outside the S3 coordination directory"
             )
         with (
-            self._locked_root(shared=True, checkpoint=checkpoint),
+            self._access(shared=True, checkpoint=checkpoint),
             _local_parent(destination, create=True) as (parent, name),
         ):
             try:
@@ -662,7 +863,8 @@ class S3ObjectStore:
     def delete(self, expected: ObjectInfo) -> None:
         expected = ObjectInfo.model_validate_json(expected.model_dump_json())
         self._full_key(expected.key)
-        with self._locked_root():
+        with self._access(initialize=True) as (_, db):
+            self._require_settled(db, expected.key)
             client = self._ready()
             if self._read(client, expected.key) != expected:
                 raise ObjectConflictError("conditional deletion received stale object information")
@@ -672,11 +874,75 @@ class S3ObjectStore:
         """Delete a verified orphan version after caller authorization/reference checks."""
         expected = ObjectInfo.model_validate_json(expected.model_dump_json())
         self._full_key(expected.key)
-        with self._locked_root():
+        with self._access(initialize=True) as (_, db):
+            self._require_settled(db, expected.key)
             client = self._ready()
             if self._read(client, expected.key, version_id=expected.version_id) != expected:
                 raise ObjectConflictError("version deletion received stale object information")
             self._delete_version(client, expected)
+
+    def reconcile_pending_writes(
+        self,
+        attestation: ServicesStoppedAttestation,
+        *,
+        provider_drained: bool,
+        after_key: str | None = None,
+    ) -> WriteReconciliation:
+        """Settle up to 1000 reservations in a quiesced deployment, without deleting objects."""
+        from regimex.infrastructure.maintenance import (
+            ServicesStoppedAttestation,
+            maintenance_lock,
+            quiescent_transaction,
+        )
+
+        attestation = ServicesStoppedAttestation.model_validate_json(attestation.model_dump_json())
+        if attestation.stopped_at > datetime.now(UTC):
+            raise ValueError("The stopped-services attestation cannot come from the future")
+        coordinator = self.coordinator
+        if coordinator is None:
+            raise ValueError("Write reconciliation requires PostgreSQL S3 coordination")
+        if after_key is not None:
+            self._full_key(after_key)
+        schema = coordinator.database.schema
+        with self._access() as (_, db):
+            assert db is not None
+            maintenance_lock(db, schema)
+            verified = missing = 0
+            with quiescent_transaction(db, schema=schema):
+                client = self._ready()
+                keys = db.execute(
+                    "SELECT object_key FROM regimex_s3_pending_writes WHERE scope_id=%s "
+                    "AND object_key>%s ORDER BY object_key LIMIT %s",
+                    (self.scope_id, after_key or "", _RECONCILE_BATCH_SIZE + 1),
+                ).fetchall()
+                page = keys[:_RECONCILE_BATCH_SIZE]
+                for (raw_key,) in page:
+                    key = cast(str, raw_key)
+                    write = coordinator.pending(db, self.scope_id, key)
+                    assert write is not None
+                    try:
+                        info = self._read(client, key)
+                    except FileNotFoundError:
+                        if not provider_drained:
+                            continue
+                        missing += 1
+                    else:
+                        self._verify_pending(client, write, info)
+                        verified += 1
+                    coordinator.finish(db, self.scope_id, write)
+                remaining = db.execute(
+                    "SELECT count(*) FROM regimex_s3_pending_writes WHERE scope_id=%s",
+                    (self.scope_id,),
+                ).fetchone()
+                assert remaining is not None
+            next_after = cast(str, page[-1][0]) if len(keys) > len(page) else None
+            return WriteReconciliation(verified, missing, cast(int, remaining[0]), next_after)
+
+    def _require_settled(self, db: Connection | None, key: str) -> None:
+        if self.coordinator is not None:
+            assert db is not None
+            if self.coordinator.pending(db, self.scope_id, key) is not None:
+                raise ObjectConflictError("Reconcile the pending S3 write before deleting its key")
 
     def _delete_version(self, client: _Client, expected: ObjectInfo) -> None:
         self._request(
@@ -689,7 +955,7 @@ class S3ObjectStore:
 
     def inventory(self) -> tuple[S3ObjectVersion, ...]:
         """Inventory retained versions/markers; metadata does not attest their SHA256."""
-        with self._locked_root():
+        with self._access():
             return self._inventory(self._ready())
 
     def _inventory(
@@ -739,8 +1005,8 @@ class S3ObjectStore:
         raise ObjectCapacityError("S3 inventory exceeds the bounded page limit")
 
     def list_multipart_uploads(self) -> tuple[S3MultipartUpload, ...]:
-        with self._locked_root() as root:
-            local = _incomplete_uploads(root)
+        with self._access() as (root, _):
+            local = _incomplete_uploads(root) if self.coordinator is None else ()
             remote = self._multipart_uploads(self._ready())
             if len(local) + len(remote) > self.config.max_inventory_entries:
                 raise ObjectCapacityError("S3 upload inventory exceeds its configured entry limit")
@@ -789,7 +1055,9 @@ class S3ObjectStore:
         """Abort an old authorized upload; no ownership/grace decision is inferred."""
         expected = S3MultipartUpload.model_validate_json(expected.model_dump_json())
         if expected.upload_id.startswith("local-temporary-v1:"):
-            with self._locked_root() as root:
+            if self.coordinator is not None:
+                raise ObjectConflictError("Cluster cleanup cannot address node-local staging files")
+            with self._access() as (root, _):
                 _abort_local_upload(root, expected, initiated_before=initiated_before)
             return
         self._full_key(expected.key)
@@ -801,7 +1069,7 @@ class S3ObjectStore:
             raise ValueError("multipart cutoff must be an aware timestamp in the past")
         if expected.initiated_at >= initiated_before:
             raise ObjectConflictError("multipart upload is newer than the authorized cutoff")
-        with self._locked_root():
+        with self._access(initialize=True):
             client = self._ready()
             found = next(
                 (

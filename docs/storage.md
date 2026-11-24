@@ -62,7 +62,7 @@ unused candidate. The review counts the weight file in object storage. Other
 bundle files and completed evaluations stay registered. PostgreSQL stores
 the selected seed, score and chart data with each successful run. For an older
 run, opening its metrics or previewing weight deletion saves that result from
-the verified bundle. [Training workspace](usage.md#train-a-model)
+the verified bundle. [Training workspace](training.md)
 
 ## Local storage
 
@@ -82,8 +82,10 @@ directory before clearing the cache. They fetch the bundles again on demand.
 ## S3 storage
 
 Regimex tests against SeaweedFS 4.48 with versioning enabled, conditional
-creation and HTTPS. Use a dedicated bucket prefix. Verify the same semantics
-before using another provider.
+creation and HTTPS. Use a dedicated bucket prefix. Other providers must
+support strongly consistent reads and version listings, atomic
+`If-None-Match: *` creation and user metadata on immutable versions. Configure
+intermediaries to forward each PUT once.
 
 When starting Regimex from a checkout, load the service's database settings
 first, then configure the provider. Give the service account write access to
@@ -107,11 +109,34 @@ The endpoint cannot contain credentials, a path, query or
 fragment. HTTP is allowed only for literal loopback with
 `REGIMEX_S3_ALLOW_LOOPBACK_HTTP=true`. The production Compose profile requires HTTPS.
 
-Run all writers for a bucket prefix on one host, with the same coordination
-directory and identical byte and inventory limits. Keep other writers out of
-that prefix. Regimex verifies each read against the exact object version and
-SHA-256 digest. Concurrent reads share the lock. A write or deletion waits up
-to five seconds for exclusive access.
+Choose how processes coordinate access to this prefix.
+
+| `REGIMEX_S3_COORDINATION` | Deployment |
+| --- | --- |
+| `local` (default) | Run all API processes, workers and maintenance commands on one host. Mount the same `REGIMEX_S3_LOCK_ROOT` into each process. |
+| `postgres` | Use one PostgreSQL primary and Regimex schema across hosts. Each host can use its own private staging directory at `REGIMEX_S3_LOCK_ROOT`. See [multi-host deployment](multi-host.md). |
+
+Use the same endpoint URL, bucket, prefix and limits everywhere. Reserve that
+prefix exclusively for this installation. Provider lifecycle rules or tools
+that change its objects bypass service coordination. To switch an installation
+to PostgreSQL coordination, drain and stop all writers, apply the database
+migration, then restart every process with `REGIMEX_S3_COORDINATION=postgres`
+and a fresh staging directory. Existing provider objects stay in place.
+The first operation that writes to the provider records the namespace and
+limits. Subsequent changes to those settings require an
+[offline backup and restore](#backup-and-restore) to a fresh target with the
+new settings. Choose limits that cover every object in the archive.
+
+In PostgreSQL mode, each active storage operation uses a dedicated database
+session. Connect directly to PostgreSQL or configure a pooler in session mode.
+Transaction and statement pooling release the backend holding the advisory locks.
+Concurrent downloads pin and verify a specific object version and its
+SHA-256. Downloads and uploads to different keys can overlap. Deletion waits for
+those operations and removes only the verified generation. Before sending a new
+object, a writer reserves bytes and one inventory entry in a committed database
+transaction. If PostgreSQL fails over, the new primary must retain all committed
+reservations. Automatic failover requires synchronous replication and fencing
+the former primary so that only one server can admit writes.
 
 | Limit | Default |
 | --- | --- |
@@ -120,15 +145,18 @@ to five seconds for exclusive access.
 | `REGIMEX_S3_MAX_INVENTORY_ENTRIES` | 100,000 retained versions and delete markers |
 | `REGIMEX_S3_CONNECT_TIMEOUT_SECONDS` | 5 |
 | `REGIMEX_S3_READ_TIMEOUT_SECONDS` | 10 per blocking read |
-| `REGIMEX_S3_MAX_ATTEMPTS` | 3 |
+| `REGIMEX_S3_MAX_ATTEMPTS` | 3 (PostgreSQL-coordinated PUTs send one request per reservation) |
 
 At the entry limit an upload to a new key fails. Existing versions remain
 readable and retrying an identical upload succeeds. Staging an upload requires
 additional local disk space.
 
-Run `storage-check` to check connectivity and versioning and to count retained
-versions and payload bytes. See the [deployment guide](deployment.md#s3-profile)
-for container settings.
+Run `storage-check` to check connectivity, versioning, retained versions and
+payload bytes. In PostgreSQL mode it also reports `pending_writes` and
+`reserved_payload_bytes`. A write awaiting confirmation can appear in both
+provider usage and reservations. Once confirmed, only the provider charge
+remains. See the [deployment guide](deployment.md#s3-profile) for container
+settings.
 
 Workers renew their database leases while loading inputs, running the model
 and uploading results. The attempt's time budget covers all three stages.
@@ -161,12 +189,36 @@ in a private JSON attestation.
 Replace the example timestamp. The tools check database jobs and sessions. The
 operator must also stop anything that writes to the filesystem or S3 directly.
 
+### Resolve unconfirmed S3 writes
+
+If a node disconnects during an upload, PostgreSQL keeps the reservation.
+Retrying the same key and content confirms a completed upload by its write
+token, exact provider version and digest. Until confirmation, that key is
+protected from deletion. Other keys can still use the remaining capacity.
+
+Before backup, resolve outstanding reservations. Stop writers as described
+above, then run:
+
+```sh
+uv run --locked --extra service --extra s3 regimex service storage-reconcile-writes \
+  --attestation-file var/stopped.json
+```
+
+The command reports verified writes, released missing writes and remaining
+reservations. A missing object can still be in flight at the provider. Only
+after all former clients have stopped and the provider has finished processing
+their outstanding requests, including timed-out requests, repeat the command
+with `--provider-drained` to release reservations for absent objects. Each run
+checks up to 1,000 keys. If the result includes a non-null `next_after`, pass
+that value as `--after-key` to continue. Leave reservations in place if provider
+completion cannot be established.
+
 ## Backup and restore
 
 Use PostgreSQL 16 `pg_dump` and `pg_restore`, or the Compose `ops` image.
 Set `PGDUMP_BIN` and `PGRESTORE_BIN` or pass `--pg-dump` and `--pg-restore`
 to select the binaries. Backups require the schema revision supported by the
-running release (currently `0015_terminal_activity`).
+running release (currently `0016_s3_coordination`).
 
 With all writers stopped:
 
@@ -193,7 +245,7 @@ authentication hashes, experiment metadata and all registered files.
 This release restores archives from schemas `0007_resource_deletion`,
 `0008_analysis_metadata`, `0009_training_run_names`, `0010_evaluation_reuse`,
 `0011_training_progress`, `0012_training_metrics`, `0013_training_archive`,
-`0014_external_training` and `0015_terminal_activity`.
+`0014_external_training`, `0015_terminal_activity` and `0016_s3_coordination`.
 Point its configuration at a **new, empty database** and a **fresh local object
 root or S3 prefix**. Use the original schema name. Restore checks the target's
 schema inventory and large objects before copying files. Database tools use the

@@ -191,7 +191,14 @@ class ServiceSettings(StrictModel):
     @staticmethod
     def _s3_from_env(environment: dict[str, str], work_root: Path) -> S3Config:
         values: dict[str, object] = {"lock_root": work_root / "s3-coordination"}
-        strings = {"endpoint_url", "region", "bucket", "prefix", "credential_profile"}
+        strings = {
+            "endpoint_url",
+            "region",
+            "bucket",
+            "prefix",
+            "credential_profile",
+            "coordination",
+        }
         paths = {"lock_root", "ca_bundle"}
         integers = {
             "connect_timeout_seconds",
