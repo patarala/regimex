@@ -65,7 +65,7 @@ The Transformer can use later observations because Regimex classifies a complete
 
 The development corpus contained 96 training and 30 validation experiments
 of 256 or 512 steps. We used the same development corpus as the
-[TCN width comparison](tcn.md#comparing-model-widths). For each neural
+[TCN width comparison](../tcn.md#comparing-model-widths). For each neural
 configuration we ran seeds 11, 23 and 47, with 96 optimizer updates per seed,
 eight sequences per batch and validation at updates 32, 64 and 96. The best
 decoded validation interval macro-F1 selected the checkpoint per seed. The
@@ -92,7 +92,7 @@ show how much checkpoint scores varied with the training seed.
 
 ## Reproduce
 
-With the [development corpus and baseline bundle](tcn.md#comparing-model-widths)
+With the [development corpus and baseline bundle](../tcn.md#comparing-model-widths)
 in `var/tcn-widths`, run the following phases in order. Choose a new output
 directory for each comparison. Add `--exposure-index PATH` to the reservation
 when a prior inventory of seeds and identity digests is available.

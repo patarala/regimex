@@ -7,7 +7,7 @@ published prices preserved 21 of the 22, including both endpoints. The small
 number of training examples makes short plateaus a candidate for targeted
 sampling. Stability measures agreement with the automatic rule under specific
 changes. Human agreement has yet to be measured.
-[Development corpus](tcn.md#comparing-model-widths)
+[Development corpus](../tcn.md#comparing-model-widths)
 
 ## What changes the labels?
 

@@ -39,7 +39,7 @@ its database transaction commits.
   a verified bundle, use the shared optional registration hook to make its
   settings and evidence available in Training. Record the submission channel on
   the original operation. Only a known command name belongs in its metadata.
-  [Terminal and browser runs](docs/usage.md#find-a-run-started-in-the-terminal)
+  [Terminal and browser runs](docs/cli.md#find-a-run-started-in-the-terminal)
 - **Jobs.** Pin the model version at intake. Commit the operation and queue task
   together. Scope idempotency by owner and operation. Renew the lease during
   I/O, verify output objects before publication, and check the attempt token and
@@ -49,6 +49,8 @@ its database transaction commits.
   downloads. Keep integration keys on the backend and preserve session and CSRF
   checks. Preserve digest-bound JSON numbers. Check references and exact object
   generations before cleanup. Block readiness and intake during a partial restore.
+  In multi-node S3 mode, reserve capacity before the provider upload and retain
+  the reservation across an ambiguous response or loss of the database session.
   [Integration contract](docs/integration.md) · [Storage and recovery](docs/storage.md)
 
 ## Verify the change

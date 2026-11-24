@@ -149,7 +149,7 @@ uv run --locked --all-extras regimex service register-model \
 
 On a service with an active model, activation also requires
 `--expected-previous` and the current active version ID. See the
-[local service guide](usage.md#start-locally) for worker and API startup.
+[local service guide](development.md#start-locally) for worker and API startup.
 
 ## Import a completed comparison
 
@@ -202,7 +202,7 @@ run check_large_direction_transfer score
 
 To regenerate the observation archive from its original inputs, run the
 following in place of the unpack step. The inventory, dataset and previous
-transfer plan come from the [previous forest comparison](adaptive-intervals.md#training-on-more-experiments).
+transfer plan come from the [previous forest comparison](evaluations/adaptive-intervals.md#training-on-more-experiments).
 
 ```sh
 uv run --locked --extra ml python scripts/prepare_large_direction.py \

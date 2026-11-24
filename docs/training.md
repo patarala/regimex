@@ -1,0 +1,70 @@
+# Train and publish a model
+
+You need an administrator token and a running `admin` worker. Open **Training**
+and choose **New run**. To follow a job submitted from a terminal, open the run
+link printed by the command. [Terminal workflows](cli.md#find-a-run-started-in-the-terminal)
+
+## Prepare the data
+
+1. Choose **Prepare training data**, set the experiment counts and length,
+   and select **Generate datasets**. The service creates observations and
+   automatic direction labels. Whole experiments stay together in each split.
+2. Review the inventory of previously used data. If prior uses are missing,
+   [register them through the API](api.md#2-reserve-final-data-before-selection).
+   Check the confirmation box, choose **Reserve benchmark**, then **Use
+   prepared data**. Final test labels stay sealed during model selection.
+3. For another run on the same development data, select its dataset,
+   compatible training and validation references, and existing reservation.
+   For imported observations, follow the [API preparation steps](api.md#1-create-observations-and-references).
+
+## Start training
+
+Choose an architecture and review **Training policy**. A run name is optional.
+The form fills in defaults for the chosen model. **Advanced settings** lets
+you override model parameters and runtime limits. To enter the whole run
+configuration as JSON, choose **Edit JSON** at the top of the form. Select
+**Start training** to submit the run.
+
+| Architecture | What to look for during training |
+| --- | --- |
+| Adaptive direction forest | After fitting the trees, the worker scores forests of increasing size on validation data. The saved model uses all its trees. [Forest features and weights](models.md#adaptive-direction-forest) |
+| Logistic baseline | One validation score per regularization setting. [Logistic baseline](baseline-context.md) |
+| Temporal convolutional network (TCN) | Loss by epoch or optimizer update and validation scores at scheduled checks. [TCN settings and checkpoints](tcn.md) |
+| Direction persistence | Training loss and validation interval macro-F1 by epoch. It learns which neighboring stretches of price movement to combine. [Model settings](models.md#direction-persistence) |
+
+## Read a run
+
+The run page updates while the job is running. Hover over a chart to inspect
+a measurement. Validation scores appear only for epochs or updates where a
+check ran. For repeated fits, **Training repeat** selects a curve and
+**used for this model** identifies
+the repeat that supplied the saved weights. The run shows when training stopped
+after consecutive checks without improvement.
+
+To change a workspace run, choose **New run from this run**. The form opens
+with that run's data and settings. To compare two runs, choose **Select runs**
+in the history, select both runs, then choose **Compare**. For workspace runs,
+the score difference appears when both used the same development dataset,
+validation labels and analysis profile. Two imported runs can also be
+compared when their recorded validation data, splits and references match.
+
+## Evaluate and publish
+
+Under **Model evaluation**, choose **Evaluate model**. Once it finishes, inspect
+the interval and step scores and the results for each direction on the run page.
+**All fields** opens the evaluation details. **Download JSON** saves them.
+**Use as default** publishes the evaluated model for new analyses after
+confirmation. Accepted analyses retain their original model version.
+
+For final benchmark results, freeze the selected candidate before opening its
+reserved references. Further selection requires another benchmark.
+[Final evaluation](api.md#4-freeze-and-evaluate-final-data) · [How scores are measured](quality.md)
+
+## Manage saved runs
+
+**Archive run** moves a finished run out of the current history and keeps its
+weights, charts and evaluations. Use **Archived runs → Restore run** to bring
+it back. To free storage, open **Run details and settings → Delete model
+weights**. The preview shows anything blocking deletion. You can also archive
+the run when confirming. A retired version retains its recorded metrics and
+cannot be used to make new predictions.

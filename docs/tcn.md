@@ -31,11 +31,11 @@ the preceding 16 and 32 steps and the following 16 and 32 steps. Each window
 includes the current step. The four fits and their missing-value indicators
 bring the input width to 58. The package records the layout so inference
 rebuilds the features used in training. In a comparison on new simulations,
-this option recovered fewer short sideways intervals. [Measured results](interval-errors.md#past-and-future-price-slopes)
+this option recovered fewer short sideways intervals. [Measured results](evaluations/interval-errors.md#past-and-future-price-slopes)
 
 A separate offline comparison tested a flat center window between two sloping
 flanks, both as a learned input and as a check on a decoded trend.
-[Short-pause comparison](pause-supervision.md#using-slope-contrasts-to-find-a-pause)
+[Short-pause comparison](evaluations/pause-supervision.md#using-slope-contrasts-to-find-a-pause)
 
 ## From features to intervals
 
@@ -86,11 +86,14 @@ weight gives shorter reference intervals more influence. The smoothing
 term penalizes changes in log probabilities between adjacent steps with
 the same known direction.
 
-The default TCN has 32 hidden channels. Epoch-based runs can stop each repeat
-when validation stops improving. Fixed-update runs check the requested
+The default TCN has 32 hidden channels. The epoch policy fits three initializations
+(seeds 11, 23 and 47) to sample variation between fits. Each gets up to 30
+epochs, using batches of 16 and a learning rate of 0.001. Validation runs at
+the first and last epoch and every two epochs in between. Five consecutive
+checks without improvement stop that repeat, limiting time spent on a plateau.
+Fixed-update runs check the requested
 updates and count only batches with known targets. Both training modes retain
 the checkpoint with the highest decoded validation interval macro-F1.
-[Why these defaults?](usage.md#why-these-defaults) ·
 [Training request and checkpoint example](api.md#3-train-and-publish)
 
 Both published versions use 48 hidden channels, the eight dilations above
@@ -104,7 +107,7 @@ you which one you have.
 | `tcn-0.2.0` | Optimizer update 900, seed 29 |
 
 The [direction classifier comparison](direction-context.md#results) evaluates
-both versions on the same 144 experiments. The [reference model evaluation](quality.md#reference-model-on-direction-3220)
+both versions on the same 144 experiments. The [reference model evaluation](evaluations/reference-releases.md#reference-model-on-direction-3220)
 gives the original 384-experiment benchmark and boundary scores for `tcn-0.2.0`.
 
 ## Comparing model widths

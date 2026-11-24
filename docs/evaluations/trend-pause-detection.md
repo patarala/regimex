@@ -73,7 +73,7 @@ the same trend slope, noise, candidate locations and tick size:
   still move during the pause.
 
 Each version is observed twice using dense and sparse trading schedules from
-the native [exchange](../src/regimex/market.py). Each market has 13 participants
+the native [exchange](../../src/regimex/market.py). Each market has 13 participants
 who independently choose to buy or sell with probabilities of 35% per side
 (dense) or 4% per side (sparse). The exchange matches these orders. The
 comparison preserves the times and volumes of actual executions. At a step

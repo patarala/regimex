@@ -55,8 +55,8 @@ slows to 40% of its original speed.
 
 ### Reproduce the feature comparison
 
-Use the locked ML dependencies, the previous [direction comparison](direction-context.md#reproduce)
-and its verified [model bundle](direction-context.md#use-the-trained-forest).
+Use the locked ML dependencies, the previous [direction comparison](../direction-context.md#reproduce)
+and its verified [model bundle](../direction-context.md#use-the-trained-forest).
 Run the phases below in one checkout with unused output directories. To replay
 a saved fit, use its original revision (`f283900` for the reported feature
 comparison). The scorer checks the source fingerprint recorded during training.

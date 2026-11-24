@@ -110,7 +110,7 @@ summary mode with the numeric weights and fitted preprocessing.
 ## Reproduce
 
 Prepare the comparison corpus and its frozen baseline using the first two
-commands in [model quality](quality.md#reproduce-the-comparison).
+commands in [model quality](evaluations/reference-releases.md#reproduce-the-comparison).
 The first command below writes a plan in a new output directory, compares
 the validation predictions and freezes the selected model. The second
 checks the recorded code, environment, bundle identities and data before

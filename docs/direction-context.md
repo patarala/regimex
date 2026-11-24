@@ -97,7 +97,7 @@ original fits and scores are bound to the source at `7090f35`. Use its
 scripts and locked ML environment for the comparison. Input and output
 paths are relative to the checkout where you run the commands.
 
-- Place the [mixed 192 training population and its frozen TCN](training-populations.md#reproduce)
+- Place the [mixed 192 training population and its frozen TCN](evaluations/training-populations.md#reproduce)
   under `var/verification/training-populations/`. The comparison checks the
   control bundle's manifest against its recorded SHA-256.
 - The TCN 0.1.0 bundle belongs in `release/models/tcn/`. The TCN 0.2.0 check

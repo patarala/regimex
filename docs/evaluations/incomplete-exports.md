@@ -40,7 +40,7 @@ input to the baseline at every step. The TCN uses price-derived features.
 These measurements cover the specified gaps on synthetic markets and measure
 agreement with the automatic labeling rule. Accuracy on external markets and
 agreement with human judgments remain unmeasured. A separate
-[comparison of baseline windows](baseline-context.md) tests which features
+[comparison of baseline windows](../baseline-context.md) tests which features
 make a price gap change directions elsewhere in the run.
 
 ## When does the service stop classifying?
@@ -67,12 +67,12 @@ missing, all 4,608 window steps became `insufficient_data`, including the same
 The execution gap broke the evidence for a sustained pause across its edges.
 An additional 20 steps outside the gap then received a direction. Keeping the
 price state in the price-only export preserved evidence of inactivity through
-the carried prices. [Availability rules](models.md)
+the carried prices. [Availability rules](../models.md)
 
 ## Reproduce the measurements
 
 Start with the saved baseline and TCN bundles from the
-[direction-32/2.1 comparison](quality.md#reproduce-the-comparison).
+[direction-32/2.1 comparison](../evaluations/reference-releases.md#reproduce-the-comparison).
 Run the following command from the checkout with a new output directory.
 
 ```sh

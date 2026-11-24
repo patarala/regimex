@@ -17,7 +17,7 @@ Optional integrations report skips when their dependencies or services are
 unavailable. The [architecture guide](architecture.md#where-to-find-the-code)
 maps each part of the service to its source files.
 
-When [running from source](usage.md#start-locally), edit the workspace HTML,
+When [running from source](development.md#start-locally), edit the workspace HTML,
 JavaScript or CSS under `src/regimex/web/` and reload the browser. The API
 reads these files on request, including newly added top-level modules. Changes
 to Python handlers take effect when you restart the API process. In a packaged
@@ -58,3 +58,66 @@ To run the full checks before releasing a direct push to `main`, open
 storage and container checks**. The manual run checks the branch tip at dispatch.
 The workflow lists the dependency groups, service versions and commands for each job.
 [CI workflow](../.github/workflows/ci.yml)
+
+## Start locally
+
+To run from source, use Linux with Python 3.14.4, uv 0.13.0 and PostgreSQL 16.
+A PostgreSQL administrator can create the role and database on a running server.
+
+```sh
+sudo -u postgres createuser --pwprompt regimex
+sudo -u postgres createdb --owner=regimex regimex
+```
+
+Put the password in a private `~/.pgpass` file with mode `0600`. For the
+connection below the entry is `127.0.0.1:5432:regimex:regimex:YOUR_PASSWORD`.
+For a fresh installation, prepare the local configuration and issue the tokens
+from the checkout root.
+
+```sh
+uv sync --locked --all-extras
+umask 077
+mkdir -p var/credentials var/objects var/work
+cat > var/environment.sh <<'EOF'
+export REGIMEX_DATABASE_DSN='host=127.0.0.1 port=5432 dbname=regimex user=regimex'
+export REGIMEX_OBJECT_ROOT="$PWD/var/objects"
+export REGIMEX_WORK_ROOT="$PWD/var/work"
+export REGIMEX_PUBLIC_ORIGIN='http://127.0.0.1:8000'
+export REGIMEX_ALLOW_LOOPBACK_HTTP=true
+EOF
+. var/environment.sh
+uv run --locked --all-extras regimex service migrate
+uv run --locked --all-extras regimex service token-create --owner admin --role admin --output var/credentials/admin.token
+uv run --locked --all-extras regimex service token-create --owner researcher --role user --output var/credentials/user.token
+```
+
+If you have the release asset pack in `release/`, verify its checksums and
+import the supplied TCN. With a source-only installation, start the processes
+below, sign in as an administrator and [train and publish a model](training.md).
+
+```sh
+(cd release && sha256sum -c SHA256SUMS)
+```
+
+Once all files pass verification, register and activate the model.
+
+```sh
+MODEL_MANIFEST_SHA256=$(awk '$2 == "models/tcn/manifest.json" {print $1}' release/SHA256SUMS)
+uv run --locked --all-extras regimex service register-model \
+  --bundle release/models/tcn --manifest-sha256 "$MODEL_MANIFEST_SHA256" \
+  --token-file var/credentials/admin.token --activate
+```
+
+Open four terminals in the checkout root and run `. var/environment.sh` in
+each. Start one process per terminal.
+
+```sh
+uv run --locked --all-extras regimex service serve
+uv run --locked --all-extras regimex service worker --queue analysis
+uv run --locked --all-extras regimex service worker --queue admin
+uv run --locked --all-extras regimex service worker --queue maintenance
+```
+
+Open `http://127.0.0.1:8000/` to sign in. The API reference is at `/docs`.
+Ctrl+C stops each process. Keep the PostgreSQL database and `var/objects` to
+retain saved work.

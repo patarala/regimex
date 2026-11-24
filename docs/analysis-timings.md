@@ -52,7 +52,21 @@ when any submitted analysis has issues.
 
 ## Reference workload
 
-These three measurements used one owner, two analysis workers and previously
+A fixed-resource worker comparison at revision `cb913ff` used the same four
+exports per length, `tcn-0.2.0`, two CPUs and 3 GiB for the whole installation.
+All four results were verified in every cell.
+
+| Steps per instrument | Workers | Completed per minute | Median queue wait | Peak memory |
+| ---: | ---: | ---: | ---: | ---: |
+| 512 | 1 | 10.96 | 7.07 s | 528 MiB |
+| 512 | 2 | 13.45 | 4.90 s | 756 MiB |
+| 4,096 | 1 | 6.32 | 17.27 s | 769 MiB |
+| 4,096 | 2 | 8.95 | 6.13 s | 1,038 MiB |
+
+The second worker reduced queue wait at both lengths and used more memory.
+The rates cover a four-job burst from first submission through last download.
+
+The fixed-arrival runs below used one owner, two analysis workers and previously
 uploaded 512-step exports. The API, database and workers shared two CPUs and
 3 GiB of memory. Each request used `tcn-0.2.0`. The client timed submission
 through result download and verified the returned result. The measurements

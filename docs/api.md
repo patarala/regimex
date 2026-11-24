@@ -38,7 +38,7 @@ come from the credential. An idempotent retry keeps the original source.
 
 Verified imports made by `regimex service register-model` record that command
 as the import source. Earlier jobs can omit the field or return null.
-[Finding a run](usage.md#find-a-run-started-in-the-terminal)
+[Finding a run](cli.md#find-a-run-started-in-the-terminal)
 
 ## Manage platform connections
 
@@ -289,7 +289,7 @@ recovers the existing reservation while selection remains open.
 ### 3. Train and publish
 
 After starting selection on the reservation, use the [browser training
-screen](usage.md#train-a-model) or submit `POST /training-runs` with an
+screen](training.md) or submit `POST /training-runs` with an
 administrator token and an `Idempotency-Key`. For example, replace the IDs
 in this baseline request with your own:
 
@@ -317,13 +317,14 @@ run (`max_training_seeds`) and its limits per seed for epochs and optimizer
 updates (`max_training_epochs` and `max_training_updates`). A null epoch or
 update limit means the architecture does not use that budget. The baseline
 uses one seed (11 when omitted) and fits each regularization candidate once.
-The TCN accepts up to 32 seeds within the deployment limit. The adaptive forest
-takes one seed (173 by default) and scores validation once after fitting. For
-its policy, send `{"optimizer":"extra_trees"}`. Set `trees` and `max_depth`
+The adaptive forest takes one seed (173 by default). It fits once, then
+scores progressively larger subsets of the fitted trees on validation data.
+For its policy, send `{"optimizer":"extra_trees"}`. Set `trees` and `max_depth`
 under `parameters` to change the [forest settings](models.md#adaptive-direction-forest).
 
-For epoch-based TCN training, send a policy with `"optimizer":"adamw"` and
-an optional `epochs` count. Omit the `budget` field for this policy. For a
+The TCN and direction persistence accept epoch-based training with up to
+32 seeds within the deployment limit. Send a policy with `"optimizer":"adamw"`
+and an optional `epochs` count. Omit the `budget` field for this policy. For a
 fixed number of optimizer updates, set `architecture_id` to `tcn` and use
 the following policy. The last validation checkpoint must equal `updates`,
 and all seeds together can use at most 32,000 updates.
@@ -399,8 +400,8 @@ and `cursor` as `?attempt=ATTEMPT&after=CURSOR` on the next request. Each page
 contains up to 512 new measurements in `history`. A forest reports decoded
 validation scores in `history.fits` for increasing numbers of trees from the
 same fit. The final row scores the complete forest. A single row is valid.
-The baseline records regularization candidates, and the TCN records epochs
-or optimizer updates.
+The baseline records regularization candidates. Direction persistence records
+epochs, and the TCN records epochs or optimizer updates according to its budget.
 An empty `history` means there are no new samples. Read the next page immediately
 when `has_more` is true. If the attempt changes, replace your local history
 with the new attempt's points. A successful run serves its saved history from
@@ -493,8 +494,9 @@ settings are rejected. See [metrics](quality.md).
 
 ## Health and error handling
 
-`/health/live` checks the API process. `/health/ready` checks the database schema
-and restore state. `/health/models` also validates the active model's stored
+`/health/live` checks the API process. `/health/ready` checks that the database
+accepts writes, has the expected schema and has finished any restore.
+`/health/models` also validates the active model's stored
 metadata. If the database is ready but the model probe returns HTTP 503, run
 `regimex service doctor` to inspect the deployment. Workers have a separate
 heartbeat health command.

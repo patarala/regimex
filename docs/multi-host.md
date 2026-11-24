@@ -72,8 +72,15 @@ docker compose run --rm ops service storage-check
 ```
 
 On **each API node**, start the API. On a **compute node**, set its worker
-count according to its CPU and memory budget. Run the following commands on
-the nodes assigned those roles.
+count according to its CPU and memory budget. Before starting a role, verify
+that the credentials, certificate and prefix on its node reach the versioned
+store. Substitute the local service name for `api` on worker hosts.
+
+```sh
+docker compose --profile '*' run --build --rm --no-deps api service storage-check
+```
+
+Run the following commands on the nodes assigned those roles.
 
 ```sh
 docker compose --profile api up --build -d --wait
@@ -93,7 +100,8 @@ ops node and keep its token output volume private.
 Terminate TLS at the Regimex API. Configure the load balancer for TCP
 pass-through with an HTTPS `GET /health/ready` probe on each backend. Probe
 using the public hostname for TLS verification and the HTTP Host header. A
-ready backend returns 200. Browser sessions live in PostgreSQL, so clients
+ready backend returns 200 when the database accepts writes, the schema is
+current and any restore has finished. Browser sessions live in PostgreSQL, so clients
 can use any ready replica. Preserve the public origin across every request.
 
 The [HAProxy example](../deploy/haproxy.cfg.example) routes to two private
