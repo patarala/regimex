@@ -44,6 +44,27 @@ def test_geometry_preserves_original_steps_and_resets_at_unavailable_blocks() ->
     )
 
 
+def test_moe_uses_the_forest_partition_at_the_profile_penalty() -> None:
+    from test_segmentation import experiment
+
+    from regimex.backends import multiscale_segments
+    from regimex.backends.segment_moe_features import segment_features
+    from regimex.directions import AnalysisConfig
+
+    returns = np.random.default_rng(491).normal(0, 0.003, 241)
+    rows = experiment((100 * np.exp(returns.cumsum())).tolist()).observations
+    config = AnalysisConfig(min_duration=8)
+    forest = multiscale_segments.features(rows, config)
+    cuts = []
+    for scale in ("0.625", "1", "1.625"):
+        column = multiscale_segments.FEATURE_NAMES.index(f"scale_{scale}_line_movement")
+        cuts.append((1 + np.flatnonzero(np.diff(forest[:, column]))).tolist())
+    assert cuts[0] != cuts[1] != cuts[2]
+    spans, _, _ = segment_features(rows, config)
+    np.testing.assert_array_equal(spans[:, 0], [0, *cuts[1]])
+    np.testing.assert_array_equal(spans[:, 1], [*cuts[1], len(rows)])
+
+
 def test_accumulation_joins_consecutive_evidence_and_reflects_direction() -> None:
     from regimex.backends.segment_moe_network import AccumulationExpert, BlockGate
 

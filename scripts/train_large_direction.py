@@ -11,7 +11,7 @@ from time import monotonic
 import numpy as np
 
 from regimex.application.analysis_computation import snapshot_inputs
-from regimex.backends import adaptive_forest, multiscale_segments
+from regimex.backends import adaptive_forest, multiscale_segments, price_segments
 from regimex.backends.adaptive import environment
 from regimex.data_catalog import (
     DatasetManifest,
@@ -38,7 +38,7 @@ CANDIDATES = {
 }
 
 
-def extract(item, *, folder):
+def extract(item, *, folder, feature_sets=("greedy", "multiscale")):
     member, reference, location = item
     export = load_export_v2(folder / location)
     labels = DirectionAnnotations.model_validate_json(
@@ -53,15 +53,13 @@ def extract(item, *, folder):
         raise ValueError(f"Unregistered export or training targets for {member.snapshot_id}")
     labels.validate_for(SnapshotGrid.from_export(export), export_sha256=member.export_sha256)
     inputs = snapshot_inputs(export)
-    output = {"greedy": [], "multiscale": []}
+    extractors = {"greedy": adaptive_forest.features, "multiscale": multiscale_segments.features}
+    output = {name: [] for name in feature_sets}
     for info, rows in zip(inputs.info, inputs.observations, strict=True):
         intervals = tuple(i for i in labels.intervals if i.instrument_id == info.instrument_id)
         targets = dense_labels(intervals, info.step_count)
-        for name, features in (
-            ("greedy", adaptive_forest.features),
-            ("multiscale", multiscale_segments.features),
-        ):
-            output[name].append(adaptive_forest.training_rows(features(rows, PROFILE), targets))
+        for name, tables in output.items():
+            tables.append(adaptive_forest.training_rows(extractors[name](rows, PROFILE), targets))
     return output
 
 
@@ -124,6 +122,7 @@ def train(data: Path, workers: int) -> None:
                 Path(__file__),
                 Path(adaptive_forest.__file__),
                 Path(multiscale_segments.__file__),
+                Path(price_segments.__file__),
             )
         },
     }

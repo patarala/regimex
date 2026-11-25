@@ -8,14 +8,14 @@ from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
-from numpy.typing import NDArray
 
+from regimex.backends.price_segments import Floats as Floats
+from regimex.backends.price_segments import Ints as Ints
+from regimex.backends.price_segments import line_fit, line_residuals, price_blocks, scaled_movement
 from regimex.contracts import MAX_STEPS, Observation
-from regimex.directions import AnalysisConfig, observation_blocks
+from regimex.directions import AnalysisConfig
 from regimex.resource_limits import ResourceBudgetExceeded
 
-Floats = NDArray[np.float64]
-Ints = NDArray[np.int64]
 _PENALTIES = (4.0, 12.0, 36.0)
 _MEASURES = (
     "movement",
@@ -37,19 +37,15 @@ _MAX_DEPTH = 16
 _MIN_LEAF_FRACTION = 0.0002
 
 
+def _check_dimensions(trees: int | None, max_depth: int) -> None:
+    if not 1 <= max_depth <= _MAX_DEPTH or (trees is not None and not 1 <= trees <= _MAX_TREES):
+        raise ValueError("Unsupported direction forest dimensions")
+
+
 def max_nodes_per_tree(max_depth: int) -> int:
     # Each leaf needs a fixed fraction of the total sample weight. A binary tree
     # with L leaves has 2L - 1 nodes, even if the depth limit would allow more.
     return min((1 << (max_depth + 1)) - 1, 2 * int(1 / _MIN_LEAF_FRACTION) - 1)
-
-
-def _errors(prefix: Floats, start: int | Ints, stop: int | Ints) -> Floats:
-    """Residual sum of squares for separate intercepts and slopes on each span."""
-    count, x, y, xx, xy, yy = (prefix[stop] - prefix[start]).T
-    n = np.maximum(count, 1.0)
-    spread = xx - x * x / n
-    covariance = xy - x * y / n
-    return np.asarray(np.maximum(0.0, yy - y * y / n - covariance**2 / np.maximum(spread, 1e-12)))
 
 
 def _partition(prefix: Floats, size: int, width: int, penalty: float) -> list[int]:
@@ -62,9 +58,9 @@ def _partition(prefix: Floats, size: int, width: int, penalty: float) -> list[in
         options = np.arange(left + width, right - width + 1)
         if not len(options):
             continue
-        residual = _errors(prefix, left, options) + _errors(prefix, options, right)
+        residual = line_residuals(prefix, left, options) + line_residuals(prefix, options, right)
         choice = int(residual.argmin())
-        if float(_errors(prefix, left, right)) - residual[choice] > penalty:
+        if float(line_residuals(prefix, left, right)) - residual[choice] > penalty:
             cut = int(options[choice])
             cuts.append(cut)
             pending.extend(((left, cut), (cut, right)))
@@ -72,26 +68,9 @@ def _partition(prefix: Floats, size: int, width: int, penalty: float) -> list[in
     for index in range(1, len(cuts) - 1):
         left, right = cuts[index - 1], cuts[index + 1]
         options = np.arange(left + width, right - width + 1)
-        residual = _errors(prefix, left, options) + _errors(prefix, options, right)
+        residual = line_residuals(prefix, left, options) + line_residuals(prefix, options, right)
         cuts[index] = int(options[residual.argmin()])
     return cuts
-
-
-def _line(x: Floats, y: Floats) -> tuple[float, float]:
-    centered = y - y.mean()
-    xy = float(x @ centered)
-    xx = max(float(x @ x), 1e-12)
-    movement = xy / xx
-    fit = min(1.0, xy**2 / max(xx * float(centered @ centered), 1e-24))
-    return movement, fit
-
-
-def _scaled_movement(value: float, scale: float) -> float:
-    ratio = float(value) / float(scale)
-    if math.isfinite(ratio):
-        return float(np.arcsinh(ratio))
-    # The ratio overflowed, but asinh is still finite and rounds to log(2 * |ratio|).
-    return math.copysign(math.log(2) + math.log(abs(value)) - math.log(scale), value)
 
 
 def _describe(values: Floats, scale: float) -> tuple[float, ...]:
@@ -102,7 +81,7 @@ def _describe(values: Floats, scale: float) -> tuple[float, ...]:
     if len(y) < 2:
         return (0.0,) * 6
     x = (x - x.mean()) / max(1, length - 1)
-    movement, fit = _line(x, y)
+    movement, fit = line_fit(x, y)
     # One abrupt change in level can dominate a line. Removing its excess over
     # the median increment gives a second estimate of sustained movement.
     differences = np.diff(y)
@@ -110,15 +89,15 @@ def _describe(values: Floats, scale: float) -> tuple[float, ...]:
     jump = int(np.abs(differences - typical).argmax())
     adjusted = y.copy()
     adjusted[jump + 1 :] -= differences[jump] - typical
-    adjusted_move, adjusted_fit = _line(x, adjusted)
+    adjusted_move, adjusted_fit = line_fit(x, adjusted)
     edge = max(1, len(y) // 5)
     median_move = float(np.median(y[-edge:]) - np.median(y[:edge]))
     return (
-        _scaled_movement(movement, scale),
+        scaled_movement(movement, scale),
         fit,
-        _scaled_movement(adjusted_move, scale),
+        scaled_movement(adjusted_move, scale),
         adjusted_fit,
-        _scaled_movement(median_move, scale),
+        scaled_movement(median_move, scale),
         float(np.log1p(length)),
     )
 
@@ -136,30 +115,6 @@ def _greedy_partitions(
         )
         for multiplier in _PENALTIES
     )
-
-
-def price_blocks(
-    rows: tuple[Observation, ...], config: AnalysisConfig
-) -> Iterator[tuple[int, Floats, Floats, float]]:
-    """Prepare log prices, line-fit moments and noise from each available block."""
-    for start, stop, status in observation_blocks(rows, config):
-        if status != "observed":
-            continue
-        raw = np.array([row.last_price for row in rows[start:stop]], dtype=np.float64)
-        present = np.isfinite(raw)
-        log_price = np.log(raw)
-        log_price -= log_price[present][0]
-        size = len(raw)
-        x = np.arange(size, dtype=np.float64) * present
-        y = np.where(present, log_price, 0.0)
-        moments = np.column_stack((present, x, y, x * x, x * y, y * y))
-        prefix = np.vstack((np.zeros(6), moments.cumsum(axis=0)))
-        diff = np.diff(log_price)
-        diff = diff[np.isfinite(diff)]
-        noise = config.noise_floor
-        if len(diff):
-            noise = max(noise, 1.4826 * float(np.median(np.abs(diff - np.median(diff)))))
-        yield start, log_price, prefix, noise
 
 
 def features(
@@ -286,8 +241,7 @@ class DirectionContextModel:
         max_depth: int = _MAX_DEPTH,
         max_bytes: int = 128 * 1024**2,
     ) -> DirectionContextModel:
-        if not 1 <= max_depth <= _MAX_DEPTH or (trees is not None and not 1 <= trees <= _MAX_TREES):
-            raise ValueError("Unsupported direction forest dimensions")
+        _check_dimensions(trees, max_depth)
         max_nodes = (trees or _MAX_TREES) * max_nodes_per_tree(max_depth)
         layout = {
             "offsets": ((), np.int64),
@@ -409,7 +363,7 @@ class ForestTrainingRows:
 
 def training_rows(x: Floats, targets: Ints) -> ForestTrainingRows:
     """Collapse repeated feature/target pairs within one instrument, preserving both weights."""
-    if x.ndim != 2 or x.shape != (len(targets), _WIDTH) or not np.isfinite(x).all():
+    if targets.ndim != 1 or x.shape != (targets.size, _WIDTH) or not np.isfinite(x).all():
         raise ValueError("Expected aligned finite training rows and direction targets")
     if targets.dtype != np.int64 or np.any((targets < -1) | (targets > 2)):
         raise ValueError("Expected original-grid direction targets or -1 for unavailable steps")
@@ -441,6 +395,7 @@ def fit_training_rows(
 ) -> DirectionContextModel:
     from sklearn.ensemble import ExtraTreesClassifier  # type: ignore[import-untyped]
 
+    _check_dimensions(trees, max_depth)
     table = np.concatenate([row.table for row in rows])
     counts = np.concatenate([row.counts for row in rows])
     labels = table[:, -1].astype(np.int64)

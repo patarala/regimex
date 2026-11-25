@@ -5,7 +5,13 @@ from itertools import pairwise
 
 import numpy as np
 
-from regimex.backends.adaptive_forest import Floats, _errors, _line, _scaled_movement, price_blocks
+from regimex.backends.price_segments import (
+    Floats,
+    line_fit,
+    line_residuals,
+    price_blocks,
+    scaled_movement,
+)
 from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig
 
@@ -25,25 +31,27 @@ _MEASURES = (
 FEATURE_NAMES = tuple(f"scale_{scale:g}_{name}" for scale in _SCALES for name in _MEASURES)
 
 
-def _cuts(prefix: Floats, start: int, config: AnalysisConfig, noise: float) -> list[list[int]]:
-    """Fit three scales jointly on a bounded grid, then refine cuts at single steps."""
+def _partitions(
+    prefix: Floats, start: int, config: AnalysisConfig, noise: float, scales: tuple[float, ...]
+) -> list[list[int]]:
+    """Fit the requested scales jointly on a bounded grid, then refine cuts at single steps."""
     size = len(prefix) - 1
     width = config.min_duration
     if size < 2 * width:
-        return [[0, size] for _ in _SCALES]
+        return [[0, size] for _ in scales]
     # At most 512 interior candidates keep the dynamic program bounded on long exports.
     stride = max(2, math.ceil(size / 512))
     inside = np.arange((-start) % stride, size, stride)
     nodes = np.r_[0, inside[(inside >= width) & (inside <= size - width)], size]
     with np.errstate(over="ignore"):
         scaled_noise = math.sqrt(config.boundary_penalty) * noise * math.sqrt(math.log(size))
-        penalties = np.asarray(_SCALES) * scaled_noise * scaled_noise
+        penalties = np.asarray(scales) * scaled_noise * scaled_noise
     if not np.isfinite(penalties).all():
-        return [[0, size] for _ in _SCALES]
-    costs = np.full((len(nodes), len(_SCALES)), np.inf)
+        return [[0, size] for _ in scales]
+    costs = np.full((len(nodes), len(scales)), np.inf)
     costs[0] = 0
     parents = np.zeros(costs.shape, dtype=np.int64)
-    levels = np.arange(len(_SCALES))
+    levels = np.arange(len(scales))
     for i, end in enumerate(nodes[1:], start=1):
         count = nodes.searchsorted(end - width, side="right")
         if not count:
@@ -53,7 +61,7 @@ def _cuts(prefix: Floats, start: int, config: AnalysisConfig, noise: float) -> l
         enough = (present >= config.minimum_observations) & (
             present >= (end - left) * config.minimum_price_coverage
         )
-        residual = np.where(enough, _errors(prefix, left, int(end)), np.inf)
+        residual = np.where(enough, line_residuals(prefix, left, int(end)), np.inf)
         options = costs[:count] + residual[:, None]
         best = options.argmin(axis=0)
         costs[i] = options[best, levels] + penalties
@@ -79,10 +87,19 @@ def _cuts(prefix: Floats, start: int, config: AnalysisConfig, noise: float) -> l
                 & (left_count >= (choices - left_edge) * config.minimum_price_coverage)
                 & (right_count >= (right_edge - choices) * config.minimum_price_coverage)
             )
-            residual = _errors(prefix, left_edge, choices) + _errors(prefix, choices, right_edge)
+            residual = line_residuals(prefix, left_edge, choices) + line_residuals(
+                prefix, choices, right_edge
+            )
             cuts[j] = int(choices[np.where(allowed, residual, np.inf).argmin()])
         results.append(cuts)
     return results
+
+
+def profile_partition(
+    prefix: Floats, start: int, config: AnalysisConfig, noise: float
+) -> list[int]:
+    """Return the cuts at the profile's own boundary penalty for Segment MoE."""
+    return _partitions(prefix, start, config, noise, (1.0,))[0]
 
 
 def _measure(values: Floats) -> tuple[float, float, float, float]:
@@ -93,7 +110,7 @@ def _measure(values: Floats) -> tuple[float, float, float, float]:
         return 0.0, 0.0, 0.0, 0.0
     x = (x - x.mean()) / (len(values) - 1)
     y = y - y.mean()
-    slope, fit = _line(x, y)
+    slope, fit = line_fit(x, y)
     if len(y) < 4:
         return slope, fit, slope, fit
     # Quantiles cover gradual transitions. Large innovations supply exact candidates
@@ -140,7 +157,7 @@ def features(rows: tuple[Observation, ...], config: AnalysisConfig) -> Floats:
     scale = math.log1p(config.minimum_relative_change)
     for start, values, prefix, noise in price_blocks(rows, config):
         measures = {}
-        for level, cuts in enumerate(_cuts(prefix, start, config, noise)):
+        for level, cuts in enumerate(_partitions(prefix, start, config, noise, _SCALES)):
             for a, b in pairwise(cuts):
                 if (a, b) not in measures:
                     measures[a, b] = _measure(values[a:b])
@@ -152,15 +169,15 @@ def features(rows: tuple[Observation, ...], config: AnalysisConfig) -> Floats:
                 previous = piece[i - 1, 2:] if i else (0.0, 0.0)
                 following = piece[i + 1, 2:] if i + 1 < len(piece) else (0.0, 0.0)
                 output[start + a : start + b, first : first + len(_MEASURES)] = (
-                    _scaled_movement(movement, scale),
+                    scaled_movement(movement, scale),
                     fit,
-                    _scaled_movement(adjusted, scale),
+                    scaled_movement(adjusted, scale),
                     adjusted_fit,
-                    _scaled_movement(support[i], scale),
+                    scaled_movement(support[i], scale),
                     math.log1p(b - a),
-                    _scaled_movement(previous[0], scale),
+                    scaled_movement(previous[0], scale),
                     previous[1],
-                    _scaled_movement(following[0], scale),
+                    scaled_movement(following[0], scale),
                     following[1],
                 )
     return output

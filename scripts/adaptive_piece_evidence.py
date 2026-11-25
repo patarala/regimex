@@ -10,6 +10,7 @@ from regimex.backends.adaptive_forest import (
     Ints,
     fit,
 )
+from regimex.backends.price_segments import line_residuals
 from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig
 
@@ -38,9 +39,7 @@ def _refine(prefix: Floats, cuts: list[int], config: AnalysisConfig, stride: int
         options = options[
             _covered(prefix, left, options, config) & _covered(prefix, options, right, config)
         ]
-        errors = adaptive_forest._errors(prefix, left, options) + adaptive_forest._errors(
-            prefix, options, right
-        )
+        errors = line_residuals(prefix, left, options) + line_residuals(prefix, options, right)
         cuts[i] = int(options[errors.argmin()])
 
 
@@ -65,7 +64,7 @@ def partitions(
         if not last:
             continue
         begins = nodes[:last]
-        residuals = adaptive_forest._errors(prefix, begins, int(end))
+        residuals = line_residuals(prefix, begins, int(end))
         valid = _covered(prefix, begins, int(end), config)
         totals = costs[:last] + np.where(valid, residuals, np.inf)[:, None]
         best = totals.argmin(axis=0)

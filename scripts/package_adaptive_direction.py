@@ -139,7 +139,7 @@ def references(corpus, parts, target, dataset):
 
 
 def package(comparison, transfer, train_path, source_path, destination):
-    from regimex.backends import adaptive, adaptive_forest
+    from regimex.backends import adaptive, adaptive_forest, price_segments
     from regimex.backends.adaptive import AdaptiveBackend, fit_result_from_forest
     from regimex.backends.adaptive_forest import DirectionContextModel
 
@@ -185,7 +185,8 @@ def package(comparison, transfer, train_path, source_path, destination):
         "published_comparison_sha256": PUBLISHED_RESULT,
         "transfer_comparison_sha256": TRANSFER_RESULT,
         "native_source_sha256": {
-            module.__name__: digest(Path(module.__file__)) for module in (adaptive, adaptive_forest)
+            module.__name__: digest(Path(module.__file__))
+            for module in (adaptive, adaptive_forest, price_segments)
         },
         "training_runtime": (
             "The original forest used one sklearn worker. Import supplies service defaults "

@@ -44,6 +44,27 @@ def test_isolated_level_change_has_no_adjusted_slope(adaptive: ModuleType) -> No
     assert move > 1 and adjusted == pytest.approx(0, abs=1e-12)
 
 
+@pytest.mark.parametrize("size", [0, 4])
+def test_training_rejects_matrix_targets(adaptive: ModuleType, size: int) -> None:
+    import numpy as np
+
+    values = np.zeros((size, len(adaptive.FEATURE_NAMES)))
+    with pytest.raises(ValueError, match="aligned"):
+        adaptive.training_rows(values, np.zeros((size, 1), dtype=np.int64))
+
+
+@pytest.mark.parametrize(("trees", "depth"), [(129, 3), (1, 17)])
+def test_local_fit_rejects_settings_outside_the_weight_codec(
+    adaptive: ModuleType, trees: int, depth: int
+) -> None:
+    import numpy as np
+
+    labels = np.arange(3, dtype=np.int64)
+    values = np.tile(labels[:, None], (1, len(adaptive.FEATURE_NAMES))).astype(float)
+    with pytest.raises(ValueError, match="forest dimensions"):
+        adaptive.fit(values, labels, trees=trees, max_depth=depth)
+
+
 def test_multiscale_forest_separates_price_level_from_sustained_movement() -> None:
     np = pytest.importorskip("numpy")
     from regimex.backends.multiscale_segments import _measure

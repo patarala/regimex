@@ -5,8 +5,8 @@ from itertools import pairwise
 import numpy as np
 from numpy.typing import NDArray
 
-from regimex.backends.adaptive_forest import Floats, price_blocks
-from regimex.backends.multiscale_segments import _cuts
+from regimex.backends.multiscale_segments import profile_partition
+from regimex.backends.price_segments import Floats, price_blocks
 from regimex.backends.segment_moe_layout import (
     BLOCK_FEATURE_COUNT,
     CONTEXT_LENGTH,
@@ -84,7 +84,7 @@ def segment_features(
     contexts = []
     blocks = []
     for start, prices, prefix, noise in price_blocks(rows, config):
-        cuts = _cuts(prefix, start, config, noise)[1]
+        cuts = profile_partition(prefix, start, config, noise)
         pieces = np.array([_piece_evidence(prices[a:b]) for a, b in pairwise(cuts)], np.float32)
         # Reset the window at each availability boundary.
         neighbors = np.pad(pieces, ((NEIGHBOR_RADIUS, NEIGHBOR_RADIUS), (0, 0)))

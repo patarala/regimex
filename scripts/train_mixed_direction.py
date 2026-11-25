@@ -20,7 +20,7 @@ from latent_direction_training import (
 )
 from train_large_direction import PROFILE, SEED, extract
 
-from regimex.backends import adaptive_forest, multiscale_segments
+from regimex.backends import adaptive_forest, multiscale_segments, price_segments
 from regimex.backends.adaptive import environment
 from regimex.data_catalog import (
     DatasetManifest,
@@ -171,8 +171,9 @@ def fit(data, workers):
         raise ValueError("Unexpected or overlapping latent train membership")
     with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
         native = []
+        native_features = partial(extract, folder=folder, feature_sets=("multiscale",))
         for i, block in enumerate(
-            pool.map(partial(extract, folder=folder), items, chunksize=2, buffersize=workers * 2), 1
+            pool.map(native_features, items, chunksize=2, buffersize=workers * 2), 1
         ):
             native.extend(block["multiscale"])
             if i % 384 == 0:
@@ -211,6 +212,7 @@ def fit(data, workers):
                 Path(__file__).with_name("train_large_direction.py"),
                 Path(adaptive_forest.__file__),
                 Path(multiscale_segments.__file__),
+                Path(price_segments.__file__),
             )
         },
     }
