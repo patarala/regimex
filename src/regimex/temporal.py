@@ -53,36 +53,29 @@ def _context_prefix(price: DoubleArray) -> DoubleArray:
 
 
 def _price_context(
-    price: DoubleArray, prefix: DoubleArray, left: IntArray, right: IntArray
+    prefix: DoubleArray,
+    left: IntArray,
+    right: IntArray,
+    *,
+    endpoints: tuple[DoubleArray, DoubleArray] | None = None,
 ) -> DoubleArray:
     """Fit observed prices against their actual steps inside each half-open window."""
-    length = len(price)
     count, sx, sxx, sy, syy, sxy = (prefix[right] - prefix[left]).T
     denominator = np.maximum(count, 1)
     xx = np.maximum(0, sxx - sx * sx / denominator)
-    yy = np.maximum(0, syy - sy * sy / denominator)
     xy = sxy - sx * sy / denominator
     valid = (count >= 2) & (xx > 0)
-    slope = np.divide(xy, xx, out=np.zeros(length), where=valid)
-    fit = np.clip(
-        np.divide(xy * xy, xx * yy, out=np.zeros(length), where=valid & (yy > 1e-16)),
-        0,
-        1,
-    )
-    known = np.flatnonzero(np.isfinite(price))
-    change = np.full(length, np.nan)
-    if len(known):
-        first = np.searchsorted(known, left)
-        last = np.searchsorted(known, right) - 1
-        good = (first < len(known)) & (last >= first)
-        change[good] = price[known[last[good]]] - price[known[first[good]]]
+    width = right - left
+    slope = np.divide(xy, xx, out=np.full(len(left), np.nan), where=valid)
+    movement: DoubleArray = np.arcsinh(slope * (width - 1) / 0.01)
+    if endpoints is None:
+        return movement[:, None]
+    yy = np.maximum(0, syy - sy * sy / denominator)
+    fit = np.divide(xy * xy, xx * yy, out=np.zeros(len(left)), where=valid & (yy > 1e-16))
+    first_price, last_price = endpoints
+    change = last_price[right] - first_price[left]
     result = np.column_stack(
-        (
-            np.arcsinh(slope * (right - left - 1) / 0.01),
-            fit,
-            np.arcsinh(change / 0.01),
-            count / (right - left),
-        )
+        (movement, np.clip(fit, 0, 1), np.arcsinh(change / 0.01), count / width)
     )
     result[~valid, :3] = np.nan
     return result
@@ -91,12 +84,17 @@ def _price_context(
 def _contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
     prefix = _context_prefix(price)
     positions = np.arange(len(price), dtype=np.int64)
+    # Before each boundary, the count indexes the next observed price in the packed array.
+    # Its predecessor is the last price before that boundary. The sentinel covers both ends.
+    counts = prefix[:, 0].astype(np.int64)
+    known = np.append(price[np.isfinite(price)], np.nan)
+    endpoints = known[counts], known[counts - 1]
     contexts = [
         _price_context(
-            price,
             prefix,
             np.maximum(0, positions - size // 2),
             np.minimum(len(price), positions + (size + 1) // 2),
+            endpoints=endpoints,
         )
         for size in CONTEXT_SIZES
     ]
@@ -107,7 +105,7 @@ def _contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
                 (np.maximum(0, positions - size + 1), positions + 1),
                 (positions, np.minimum(len(price), positions + size)),
             ):
-                contexts.append(_price_context(price, prefix, left, right)[:, :1])
+                contexts.append(_price_context(prefix, left, right))
     return contexts
 
 
@@ -133,7 +131,7 @@ def temporal_price_features(channels: FloatArray, *, side_slopes: bool) -> Float
     )
     if np.isinf(result).any():
         raise ValueError("temporal representation produced infinite values")
-    return np.concatenate((result, np.isnan(result)), axis=1).astype(np.float32)
+    return np.concatenate((result, np.isnan(result)), axis=1, dtype=np.float32)
 
 
 def temporal_features(sequences: PredictionInputs, *, side_slopes: bool = False) -> FloatArray:

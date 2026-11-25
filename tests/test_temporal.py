@@ -133,6 +133,25 @@ def test_price_context_uses_actual_time_and_preserves_missing_observations() -> 
     assert missing[32, TEMPORAL_NAMES.index("context_32_slope_change_asinh_missing")] == 1
 
 
+def test_context_endpoint_change_uses_only_observations_inside_each_window() -> None:
+    prices = {12: 100.0, 24: 103.0, 25: 101.0, 70: 110.0, 93: 102.0}
+    raw = sequence([prices.get(step) for step in range(110)])
+    log_prices = raw.values[:, 0].astype(np.float64)
+    features = temporal_features(raw)
+    for width in (32, 64, 128, 256, 512):
+        expected = np.full(len(log_prices), np.nan, dtype=np.float32)
+        for step in range(len(log_prices)):
+            window = log_prices[max(0, step - width // 2) : step + (width + 1) // 2]
+            observed = window[np.isfinite(window)]
+            if len(observed) >= 2:
+                expected[step] = np.arcsinh((observed[-1] - observed[0]) / 0.01)
+        name = f"context_{width}_endpoint_change_asinh"
+        np.testing.assert_array_equal(features[:, TEMPORAL_NAMES.index(name)], expected)
+        np.testing.assert_array_equal(
+            features[:, TEMPORAL_NAMES.index(name + "_missing")], np.isnan(expected)
+        )
+
+
 def test_temporal_preprocessing_restores_training_state_and_masks() -> None:
     values = temporal_features(sequence([100.0, None, 102.0, 103.0]))
     preprocessing = TemporalPreprocessor.fit(values)
