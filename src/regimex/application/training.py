@@ -20,6 +20,7 @@ from regimex.data_catalog import (
     LabeledSnapshot,
     NoValidationDirections,
     RawTrainingData,
+    TrainingCatalog,
     analysis_profile_hash,
     content_hash,
 )
@@ -193,7 +194,7 @@ def _validate_predictor(
 
 
 def train_candidate(
-    data: RawTrainingData,
+    data: RawTrainingData | TrainingCatalog,
     request: TrainingRequest,
     output: Path,
     *,
@@ -206,7 +207,12 @@ def train_candidate(
     The caller establishes the benchmark reservation/selection boundary before
     scheduling scientific searches. Unit behavior fixtures are not final data.
     """
-    data = RawTrainingData.model_validate_json(data.model_dump_json())
+    # The loader validates and owns its snapshot. Standalone values can come from
+    # model_copy() or model_construct(), which bypass Pydantic's validators.
+    if isinstance(data, TrainingCatalog):
+        data = data.load()
+    else:
+        data = RawTrainingData.model_validate_json(data.model_dump_json())
     request = TrainingRequest.model_validate_json(request.model_dump_json())
     if data.semantics.decoder_version != DECODER_VERSION:
         raise ValueError("training references require an unsupported shared decoder")

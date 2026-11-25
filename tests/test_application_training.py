@@ -27,10 +27,10 @@ from regimex.data_catalog import (
     ReferenceSet,
     SourceSnapshot,
     SplitGroup,
+    TrainingCatalog,
     analysis_profile_hash,
     create_reference_member,
     create_snapshot_member,
-    load_training_data,
     seal_dataset,
     seal_reference_set,
 )
@@ -92,7 +92,7 @@ def source(index: int, *, inactive: bool = False) -> SourceSnapshot:
     )
 
 
-def prepared_data(*, inactive_validation: bool = False) -> tuple[RawTrainingData, DatasetManifest]:
+def training_catalog(*, inactive_validation: bool = False) -> TrainingCatalog:
     sources = (source(0), source(1, inactive=inactive_validation), source(2))
     partitions: tuple[Partition, ...] = ("train", "validation", "test")
     dataset = seal_dataset(
@@ -165,13 +165,18 @@ def prepared_data(*, inactive_validation: bool = False) -> tuple[RawTrainingData
         assert reference.partition != "test", "training opened final references"
         return documents[reference.members[0].snapshot_id]
 
-    return load_training_data(
+    return TrainingCatalog(
         dataset,
         sets[0],
         sets[1],
         snapshot_reader=read_snapshot,
         reference_reader=read_reference,
-    ), dataset
+    )
+
+
+def prepared_data(*, inactive_validation: bool = False) -> tuple[RawTrainingData, DatasetManifest]:
+    catalog = training_catalog(inactive_validation=inactive_validation)
+    return catalog.load(), catalog.dataset
 
 
 def request() -> TrainingRequest:
@@ -186,6 +191,34 @@ def request() -> TrainingRequest:
         analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
         build_id="fixture-build",
     )
+
+
+def test_training_from_catalog_verifies_the_same_bundle_as_standalone_data(tmp_path: Path) -> None:
+    catalog = training_catalog()
+    registry = ArchitectureRegistry((baseline_descriptor(),))
+    digests = [
+        train_candidate(
+            data, request(), tmp_path / name, registry=registry, worker_id="fixture-worker"
+        ).manifest_sha256
+        for name, data in (("catalog", catalog), ("standalone", catalog.load()))
+    ]
+    assert digests[0] == digests[1]
+
+
+def test_standalone_training_rechecks_copied_data(tmp_path: Path) -> None:
+    data, _ = prepared_data()
+    changed = data.model_copy(
+        update={"validation": data.train, "validation_references": data.labels}
+    )
+    with pytest.raises(ValueError, match="duplicate snapshot identities"):
+        train_candidate(
+            changed,
+            request(),
+            tmp_path / "candidate",
+            registry=ArchitectureRegistry((baseline_descriptor(),)),
+            worker_id="fixture-worker",
+        )
+    assert not (tmp_path / "candidate").exists()
 
 
 def test_training_uses_generic_registry_shared_selection_and_independent_references(

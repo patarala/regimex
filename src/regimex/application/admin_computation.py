@@ -36,12 +36,12 @@ from regimex.data_catalog import (
     ReferenceSet,
     SnapshotMember,
     SourceSnapshot,
+    TrainingCatalog,
     _load_partition,
     analysis_profile_hash,
     content_hash,
     create_reference_member,
     create_snapshot_member,
-    load_training_data,
     seal_dataset,
     seal_reference_set,
     validate_reference_membership,
@@ -328,7 +328,7 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
 
         if isinstance(spec, TrainingSpec):
             by_id = {item.references.reference_set_id: item.references for item in sets}
-            data = load_training_data(
+            catalog = TrainingCatalog(
                 dataset.manifest,
                 by_id[spec.labels_reference_set_id],
                 by_id[spec.validation_reference_set_id],
@@ -348,7 +348,7 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
             )
             with record_training_progress(root) as record:
                 result = train_candidate(
-                    data,
+                    catalog,
                     request,
                     root / "output/bundle",
                     registry=ArchitectureRegistry.discover(),

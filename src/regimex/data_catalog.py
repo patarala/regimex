@@ -126,7 +126,13 @@ class SnapshotMember(CatalogRecord):
 
 def create_snapshot_member(snapshot: SourceSnapshot, partition: Partition) -> SnapshotMember:
     # Reparse nested instances too: model_copy/model_construct are not boundary validation.
-    snapshot = SourceSnapshot.model_validate_json(snapshot.model_dump_json())
+    checked = SourceSnapshot.model_validate_json(snapshot.model_dump_json())
+    return _member_from_validated_snapshot(checked, partition)
+
+
+def _member_from_validated_snapshot(
+    snapshot: SourceSnapshot, partition: Partition
+) -> SnapshotMember:
     export = snapshot.export
     return SnapshotMember(
         source_namespace=snapshot.source_namespace,
@@ -466,11 +472,11 @@ def _load_partition(
     result = []
     members = tuple(m for m in dataset.members if m.partition == references.partition)
     for member, reference_member in zip(members, references.members, strict=True):
-        snapshot = snapshot_reader(member)
-        if create_snapshot_member(snapshot, references.partition) != member:
+        snapshot = SourceSnapshot.model_validate_json(snapshot_reader(member).model_dump_json())
+        if _member_from_validated_snapshot(snapshot, references.partition) != member:
             raise ValueError("loaded snapshot differs from its dataset identity")
         # Keep no group/seed metadata in the value passed on to model backends.
-        export = ExportV2.model_validate_json(snapshot.export.model_dump_json())
+        export = snapshot.export
         annotations = reference_reader(references, reference_member)
         annotations = DirectionAnnotations.model_validate_json(annotations.model_dump_json())
         if content_hash(annotations.model_dump(mode="json")) != reference_member.annotations_sha256:
@@ -508,6 +514,26 @@ def _load_partition(
             )
         )
     return tuple(result)
+
+
+@dataclass(frozen=True, slots=True)
+class TrainingCatalog:
+    """The dataset and readers needed to load just the training and validation partitions."""
+
+    dataset: DatasetManifest
+    labels: ReferenceSet
+    validation_references: ReferenceSet
+    snapshot_reader: Callable[[SnapshotMember], SourceSnapshot]
+    reference_reader: Callable[[ReferenceSet, ReferenceMember], DirectionAnnotations]
+
+    def load(self) -> RawTrainingData:
+        return load_training_data(
+            self.dataset,
+            self.labels,
+            self.validation_references,
+            snapshot_reader=self.snapshot_reader,
+            reference_reader=self.reference_reader,
+        )
 
 
 def load_training_data(
