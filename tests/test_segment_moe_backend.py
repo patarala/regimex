@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
     from test_tcn_backend import inputs, policy, provenance
 
     from regimex.backends.segment_moe import SegmentMoEBackend, SegmentTable
+    from regimex.backends.segment_moe_features import SegmentFeatureVersion
     from regimex.backends.segment_moe_network import SegmentMoE
     from regimex.directions import AnalysisConfig
     from regimex.model_contracts import TrainingInputs
@@ -22,6 +24,7 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
         persistence_descriptor,
     )
     from regimex.resource_limits import ResourceBudgetExceeded
+    from regimex.storage import digest, write_json
 
     train, validation = inputs("train", (64, 64, 64)), inputs("validation", (90, 80, 64))
     targets = np.repeat(np.arange(3), 64).astype(np.int64)
@@ -78,6 +81,30 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
             policy=settings,
             runtime=TrainingRuntime(threads=1),
             evaluator=lambda _: 0.1,
+        )
+
+    # Both feature versions use the same flat weights. Only the manifest selects the lag grid.
+    manifest_path = tmp_path / "bundle" / "manifest.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    assert manifest["feature_version"] == SegmentFeatureVersion.ORIGINAL_STEPS.value
+    manifest["feature_version"] = SegmentFeatureVersion.OBSERVED_PRICES.value
+    write_json(manifest_path, manifest)
+    restored_legacy = backend.load_bundle(
+        manifest_path.parent, manifest_sha256=digest(manifest_path), runtime=runtime
+    )
+    legacy_input = SegmentTable.prepare(
+        validation, reloaded.analysis, feature_version=SegmentFeatureVersion.OBSERVED_PRICES
+    )
+    expected = legacy_input.standardized(reloaded.scale).predict(
+        reloaded.model, runtime.max_batch_size
+    )
+    assert np.any(raw != expected)
+    np.testing.assert_array_equal(restored_legacy.predict(validation, runtime=runtime), expected)
+    manifest["feature_version"] = "direction-persistence/unknown"
+    write_json(manifest_path, manifest)
+    with pytest.raises(ValueError, match="feature layout"):
+        backend.load_bundle(
+            manifest_path.parent, manifest_sha256=digest(manifest_path), runtime=runtime
         )
 
 

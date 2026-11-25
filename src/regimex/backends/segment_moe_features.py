@@ -1,5 +1,6 @@
 """Compute Segment MoE features on observed price blocks, on the original time grid."""
 
+from enum import StrEnum
 from itertools import pairwise
 
 import numpy as np
@@ -18,6 +19,11 @@ from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig
 
 type Float32Array = NDArray[np.float32]
+
+
+class SegmentFeatureVersion(StrEnum):
+    OBSERVED_PRICES = "direction-persistence/1.0"
+    ORIGINAL_STEPS = "direction-persistence/1.1"
 
 
 def _piece_evidence(values: Floats) -> tuple[float, float, float, float]:
@@ -48,12 +54,17 @@ def _piece_evidence(values: Floats) -> tuple[float, float, float, float]:
     return float(movement[best]), float(fit[best]), float(movement[0]), float(fit[0])
 
 
-def _block_evidence(values: Floats) -> Float32Array:
+def _block_evidence(values: Floats, version: SegmentFeatureVersion) -> Float32Array:
     """Describe the size and consistency of changes, independent of their direction."""
-    prices = values[np.isfinite(values)]
+    # The first feature version measured lags in observations even across missing steps.
+    prices = (
+        values[np.isfinite(values)] if version == SegmentFeatureVersion.OBSERVED_PRICES else values
+    )
     features: list[float] = []
     for lag in RETURN_LAGS:
         changes = prices[lag:] - prices[:-lag]
+        if version == SegmentFeatureVersion.ORIGINAL_STEPS:
+            changes = changes[np.isfinite(changes)]
         if len(changes) < 2:
             features.extend([0.0] * 7)
             continue
@@ -77,7 +88,10 @@ def _block_evidence(values: Floats) -> Float32Array:
 
 
 def segment_features(
-    rows: tuple[Observation, ...], config: AnalysisConfig
+    rows: tuple[Observation, ...],
+    config: AnalysisConfig,
+    *,
+    version: SegmentFeatureVersion = SegmentFeatureVersion.ORIGINAL_STEPS,
 ) -> tuple[NDArray[np.int64], Float32Array, Float32Array]:
     """Return original-grid spans, adjacent-piece evidence and block evidence per span."""
     spans = []
@@ -88,7 +102,7 @@ def segment_features(
         pieces = np.array([_piece_evidence(prices[a:b]) for a, b in pairwise(cuts)], np.float32)
         # Reset the window at each availability boundary.
         neighbors = np.pad(pieces, ((NEIGHBOR_RADIUS, NEIGHBOR_RADIUS), (0, 0)))
-        block = _block_evidence(prices)
+        block = _block_evidence(prices, version)
         for index, (left, right) in enumerate(pairwise(cuts)):
             spans.append((start + left, start + right))
             contexts.append(neighbors[index : index + CONTEXT_LENGTH])

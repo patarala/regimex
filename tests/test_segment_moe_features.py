@@ -4,6 +4,29 @@ np = pytest.importorskip("numpy")
 torch = pytest.importorskip("torch")
 
 
+def test_block_return_lags_measure_steps_on_the_bundle_feature_grid() -> None:
+    from regimex.backends.segment_moe_features import SegmentFeatureVersion, _block_evidence
+    from regimex.backends.segment_moe_layout import RETURN_LAGS
+
+    prices = np.repeat([0.0, np.log(2.0)], 24)
+    prices[23] = np.nan
+    observed = prices[np.isfinite(prices)]
+    current = _block_evidence(prices, SegmentFeatureVersion.ORIGINAL_STEPS)
+    original = _block_evidence(prices, SegmentFeatureVersion.OBSERVED_PRICES)
+    for i, lag in enumerate(RETURN_LAGS):
+        returns = prices[lag:] - prices[:-lag]
+        packed_returns = observed[lag:] - observed[:-lag]
+        assert current[i * 7] == pytest.approx(np.log1p(1000 * np.sqrt(np.nanmean(returns**2))))
+        assert original[i * 7] == pytest.approx(
+            np.log1p(1000 * np.sqrt(np.mean(packed_returns**2)))
+        )
+    assert current[0] == 0 < original[0]
+    np.testing.assert_array_equal(
+        _block_evidence(observed, SegmentFeatureVersion.ORIGINAL_STEPS),
+        _block_evidence(observed, SegmentFeatureVersion.OBSERVED_PRICES),
+    )
+
+
 def test_slope_survives_an_intercept_change_and_missing_observations() -> None:
     from regimex.backends.segment_moe_features import _piece_evidence
 

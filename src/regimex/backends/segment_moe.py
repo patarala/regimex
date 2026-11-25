@@ -16,7 +16,7 @@ from pydantic import Field, JsonValue
 from torch import Tensor, nn
 
 from regimex.backends.epoch_history import HistoryRecord, ValidationRecord, validate_epoch_selection
-from regimex.backends.segment_moe_features import segment_features
+from regimex.backends.segment_moe_features import SegmentFeatureVersion, segment_features
 from regimex.backends.segment_moe_layout import (
     BLOCK_FEATURE_COUNT,
     CONTEXT_LENGTH,
@@ -51,7 +51,6 @@ from regimex.storage import digest, json_bytes, output_directory, write_json
 
 ARCHITECTURE = "persistence"
 VERSION = "0.1.0"
-FEATURES = "direction-persistence/1.0"
 PREPROCESSING = "persistence-block-standardization/1.0"
 _ROLES: dict[BundleRole, str] = {
     "configuration": "configuration.json",
@@ -108,6 +107,8 @@ class SegmentTable:
         inputs: ObservationInputs,
         config: AnalysisConfig,
         check_budget: Callable[[], None] | None = None,
+        *,
+        feature_version: SegmentFeatureVersion = SegmentFeatureVersion.ORIGINAL_STEPS,
     ) -> SegmentTable:
         require_observation_inputs(inputs)
         spans, contexts, blocks = [], [], []
@@ -115,7 +116,9 @@ class SegmentTable:
         for rows in inputs.observations:
             if check_budget:
                 check_budget()
-            sequence_spans, context, block = segment_features(tuple(rows), config)
+            sequence_spans, context, block = segment_features(
+                tuple(rows), config, version=feature_version
+            )
             spans.append(sequence_spans + offset)
             contexts.append(context)
             blocks.append(block)
@@ -151,6 +154,7 @@ class SegmentMoEPredictor:
     model: SegmentMoE
     scale: BlockScale
     configuration: Configuration
+    feature_version: SegmentFeatureVersion = SegmentFeatureVersion.ORIGINAL_STEPS
     architecture_id = ARCHITECTURE
     implementation_version = VERSION
     class_names = DIRECTION_NAMES
@@ -163,7 +167,7 @@ class SegmentMoEPredictor:
         InferenceRuntime.model_validate(runtime.model_dump())
         _check_cache_budget(self.model, runtime)
         torch.set_num_threads(runtime.threads)
-        table = SegmentTable.prepare(inputs, self.analysis)
+        table = SegmentTable.prepare(inputs, self.analysis, feature_version=self.feature_version)
         return table.standardized(self.scale).predict(self.model, runtime.max_batch_size)
 
 
@@ -465,7 +469,7 @@ class SegmentMoEBackend:
                 implementation_version=VERSION,
                 interface_version="1.0",
                 observation_version="2.1",
-                feature_version=FEATURES,
+                feature_version=predictor.feature_version.value,
                 preprocessing_version=PREPROCESSING,
                 decoder_version=DECODER_VERSION,
                 class_names=("sideways", "growth", "decline"),
@@ -488,7 +492,7 @@ class SegmentMoEBackend:
         )
         if (
             {m.role: m.path for m in bundle.members} != _ROLES
-            or bundle.feature_version != FEATURES
+            or bundle.feature_version not in SegmentFeatureVersion
             or bundle.preprocessing_version != PREPROCESSING
             or bundle.decoder_version != DECODER_VERSION
         ):
@@ -512,7 +516,12 @@ class SegmentMoEBackend:
         _check_cache_budget(model, runtime)
         _load_weights(model, root / _ROLES["weights"])
         model.to(runtime.device)
-        return SegmentMoEPredictor(model.eval().requires_grad_(False), scale, config)
+        return SegmentMoEPredictor(
+            model.eval().requires_grad_(False),
+            scale,
+            config,
+            SegmentFeatureVersion(bundle.feature_version),
+        )
 
 
 def create_backend() -> SegmentMoEBackend:

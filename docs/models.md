@@ -162,7 +162,12 @@ direction. The second learns patterns in the slopes and their goodness of fit,
 evaluating both the original and sign-reversed movements. A third network,
 the gate, reads price-change statistics for the whole observed block and sets
 the relative weights of the two predictions. Both experts run on every
-available segment. Availability gaps reset the context. The gate follows the
+available segment. Availability gaps reset the context. For new fits, the gate
+compares prices 1, 4, 16 and 32 steps apart on the original time grid.
+A pair contributes when both endpoints have a price. With fewer than two
+pairs at a given lag, its statistics are zero. Bundles whose manifest records
+`feature_version` as `direction-persistence/1.0` measure those lags in observed
+prices, skipping missing steps. The gate follows the
 mixture-of-experts principle described by [Jacobs et al. (1991)](https://www.cs.toronto.edu/~hinton/absps/jjnh91.html).
 The segment features and the two expert designs are specific to Regimex.
 
