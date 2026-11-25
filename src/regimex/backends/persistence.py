@@ -1,4 +1,4 @@
-"""Train and restore a direction-persistence mixture from workspace observations."""
+"""Train and restore Segment MoE from workspace observations."""
 
 import copy
 import hashlib
@@ -98,9 +98,7 @@ class PersistenceNetwork(nn.Module):
 
     def check_cache_budget(self, runtime: InferenceRuntime) -> None:
         if self.weight_bytes + _BLOCK_WIDTH * 16 > runtime.model_cache_budget_bytes:
-            raise ResourceBudgetExceeded(
-                "persistence model exceeds the inference model cache budget"
-            )
+            raise ResourceBudgetExceeded("Segment MoE exceeds the inference model cache budget")
 
     def forward(self, segments: Tensor, block: Tensor) -> Tensor:
         slope, fit, simple, simple_fit = segments.unbind(-1)
@@ -211,9 +209,7 @@ class PersistenceBackend:
         evaluator: SelectionEvaluator,
     ) -> FitResult:
         if type(training) is not TrainingInputs or type(parameters) is not PersistenceParameters:
-            raise TypeError(
-                "Direction persistence requires TrainingInputs and PersistenceParameters"
-            )
+            raise TypeError("Segment MoE requires TrainingInputs and PersistenceParameters")
         require_observation_inputs(validation)
         parameters = PersistenceParameters.model_validate(parameters.model_dump())
         validate_persistence_policy(policy)
@@ -249,9 +245,7 @@ class PersistenceBackend:
         labeled = counts.sum(1)
         keep = np.flatnonzero(labeled)
         if not counts.sum(axis=0).all():
-            raise ValueError(
-                "direction persistence requires training segments for all three directions"
-            )
+            raise ValueError("Segment MoE requires training segments for all three directions")
         target = torch.tensor(counts[keep] / labeled[keep, None], dtype=torch.float32)
         # Square-root weighting keeps long segments informative without drowning out short regimes.
         weight = torch.tensor(np.sqrt(labeled[keep]), dtype=torch.float32)
@@ -371,9 +365,7 @@ class PersistenceBackend:
             selected_epoch=cast(int, result.selected_settings["epoch"]),
         )
         history = HistoryRecord.model_validate({"epochs": result.history})
-        validate_epoch_selection(
-            "Direction persistence", config.training_policy, validation, history
-        )
+        validate_epoch_selection("Segment MoE", config.training_policy, validation, history)
         with output_directory(root) as out:
             for role, doc in [
                 ("configuration", config),
@@ -386,7 +378,7 @@ class PersistenceBackend:
                 for _, tensor in sorted(predictor.model.state_dict().items()):
                     values = tensor.detach().cpu().numpy().astype("<f4", copy=False)
                     if not np.isfinite(values).all():
-                        raise ValueError("persistence model contains nonfinite weights")
+                        raise ValueError("Segment MoE contains nonfinite weights")
                     stream.write(values.tobytes())
             members = tuple(
                 BundleMember(
@@ -436,9 +428,7 @@ class PersistenceBackend:
         validation = _read_json(root / _ROLES["validation"], ValidationRecord)
         history = _read_json(root / _ROLES["history"], HistoryRecord, 16 << 20)
         validate_persistence_policy(config.training_policy)
-        validate_epoch_selection(
-            "Direction persistence", config.training_policy, validation, history
-        )
+        validate_epoch_selection("Segment MoE", config.training_policy, validation, history)
         if (
             _hash(config.analysis.model_dump(mode="json")) != bundle.analysis_profile_sha256
             or _hash(config.environment) != bundle.environment_sha256
@@ -474,7 +464,7 @@ def create_backend() -> PersistenceBackend:
 
 def probe_runtime(device: str) -> None:
     if device != "cpu":
-        raise ValueError("Direction persistence supports CPU execution only")
+        raise ValueError("Segment MoE supports CPU execution only")
     with torch.random.fork_rng(devices=[]), torch.inference_mode():
         p = PersistenceNetwork(4)(torch.zeros(1, 9, 4), torch.zeros(1, _BLOCK_WIDTH))
         probabilities_valid(p.double().numpy(), 1)

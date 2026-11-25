@@ -689,9 +689,9 @@ def tcn_descriptor() -> ArchitectureDescriptor:
 
 def validate_persistence_policy(policy: TrainingPolicySpec) -> None:
     if not isinstance(policy, TrainingPolicy) or policy.optimizer != "adamw":
-        raise RegistryError("Direction persistence requires epoch training with AdamW")
+        raise RegistryError("Segment MoE requires epoch training with AdamW")
     if len(policy.seeds) > 32:
-        raise RegistryError("Direction persistence supports at most 32 search seeds")
+        raise RegistryError("Segment MoE supports at most 32 search seeds")
 
 
 def persistence_descriptor() -> ArchitectureDescriptor:

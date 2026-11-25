@@ -322,8 +322,8 @@ scores progressively larger subsets of the fitted trees on validation data.
 For its policy, send `{"optimizer":"extra_trees"}`. Set `trees` and `max_depth`
 under `parameters` to change the [forest settings](models.md#adaptive-direction-forest).
 
-The TCN and direction persistence accept epoch-based training with up to
-32 seeds within the deployment limit. Send a policy with `"optimizer":"adamw"`
+The TCN (`tcn`) and Segment MoE (`persistence`) accept epoch-based training
+with up to 32 seeds within the deployment limit. Send a policy with `"optimizer":"adamw"`
 and an optional `epochs` count. Omit the `budget` field for this policy. For a
 fixed number of optimizer updates, set `architecture_id` to `tcn` and use
 the following policy. The last validation checkpoint must equal `updates`,
@@ -400,7 +400,7 @@ and `cursor` as `?attempt=ATTEMPT&after=CURSOR` on the next request. Each page
 contains up to 512 new measurements in `history`. A forest reports decoded
 validation scores in `history.fits` for increasing numbers of trees from the
 same fit. The final row scores the complete forest. A single row is valid.
-The baseline records regularization candidates. Direction persistence records
+The baseline records regularization candidates. Segment MoE records
 epochs, and the TCN records epochs or optimizer updates according to its budget.
 An empty `history` means there are no new samples. Read the next page immediately
 when `has_more` is true. If the attempt changes, replace your local history

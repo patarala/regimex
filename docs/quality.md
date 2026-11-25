@@ -17,9 +17,9 @@
   [Model and metrics API](api.md#choose-a-model-or-compare-results)
 - **A reference release or offline experiment.** Use the report for the named
   weights and population. The [reference benchmarks](evaluations/reference-releases.md)
-  cover specific baseline and TCN fits. The [offline neural comparison](evaluations/neural-direction.md#direction-persistence-across-adjacent-price-segments)
-  includes a direction-persistence model with a pretrained drift component. A new
-  [workspace fit](models.md#direction-persistence) trains its own weights from scratch.
+  cover specific baseline and TCN fits. The [offline neural comparison](evaluations/neural-direction.md#segment-moe-on-exchange-prices-and-known-drift)
+  includes a Segment MoE with a pretrained drift expert. A new
+  [workspace fit](models.md#segment-moe) trains both experts and the gate from scratch.
 
 ## Read the metrics
 

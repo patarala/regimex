@@ -15,7 +15,7 @@ const api = "/api/v1/";
 
 export function architectureName(id, compact = false) {
   if (id === "tcn") return compact ? "TCN" : "Temporal convolutional network (TCN)";
-  if (id === "persistence") return "Direction persistence";
+  if (id === "persistence") return "Segment MoE";
   if (id === "adaptive") return compact ? "Adaptive forest" : "Adaptive direction forest";
   if (id === "baseline") return compact ? "Baseline" : "Logistic baseline";
   return id;

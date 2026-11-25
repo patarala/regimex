@@ -15,6 +15,7 @@ from regimex.model_registry import (
     FixedUpdatePolicy,
     adaptive_descriptor,
     baseline_descriptor,
+    persistence_descriptor,
     tcn_descriptor,
 )
 
@@ -208,6 +209,7 @@ class TrainingAPI:
                     {**TCN, "architecture_id": "metadata-only", "executable": False},
                     {**TCN, "default_training_policy": POLICY},
                     BASELINE,
+                    persistence_descriptor().describe().model_dump(mode="json"),
                     {**TCN, "architecture_id": "worker-verified", "executable": True},
                 ]
             },
@@ -287,7 +289,15 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         expect(page.get_by_label("Validation labels").locator("option")).to_have_count(1)
         expect(page.get_by_label("Development dataset").locator("option")).to_have_count(1)
         expect(page.get_by_label("Architecture").locator("option")).to_have_text(
-            ["Temporal convolutional network (TCN)", "Logistic baseline", "worker-verified"]
+            [
+                "Temporal convolutional network (TCN)",
+                "Logistic baseline",
+                "Segment MoE",
+                "worker-verified",
+            ]
+        )
+        expect(page.get_by_role("option", name="Segment MoE")).to_have_attribute(
+            "value", "persistence"
         )
         start = page.get_by_role("button", name="Start training")
         expect(page.get_by_label("Reserved benchmark")).to_have_value("selection-v1")

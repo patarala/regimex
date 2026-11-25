@@ -30,7 +30,7 @@ configuration as JSON, choose **Edit JSON** at the top of the form. Select
 | Adaptive direction forest | After fitting the trees, the worker scores forests of increasing size on validation data. The saved model uses all its trees. [Forest features and weights](models.md#adaptive-direction-forest) |
 | Logistic baseline | One validation score per regularization setting. [Logistic baseline](baseline-context.md) |
 | Temporal convolutional network (TCN) | Loss by epoch or optimizer update and validation scores at scheduled checks. [TCN settings and checkpoints](tcn.md) |
-| Direction persistence | Training loss and validation interval macro-F1 by epoch. It learns which neighboring stretches of price movement to combine. [Model settings](models.md#direction-persistence) |
+| Segment MoE | Training loss for the mixture of experts and decoded validation interval macro-F1 by epoch. [Experts, gate and model settings](models.md#segment-moe) |
 
 ## Read a run
 

@@ -24,7 +24,10 @@ and soft predictions from a forest trained on separate experiments. The other
 learned the drift schedule of 960 price paths before noise and price rounding.
 The mixture combines these specialists with earlier neural models. For each
 observed block, a small network chooses a mixing weight using price changes
-and expert confidence. Four-fold validation kept all views of a seed together.
+and expert confidence. In `direction-quality-mixture-v2`, three predictors
+contribute to the exchange branch and four to the drift branch, including
+models trained with different seeds. The gate assigns a weight to each of
+the two branches. Four-fold validation kept all views of a seed together.
 
 The weights were frozen before scoring 192 independent exchange experiments
 and 96 independent drift seeds. Each drift seed supplied four schedules with
@@ -74,16 +77,21 @@ sha256sum direction-quality-mixture-v2/manifest.json
 python direction-quality-mixture-v2/predict.py market-export.json --output directions.json
 ```
 
-## Direction persistence across adjacent price segments
+<a name="direction-persistence-across-adjacent-price-segments"></a>
+
+## Segment MoE on exchange prices and known drift
 
 Three neural candidates used the same decoder and complete, ordered observations
-for one instrument. The first fitted a slope on each price segment, allowing a
-one-time shift in price level, and learned how much movement to accumulate across
-consecutive segments with the same slope sign. Its second head weighs this
-exchange specialist against a network trained on known drift. A gap resets the
-window. The other candidates used a sign-symmetric multilayer perceptron and
-a learned choice between existing specialists based on local price windows.
-[Persistence architecture](../../src/regimex/backends/price_persistence.py)
+for one instrument. The offline Segment MoE combined two independently trained
+experts. The exchange expert fitted slopes allowing for a shift in price level
+and learned how much movement to accumulate across consecutive segments with
+the same slope sign. An availability gap reset its window. The other expert
+had been trained to recover known drift. With their predictions fixed, a gate
+learned how much weight to give each expert from price-change statistics in
+each observed block. The other two candidates used a sign-symmetric multilayer
+perceptron and a learned choice between existing specialists based on local
+price windows. The [workspace architecture](../models.md#segment-moe) trains
+its two experts and gate together on the selected training references.
 
 An already opened panel of 192 exchange experiments and 96 drift seeds served
 as the final **selection** set. The rule maximized the smaller of the candidate's
@@ -91,7 +99,7 @@ two margins over the best of three forests in each population.
 
 | Candidate | Exchange automatic reference | Known drift |
 | --- | ---: | ---: |
-| Direction persistence | 0.9474 | 0.9749 |
+| Segment MoE (offline) | 0.9474 | 0.9749 |
 | Sign-symmetric network mixed with the previous model | 0.9037 | 0.9778 |
 | Learned choice based on local windows | 0.9296 | 0.9743 |
 | Best forest on each population | 0.9411 | 0.9577 |
@@ -104,7 +112,7 @@ IoU ≥ 0.50, averaged equally across lengths and, for drift, across views.
 
 | Model on independent groups | Exchange automatic reference | Known drift |
 | --- | ---: | ---: |
-| Direction persistence | 0.9360 | 0.9729 |
+| Segment MoE (offline) | 0.9360 | 0.9729 |
 | Large interval forest | 0.9419 | 0.7930 |
 | Expanded native forest | 0.9418 | 0.7952 |
 | Mixed-supervision window forest | 0.9276 | 0.9397 |

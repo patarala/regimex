@@ -1,4 +1,4 @@
-"""Price evidence and neural heads shared by the direction-persistence models."""
+"""Price segment features, accumulation expert and block gate for Segment MoE."""
 
 from itertools import pairwise
 from typing import cast

@@ -123,7 +123,7 @@ penalty for switching direction and the availability and duration rules above.
 
 | Backend | How it scores a step |
 | --- | --- |
-| Direction persistence | Combines accumulated movement across consecutive price segments with a learned network that compares local slope and fit. |
+| Segment MoE | Mixes two predictions for each price segment. One expert follows sustained movement and the other compares patterns in neighboring slopes. |
 | Adaptive direction forest | Fits trends over price-dependent spans, then averages tree probabilities using the span and its neighboring trends. Fits each side of a sustained availability gap independently. |
 | Logistic baseline | Applies fitted linear weights to summaries of price, trades, orders, spread and missingness. [Window settings and gap behavior](baseline-context.md) |
 | Temporal convolutional network (TCN) | Learns price patterns from centered windows and whole-instrument statistics using dilated convolutions. [Inputs, network and training](tcn.md) |
@@ -143,26 +143,33 @@ macro-F1 and breaks ties with the first result. The administrative workflow
 covers benchmark reservation, freezing the model and final evaluation.
 [API guide](api.md#administration)
 
-### Direction persistence
+<a name="direction-persistence"></a>
 
-Choose **Direction persistence** to fit a neural model on the selected
-development dataset. The model fits slopes on adjacent price segments and
-learns how much earlier and later movement supports the current direction.
-A second network compares the local slope patterns in both price directions.
-A learned weight combines their probabilities using the variability of price
-changes in the current observed block. Availability gaps reset both contexts.
+### Segment MoE
 
-The worker initializes all three components from scratch and fits block
-standardization on training experiments. The default run uses a context width
-of 32, AdamW and up to 24 epochs, with one validation score per epoch. It stops
-after six validation checks without improvement and saves the highest-scoring
-checkpoint. Training shows the loss, validation interval macro-F1 and selected
-repeat. Saved weights support validation evaluation and publication through
-the same controls as the other backends.
+**Segment MoE** is a segment-based mixture of experts. Each expert sees the
+current price segment and up to four neighboring segments on each side. The
+first accumulates movement across consecutive slopes that point in the same
+direction. The second learns patterns in the slopes and their goodness of fit,
+evaluating both the original and sign-reversed movements. A third network,
+the gate, reads price-change statistics for the whole observed block and sets
+the relative weights of the two predictions. Both experts run on every
+available segment. Availability gaps reset the context. The gate follows the
+mixture-of-experts principle described by [Jacobs et al. (1991)](https://www.cs.toronto.edu/~hinton/absps/jjnh91.html).
+The segment features and the two expert designs are specific to Regimex.
 
-The [offline direction-persistence comparison](evaluations/neural-direction.md#direction-persistence-across-adjacent-price-segments)
-used a separate ensemble pretrained on known drift. Its benchmark scores apply
-only to that saved offline bundle. A workspace fit records its own scores.
+The worker starts both experts and the gate from scratch. It fits the block
+feature scaling on training experiments, then updates all three networks
+together using the cross-entropy of their mixed prediction. A segment’s target
+is the share of its labeled steps in each direction. The default run uses a
+context width of 32, AdamW and up to 24 epochs, with validation after each
+epoch. Six consecutive checks without improvement stop training. The saved
+checkpoint has the highest decoded validation interval macro-F1.
+
+The [offline Segment MoE comparison](evaluations/neural-direction.md#segment-moe-on-exchange-prices-and-known-drift)
+used a separately fitted exchange expert and a pretrained drift expert.
+Its benchmark scores apply to the named offline bundle. A workspace fit
+records its own scores.
 
 ### Adaptive direction forest
 
@@ -281,7 +288,7 @@ reloads the bundle and checks that it reproduces the validation probabilities.
 Analyses use the published weights and preprocessing. The baseline stores
 its coefficients as numeric arrays. The forest stores tree splits, thresholds
 and class probabilities in a numeric NPZ file with a versioned preprocessing
-record. Direction persistence stores a fixed layout of little-endian float32 weights
+record. Segment MoE stores a fixed layout of little-endian float32 weights
 and the training mean and scale for its block features. The TCN stores a restricted Torch state dictionary. Its
 `temporal-tcn/2.0` and `temporal-tcn/3.0` codecs share the same inference
 procedure and record training by epoch and optimizer update respectively.
