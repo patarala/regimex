@@ -90,13 +90,15 @@ class IntervalStatistics(StrictModel):
     longest_no_trade_run: Annotated[int, Field(ge=0)]
 
 
-class DirectionInterval(StrictModel):
+IntervalStatus = Literal["observed", "no_trades", "insufficient_data"]
+
+
+class DirectionSpan(StrictModel):
     instrument_id: Identifier
     start: Annotated[int, Field(ge=0, lt=MAX_STEPS)]
     stop: Annotated[int, Field(gt=0, le=MAX_STEPS)]
     direction: Direction | None
-    status: Literal["observed", "no_trades", "insufficient_data"]
-    statistics: IntervalStatistics
+    status: IntervalStatus
 
     @model_validator(mode="after")
     def meaningful_interval(self) -> Self:
@@ -105,6 +107,10 @@ class DirectionInterval(StrictModel):
         if (self.direction is not None) != (self.status == "observed"):
             raise ValueError("only observed intervals have a direction")
         return self
+
+
+class DirectionInterval(DirectionSpan):
+    statistics: IntervalStatistics
 
 
 def summarize_interval(
@@ -149,7 +155,7 @@ def summarize_interval(
 
 def observation_blocks(
     observations: tuple[Observation, ...], config: AnalysisConfig
-) -> tuple[tuple[int, int, Literal["observed", "no_trades", "insufficient_data"]], ...]:
+) -> tuple[tuple[int, int, IntervalStatus], ...]:
     """Share the same availability policy between annotations and model outputs."""
     if not observations:
         raise ValueError("an instrument sequence must not be empty")
@@ -159,7 +165,7 @@ def observation_blocks(
     ):
         raise ValueError("observations must be one complete ordered instrument sequence")
     size = len(observations)
-    statuses: list[Literal["observed", "no_trades", "insufficient_data"]] = ["observed"] * size
+    statuses: list[IntervalStatus] = ["observed"] * size
     inactive = [
         row.trade_count == 0 if config.version == "2.0" else known_no_executions(row)
         for row in observations
@@ -187,10 +193,10 @@ def observation_blocks(
                         "no_trades" if unavailable_status == "no_trades" else "insufficient_data"
                     )
             start = stop
-    result: list[tuple[int, int, Literal["observed", "no_trades", "insufficient_data"]]] = []
+    result: list[tuple[int, int, IntervalStatus]] = []
     start = 0
     while start < size:
-        status: Literal["observed", "no_trades", "insufficient_data"] = statuses[start]
+        status = statuses[start]
         stop = start + 1
         while stop < size and statuses[stop] == status:
             stop += 1

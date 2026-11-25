@@ -126,6 +126,8 @@ uses that value to match the completed draft to its snapshot.
 Each backend returns one probability for each of the three directions at every
 original step. A shared decoder chooses intervals using the probabilities, a
 penalty for switching direction and the availability and duration rules above.
+Checkpoint selection scores the resulting boundaries and directions. Analysis
+also computes the price, trading and coverage statistics displayed for each interval.
 
 | Backend | How it scores a step |
 | --- | --- |

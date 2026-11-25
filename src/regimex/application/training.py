@@ -22,7 +22,7 @@ from regimex.data_catalog import (
     analysis_profile_hash,
     content_hash,
 )
-from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval
+from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval, DirectionSpan
 from regimex.evaluation import (
     dense_labels,
     probabilities_valid,
@@ -50,7 +50,7 @@ from regimex.model_registry import (
 )
 from regimex.operations import Sha256
 from regimex.prediction_inputs import PredictionSequenceInfo
-from regimex.segmentation import DECODER_VERSION, decode
+from regimex.segmentation import DECODER_VERSION, decode, decode_spans
 from regimex.storage import output_directory
 from regimex.training_statistics import TrainingFitStatistics
 
@@ -126,8 +126,8 @@ class SharedSelectionEvaluator:
             validate_interval_grid(intervals, info.instrument_id, info.step_count)
 
     def _decode(
-        self, probabilities: DoubleArray
-    ) -> tuple[IntArray, tuple[tuple[DirectionInterval, ...], ...]]:
+        self, probabilities: DoubleArray, *, with_statistics: bool = True
+    ) -> tuple[IntArray, tuple[tuple[DirectionSpan, ...], ...]]:
         if not isinstance(probabilities, np.ndarray) or probabilities.dtype != np.float64:
             raise ValueError("backend probabilities must be a float64 array")
         probabilities_valid(probabilities, self.inputs.row_count)
@@ -140,8 +140,9 @@ class SharedSelectionEvaluator:
                 ),
             )
         )
+        decode_sequence = decode if with_statistics else decode_spans
         predicted = tuple(
-            decode(probabilities[start:stop], rows, self.analysis)
+            decode_sequence(probabilities[start:stop], rows, self.analysis)
             for start, stop, rows in zip(
                 offsets[:-1],
                 offsets[1:],
@@ -154,7 +155,7 @@ class SharedSelectionEvaluator:
     def evaluate(
         self, probabilities: DoubleArray, *, bootstrap_repetitions: int = 0
     ) -> dict[str, JsonValue]:
-        offsets, predicted = self._decode(probabilities)
+        offsets, predicted = self._decode(probabilities, with_statistics=False)
         labels = np.concatenate(
             [
                 dense_labels(intervals, item.step_count)
@@ -169,7 +170,7 @@ class SharedSelectionEvaluator:
         )
 
     def __call__(self, probabilities: DoubleArray) -> float:
-        _, predicted = self._decode(probabilities)
+        _, predicted = self._decode(probabilities, with_statistics=False)
         for info, intervals in zip(self.inputs.info, predicted, strict=True):
             validate_interval_grid(intervals, info.instrument_id, info.step_count)
         return segment_macro_f1(self.references, predicted)

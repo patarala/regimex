@@ -2,13 +2,14 @@
 
 import hashlib
 import math
+from collections.abc import Sequence
 from itertools import pairwise
 from typing import Literal, Protocol, cast
 
 import numpy as np
 from pydantic import JsonValue
 
-from regimex.directions import DIRECTION_NAMES, DirectionInterval
+from regimex.directions import DIRECTION_NAMES, DirectionSpan
 from regimex.features import DoubleArray, IntArray
 from regimex.storage import json_bytes
 
@@ -42,10 +43,10 @@ class IntervalEvaluationData(Protocol):
     def info(self) -> tuple[EvaluationSequence, ...]: ...
 
     @property
-    def references(self) -> tuple[tuple[DirectionInterval, ...], ...]: ...
+    def references(self) -> tuple[tuple[DirectionSpan, ...], ...]: ...
 
 
-def dense_labels(intervals: tuple[DirectionInterval, ...], length: int) -> IntArray:
+def dense_labels(intervals: tuple[DirectionSpan, ...], length: int) -> IntArray:
     result = np.full(length, -1, dtype=np.int64)
     for interval in intervals:
         if interval.direction is not None:
@@ -142,14 +143,14 @@ def scores(labels: IntArray, predicted: IntArray) -> dict[str, JsonValue]:
     return _point_metrics(_point_table(labels, predicted))
 
 
-def interval_iou(expected: DirectionInterval, actual: DirectionInterval) -> float:
+def interval_iou(expected: DirectionSpan, actual: DirectionSpan) -> float:
     overlap = max(0, min(expected.stop, actual.stop) - max(expected.start, actual.start))
     union = expected.stop - expected.start + actual.stop - actual.start - overlap
     return overlap / union
 
 
 def matched_interval_indices(
-    reference: list[DirectionInterval], predicted: list[DirectionInterval]
+    reference: Sequence[DirectionSpan], predicted: Sequence[DirectionSpan]
 ) -> dict[int, int]:
     """Match two ordered, disjoint interval lists for one instrument and direction."""
     matches: dict[int, int] = {}
@@ -171,7 +172,7 @@ def matched_interval_indices(
 
 
 def _segment_counts(
-    reference: tuple[DirectionInterval, ...], predicted: tuple[DirectionInterval, ...]
+    reference: tuple[DirectionSpan, ...], predicted: tuple[DirectionSpan, ...]
 ) -> IntArray:
     result = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
     for index, name in enumerate(DIRECTION_NAMES):
@@ -183,8 +184,8 @@ def _segment_counts(
 
 
 def segment_macro_f1(
-    references: tuple[tuple[DirectionInterval, ...], ...],
-    predictions: tuple[tuple[DirectionInterval, ...], ...],
+    references: tuple[tuple[DirectionSpan, ...], ...],
+    predictions: tuple[tuple[DirectionSpan, ...], ...],
 ) -> float:
     """Score complete decoded sequences using the pooled counts from the full report."""
     counts = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
@@ -193,7 +194,7 @@ def segment_macro_f1(
     return cast(float, _metrics(counts)["macro_f1"])
 
 
-def _boundaries(intervals: tuple[DirectionInterval, ...]) -> list[int]:
+def _boundaries(intervals: tuple[DirectionSpan, ...]) -> list[int]:
     return [
         right.start
         for left, right in pairwise(intervals)
@@ -252,8 +253,8 @@ def _aligned_lags(reference: list[int], predicted: list[int]) -> list[int]:
 
 
 def _typed_boundary_counts(
-    reference: tuple[DirectionInterval, ...],
-    predicted: tuple[DirectionInterval, ...],
+    reference: tuple[DirectionSpan, ...],
+    predicted: tuple[DirectionSpan, ...],
     labels: IntArray,
     predicted_labels: IntArray,
 ) -> tuple[IntArray, list[int]]:
@@ -335,7 +336,7 @@ def _typed_summary(counts: IntArray, lags: list[int]) -> dict[str, JsonValue]:
 
 
 def validate_interval_grid(
-    intervals: tuple[DirectionInterval, ...], instrument_id: str, length: int
+    intervals: tuple[DirectionSpan, ...], instrument_id: str, length: int
 ) -> None:
     previous = 0
     for interval in intervals:
@@ -549,7 +550,7 @@ def paired_bootstrap(
 
 def report(
     sequences: IntervalEvaluationData,
-    predictions: tuple[tuple[DirectionInterval, ...], ...],
+    predictions: tuple[tuple[DirectionSpan, ...], ...],
     reference_kind: Literal["automatic", "human"] = "automatic",
     bootstrap_repetitions: int = 200,
 ) -> dict[str, JsonValue]:

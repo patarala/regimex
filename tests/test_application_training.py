@@ -42,6 +42,7 @@ from regimex.directions import (
     DirectionInterval,
     summarize_interval,
 )
+from regimex.evaluation import segment_macro_f1
 from regimex.exports import ExportPayloadV2, seal_export
 from regimex.features import DoubleArray
 from regimex.model_bundles import verify_model_bundle
@@ -357,7 +358,16 @@ def test_checkpoint_score_matches_pooled_report_without_boundary_diagnostics(
     )
     flat = np.zeros((inputs.row_count, 3), dtype=np.float64)
     flat[:, 0] = 1
-    expected = evaluator.evaluate(flat)["segment_macro_f1"]
+    _, full_intervals = evaluator._decode(flat)
+    assert all(
+        isinstance(item, DirectionInterval) for sequence in full_intervals for item in sequence
+    )
+    expected = segment_macro_f1(evaluator.references, full_intervals)
+    monkeypatch.setattr(
+        "regimex.segmentation.summarize_interval",
+        lambda *_: pytest.fail("evaluation recalculated interval statistics"),
+    )
+    assert evaluator.evaluate(flat)["segment_macro_f1"] == expected
     monkeypatch.setattr(
         "regimex.evaluation._typed_boundary_counts",
         lambda *_: pytest.fail("unused boundary diagnostics"),

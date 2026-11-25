@@ -1,6 +1,7 @@
 """Retrospective log-linear segmentation and duration-constrained decoding."""
 
 import math
+from collections.abc import Iterator
 from dataclasses import dataclass
 from sys import float_info
 
@@ -18,6 +19,8 @@ from regimex.directions import (
     Direction,
     DirectionAnnotations,
     DirectionInterval,
+    DirectionSpan,
+    IntervalStatus,
     observation_blocks,
     summarize_interval,
 )
@@ -255,6 +258,46 @@ def annotate(
     return result
 
 
+def _always_eligible_after(
+    known: NDArray[np.int64], minimum: int, config: AnalysisConfig
+) -> NDArray[np.int64]:
+    """For each start, find an end after which all longer intervals meet the constraints."""
+    steps = np.arange(len(known), dtype=np.int64)
+    if known[-1] == steps[-1]:
+        return steps + max(minimum, config.minimum_observations)
+    enough_prices = np.searchsorted(known, known + config.minimum_observations)
+    # Find the smallest attainable fraction accepted by the decoder's float comparison.
+    # E.g. four prices in five steps qualify at 0.8, including its binary rounding.
+    lengths = steps[1:]
+    needed = (config.minimum_price_coverage * lengths).astype(np.int64)
+    needed += needed / lengths < config.minimum_price_coverage
+    tightest = int(np.argmin(needed / lengths))
+    # Coverage from s to t qualifies exactly when balance[t] >= balance[s].
+    balance = known * int(lengths[tightest]) - steps * int(needed[tightest])
+    suffix_minimum = np.minimum.accumulate(balance[::-1])[::-1]
+    enough_coverage = np.searchsorted(suffix_minimum, balance)
+    return np.maximum(np.maximum(steps + minimum, enough_prices), enough_coverage)
+
+
+def _competitive_starts(
+    candidates: NDArray[np.int64],
+    previous_cost: NDArray[np.float64],
+    cumulative: NDArray[np.float64],
+    eligible_after: NDArray[np.int64],
+    stop: int,
+    penalty: float,
+    roundoff: float,
+) -> NDArray[np.int64]:
+    # For a fixed class and end, all starts add the same end cost and switch penalty.
+    # The unsplit prefix is eligible whenever a partition of it is eligible.
+    # A split already eligible at every future end is also a permanent competitor.
+    offsets = previous_cost[:, candidates] - cumulative[:, candidates]
+    permanent = eligible_after[candidates] <= stop
+    best = np.min(offsets[:, permanent], axis=1, initial=-penalty)
+    keep = np.any(offsets <= best[:, None] + roundoff, axis=0)
+    return candidates[keep]
+
+
 def _decode_block(
     probabilities: NDArray[np.float64],
     observations: tuple[Observation, ...],
@@ -265,25 +308,44 @@ def _decode_block(
     label_count = len(DIRECTION_NAMES)
     cumulative = np.vstack((np.zeros((1, label_count)), np.cumsum(losses, axis=0))).T.copy()
     minimum = min(size, config.min_duration)
-    starts = np.zeros((size + 1, label_count), dtype=np.int64)
-    # At each possible split, cache the cheapest predecessor distinct from the
-    # next label. Its cost and class are independent of the end of the new interval.
-    previous_cost = np.full((label_count, size + 1), np.inf)
-    previous_label = np.zeros((label_count, size + 1), dtype=np.int64)
     known = np.concatenate(
         (
             np.zeros(1, dtype=np.int64),
             np.cumsum([row.last_price is not None for row in observations]),
         )
     )
+    if known[-1] < config.minimum_observations or known[-1] / size < config.minimum_price_coverage:
+        raise ValueError("scores cannot be decoded with the observation constraints")
+    if size < 2 * minimum or known[-1] < 2 * config.minimum_observations:
+        return [(0, size, Direction(DIRECTION_NAMES[int(cumulative[:, -1].argmin())]))]
+
+    starts = np.zeros((size + 1, label_count), dtype=np.int64)
+    # At each possible split, cache the cheapest predecessor distinct from the
+    # next label. Its cost and class are independent of the end of the new interval.
+    previous_cost = np.full((label_count, size + 1), np.inf)
+    previous_label = np.zeros((label_count, size + 1), dtype=np.int64)
     steps = np.arange(size + 1)
     all_prices_known = known[-1] == size
+    eligible_after = _always_eligible_after(known, minimum, config) if size >= 256 else None
+    retained = steps[:0]
+    # The offset comparison reassociates two additions and a subtraction. All finite
+    # prefix optima are bounded above by the unsplit cost. Keep near-ties and score
+    # them in the original arithmetic and start order below.
+    roundoff = (
+        32
+        * float_info.epsilon
+        * max(1.0, float(cumulative[:, -1].max()), config.decoder_switch_penalty)
+    )
     # Each split precedes its endpoint by at least minimum steps. Endpoints within
     # that distance share only already-computed predecessors and can run together.
     first_stop = minimum
     while first_stop <= size:
+        new_start = max(minimum, first_stop - minimum)
+        max_candidates = (
+            first_stop if eligible_after is None else len(retained) + first_stop - new_start
+        )
         batch_size = min(
-            minimum, max(1, _DECODER_COST_BUFFER_ELEMENTS // (label_count * first_stop))
+            minimum, max(1, _DECODER_COST_BUFFER_ELEMENTS // (label_count * max(1, max_candidates)))
         )
         end = min(first_stop + batch_size, size + 1)
         stops = steps[first_stop:end]
@@ -292,9 +354,26 @@ def _decode_block(
             known[stops] / stops >= config.minimum_price_coverage
         )
         cost = np.where(eligible[:, None], end_cost, np.inf)
-        if stops[-1] >= 2 * minimum:
-            candidates = slice(minimum, end - minimum)
-            lengths = stops[:, None] - steps[candidates]
+        candidates: slice | NDArray[np.int64] = slice(minimum, end - minimum)
+        candidate_steps = steps[candidates]
+        if eligible_after is not None and len(candidate_steps):
+            retained = _competitive_starts(
+                np.concatenate((retained, steps[new_start : end - minimum])),
+                previous_cost,
+                cumulative,
+                eligible_after,
+                first_stop,
+                config.decoder_switch_penalty,
+                roundoff,
+            )
+            # On dense ties the contiguous exhaustive scan is cheaper. Recompute this
+            # batch with its full candidate count so the same memory bound still applies.
+            if len(retained) >= 128 and 2 * len(retained) >= len(candidate_steps):
+                eligible_after = None
+                continue
+            candidates = candidate_steps = retained
+        if len(candidate_steps):
+            lengths = stops[:, None] - candidate_steps
             if all_prices_known:
                 sufficient = lengths >= max(minimum, config.minimum_observations)
             else:
@@ -311,7 +390,7 @@ def _decode_block(
             offsets = options.argmin(axis=2)
             split_cost = np.take_along_axis(options, offsets[:, :, None], axis=2)[:, :, 0]
             improved = split_cost < cost
-            starts[first_stop:end] = np.where(improved, minimum + offsets, 0)
+            starts[first_stop:end] = np.where(improved, candidate_steps[offsets], 0)
             np.copyto(cost, split_cost, where=improved)
 
         # Stable class order also decides ties when reconstructing the path.
@@ -336,12 +415,11 @@ def _decode_block(
     return result
 
 
-def decode(
+def _decoded_ranges(
     probabilities: NDArray[np.float32] | NDArray[np.float64],
     observations: tuple[Observation, ...],
-    config: AnalysisConfig | None = None,
-) -> tuple[DirectionInterval, ...]:
-    """Decode each available block on the original grid, including short edge blocks."""
+    config: AnalysisConfig | None,
+) -> Iterator[tuple[int, int, Direction | None, IntervalStatus]]:
     config = config or AnalysisConfig()
     values = np.asarray(probabilities, dtype=np.float64)
     if values.shape != (len(observations), len(DIRECTION_NAMES)):
@@ -350,13 +428,41 @@ def decode(
         raise ValueError("scores must be finite values between zero and one")
     if not np.allclose(values.sum(axis=1), 1.0, atol=1e-6, rtol=0):
         raise ValueError("each score row must sum to one")
-    result = []
     for start, stop, status in observation_blocks(observations, config):
         if status != "observed":
-            result.append(_interval(observations, start, stop, None, status))
+            yield start, stop, None, status
             continue
         for left, right, direction in _decode_block(
             values[start:stop], observations[start:stop], config
         ):
-            result.append(_interval(observations, start + left, start + right, direction, status))
-    return tuple(result)
+            yield start + left, start + right, direction, status
+
+
+def decode_spans(
+    probabilities: NDArray[np.float32] | NDArray[np.float64],
+    observations: tuple[Observation, ...],
+    config: AnalysisConfig | None = None,
+) -> tuple[DirectionSpan, ...]:
+    """Return the boundaries and directions needed to evaluate a model."""
+    return tuple(
+        DirectionSpan(
+            instrument_id=observations[0].instrument_id,
+            start=start,
+            stop=stop,
+            direction=direction,
+            status=status,
+        )
+        for start, stop, direction, status in _decoded_ranges(probabilities, observations, config)
+    )
+
+
+def decode(
+    probabilities: NDArray[np.float32] | NDArray[np.float64],
+    observations: tuple[Observation, ...],
+    config: AnalysisConfig | None = None,
+) -> tuple[DirectionInterval, ...]:
+    """Decode each available block and summarize its intervals on the original grid."""
+    return tuple(
+        _interval(observations, start, stop, direction, status)
+        for start, stop, direction, status in _decoded_ranges(probabilities, observations, config)
+    )

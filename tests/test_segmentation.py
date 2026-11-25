@@ -5,6 +5,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
+from itertools import accumulate
 
 import pytest
 from pydantic import ValidationError
@@ -512,6 +513,90 @@ def test_each_decoded_piece_needs_enough_known_prices(
         else [(0, first_split, Direction.GROWTH), (first_split, 13, Direction.DECLINE)]
     )
     assert [(item.start, item.stop, item.direction) for item in decoded] == expected
+
+
+def reference_duration_path(
+    prefix_loss: list[list[float]], prices: list[float | None], config: AnalysisConfig
+) -> tuple[tuple[int, int, Direction], ...]:
+    """Try every eligible split in order and retain the full path for each ending class."""
+    directions = tuple(Direction)
+    size = len(prices)
+    minimum = min(config.min_duration, size)
+    known = list(accumulate((price is not None for price in prices), initial=0))
+    costs = [[math.inf] * len(directions) for _ in range(size + 1)]
+    paths: dict[tuple[int, int], tuple[tuple[int, int, Direction], ...]] = {}
+    for stop in range(minimum, size + 1):
+        for start in range(stop - minimum + 1):
+            count = known[stop] - known[start]
+            if (
+                count < config.minimum_observations
+                or count / (stop - start) < config.minimum_price_coverage
+            ):
+                continue
+            for label, direction in enumerate(directions):
+                cost = prefix_loss[stop][label]
+                parent = 0
+                if start:
+                    others = (index for index in range(len(directions)) if index != label)
+                    parent = min(others, key=costs[start].__getitem__)
+                    # Regrouping the additions changes the chosen split at float64 precision.
+                    cost = (
+                        costs[start][parent]
+                        + cost
+                        - prefix_loss[start][label]
+                        + config.decoder_switch_penalty
+                    )
+                if cost < costs[stop][label]:
+                    costs[stop][label] = cost
+                    path = paths[(start, parent)] if start else ()
+                    paths[(stop, label)] = (*path, (start, stop, direction))
+    return paths[(size, min(range(len(directions)), key=costs[size].__getitem__))]
+
+
+@pytest.mark.parametrize(
+    "length,minimum,missing_every,coverage,spread,penalty",
+    [
+        pytest.param(321, 7, 0, 1.0, 1.0, 0.7, id="complete"),
+        pytest.param(321, 7, 3, 2 / 3, 1.0, 0.3, id="coverage-at-threshold"),
+        pytest.param(321, 4, 0, 1.0, 0.0, 0.0, id="identical-scores"),
+        pytest.param(321, 4, 0, 1.0, 2**-47, 0.0, id="nearly-tied-scores"),
+        pytest.param(17, 32, 2, 0.5, 1.0, 3.0, id="short-observed-block"),
+    ],
+)
+def test_decoder_matches_exhaustive_split_search(
+    length: int, minimum: int, missing_every: int, coverage: float, spread: float, penalty: float
+) -> None:
+    rng = np.random.default_rng(298)
+    weights = 1 + spread * rng.uniform(-0.99, 0.99, size=(length, 3))
+    scores = weights / weights.sum(axis=1, keepdims=True)
+    prices = [
+        None if missing_every and (step + 1) % missing_every == 0 else 100.0
+        for step in range(length)
+    ]
+    config = AnalysisConfig(
+        min_duration=minimum, minimum_price_coverage=coverage, decoder_switch_penalty=penalty
+    )
+    prefix_loss = np.vstack((np.zeros(3), np.cumsum(-np.log(scores), axis=0)))
+    expected = reference_duration_path(prefix_loss.tolist(), prices, config)
+    decoded = segmentation.decode(scores, experiment(prices).observations, config)
+    assert (
+        tuple((interval.start, interval.stop, interval.direction) for interval in decoded)
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "coverage,expected",
+    [(math.nextafter(0.8, 0), (2, 11)), (0.8, (2, 11)), (math.nextafter(0.8, 1), (11, 12))],
+)
+def test_permanent_split_eligibility_at_four_prices_in_five_steps(
+    coverage: float, expected: tuple[int, int]
+) -> None:
+    # Both the five-step and ten-step prefixes have exactly 80% coverage.
+    known = np.r_[0, np.cumsum([1, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1])]
+    config = AnalysisConfig(min_duration=2, minimum_observations=2, minimum_price_coverage=coverage)
+    after = segmentation._always_eligible_after(known, config.min_duration, config)
+    assert tuple(after[:2]) == expected
 
 
 def test_decoder_workspace_size_keeps_the_same_splits(monkeypatch: pytest.MonkeyPatch) -> None:
