@@ -366,6 +366,15 @@ def test_descriptor_checks_native_training_restrictions_before_fitting() -> None
         )
 
 
+def test_plugin_seed_limit_is_advertised_and_enforced() -> None:
+    descriptor = changed_descriptor(architecture_id="test-search", max_training_seeds=3)
+    assert descriptor.describe().max_training_seeds == 3
+    assert descriptor.describe(max_training_seeds=2).max_training_seeds == 2
+    descriptor.validate_training_policy(TrainingPolicy(optimizer="lbfgs", seeds=(1, 2, 3)))
+    with pytest.raises(RegistryError, match="at most 3 training seeds"):
+        descriptor.validate_training_policy(TrainingPolicy(optimizer="lbfgs", seeds=(1, 2, 3, 4)))
+
+
 @pytest.mark.parametrize("runtime_model", [TrainingRuntime, InferenceRuntime])
 def test_runtime_profiles_reject_unsupported_device_and_invalid_threads(
     runtime_model: type[TrainingRuntime] | type[InferenceRuntime],

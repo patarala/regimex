@@ -231,6 +231,7 @@ type TrainingBudget = Literal["epochs", "updates", "fit"]
 
 
 BASELINE_DEFAULT_POLICY = TrainingPolicy(optimizer="lbfgs", seeds=(11,))
+MAX_NEURAL_TRAINING_SEEDS = 32
 
 
 def resolve_training_policy(architecture_id: str, policy: TrainingPolicySpec) -> TrainingPolicySpec:
@@ -276,8 +277,8 @@ def validate_tcn_policy(policy: TrainingPolicySpec) -> None:
         raise RegistryError("TCN supports only epoch or fixed-update training")
     if policy.optimizer != "adamw":
         raise RegistryError("TCN supports only the AdamW optimizer")
-    if len(policy.seeds) > 32:
-        raise RegistryError("TCN supports at most 32 search seeds")
+    if len(policy.seeds) > MAX_NEURAL_TRAINING_SEEDS:
+        raise RegistryError(f"TCN supports at most {MAX_NEURAL_TRAINING_SEEDS} search seeds")
 
 
 class TrainingRuntime(StrictModel):
@@ -364,6 +365,7 @@ class ArchitectureDescriptor(StrictModel):
         default=None, exclude=True
     )
     trains_by_epoch: bool = True
+    max_training_seeds: Annotated[int, Field(ge=1)] | None = None
     sizes: tuple[ModelSize, ...] = ()
     default_training_policy: TrainingPolicy | SingleFitPolicy
     supported_optimizers: Annotated[tuple[Optimizer, ...], Field(min_length=1)]
@@ -428,6 +430,11 @@ class ArchitectureDescriptor(StrictModel):
 
         if self.policy_validator is not None:
             self.policy_validator(policy)
+        if self.max_training_seeds is not None and len(policy.seeds) > self.max_training_seeds:
+            raise RegistryError(
+                f"architecture {self.architecture_id!r} supports at most "
+                f"{self.max_training_seeds} training seeds"
+            )
 
     def validate_observation_fields(self, available_fields: Collection[str]) -> None:
         """Check recorded field capabilities, independently from per-row missingness."""
@@ -445,6 +452,13 @@ class ArchitectureDescriptor(StrictModel):
         max_training_epochs: int | None = None,
         max_training_updates: int | None = None,
     ) -> ArchitectureInfo:
+        seed_limit = self.max_training_seeds
+        if isinstance(self.default_training_policy, SingleFitPolicy):
+            seed_limit = 1
+        if max_training_seeds is not None:
+            seed_limit = (
+                max_training_seeds if seed_limit is None else min(seed_limit, max_training_seeds)
+            )
         return ArchitectureInfo(
             descriptor_version=self.descriptor_version,
             architecture_id=self.architecture_id,
@@ -453,9 +467,7 @@ class ArchitectureDescriptor(StrictModel):
             parameter_schema=self.parameters_model.model_json_schema(),
             sizes=self.sizes,
             default_training_policy=self.default_training_policy,
-            max_training_seeds=1
-            if isinstance(self.default_training_policy, SingleFitPolicy)
-            else max_training_seeds,
+            max_training_seeds=seed_limit,
             max_training_epochs=max_training_epochs if self.trains_by_epoch else None,
             max_training_updates=max_training_updates
             if "updates" in self.supported_training_budgets
@@ -645,6 +657,7 @@ def baseline_descriptor() -> ArchitectureDescriptor:
         parameters_model=LogisticParameters,
         default_training_policy=BASELINE_DEFAULT_POLICY,
         policy_validator=validate_baseline_policy,
+        max_training_seeds=1,
         trains_by_epoch=False,
         supported_optimizers=("lbfgs",),
         # Activity and quotes contribute when recorded; their explicit masks
@@ -677,6 +690,7 @@ def tcn_descriptor() -> ArchitectureDescriptor:
         sizes=tuple(sizes),
         default_training_policy=TrainingPolicy(optimizer="adamw"),
         policy_validator=validate_tcn_policy,
+        max_training_seeds=MAX_NEURAL_TRAINING_SEEDS,
         supported_optimizers=("adamw",),
         supported_training_budgets=("epochs", "updates"),
         required_observation_fields=("last_price",),
@@ -689,8 +703,10 @@ def tcn_descriptor() -> ArchitectureDescriptor:
 def validate_persistence_policy(policy: TrainingPolicySpec) -> None:
     if not isinstance(policy, TrainingPolicy) or policy.optimizer != "adamw":
         raise RegistryError("Segment MoE requires epoch training with AdamW")
-    if len(policy.seeds) > 32:
-        raise RegistryError("Segment MoE supports at most 32 search seeds")
+    if len(policy.seeds) > MAX_NEURAL_TRAINING_SEEDS:
+        raise RegistryError(
+            f"Segment MoE supports at most {MAX_NEURAL_TRAINING_SEEDS} search seeds"
+        )
 
 
 def persistence_descriptor() -> ArchitectureDescriptor:
@@ -708,6 +724,7 @@ def persistence_descriptor() -> ArchitectureDescriptor:
             patience=6,
         ),
         policy_validator=validate_persistence_policy,
+        max_training_seeds=MAX_NEURAL_TRAINING_SEEDS,
         supported_optimizers=("adamw",),
         required_observation_fields=("last_price",),
         dependency_modules=("numpy", "torch"),

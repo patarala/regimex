@@ -45,8 +45,7 @@ function singleSeed(architecture) {
 
 function repeatLimit(architecture) {
   if (singleSeed(architecture)) return 1;
-  const workspaceLimit = architecture.max_training_seeds ?? 64;
-  return ["tcn", "persistence"].includes(architecture.architecture_id) ? Math.min(32, workspaceLimit) : workspaceLimit;
+  return architecture.max_training_seeds ?? 64;
 }
 
 function budgetLimit(architecture, key) {
@@ -130,8 +129,6 @@ function validate(architecture, raw) {
     throw new PolicyError("seeds", "Seeds must be whole numbers between 0 and 4294967295.");
   if (new Set(policy.seeds).size !== policy.seeds.length)
     throw new PolicyError("seeds", "Enter each seed only once.");
-  if (architecture.architecture_id === "baseline" && policy.seeds.length !== 1)
-    throw new PolicyError("seeds", "The logistic baseline requires exactly one seed.");
   validateTrainingLimits(architecture, policy);
   for (const key of numeric) {
     const {min, max, step, title, fallback} = numbers[key];

@@ -675,6 +675,32 @@ def test_workspace_limits_follow_the_selected_training_budget(browser: Any) -> N
         page.close()
 
 
+def test_one_repeat_workspace_keeps_tcn_epoch_controls(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    architecture = tcn_descriptor().describe(max_training_seeds=1).model_dump(mode="json")
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        ORIGIN + "/api/v1/architectures*", lambda r: r.fulfill(json={"items": [architecture]})
+    )
+    try:
+        page.goto(ORIGIN + "/training/new")
+        page.get_by_text("Training policy", exact=True).click()
+        expect(page.get_by_label("Training repeats")).to_have_attribute("max", "1")
+        expect(page.get_by_label("Random seeds", exact=True)).to_have_value("11")
+        page.get_by_label("Maximum epochs").fill("2")
+        page.get_by_role("button", name="Start training").click()
+        expect(page.locator("#training-detail")).to_be_visible()
+        assert api.posts[0][1]["policy"] == {
+            **architecture["default_training_policy"],
+            "seeds": [11],
+            "epochs": 2,
+        }
+    finally:
+        page.close()
+
+
 def test_repeat_count_and_generated_seeds_round_trip_through_run_json(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()

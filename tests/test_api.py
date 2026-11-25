@@ -78,8 +78,12 @@ def authorization(token: str = TOKEN) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+@pytest.mark.parametrize(("workspace_seeds", "expected_neural_seeds"), [(5, 5), (64, 32)])
 def test_architecture_catalog_reports_applicable_training_limits(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    workspace_seeds: int,
+    expected_neural_seeds: int,
 ) -> None:
     from regimex.service_bootstrap import create_service
     from regimex.service_settings import ServiceSettings
@@ -87,7 +91,7 @@ def test_architecture_catalog_reports_applicable_training_limits(
     monkeypatch.setenv("REGIMEX_DATABASE_DSN", "dbname=not_connected")
     monkeypatch.setenv("REGIMEX_OBJECT_ROOT", str(tmp_path / "objects"))
     monkeypatch.setenv("REGIMEX_WORK_ROOT", str(tmp_path / "work"))
-    monkeypatch.setenv("REGIMEX_MAX_TRAINING_SEEDS", "5")
+    monkeypatch.setenv("REGIMEX_MAX_TRAINING_SEEDS", str(workspace_seeds))
     monkeypatch.setenv("REGIMEX_MAX_TRAINING_EPOCHS", "2")
     monkeypatch.setenv("REGIMEX_MAX_TRAINING_UPDATES", "24")
     service = create_service(ServiceSettings.from_env())
@@ -101,11 +105,12 @@ def test_architecture_catalog_reports_applicable_training_limits(
     assert limits["adaptive"]["max_training_seeds"] == 1
     assert limits["adaptive"]["max_training_epochs"] is None
     assert limits["adaptive"]["max_training_updates"] is None
-    assert limits["tcn"]["max_training_seeds"] == limits["baseline"]["max_training_seeds"] == 5
+    assert limits["baseline"]["max_training_seeds"] == 1
+    assert limits["tcn"]["max_training_seeds"] == expected_neural_seeds
     assert limits["tcn"] == detail.json()
     assert limits["tcn"]["max_training_epochs"] == 2
     assert limits["tcn"]["max_training_updates"] == 24
-    assert limits["persistence"]["max_training_seeds"] == 5
+    assert limits["persistence"]["max_training_seeds"] == expected_neural_seeds
     assert limits["persistence"]["max_training_epochs"] == 2
     assert limits["persistence"]["max_training_updates"] is None
     assert limits["baseline"]["max_training_epochs"] is None

@@ -312,9 +312,11 @@ profile, `direction-32/2.2`. The service fills in this profile when you omit
 direction. The built-in architectures run on CPU. Set `training_runtime` and
 `inference_runtime` to override their default thread counts or budgets.
 Read `GET /architectures` for parameter schemas, default policies and
-supported budgets. Each entry includes the deployment’s limit on seeds per
-run (`max_training_seeds`) and its limits per seed for epochs and optimizer
-updates (`max_training_epochs` and `max_training_updates`). A null epoch or
+supported budgets. Each entry reports how many seeds the architecture accepts
+in one run on this deployment (`max_training_seeds`). The TCN and Segment MoE
+accept up to 32 seeds each, and the administrator can set a lower limit.
+The per-seed limits for epochs and optimizer updates are reported in
+`max_training_epochs` and `max_training_updates`. A null epoch or
 update limit means the architecture does not use that budget. The baseline
 uses one seed (11 when omitted) and fits each regularization candidate once.
 The adaptive forest takes one seed (173 by default). It fits once, then
