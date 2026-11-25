@@ -1,11 +1,32 @@
 """A missing or substituted training candidate must keep the automatic holdout labels sealed."""
 
 import importlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from regimex.storage import digest, write_json
+
+
+def test_resumable_evidence_only_publishes_complete_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pytest.importorskip("torch")
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
+    comparison = importlib.import_module("compare_profile_21")
+    path = tmp_path / "report.json"
+    with pytest.raises(ValueError):
+        comparison.write(path, {"score": float("nan")})
+    assert not path.exists()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(comparison.record, path, {"score": 0.9}) for _ in range(8)]
+        for future in futures:
+            future.result()
+    assert path.read_bytes() == b'{"score":0.9}\n'
+    with pytest.raises(ValueError, match="Previous evidence differs"):
+        comparison.record(path, {"score": 0.5})
+    assert path.read_bytes() == b'{"score":0.9}\n'
 
 
 @pytest.mark.parametrize("substitute", [False, True], ids=["incomplete", "wrong-bundle"])

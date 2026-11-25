@@ -1,7 +1,6 @@
 """Reproduce the synthetic direction-32/2.1 baseline and TCN comparison."""
 
 import argparse
-import hashlib
 import json
 import platform
 from importlib.metadata import version
@@ -47,7 +46,8 @@ from regimex.model_registry import (
     TrainingRuntime,
 )
 from regimex.segmentation import DECODER_VERSION, annotate
-from regimex.storage import json_bytes
+from regimex.storage import digest as sha256
+from regimex.storage import json_bytes, write_new_file
 from regimex.terminal_training import register_completed_bundle
 
 LENGTHS = (256, 512, 1024)
@@ -59,21 +59,17 @@ SOURCE = Path(__file__).resolve().parents[1] / "src" / "regimex"
 
 
 def write(path: Path, value: object) -> None:
-    with path.open("xb") as stream:
-        stream.write(json_bytes(value))
+    write_new_file(path, json_bytes(value))
 
 
 def record(path: Path, value: object) -> None:
     """Resume scoring only when the already written evidence agrees."""
-    if path.exists():
-        if path.read_bytes() != json_bytes(value):
-            raise ValueError(f"Previous evidence differs: {path}")
-    else:
-        write(path, value)
-
-
-def sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    expected = json_bytes(value)
+    try:
+        write_new_file(path, expected)
+    except FileExistsError:
+        if path.read_bytes() != expected:
+            raise ValueError(f"Previous evidence differs: {path}") from None
 
 
 def prepare(output, history):
