@@ -39,7 +39,12 @@ def price_blocks(
 
 def line_residuals(prefix: Floats, start: int | Ints, stop: int | Ints) -> Floats:
     """Residual sum of squares for separate intercepts and slopes on each span."""
-    count, x, y, xx, xy, yy = (prefix[stop] - prefix[start]).T
+    return line_residuals_from_moments((prefix[stop] - prefix[start]).T)
+
+
+def line_residuals_from_moments(moments: Floats) -> Floats:
+    """Compute the line-fit error from counts and sums of x, y, x², xy and y²."""
+    count, x, y, xx, xy, yy = moments
     n = np.maximum(count, 1.0)
     spread = xx - x * x / n
     covariance = xy - x * y / n

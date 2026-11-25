@@ -78,6 +78,29 @@ def test_multiscale_forest_separates_price_level_from_sustained_movement() -> No
             assert fit == pytest.approx(1)
 
 
+def test_multiscale_cuts_respect_missing_prices_and_the_shifted_grid() -> None:
+    np = pytest.importorskip("numpy")
+    from test_segmentation import experiment
+
+    from regimex.backends.multiscale_segments import _partitions
+    from regimex.backends.price_segments import price_blocks
+    from regimex.directions import AnalysisConfig
+
+    steps = np.arange(55)
+    trend = np.interp(steps, [0, 11, 20, 30, 40, 54], [0, 0.12, 0.10, 0.11, -0.09, -0.07])
+    prices = 100 * np.exp(trend + 0.001 * np.sin(steps))
+    missing = {2, 13, 16, 22, 23, 24, 50}
+    rows = experiment([None] * 5 + [None if i in missing else p for i, p in enumerate(prices)])
+    config = AnalysisConfig(min_duration=5, noise_floor=0.005)
+    ((start, _, prefix, noise),) = price_blocks(rows.observations, config)
+    assert start == 5
+    assert _partitions(prefix, start, config, noise, (0.625, 1.0, 1.625)) == [
+        [0, 7, 17, 32, 41, 55],
+        [0, 7, 17, 32, 41, 55],
+        [0, 8, 33, 41, 55],
+    ]
+
+
 def test_training_weights_respect_unavailable_steps_and_each_instrument(
     adaptive: ModuleType,
 ) -> None:

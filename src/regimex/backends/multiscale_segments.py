@@ -7,8 +7,10 @@ import numpy as np
 
 from regimex.backends.price_segments import (
     Floats,
+    Ints,
     line_fit,
     line_residuals,
+    line_residuals_from_moments,
     price_blocks,
     scaled_movement,
 )
@@ -31,6 +33,38 @@ _MEASURES = (
 FEATURE_NAMES = tuple(f"scale_{scale:g}_{name}" for scale in _SCALES for name in _MEASURES)
 
 
+def _best_predecessors(
+    prefix: Floats, nodes: Ints, config: AnalysisConfig, penalties: Floats
+) -> Ints:
+    """Choose the lowest-cost previous cut for each penalty and grid endpoint."""
+    moments = np.ascontiguousarray(prefix[nodes].T)
+    limits = nodes.searchsorted(nodes - config.min_duration, side="right")
+    costs = np.full((len(penalties), len(nodes)), np.inf)
+    costs[:, 0] = 0
+    parents = np.zeros(costs.shape, dtype=np.int64)
+    levels = np.arange(len(penalties))
+    # Line-fit errors depend only on prices. Compute eight endpoints at a time to
+    # bound the temporary arrays, then update the dependent path costs in order.
+    batch_size = 8
+    for first in range(1, len(nodes), batch_size):
+        stop = min(first + batch_size, len(nodes))
+        limit = limits[stop - 1]
+        spans = moments[:, first:stop, None] - moments[:, None, :limit]
+        lengths = nodes[first:stop, None] - nodes[:limit]
+        enough = (spans[0] >= config.minimum_observations) & (
+            spans[0] >= lengths * config.minimum_price_coverage
+        )
+        residual = line_residuals_from_moments(spans)
+        residual[~enough] = np.inf
+        for i in range(first, stop):
+            count = limits[i]
+            options = costs[:, :count] + residual[i - first, :count]
+            best = options.argmin(axis=1)
+            costs[:, i] = options[levels, best] + penalties
+            parents[:, i] = best
+    return parents
+
+
 def _partitions(
     prefix: Floats, start: int, config: AnalysisConfig, noise: float, scales: tuple[float, ...]
 ) -> list[list[int]]:
@@ -48,30 +82,13 @@ def _partitions(
         penalties = np.asarray(scales) * scaled_noise * scaled_noise
     if not np.isfinite(penalties).all():
         return [[0, size] for _ in scales]
-    costs = np.full((len(nodes), len(scales)), np.inf)
-    costs[0] = 0
-    parents = np.zeros(costs.shape, dtype=np.int64)
-    levels = np.arange(len(scales))
-    for i, end in enumerate(nodes[1:], start=1):
-        count = nodes.searchsorted(end - width, side="right")
-        if not count:
-            continue
-        left = nodes[:count]
-        present = prefix[end, 0] - prefix[left, 0]
-        enough = (present >= config.minimum_observations) & (
-            present >= (end - left) * config.minimum_price_coverage
-        )
-        residual = np.where(enough, line_residuals(prefix, left, int(end)), np.inf)
-        options = costs[:count] + residual[:, None]
-        best = options.argmin(axis=0)
-        costs[i] = options[best, levels] + penalties
-        parents[i] = best
+    parents = _best_predecessors(prefix, nodes, config, penalties)
     results = []
-    for level in levels:
+    for previous in parents:
         i = len(nodes) - 1
         cuts = [size]
         while i:
-            i = int(parents[i, level])
+            i = int(previous[i])
             cuts.append(int(nodes[i]))
         cuts.reverse()
         for j in range(1, len(cuts) - 1):
