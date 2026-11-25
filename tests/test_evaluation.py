@@ -87,6 +87,23 @@ def sequences(
     return result
 
 
+def test_reference_grid_digest_preserves_paired_evaluation_across_input_order() -> None:
+    references = (
+        intervals(rows(4, "Z/Q"), [(0, 4, Direction.GROWTH)]),
+        intervals(rows(3, "A/Q"), [(0, 3, Direction.DECLINE)]),
+        intervals(rows(4, "A/Q"), [(0, 2, Direction.SIDEWAYS), (2, 4, None)]),
+    )
+    data = sequences(references, ("first", "second", "first"))
+    result = evaluation.report(data, references, bootstrap_repetitions=0)
+    assert {
+        row["experiment_id"]: row["reference_grid_sha256"]
+        for row in result["experiment_statistics"]
+    } == {
+        "first": "ae47f133dd2aec5e35ae8afdd4a529f6bc8deffd3f0d7f186e2424d7892ea204",
+        "second": "b636042f679df45f23fafe0d91da4ca806f05e6d6a822d4b96e3e50951be145c",
+    }
+
+
 @pytest.mark.parametrize("reference_kind", ["automatic", "human"])
 def test_perfect_three_direction_intervals_have_both_metrics_one(
     reference_kind: Literal["automatic", "human"],

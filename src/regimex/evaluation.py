@@ -548,6 +548,28 @@ def paired_bootstrap(
     }
 
 
+def _reference_grid_sha256(sequences: IntervalEvaluationData, indices: list[int]) -> str:
+    grid = []
+    for index in sorted(indices, key=lambda i: sequences.info[i].instrument_id):
+        info = sequences.info[index]
+        grid.append(
+            {
+                "instrument_id": info.instrument_id,
+                "step_count": info.step_count,
+                "intervals": [
+                    {
+                        "start": item.start,
+                        "stop": item.stop,
+                        "direction": item.direction.value if item.direction is not None else None,
+                        "status": item.status,
+                    }
+                    for item in sequences.references[index]
+                ],
+            }
+        )
+    return hashlib.sha256(json_bytes(grid)).hexdigest()
+
+
 def report(
     sequences: IntervalEvaluationData,
     predictions: tuple[tuple[DirectionSpan, ...], ...],
@@ -572,7 +594,7 @@ def report(
         raise ValueError("evaluation cannot repeat an experiment/instrument sequence")
     grouped: dict[str, ExperimentCounts] = {}
     grouped_lags: dict[str, list[int]] = {}
-    reference_grids: dict[str, list[dict[str, JsonValue]]] = {}
+    sequence_indices: dict[str, list[int]] = {}
     segment_total = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
     point_total = np.zeros((len(DIRECTION_NAMES) + 1, len(DIRECTION_NAMES) + 1), dtype=np.int64)
     reference_lengths: list[int] = []
@@ -603,21 +625,7 @@ def report(
         )
         typed_counts, lags = _typed_boundary_counts(reference, predicted, labels, predicted_labels)
         grouped_lags.setdefault(info.experiment_id, []).extend(lags)
-        reference_grids.setdefault(info.experiment_id, []).append(
-            {
-                "instrument_id": info.instrument_id,
-                "step_count": info.step_count,
-                "intervals": [
-                    {
-                        "start": item.start,
-                        "stop": item.stop,
-                        "direction": item.direction.value if item.direction is not None else None,
-                        "status": item.status,
-                    }
-                    for item in reference
-                ],
-            }
-        )
+        sequence_indices.setdefault(info.experiment_id, []).append(index)
         segment_total += segment_counts
         if info.experiment_id in grouped:
             previous_segments, previous_points, previous_boundaries, previous_typed = grouped[
@@ -714,13 +722,9 @@ def report(
         "experiment_statistics": [
             {
                 "experiment_id": identifier,
-                "reference_grid_sha256": hashlib.sha256(
-                    json_bytes(
-                        sorted(
-                            reference_grids[identifier], key=lambda item: str(item["instrument_id"])
-                        )
-                    )
-                ).hexdigest(),
+                "reference_grid_sha256": _reference_grid_sha256(
+                    sequences, sequence_indices[identifier]
+                ),
                 "segment_counts": cast(JsonValue, grouped[identifier][0].tolist()),
                 "point_counts": cast(JsonValue, grouped[identifier][1].tolist()),
                 "boundary_counts": cast(JsonValue, grouped[identifier][2].tolist()),
