@@ -12,22 +12,42 @@ function reading(value) {
   return Number.isFinite(value) ? number.format(value) : "Unavailable";
 }
 
+function scoreEntry(label, score, bounds, level, missing = "Unavailable") {
+  const entry = element("div");
+  const value = element("dd", Number.isFinite(score) ? number.format(score) : missing);
+  entry.append(element("dt", label), value);
+  if (Number.isFinite(score) && Number.isFinite(level) && level > 0 && level < 1 &&
+      Array.isArray(bounds) && bounds.length === 2 && bounds.every(Number.isFinite)) {
+    const [lower, upper] = bounds;
+    if (lower >= 0 && lower <= upper && upper <= 1) {
+      const interval = element("small", "", "evaluation-score-interval");
+      const abbreviation = element("abbr", percent.format(level) + " CI");
+      abbreviation.title = percent.format(level) + " confidence interval across experiments";
+      interval.append(abbreviation, " · " + number.format(lower) + "–" + number.format(upper));
+      value.append(interval);
+    }
+  }
+  return entry;
+}
+
 function showReport(content, report) {
-  const split = report.scope === "controlled_final_benchmark" ? "held-out" : "validation";
+  const split = {controlled_final_benchmark: "held-out ", fixed_model_validation: "validation "}[report.scope] || "";
   const cohort = [
-    quantity(report.experiment_count, split + " experiment", split + " experiments"),
+    quantity(report.experiment_count, split + "experiment", split + "experiments"),
     quantity(report.instrument_sequence_count, "instrument series", "instrument series"),
     {automatic: "Automatic references", human: "Human references"}[report.reference_kind],
   ].filter(Boolean);
   const scores = element("dl", undefined, "evaluation-summary");
-  for (const [label, value] of [
-    ["Interval macro-F1", reading(report.segment_macro_f1)],
-    ["Per-step macro-F1", report.point_metrics?.defined === false ? "No labeled steps" : reading(report.point_macro_f1)],
-  ]) {
-    const pair = element("div");
-    pair.append(element("dt", label), element("dd", value));
-    scores.append(pair);
-  }
+  const enoughExperiments = (report.confidence_intervals?.experiment_count ?? report.experiment_count) > 1;
+  const uncertainty = enoughExperiments ? report.confidence_intervals : null;
+  const hasPointScore = report.point_metrics?.defined !== false;
+  scores.append(
+    scoreEntry("Interval macro-F1", report.segment_macro_f1,
+      uncertainty?.segment_macro_f1_percentile_interval, uncertainty?.confidence_level),
+    scoreEntry("Per-step macro-F1", hasPointScore ? report.point_macro_f1 : null,
+      uncertainty?.point_macro_f1_percentile_interval, uncertainty?.confidence_level,
+      hasPointScore ? "Unavailable" : "No labeled steps"),
+  );
   content.replaceChildren();
   if (cohort.length) content.append(element("p", cohort.join(" · "), "hint"));
   content.append(scores);

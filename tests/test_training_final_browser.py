@@ -65,6 +65,20 @@ def test_freeze_open_evaluate_and_publish_held_out_result(browser: Any) -> None:
 
     page.route("**/benchmarks?*", benchmark)
     page.route("**/benchmarks/*?*", benchmark)
+    validation_report = {
+        **evaluation_report(),
+        "confidence_intervals": {
+            "confidence_level": 0.95,
+            "experiment_count": 3,
+            "repetitions": 1000,
+            "segment_macro_f1_percentile_interval": [0.53, 0.72],
+            "point_macro_f1_percentile_interval": [0.76, 0.86],
+        },
+    }
+    page.route(
+        f"**/evaluations/{EVALUATION_ID}/result",
+        lambda route: route.fulfill(json=validation_report),
+    )
     report = {
         **evaluation_report(),
         "scope": "controlled_final_benchmark",
@@ -72,6 +86,13 @@ def test_freeze_open_evaluate_and_publish_held_out_result(browser: Any) -> None:
         "experiment_count": 15,
         "segment_macro_f1": 0.45,
         "independent": False,
+        "confidence_intervals": {
+            "confidence_level": 0.95,
+            "experiment_count": 15,
+            "repetitions": 1000,
+            "segment_macro_f1_percentile_interval": [0.38, 0.49],
+            "point_macro_f1_percentile_interval": [0.79, 0.83],
+        },
     }
     page.route(f"**/evaluations/{FINAL_ID}/result", lambda route: route.fulfill(json=report))
     try:
@@ -103,7 +124,15 @@ def test_freeze_open_evaluate_and_publish_held_out_result(browser: Any) -> None:
         expect(final).to_contain_text("15 held-out experiments", timeout=10_000)
         expect(final).to_contain_text("Automatic references")
         expect(final).to_contain_text("0.45")
-        expect(page.locator("#training-actions")).to_contain_text("3 validation experiments")
+        validation = page.locator("#training-actions")
+        expect(validation).to_contain_text("3 validation experiments")
+        for panel, interval, point in [
+            (validation, "95% CI · 0.53\u20130.72", "95% CI · 0.76\u20130.86"),
+            (final, "95% CI · 0.38\u20130.49", "95% CI · 0.79\u20130.83"),
+        ]:
+            for label, bounds in [("Interval macro-F1", interval), ("Per-step macro-F1", point)]:
+                metric = panel.get_by_text(label, exact=True).locator("+ dd")
+                expect(metric.locator(".evaluation-score-interval")).to_have_text(bounds)
         expect(final.get_by_role("link", name="Download JSON")).to_have_attribute(
             "href", f"/api/v1/evaluations/{FINAL_ID}/result"
         )

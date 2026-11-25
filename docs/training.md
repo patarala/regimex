@@ -53,6 +53,9 @@ compared when their recorded validation data, splits and references match.
 Under **Model evaluation → Validation**, choose **Evaluate model** to score the saved weights
 against the run's validation references. Once it finishes, inspect the interval
 and step scores and the results for each direction on the run page.
+When the report includes confidence intervals, the range below each F1 score
+describes sampling uncertainty across experiments. The evaluation resamples
+whole experiments, keeping all their instruments together.
 **All fields** opens the evaluation details. **Download JSON** saves them.
 Under **Final benchmark**, choose **Freeze this model** after training finishes
 and you have selected a candidate. Confirm the version and benchmark. Freezing

@@ -1553,6 +1553,16 @@ iframe {
   font-variant-numeric: tabular-nums;
   overflow-wrap: anywhere;
 }
+.evaluation-score-interval {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.evaluation-score-interval abbr {
+  text-decoration: none;
+}
 .evaluation-directions caption,
 .evaluation-directions :is(th, td):first-child {
   text-align: start;

@@ -1640,6 +1640,61 @@ def test_duplicate_evaluations_use_one_report_for_display_and_publication(browse
         page.close()
 
 
+@pytest.mark.parametrize(
+    ("experiment_count", "bounds", "point_defined", "interval_text"),
+    [
+        (3, None, True, None),
+        (1, (None, None), True, None),
+        (1, ([0.6, 0.6], [0.8, 0.8]), True, None),
+        (3, ([0.7, 0.5], None), True, None),
+        (3, ([0.5, 0.7], [0.0, 0.0]), False, "95% CI · 0.5\u20130.7"),
+        (3, ([0.0, 0.0], None), True, "95% CI · 0\u20130"),
+    ],
+    ids=["no-bootstrap", "null-bounds", "one-experiment", "reversed", "no-labeled-steps", "zero"],
+)
+def test_evaluation_only_displays_intervals_for_defined_scores(
+    browser: Any,
+    experiment_count: int,
+    bounds: tuple[list[float] | None, list[float] | None] | None,
+    point_defined: bool,
+    interval_text: str | None,
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.actions.append(completed_run(EVALUATION_ID, "evaluation"))
+    report = evaluation_report()
+    report["experiment_count"] = experiment_count
+    report["point_metrics"]["defined"] = point_defined
+    if not point_defined:
+        report["point_macro_f1"] = 0.0
+    if bounds is not None:
+        if bounds[0] == [0, 0]:
+            report["segment_macro_f1"] = 0
+        report["confidence_intervals"] = {
+            "confidence_level": 0.95,
+            "repetitions": 1000,
+            "experiment_count": report["experiment_count"],
+            "segment_macro_f1_percentile_interval": bounds[0],
+            "point_macro_f1_percentile_interval": bounds[1],
+        }
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(f"**/evaluations/{EVALUATION_ID}/result", lambda route: route.fulfill(json=report))
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        scores = page.locator("#training-actions .evaluation-summary")
+        segment = scores.get_by_text("Interval macro-F1", exact=True).locator("+ dd")
+        point = scores.get_by_text("Per-step macro-F1", exact=True).locator("+ dd")
+        expect(point).to_have_text("0.8" if point_defined else "No labeled steps")
+        if interval_text is None:
+            expect(segment).to_have_text("0.6")
+        else:
+            expect(segment.locator(".evaluation-score-interval")).to_have_text(interval_text)
+        expect(point.locator(".evaluation-score-interval")).to_have_count(0)
+    finally:
+        page.close()
+
+
 def test_cancelling_running_training_updates_the_selected_run(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
