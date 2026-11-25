@@ -829,6 +829,7 @@ class AdminRepository:
         *,
         kind: AdminKind | None = None,
         training: TrainingSpec | ImportedTrainingSpec | None = None,
+        include_final: bool = False,
         archive: TrainingArchiveFilter = "all",
         limit: int = 100,
         offset: int = 0,
@@ -857,7 +858,18 @@ class AdminRepository:
                         " AND r.request->>'dataset_id'=%s AND r.request->>'reference_set_id'=%s"
                     )
                     values.extend((training.dataset_id, training.validation_reference_set_id))
-                query += "))"
+                query += ")"
+                if (
+                    include_final
+                    and isinstance(training, TrainingSpec)
+                    and training.benchmark_selection_id
+                ):
+                    query += (
+                        " OR (r.kind='evaluation' AND r.request->>'partition'='test' "
+                        "AND r.request->>'benchmark_id'=%s)"
+                    )
+                    values.append(training.benchmark_selection_id)
+                query += ")"
             rows = connection.execute(
                 query + " ORDER BY (o.document->>'created_at')::timestamptz DESC, "
                 "r.operation_id DESC LIMIT %s OFFSET %s",

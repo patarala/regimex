@@ -530,12 +530,20 @@ class AdminService:
         )
 
     def training_actions(
-        self, principal: Principal, run_id: UUID, *, limit: int, offset: int
+        self,
+        principal: Principal,
+        run_id: UUID,
+        *,
+        include_final: bool = False,
+        limit: int,
+        offset: int,
     ) -> tuple[AdminRunRecord, ...]:
         run = self.get_run(principal, run_id)
         if not isinstance(run.spec, (TrainingSpec, ImportedTrainingSpec)):
             raise NotFound()
-        return self.repository.list_runs(principal, training=run.spec, limit=limit, offset=offset)
+        return self.repository.list_runs(
+            principal, training=run.spec, include_final=include_final, limit=limit, offset=offset
+        )
 
     def get_dataset(self, principal: Principal, dataset_id: str) -> DatasetRecord:
         return self.repository.get_dataset(principal, dataset_id)

@@ -81,7 +81,7 @@ class AdminAPIService(Protocol):
     def preview_weight_deletion(self, principal: Principal, run_id: UUID) -> DeletionPreview: ...
 
     def training_actions(
-        self, principal: Principal, run_id: UUID, *, limit: int, offset: int
+        self, principal: Principal, run_id: UUID, *, include_final: bool, limit: int, offset: int
     ) -> tuple[AdminRunRecord, ...]: ...
 
     def training_metrics(self, principal: Principal, run_id: UUID) -> TrainingMetrics: ...
@@ -339,6 +339,9 @@ class AdminRunView(StrictModel):
     archived_at: AwareDatetime | None = None
     polling_url: str
     training: TrainingSpec | ImportedTrainingView | None = None
+    final_benchmark_id: Identifier | None = Field(
+        default=None, exclude_if=lambda item: item is None
+    )
     external_evaluations: tuple[ExternalEvaluation, ...] = Field(
         default=(), exclude_if=lambda items: not items
     )
@@ -414,7 +417,7 @@ class ReferencePage(StrictModel):
     offset: int
 
 
-def _run(record: AdminRunRecord) -> AdminRunView:
+def _run(record: AdminRunRecord, *, include_final: bool = False) -> AdminRunView:
     allowed = {
         "dataset_id",
         "dataset_sha256",
@@ -452,6 +455,9 @@ def _run(record: AdminRunRecord) -> AdminRunView:
         run_id=record.run_id,
         job=_operation(record.operation),
         training=training,
+        final_benchmark_id=record.spec.benchmark_id
+        if include_final and isinstance(record.spec, EvaluationSpec)
+        else None,
         external_evaluations=record.external_evaluations
         if isinstance(training, TrainingSpec)
         else (),
@@ -796,10 +802,20 @@ def install_admin_routes(
 
     @app.get("/api/v1/training-runs/{run_id}/actions")
     def training_actions(
-        run_id: UUID, identity: Identity, limit: Limit = 100, offset: Offset = 0
+        run_id: UUID,
+        identity: Identity,
+        include_final: bool = False,
+        limit: Limit = 100,
+        offset: Offset = 0,
     ) -> AdminRunPage:
-        records = service.training_actions(identity, run_id, limit=limit, offset=offset)
-        return AdminRunPage(items=tuple(_run(item) for item in records), limit=limit, offset=offset)
+        records = service.training_actions(
+            identity, run_id, include_final=include_final, limit=limit, offset=offset
+        )
+        return AdminRunPage(
+            items=tuple(_run(item, include_final=include_final) for item in records),
+            limit=limit,
+            offset=offset,
+        )
 
     @app.get("/api/v1/evaluations/{run_id}")
     def get_evaluation(run_id: UUID, identity: Identity) -> AdminRunView:

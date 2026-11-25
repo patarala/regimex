@@ -357,7 +357,7 @@ run status and the choices available to the signed-in administrator:
 | `GET /training-runs/{id}/progress` | New chart samples from the current training attempt |
 | `GET /training-runs/{id}/metrics` | Selected seed, validation interval macro-F1 and the history saved by the backend. Returns `409` until the run succeeds. |
 | `GET /training-runs/{id}/validation-score` | Model version and verified validation interval macro-F1, without the training history. |
-| `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model |
+| `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model. `include_final=true` also returns test evaluations of that model on the run's reserved benchmark, identified by `final_benchmark_id`. |
 
 Send `{"run_ids":["RUN_UUID"],"archived":true}` to archive a selection, or
 set `archived` to `false` to restore it. Success returns `204`. Every ID must

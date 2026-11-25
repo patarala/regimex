@@ -414,10 +414,18 @@
             </section>
             <section id="training-downstream" class="training-section" aria-labelledby="training-actions-title" hidden>
               <h3 id="training-actions-title">Model evaluation</h3>
+              <h4>Validation</h4>
               <ul id="training-actions" class="training-actions"></ul>
+              <button id="training-evaluate" type="button" class="quiet">Evaluate model</button>
+              <section id="training-final" aria-labelledby="training-final-title" hidden>
+                <h4 id="training-final-title">Final benchmark</h4>
+                <p id="training-final-status" class="hint" role="status"></p>
+                <ul id="training-final-actions" class="training-actions"></ul>
+                <button id="training-final-next" type="button" class="quiet" hidden></button>
+              </section>
+              <ul id="training-publications" class="training-actions"></ul>
               <p id="training-publication" class="hint"></p>
               <div class="actions">
-                <button id="training-evaluate" type="button" class="quiet">Evaluate model</button>
                 <button id="training-publish" type="button" hidden>Use as default</button>
                 <button id="training-deletion-receipt" type="button" class="quiet" hidden>View deletion receipt</button>
               </div>

@@ -1,5 +1,6 @@
 import {$, analysisStateLabel, bindTooltip, element, launchSourceLabel, shortDate} from "./ui.js";
 import {showTrainingActions} from "./training-evaluation.js";
+import {createFinalBenchmark} from "./training-benchmark.js";
 import {createTrainingMetrics} from "./training-metrics.js";
 import {createTrainingProgress} from "./training-progress.js";
 import {createRunArchive, finished} from "./training-archive.js";
@@ -16,6 +17,12 @@ const api = "/api/v1/";
 const pageSize = 12;
 const inProgress = (job) => ["queued", "running", "cancel_requested"].includes(job.state);
 const route = (id) => api + "training-runs/" + encodeURIComponent(id);
+
+function currentEvaluation(rows) {
+  // Actions are newest first. Older installations can have several successful evaluations.
+  return rows.findLast(row => row.job.state === "succeeded") ||
+    rows.findLast(row => inProgress(row.job)) || rows[0];
+}
 
 function duration(seconds) {
   if (seconds > 0 && seconds < 1) return "<1 s";
@@ -138,6 +145,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   const names = createRunNameEditor({session, getRun: () => run, applyName});
   const metrics = createTrainingMetrics();
   const progress = createTrainingProgress(session, metrics);
+  const benchmark = createFinalBenchmark({session, action, refresh: refreshDetail});
   let comparedIds = [];
   const archive = createRunArchive({apply: setArchived, renderRows,
     compare: ids => navigate(runPath("compare", view, ids))});
@@ -209,6 +217,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-facts").replaceChildren();
     renderedFacts = null;
     renderedEvaluations = null;
+    benchmark.reset();
     $("training-external-evaluations").hidden = true;
     $("training-imported-results").replaceChildren();
     $("training-import-data").removeAttribute("href");
@@ -216,6 +225,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-import-data").hidden = true;
     showTiming(null);
     $("training-actions").replaceChildren();
+    $("training-publications").replaceChildren();
   }
 
   function close() {
@@ -397,6 +407,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function showRemovedWeights() {
     $("training-downstream").hidden = false;
     $("training-evaluate").hidden = $("training-publish").hidden = $("training-delete-weights").hidden = true;
+    $("training-final-next").hidden = true;
     $("training-deletion-receipt").hidden = false;
     $("training-publication").textContent = "Model weights removed. This version can no longer be evaluated or published.";
     $("training-publication").hidden = false;
@@ -418,6 +429,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   function refreshDetail() {
+    benchmark.invalidate();
     if (target === "compare") return comparison.show(comparedIds, false);
     if (run) {
       // Verified evidence can be attached after a run finishes.
@@ -507,30 +519,33 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   async function downstream(valid) {
     const [rows, models] = await Promise.all([
-      eachPage(route(run.run_id) + "/actions", valid),
+      eachPage(route(run.run_id) + "/actions?include_final=true", valid),
       run.weights_deletion_id ? null : session.json(api + "models?published_only=true&limit=1"),
     ]);
     if (!valid()) return false;
     const attempts = rows.filter(row => row.job.kind === "evaluation");
-    // Actions are newest first. The API reuses the earliest successful or active attempt.
-    evaluation = attempts.findLast(row => row.job.state === "succeeded");
-    const attempt = evaluation || attempts.findLast(row => inProgress(row.job)) || attempts[0];
-    const actions = rows.filter(row => row.job.kind === "publication");
-    if (attempt) actions.unshift(attempt);
-    showTrainingActions($("training-actions"), actions, session);
+    const validation = currentEvaluation(attempts.filter(row => !row.final_benchmark_id));
+    const final = currentEvaluation(attempts.filter(row => row.final_benchmark_id &&
+      row.final_benchmark_id === run.training.benchmark_selection_id));
+    const publications = rows.filter(row => row.job.kind === "publication");
+    evaluation = [final, validation].find(row => row?.job.state === "succeeded");
+    showTrainingActions($("training-actions"), validation ? [validation] : [], session);
+    showTrainingActions($("training-publications"), publications, session);
     $("training-downstream").hidden = false;
+    const finalView = benchmark.show(run, final, valid);
     if (run.weights_deletion_id) {
       showRemovedWeights();
+      await finalView;
       return false;
     }
     const newlyActive = activeModel !== undefined && activeModel !== models.active_model_version_id &&
       models.active_model_version_id === run.training.model_version_id;
     activeModel = models.active_model_version_id;
     if (newlyActive) void onPublication();
-    pendingDownstream = actions.some(row => inProgress(row.job));
+    pendingDownstream = [validation, final, ...publications].some(row => row && inProgress(row.job));
     const evaluate = $("training-evaluate");
-    evaluate.hidden = Boolean(evaluation || (attempt && inProgress(attempt.job)));
-    evaluate.textContent = attempt ? "Retry evaluation" : "Evaluate model";
+    evaluate.hidden = Boolean(validation && (validation.job.state === "succeeded" || inProgress(validation.job)));
+    evaluate.textContent = validation ? "Retry evaluation" : "Evaluate model";
     evaluate.disabled = busy || pendingDownstream;
     $("training-publish").hidden = !evaluation || activeModel === run.training.model_version_id;
     $("training-publish").disabled = busy || pendingDownstream;
@@ -540,9 +555,11 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     $("training-deletion-receipt").hidden = true;
     let nextStep = "";
     if (activeModel === run.training.model_version_id) nextStep = "New analyses use this model by default.";
-    else if (!attempt) nextStep = "Evaluate the saved model on its validation data before making it the default for new analyses.";
+    else if (!validation && !final) nextStep = "Evaluate the saved model before making it the default for new analyses.";
     $("training-publication").textContent = nextStep;
     $("training-publication").hidden = !nextStep;
+    await finalView;
+    if (valid()) $("training-final-next").disabled = busy || pendingDownstream;
     return pendingDownstream;
   }
 
@@ -691,7 +708,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     for (const id of ["training-new", "training-refresh", "training-cancel", "training-copy-run"])
       $(id).disabled = locked;
     $("training-evaluate").disabled = $("training-publish").disabled =
-      $("training-delete-weights").disabled = locked || pendingDownstream;
+      $("training-final-next").disabled = $("training-delete-weights").disabled = locked || pendingDownstream;
     form.setBusy(locked || submittingDraft === draftRevision);
   }
 

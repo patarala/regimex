@@ -1113,3 +1113,9 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     rows = context.client.get(run_path + "/actions", headers=headers).json()["items"]
     assert [row["job"]["kind"] for row in rows] == ["publication", "evaluation"]
     assert rows[1]["run_id"] == str(evaluation.run_id)
+    actions = context.client.get(
+        run_path + "/actions", params={"include_final": True}, headers=headers
+    ).json()["items"]
+    assert actions[0]["run_id"] == str(final_evaluation.run_id)
+    assert actions[0]["final_benchmark_id"] == benchmark_id
+    assert actions[1:] == rows

@@ -50,16 +50,22 @@ compared when their recorded validation data, splits and references match.
 
 ## Evaluate and publish
 
-Under **Model evaluation**, choose **Evaluate model** to score the saved weights
+Under **Model evaluation → Validation**, choose **Evaluate model** to score the saved weights
 against the run's validation references. Once it finishes, inspect the interval
 and step scores and the results for each direction on the run page.
 **All fields** opens the evaluation details. **Download JSON** saves them.
-**Use as default** publishes the evaluated model for new analyses after
-confirmation. Accepted analyses retain their original model version.
-
-For final benchmark results, freeze the selected candidate before opening its
-reserved references. Further selection requires another benchmark.
+Under **Final benchmark**, choose **Freeze this model** after training finishes
+and you have selected a candidate. Confirm the version and benchmark. Freezing
+closes selection for every run using that reservation. Choose **Open held-out
+test** to unseal the test references, then choose **Evaluate frozen model**.
+You can close the page and return to follow the job or read its report.
+The report identifies the reference source used for the held-out experiments.
+Further model selection requires a fresh benchmark.
 [Final evaluation](api.md#4-freeze-and-evaluate-final-data) · [How scores are measured](quality.md)
+
+**Use as default** publishes the model for new analyses after confirmation.
+Publication records its completed final evaluation when available, otherwise
+its validation evaluation. Accepted analyses retain their original model version.
 
 ## Manage saved runs
 

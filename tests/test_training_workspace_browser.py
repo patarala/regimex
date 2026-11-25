@@ -190,6 +190,10 @@ class TrainingAPI:
                 "active_model_version_id": self.active_model,
                 "items": [{"model_version_id": self.active_model}],
             },
+            "benchmarks": {
+                "reservation": {"selection_started_at": "2026-01-01", "opened_at": None},
+                "frozen_choice": None,
+            },
             "storage": {
                 "used_bytes": 0,
                 "reserved_bytes": 0,
@@ -1530,7 +1534,7 @@ def test_validation_and_publication_stay_locked_until_their_status_arrives(brows
             assert len(held) == 1
             page.unroute(pattern)
             held.pop().fulfill(json={"items": [*api.actions[:-1], pending_action]})
-            expect(page.locator("#training-actions")).to_contain_text("Running")
+            expect(page.locator("#training-downstream")).to_contain_text("Running")
             expect(page.locator("#training-evaluate")).to_be_hidden()
             page.get_by_role("button", name="Refresh", exact=True).click()
             if kind == "evaluation":

@@ -13,8 +13,9 @@ function reading(value) {
 }
 
 function showReport(content, report) {
+  const split = report.scope === "controlled_final_benchmark" ? "held-out" : "validation";
   const cohort = [
-    quantity(report.experiment_count, "validation experiment", "validation experiments"),
+    quantity(report.experiment_count, split + " experiment", split + " experiments"),
     quantity(report.instrument_sequence_count, "instrument series", "instrument series"),
     {automatic: "Automatic references", human: "Human references"}[report.reference_kind],
   ].filter(Boolean);

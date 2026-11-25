@@ -124,7 +124,7 @@ def test_previously_published_model_has_no_delete_action(browser: Any) -> None:
     page.route(ORIGIN + "/**", api.dispatch)
     try:
         page.goto(f"{ORIGIN}/training/{RUN_ID}")
-        expect(page.locator("#training-actions")).to_contain_text("Publication")
+        expect(page.locator("#training-publications")).to_contain_text("Publication")
         page.get_by_text("Run details and settings", exact=True).click()
         expect(page.get_by_role("button", name="Delete model weights")).to_be_hidden()
     finally:
