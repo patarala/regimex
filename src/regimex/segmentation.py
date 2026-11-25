@@ -22,6 +22,9 @@ from regimex.directions import (
     summarize_interval,
 )
 
+# Keep a batch's candidate scores under 512 KiB unless one endpoint alone needs more.
+_DECODER_COST_BUFFER_ELEMENTS = 65_536
+
 
 def eligible_mask(
     observations: tuple[Observation, ...], config: AnalysisConfig
@@ -260,7 +263,6 @@ def _decode_block(
     size = len(probabilities)
     losses = -np.log(np.maximum(probabilities, 1e-12))
     label_count = len(DIRECTION_NAMES)
-    labels = np.arange(label_count)
     cumulative = np.vstack((np.zeros((1, label_count)), np.cumsum(losses, axis=0))).T.copy()
     minimum = min(size, config.min_duration)
     starts = np.zeros((size + 1, label_count), dtype=np.int64)
@@ -275,45 +277,56 @@ def _decode_block(
         )
     )
     steps = np.arange(size + 1)
-    cost = np.full(label_count, np.inf)
-    for stop in range(minimum, size + 1):
-        if (
-            known[stop] >= config.minimum_observations
-            and known[stop] / stop >= config.minimum_price_coverage
-        ):
-            cost[:] = cumulative[:, stop]
-        else:
-            cost.fill(np.inf)
-        if stop >= 2 * minimum:
-            candidates = slice(minimum, stop - minimum + 1)
-            options = (
-                previous_cost[:, candidates]
-                + cumulative[:, stop, None]
-                - cumulative[:, candidates]
-                + config.decoder_switch_penalty
-            )
-            counts = known[stop] - known[candidates]
-            sufficient = (counts >= config.minimum_observations) & (
-                counts / (stop - steps[candidates]) >= config.minimum_price_coverage
-            )
-            options[:, ~sufficient] = np.inf
-            offsets = options.argmin(axis=1)
-            split_cost = options[labels, offsets]
+    all_prices_known = known[-1] == size
+    # Each split precedes its endpoint by at least minimum steps. Endpoints within
+    # that distance share only already-computed predecessors and can run together.
+    first_stop = minimum
+    while first_stop <= size:
+        batch_size = min(
+            minimum, max(1, _DECODER_COST_BUFFER_ELEMENTS // (label_count * first_stop))
+        )
+        end = min(first_stop + batch_size, size + 1)
+        stops = steps[first_stop:end]
+        end_cost = cumulative[:, first_stop:end].T
+        eligible = (known[stops] >= config.minimum_observations) & (
+            known[stops] / stops >= config.minimum_price_coverage
+        )
+        cost = np.where(eligible[:, None], end_cost, np.inf)
+        if stops[-1] >= 2 * minimum:
+            candidates = slice(minimum, end - minimum)
+            lengths = stops[:, None] - steps[candidates]
+            if all_prices_known:
+                sufficient = lengths >= max(minimum, config.minimum_observations)
+            else:
+                counts = known[stops, None] - known[candidates]
+                sufficient = (
+                    (lengths >= minimum)
+                    & (counts >= config.minimum_observations)
+                    & (counts / lengths >= config.minimum_price_coverage)
+                )
+            options = previous_cost[None, :, candidates] + end_cost[:, :, None]
+            options -= cumulative[None, :, candidates]
+            options += config.decoder_switch_penalty
+            np.copyto(options, np.inf, where=~sufficient[:, None, :])
+            offsets = options.argmin(axis=2)
+            split_cost = np.take_along_axis(options, offsets[:, :, None], axis=2)[:, :, 0]
             improved = split_cost < cost
-            cost[improved] = split_cost[improved]
-            starts[stop, improved] = minimum + offsets[improved]
+            starts[first_stop:end] = np.where(improved, minimum + offsets, 0)
+            np.copyto(cost, split_cost, where=improved)
 
         # Stable class order also decides ties when reconstructing the path.
-        first, second = np.argsort(cost, kind="stable")[:2]
-        previous_cost[:, stop] = cost[first]
-        previous_label[:, stop] = first
-        previous_cost[first, stop] = cost[second]
-        previous_label[first, stop] = second
+        first, second = np.argsort(cost, axis=1, kind="stable")[:, :2].T
+        row = np.arange(len(stops))
+        previous_cost[:, first_stop:end] = cost[row, first]
+        previous_label[:, first_stop:end] = first
+        previous_cost[first, stops] = cost[row, second]
+        previous_label[first, stops] = second
+        first_stop = end
     result = []
-    if not np.isfinite(cost).any():
+    if not np.isfinite(cost[-1]).any():
         raise ValueError("scores cannot be decoded with the observation constraints")
     stop = size
-    label = int(np.argmin(cost))
+    label = int(np.argmin(cost[-1]))
     while stop:
         start = int(starts[stop, label])
         result.append((start, stop, Direction(DIRECTION_NAMES[label])))

@@ -495,6 +495,38 @@ def test_decoder_prefers_the_first_eligible_class_on_a_tie(last_label: int) -> N
     ]
 
 
+@pytest.mark.parametrize("missing,first_split", [((), 5), ((4, 6), 6), ((8, 10), None)])
+def test_each_decoded_piece_needs_enough_known_prices(
+    missing: tuple[int, ...], first_split: int | None
+) -> None:
+    rows = experiment([None if step in missing else 100.0 for step in range(13)]).observations
+    scores = np.full((13, 3), 0.01)
+    scores[:5] = [0.005, 0.99, 0.005]
+    scores[5:10, 2] = 0.98
+    scores[10:, 0] = 0.98
+    config = AnalysisConfig(min_duration=3, minimum_observations=5, minimum_price_coverage=0.8)
+    decoded = segmentation.decode(scores, rows, config)
+    expected = (
+        [(0, 13, Direction.GROWTH)]
+        if first_split is None
+        else [(0, first_split, Direction.GROWTH), (first_split, 13, Direction.DECLINE)]
+    )
+    assert [(item.start, item.stop, item.direction) for item in decoded] == expected
+
+
+def test_decoder_workspace_size_keeps_the_same_splits(monkeypatch: pytest.MonkeyPatch) -> None:
+    rng = np.random.default_rng(287)
+    rows = experiment([None if step % 13 == 0 else 100.0 for step in range(157)]).observations
+    weights = rng.integers(1, 4, size=(len(rows), 3))
+    scores = weights / weights.sum(axis=1, keepdims=True)
+    config = AnalysisConfig(min_duration=7, decoder_switch_penalty=0)
+    decoded = segmentation.decode(scores, rows, config)
+    assert len(decoded) > 2
+    for elements in (1000, 1):
+        monkeypatch.setattr(segmentation, "_DECODER_COST_BUFFER_ELEMENTS", elements)
+        assert segmentation.decode(scores, rows, config) == decoded
+
+
 def test_decoder_and_annotation_share_availability_and_validate_scores() -> None:
     data = experiment([100.0] * 32 + [None] * 32 + [100.0] * 32, [1] * 64 + [0] * 32)
     scores = np.tile([0.1, 0.8, 0.1], (96, 1))
