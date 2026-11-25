@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -580,6 +581,59 @@ def test_corrupt_cached_model_fails_without_a_committed_result(
     assert failed is not None and failed.state == "failed" and failed.failure is not None
     assert failed.failure.code == "incompatible_artifact"
     assert service.get_analysis(owner, queued.analysis_id).result is None
+
+
+def test_cache_usage_counts_nested_files_and_propagates_directory_read_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    nested = tmp_path / "weights"
+    nested.mkdir()
+    (nested / "state").write_bytes(b"1234")
+    (tmp_path / "config").write_bytes(b"12")
+    assert analysis_worker._cached_bundle_bytes(tmp_path) == 6
+    scan = os.scandir
+
+    def fail_read(path: str) -> Any:
+        if Path(path) == nested:
+            raise OSError(errno.EIO, "cannot read cached weights")
+        return scan(path)
+
+    monkeypatch.setattr(os, "scandir", fail_read)
+    with pytest.raises(OSError, match="cannot read cached weights"):
+        analysis_worker._cached_bundle_bytes(tmp_path)
+
+
+def test_cache_usage_rejects_directory_links(tmp_path: Path) -> None:
+    nested = tmp_path / "weights"
+    nested.mkdir()
+    (nested / "link").symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="regular files and directories"):
+        analysis_worker._cached_bundle_bytes(tmp_path)
+
+
+def test_cache_only_publishes_a_fully_read_only_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    (incoming / "weights").write_bytes(b"weights")
+    destination = tmp_path / "cached"
+    chmod = Path.chmod
+
+    def fail_chmod(path: Path, mode: int) -> None:
+        if path.is_dir() and mode == 0o500:
+            raise OSError(errno.EIO, "cannot set directory permissions")
+        chmod(path, mode)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "chmod", fail_chmod)
+        with pytest.raises(OSError, match="cannot set directory permissions"):
+            analysis_worker._publish_cached_bundle(incoming, destination)
+    assert not destination.exists()
+    analysis_worker._publish_cached_bundle(incoming, destination)
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o500
+    assert stat.S_IMODE((destination / "weights").stat().st_mode) == 0o400
+    destination.chmod(0o700)
 
 
 @pytest.mark.parametrize("disk_full", [False, True])

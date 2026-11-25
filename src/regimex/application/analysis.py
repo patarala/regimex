@@ -39,6 +39,44 @@ if TYPE_CHECKING:
     from regimex.model_contracts import LoadedPredictor
 
 
+def _cached_bundle_bytes(root: Path) -> int:
+    """Count the entire entry or propagate the I/O error before admitting another bundle."""
+    total = 0
+    directories = [os.fspath(root)]
+    while directories:
+        with os.scandir(directories.pop()) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    directories.append(entry.path)
+                elif stat.S_ISREG(info.st_mode):
+                    total += info.st_size
+                else:
+                    raise ValueError("model cache must contain regular files and directories")
+    return total
+
+
+def _raise_walk_error(error: OSError) -> None:
+    raise error
+
+
+def _discard_incoming_bundle(path: Path) -> None:
+    for parent, _, _ in os.walk(path, followlinks=False, onerror=_raise_walk_error):
+        Path(parent).chmod(0o700)
+    shutil.rmtree(path)
+
+
+def _publish_cached_bundle(incoming: Path, destination: Path) -> None:
+    """Publish the directory only after all verified files and directories are read-only."""
+    for parent, directories, names in os.walk(incoming, onerror=_raise_walk_error):
+        for name in names:
+            (Path(parent) / name).chmod(0o400)
+        for name in directories:
+            (Path(parent) / name).chmod(0o500)
+    incoming.chmod(0o500)
+    incoming.rename(destination)
+
+
 def _cache_bundle(
     service: AnalysisService, model: ModelRecord, *, heartbeat: Callable[[], None] | None = None
 ) -> Path:
@@ -72,22 +110,13 @@ def _cache_bundle(
                 continue
             if entry.name.startswith(".incoming-") and entry.is_dir() and not entry.is_symlink():
                 # No other writer can own an incoming entry under this lock.
-                for parent, _, _ in os.walk(entry, followlinks=False):
-                    Path(parent).chmod(0o700)
-                shutil.rmtree(entry)
+                _discard_incoming_bundle(entry)
                 continue
             if re.fullmatch(r"[0-9a-f]{64}-[0-9a-f]{64}", entry.name) is None:
                 raise ValueError("model cache contains an unexpected entry")
             if not entry.is_dir() or entry.is_symlink():
                 raise ValueError("model cache entries must be regular directories")
-            for parent, directories, names in os.walk(entry, followlinks=False):
-                if any((Path(parent) / name).is_symlink() for name in directories):
-                    raise ValueError("model cache cannot contain symbolic links")
-                for name in names:
-                    info = (Path(parent) / name).lstat()
-                    if not stat.S_ISREG(info.st_mode):
-                        raise ValueError("model cache must contain regular files")
-                    used += info.st_size
+            used += _cached_bundle_bytes(entry)
         required = model.manifest.size_bytes + sum(
             info.size_bytes for info in model.members.values()
         )
@@ -95,8 +124,9 @@ def _cache_bundle(
             raise ObjectCapacityError("model cache capacity is exhausted")
         if exists:
             return destination
-        with tempfile.TemporaryDirectory(prefix=".incoming-", dir=cache) as temporary:
-            incoming = Path(temporary) / "bundle"
+        # Keep both names in the same parent so a sealed directory can be renamed.
+        incoming = cache / ".incoming-bundle"
+        try:
             materialize_bundle(
                 service.store,
                 model,
@@ -111,13 +141,10 @@ def _cache_bundle(
                 architecture_id=descriptor.architecture_id,
                 implementation_version=descriptor.implementation_version,
             )
-            for parent, directories, names in os.walk(incoming):
-                for name in names:
-                    (Path(parent) / name).chmod(0o400)
-                for name in directories:
-                    (Path(parent) / name).chmod(0o500)
-            incoming.rename(destination)
-            destination.chmod(0o500)
+            _publish_cached_bundle(incoming, destination)
+        finally:
+            if incoming.exists():
+                _discard_incoming_bundle(incoming)
         return destination
     finally:
         os.close(lock)
