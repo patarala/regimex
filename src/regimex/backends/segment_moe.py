@@ -5,7 +5,7 @@ import hashlib
 import platform
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated, Literal, cast
@@ -16,7 +16,13 @@ from pydantic import Field, JsonValue
 from torch import Tensor, nn
 
 from regimex.backends.epoch_history import HistoryRecord, ValidationRecord, validate_epoch_selection
-from regimex.backends.price_persistence import Accumulation, Gate, geometry
+from regimex.backends.segment_moe_features import segment_features
+from regimex.backends.segment_moe_layout import (
+    BLOCK_FEATURE_COUNT,
+    CONTEXT_LENGTH,
+    SEGMENT_FEATURE_COUNT,
+)
+from regimex.backends.segment_moe_network import SegmentMoE
 from regimex.contracts import StrictModel
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig
 from regimex.evaluation import probabilities_valid
@@ -25,6 +31,7 @@ from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, verify_
 from regimex.model_contracts import (
     BundleProvenance,
     FitResult,
+    HistoryCallback,
     ObservationInputs,
     SelectionEvaluator,
     TrainingInputs,
@@ -53,9 +60,8 @@ _ROLES: dict[BundleRole, str] = {
     "preprocessing": "preprocessing.json",
     "validation": "validation.json",
 }
-_BLOCK_WIDTH = 28
 type _Moments = Annotated[
-    tuple[float, ...], Field(min_length=_BLOCK_WIDTH, max_length=_BLOCK_WIDTH)
+    tuple[float, ...], Field(min_length=BLOCK_FEATURE_COUNT, max_length=BLOCK_FEATURE_COUNT)
 ]
 
 
@@ -63,17 +69,21 @@ class BlockScale(StrictModel):
     mean: _Moments
     scale: Annotated[
         tuple[Annotated[float, Field(gt=0)], ...],
-        Field(min_length=_BLOCK_WIDTH, max_length=_BLOCK_WIDTH),
+        Field(min_length=BLOCK_FEATURE_COUNT, max_length=BLOCK_FEATURE_COUNT),
     ]
 
     @classmethod
     def fit(cls, blocks: Tensor) -> BlockScale:
-        values = blocks.numpy().astype(np.float64)
-        return cls(mean=tuple(values.mean(0)), scale=tuple(values.std(0).clip(min=1e-4)))
+        values = blocks.to(dtype=torch.float64)
+        return cls(
+            mean=tuple(values.mean(dim=0).tolist()),
+            scale=tuple(values.std(dim=0, correction=0).clamp_min(1e-4).tolist()),
+        )
 
     def transform(self, blocks: Tensor) -> Tensor:
-        z = (blocks.numpy() - np.asarray(self.mean)) / np.asarray(self.scale)
-        return torch.from_numpy(z.clip(-7, 7).astype(np.float32))
+        mean = blocks.new_tensor(self.mean, dtype=torch.float64)
+        scale = blocks.new_tensor(self.scale, dtype=torch.float64)
+        return ((blocks - mean) / scale).clamp(-7, 7).to(dtype=blocks.dtype)
 
 
 class Configuration(StrictModel):
@@ -85,34 +95,7 @@ class Configuration(StrictModel):
     environment: dict[str, JsonValue]
 
 
-class PersistenceNetwork(nn.Module):
-    def __init__(self, width: int) -> None:
-        super().__init__()
-        self.accumulation = Accumulation()
-        self.context = nn.Sequential(nn.Linear(36, width), nn.SiLU(), nn.Linear(width, 3))
-        self.gate = Gate()
-
-    @property
-    def weight_bytes(self) -> int:
-        return sum(value.numel() * value.element_size() for value in self.state_dict().values())
-
-    def check_cache_budget(self, runtime: InferenceRuntime) -> None:
-        if self.weight_bytes + _BLOCK_WIDTH * 16 > runtime.model_cache_budget_bytes:
-            raise ResourceBudgetExceeded("Segment MoE exceeds the inference model cache budget")
-
-    def forward(self, segments: Tensor, block: Tensor) -> Tensor:
-        slope, fit, simple, simple_fit = segments.unbind(-1)
-        signed = slope.asinh()
-        simple = simple.asinh()
-        direct = torch.stack((signed, fit, simple, simple_fit), dim=-1).flatten(1)
-        reflected = torch.stack((-signed, fit, -simple, simple_fit), dim=-1).flatten(1)
-        # Quote-unit and sign conventions should not make one direction easier to predict.
-        context = ((self.context(direct) + self.context(reflected)[:, (0, 2, 1)]) * 0.5).softmax(-1)
-        weight = self.gate(block).sigmoid()
-        return cast(Tensor, weight * self.accumulation(segments) + (1 - weight) * context)
-
-
-@dataclass
+@dataclass(frozen=True)
 class SegmentTable:
     spans: IntArray
     contexts: Tensor
@@ -132,8 +115,8 @@ class SegmentTable:
         for rows in inputs.observations:
             if check_budget:
                 check_budget()
-            lengths, context, block = geometry(tuple(rows), config)
-            spans.append(lengths + offset)
+            sequence_spans, context, block = segment_features(tuple(rows), config)
+            spans.append(sequence_spans + offset)
             contexts.append(context)
             blocks.append(block)
             offset += len(rows)
@@ -144,15 +127,19 @@ class SegmentTable:
             offset,
         )
 
+    def standardized(self, scale: BlockScale) -> SegmentTable:
+        return replace(self, blocks=scale.transform(self.blocks))
+
     @torch.inference_mode()
-    def predict(self, network: PersistenceNetwork, batch: int) -> DoubleArray:
+    def predict(self, network: SegmentMoE, batch_size: int) -> DoubleArray:
         # The decoder determines availability. Uniform scores keep every original step aligned.
         result = np.full((self.row_count, 3), 1 / 3, dtype=np.float64)
-        for start in range(0, len(self.spans), batch):
-            stop = start + batch
-            probabilities = (
-                network(self.contexts[start:stop], self.blocks[start:stop]).double().numpy()
-            )
+        device = next(network.parameters()).device
+        for start in range(0, len(self.spans), batch_size):
+            stop = start + batch_size
+            contexts = self.contexts[start:stop].to(device)
+            blocks = self.blocks[start:stop].to(device)
+            probabilities = network(contexts, blocks).to(device="cpu", dtype=torch.float64).numpy()
             for (left, right), prob in zip(self.spans[start:stop], probabilities, strict=True):
                 result[left:right] = prob
         probabilities_valid(result, self.row_count)
@@ -160,8 +147,8 @@ class SegmentTable:
 
 
 @dataclass(frozen=True)
-class PersistencePredictor:
-    model: PersistenceNetwork
+class SegmentMoEPredictor:
+    model: SegmentMoE
     scale: BlockScale
     configuration: Configuration
     architecture_id = ARCHITECTURE
@@ -174,18 +161,17 @@ class PersistencePredictor:
 
     def predict(self, inputs: ObservationInputs, *, runtime: InferenceRuntime) -> DoubleArray:
         InferenceRuntime.model_validate(runtime.model_dump())
-        self.model.check_cache_budget(runtime)
+        _check_cache_budget(self.model, runtime)
         torch.set_num_threads(runtime.threads)
         table = SegmentTable.prepare(inputs, self.analysis)
-        table.blocks = self.scale.transform(table.blocks)
-        return table.predict(self.model, runtime.max_batch_size)
+        return table.standardized(self.scale).predict(self.model, runtime.max_batch_size)
 
 
 def _read_json[T: StrictModel](path: Path, kind: type[T], limit: int = 128 * 1024) -> T:
     with path.open("rb") as stream:
         data = stream.read(limit + 1)
     if len(data) > limit:
-        raise ValueError("persistence JSON member exceeds its codec size limit")
+        raise ValueError("Segment MoE JSON member exceeds its codec size limit")
     return kind.model_validate_json(data)
 
 
@@ -193,7 +179,157 @@ def _hash(document: dict[str, JsonValue]) -> str:
     return hashlib.sha256(json_bytes(document)).hexdigest()
 
 
-class PersistenceBackend:
+def _weight_bytes(model: SegmentMoE) -> int:
+    return sum(tensor.numel() * tensor.element_size() for tensor in model.state_dict().values())
+
+
+def _check_cache_budget(model: SegmentMoE, runtime: InferenceRuntime) -> None:
+    # The bundle also stores two float64 moments per block feature.
+    if _weight_bytes(model) + 2 * 8 * BLOCK_FEATURE_COUNT > runtime.model_cache_budget_bytes:
+        raise ResourceBudgetExceeded("Segment MoE exceeds the inference model cache budget")
+
+
+def _load_weights(model: SegmentMoE, path: Path) -> None:
+    state = model.state_dict()
+    size = _weight_bytes(model)
+    with path.open("rb") as stream:
+        data = stream.read(size + 1)
+    if len(data) != size:
+        raise ValueError("Segment MoE weights do not match the configured layout")
+    values = np.frombuffer(data, dtype="<f4")
+    if not np.isfinite(values).all():
+        raise ValueError("Segment MoE weights contain nonfinite values")
+    first = 0
+    for name, template in sorted(state.items()):
+        stop = first + template.numel()
+        state[name] = torch.from_numpy(values[first:stop].astype(np.float32)).reshape(
+            template.shape
+        )
+        first = stop
+    model.load_state_dict(state)
+
+
+@dataclass(frozen=True)
+class TrainingSegments:
+    contexts: Tensor
+    blocks: Tensor
+    targets: Tensor
+    weights: Tensor
+
+    @classmethod
+    def from_table(cls, table: SegmentTable, labels: IntArray) -> TrainingSegments:
+        # Prefix differences count known labels in each variable-length segment.
+        observed = labels[:, None] == np.arange(len(DIRECTION_NAMES))
+        prefix = np.zeros((len(labels) + 1, len(DIRECTION_NAMES)), dtype=np.int64)
+        np.cumsum(observed, axis=0, out=prefix[1:])
+        starts, stops = table.spans.T
+        counts = prefix[stops] - prefix[starts]
+        if not counts.sum(axis=0).all():
+            raise ValueError("Segment MoE requires training segments for all three directions")
+        labeled_steps = counts.sum(axis=1)
+        keep = labeled_steps > 0
+        distribution = counts[keep] / labeled_steps[keep, None]
+        # Square-root weighting keeps long segments informative without drowning out short regimes.
+        return cls(
+            table.contexts[keep],
+            table.blocks[keep],
+            torch.tensor(distribution, dtype=torch.float32),
+            torch.tensor(np.sqrt(labeled_steps[keep]), dtype=torch.float32),
+        )
+
+
+def _train_epoch(
+    model: SegmentMoE,
+    optimizer: torch.optim.Optimizer,
+    segments: TrainingSegments,
+    rng: np.random.Generator,
+    batch_size: int,
+    check_budget: Callable[[], None],
+) -> float:
+    device = next(model.parameters()).device
+    order = torch.from_numpy(rng.permutation(len(segments.weights)))
+    total_loss = 0.0
+    for start in range(0, len(order), batch_size):
+        check_budget()
+        batch = order[start : start + batch_size]
+        predictions = model(segments.contexts[batch].to(device), segments.blocks[batch].to(device))
+        targets = segments.targets[batch].to(device)
+        weights = segments.weights[batch].to(device)
+        cross_entropy = -(targets * predictions.clamp_min(1e-7).log()).sum(dim=1)
+        weighted_loss = cross_entropy.dot(weights)
+        optimizer.zero_grad(set_to_none=True)
+        torch.autograd.backward(weighted_loss / weights.sum())
+        nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
+        optimizer.step()
+        total_loss += float(weighted_loss.detach())
+    return total_loss / float(segments.weights.sum())
+
+
+@dataclass(frozen=True)
+class _Checkpoint:
+    model: SegmentMoE
+    seed: int
+    epoch: int
+    score: float
+
+
+def _select_checkpoint(
+    segments: TrainingSegments,
+    validation: SegmentTable,
+    *,
+    width: int,
+    device: str,
+    policy: TrainingPolicy,
+    evaluator: SelectionEvaluator,
+    on_history: HistoryCallback | None,
+    check_budget: Callable[[], None],
+) -> tuple[list[dict[str, JsonValue]], _Checkpoint]:
+    history: list[dict[str, JsonValue]] = []
+    best: _Checkpoint | None = None
+    with torch.random.fork_rng(devices=[]):
+        for seed in policy.seeds:
+            torch.default_generator.manual_seed(seed)
+            rng = np.random.default_rng(seed)
+            model = SegmentMoE(width).to(device)
+            optimizer = torch.optim.AdamW(
+                model.parameters(), lr=policy.learning_rate, weight_decay=policy.weight_decay
+            )
+            repeat_best, stale = -1.0, 0
+            for epoch in range(1, policy.epochs + 1):
+                model.train()
+                loss = _train_epoch(
+                    model, optimizer, segments, rng, policy.batch_size, check_budget
+                )
+                row: dict[str, JsonValue] = {"seed": seed, "epoch": epoch, "training_loss": loss}
+                if epoch in (1, policy.epochs) or epoch % policy.validation_interval == 0:
+                    check_budget()
+                    model.eval()
+                    score = evaluator(validation.predict(model, 128))
+                    if not 0 <= score <= 1:
+                        raise ValueError("validation score must be interval macro-F1 in [0, 1]")
+                    row["validation_segment_macro_f1"] = score
+                    if best is None or score > best.score:
+                        best = _Checkpoint(copy.deepcopy(model), seed, epoch, score)
+                    if score > repeat_best:
+                        repeat_best, stale = score, 0
+                    else:
+                        stale += 1
+                history.append(row)
+                stop_reason = None
+                if epoch == policy.epochs:
+                    stop_reason = "epoch_limit"
+                elif stale >= policy.patience:
+                    stop_reason = "early_stopping"
+                if on_history:
+                    on_history(row | {"stop_reason": stop_reason} if stop_reason else row.copy())
+                if stop_reason:
+                    break
+    # Every seed is evaluated at its first and last epoch.
+    assert best is not None
+    return history, best
+
+
+class SegmentMoEBackend:
     architecture_id = ARCHITECTURE
     implementation_version = VERSION
 
@@ -223,103 +359,32 @@ class PersistenceBackend:
             raise ValueError("training and validation experiments must be disjoint")
         total = training.observations.row_count + validation.row_count
         if 2048 * total + (4 << 20) > runtime.memory_budget_bytes:
-            raise ResourceBudgetExceeded("persistence inputs exceed the training memory budget")
+            raise ResourceBudgetExceeded("Segment MoE inputs exceed the training memory budget")
         deadline = time.monotonic() + runtime.time_budget_seconds
 
         def check_budget() -> None:
             if time.monotonic() >= deadline:
-                raise ResourceBudgetExceeded("persistence exceeded the training time budget")
+                raise ResourceBudgetExceeded("Segment MoE exceeded the training time budget")
 
+        torch.set_num_threads(runtime.threads)
         train = SegmentTable.prepare(training.observations, analysis, check_budget)
         valid = SegmentTable.prepare(validation, analysis, check_budget)
         if not len(train.spans):
             raise ValueError("no observable training segments")
-        labels = training.targets
-        cumulative = np.vstack(
-            (
-                np.zeros(3, dtype=np.int64),
-                np.column_stack([labels == k for k in range(3)]).cumsum(0),
-            )
-        )
-        counts = cumulative[train.spans[:, 1]] - cumulative[train.spans[:, 0]]
-        labeled = counts.sum(1)
-        keep = np.flatnonzero(labeled)
-        if not counts.sum(axis=0).all():
-            raise ValueError("Segment MoE requires training segments for all three directions")
-        target = torch.tensor(counts[keep] / labeled[keep, None], dtype=torch.float32)
-        # Square-root weighting keeps long segments informative without drowning out short regimes.
-        weight = torch.tensor(np.sqrt(labeled[keep]), dtype=torch.float32)
         scale = BlockScale.fit(train.blocks)
-        context = train.contexts[keep]
-        blocks = scale.transform(train.blocks)[keep]
-        valid.blocks = scale.transform(valid.blocks)
-        torch.set_num_threads(runtime.threads)
-        history: list[dict[str, JsonValue]] = []
-        best_score, best_seed, best_epoch = -1.0, 0, 0
-        best: PersistenceNetwork | None = None
-        with torch.random.fork_rng(devices=[]):
-            for seed in policy.seeds:
-                torch.manual_seed(seed)
-                rng = np.random.default_rng(seed)
-                model = PersistenceNetwork(parameters.hidden_width)
-                optimizer = torch.optim.AdamW(
-                    model.parameters(), lr=policy.learning_rate, weight_decay=policy.weight_decay
-                )
-                seed_best, stale = -1.0, 0
-                for epoch in range(1, policy.epochs + 1):
-                    order = rng.permutation(len(keep))
-                    combined_loss = 0.0
-                    for start in range(0, len(order), policy.batch_size):
-                        check_budget()
-                        batch = order[start : start + policy.batch_size]
-                        p = model(context[batch], blocks[batch])
-                        loss_sum = (
-                            -(target[batch] * p.clamp_min(1e-7).log()).sum(1).dot(weight[batch])
-                        )
-                        loss = loss_sum / weight[batch].sum()
-                        optimizer.zero_grad(set_to_none=True)
-                        torch.autograd.backward(loss)
-                        nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
-                        optimizer.step()
-                        combined_loss += float(loss_sum.detach())
-                    row: dict[str, JsonValue] = dict(
-                        seed=seed, epoch=epoch, training_loss=combined_loss / float(weight.sum())
-                    )
-                    if (
-                        epoch == 1
-                        or epoch % policy.validation_interval == 0
-                        or epoch == policy.epochs
-                    ):
-                        check_budget()
-                        score = evaluator(valid.predict(model, 128))
-                        if not np.isfinite(score) or not 0 <= score <= 1:
-                            raise ValueError("validation score must be interval macro-F1 in [0, 1]")
-                        row["validation_segment_macro_f1"] = score
-                        if score > best_score:
-                            best, best_score, best_seed, best_epoch = (
-                                copy.deepcopy(model),
-                                score,
-                                seed,
-                                epoch,
-                            )
-                        if score > seed_best:
-                            seed_best, stale = score, 0
-                        else:
-                            stale += 1
-                    history.append(row)
-                    reason = (
-                        "epoch_limit"
-                        if epoch == policy.epochs
-                        else "early_stopping"
-                        if stale >= policy.patience
-                        else None
-                    )
-                    if training.on_history:
-                        training.on_history(row | {"stop_reason": reason} if reason else row.copy())
-                    if reason:
-                        break
+        segments = TrainingSegments.from_table(train.standardized(scale), training.targets)
+        valid = valid.standardized(scale)
+        history, checkpoint = _select_checkpoint(
+            segments,
+            valid,
+            width=parameters.hidden_width,
+            device=runtime.device,
+            policy=policy,
+            evaluator=evaluator,
+            on_history=training.on_history,
+            check_budget=check_budget,
+        )
         check_budget()
-        assert best is not None
         environment: dict[str, JsonValue] = {
             "python": platform.python_version(),
             "packages": {name: version(name) for name in ("regimex", "numpy", "torch")},
@@ -331,9 +396,14 @@ class PersistenceBackend:
             analysis=analysis,
             environment=environment,
         )
-        predictor = PersistencePredictor(best.eval().requires_grad_(False), scale, config)
+        predictor = SegmentMoEPredictor(checkpoint.model.requires_grad_(False), scale, config)
         return FitResult(
-            predictor, tuple(history), best_seed, best_score, {"epoch": best_epoch}, environment
+            predictor,
+            tuple(history),
+            checkpoint.seed,
+            checkpoint.score,
+            {"epoch": checkpoint.epoch},
+            environment,
         )
 
     def write_bundle(
@@ -345,8 +415,8 @@ class PersistenceBackend:
         analysis: AnalysisConfig,
     ) -> str:
         predictor = result.predictor
-        if not isinstance(predictor, PersistencePredictor):
-            raise TypeError("persistence bundles require a fitted persistence predictor")
+        if not isinstance(predictor, SegmentMoEPredictor):
+            raise TypeError("Segment MoE bundles require a fitted Segment MoE predictor")
         config = predictor.configuration
         if (
             analysis != config.analysis
@@ -358,7 +428,7 @@ class PersistenceBackend:
             or result.validation_score != provenance.training.validation_segment_macro_f1
             or set(result.selected_settings) != {"epoch"}
         ):
-            raise ValueError("persistence bundle provenance differs from its fitted configuration")
+            raise ValueError("Segment MoE bundle provenance differs from its fitted configuration")
         validation = ValidationRecord(
             selected_seed=result.selected_seed,
             score=result.validation_score,
@@ -408,7 +478,7 @@ class PersistenceBackend:
 
     def load_bundle(
         self, root: Path, *, manifest_sha256: str, runtime: InferenceRuntime
-    ) -> PersistencePredictor:
+    ) -> SegmentMoEPredictor:
         InferenceRuntime.model_validate(runtime.model_dump())
         bundle = verify_model_bundle(
             root,
@@ -422,7 +492,7 @@ class PersistenceBackend:
             or bundle.preprocessing_version != PREPROCESSING
             or bundle.decoder_version != DECODER_VERSION
         ):
-            raise ValueError("incompatible persistence bundle codec or feature layout")
+            raise ValueError("incompatible Segment MoE bundle codec or feature layout")
         config = _read_json(root / _ROLES["configuration"], Configuration)
         scale = _read_json(root / _ROLES["preprocessing"], BlockScale)
         validation = _read_json(root / _ROLES["validation"], ValidationRecord)
@@ -436,35 +506,25 @@ class PersistenceBackend:
             or bundle.training.selected_seed != validation.selected_seed
             or bundle.training.validation_segment_macro_f1 != validation.score
         ):
-            raise ValueError("persistence configuration differs from manifest provenance")
+            raise ValueError("Segment MoE configuration differs from manifest provenance")
         with torch.random.fork_rng(devices=[]):
-            model = PersistenceNetwork(config.parameters.hidden_width)
-        state = model.state_dict()
-        model.check_cache_budget(runtime)
-        size = model.weight_bytes
-        with (root / _ROLES["weights"]).open("rb") as stream:
-            data = stream.read(size + 1)
-        if len(data) != size:
-            raise ValueError("persistence weights do not match the configured layout")
-        values = np.frombuffer(data, dtype="<f4")
-        if not np.isfinite(values).all():
-            raise ValueError("persistence weights contain nonfinite values")
-        first = 0
-        for name, template in sorted(state.items()):
-            stop = first + template.numel()
-            state[name] = torch.from_numpy(values[first:stop].copy().reshape(tuple(template.shape)))
-            first = stop
-        model.load_state_dict(state)
-        return PersistencePredictor(model.eval().requires_grad_(False), scale, config)
+            model = SegmentMoE(config.parameters.hidden_width)
+        _check_cache_budget(model, runtime)
+        _load_weights(model, root / _ROLES["weights"])
+        model.to(runtime.device)
+        return SegmentMoEPredictor(model.eval().requires_grad_(False), scale, config)
 
 
-def create_backend() -> PersistenceBackend:
-    return PersistenceBackend()
+def create_backend() -> SegmentMoEBackend:
+    return SegmentMoEBackend()
 
 
 def probe_runtime(device: str) -> None:
     if device != "cpu":
         raise ValueError("Segment MoE supports CPU execution only")
     with torch.random.fork_rng(devices=[]), torch.inference_mode():
-        p = PersistenceNetwork(4)(torch.zeros(1, 9, 4), torch.zeros(1, _BLOCK_WIDTH))
+        p = SegmentMoE(4)(
+            torch.zeros(1, CONTEXT_LENGTH, SEGMENT_FEATURE_COUNT),
+            torch.zeros(1, BLOCK_FEATURE_COUNT),
+        )
         probabilities_valid(p.double().numpy(), 1)

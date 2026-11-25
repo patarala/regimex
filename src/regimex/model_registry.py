@@ -19,7 +19,7 @@ from typing import Annotated, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, JsonValue, ValidationError, model_validator
 
-from regimex.backends import baseline_layout, tcn_layout
+from regimex.backends import baseline_layout, segment_moe_layout, tcn_layout
 from regimex.contracts import MAX_STEPS, Seed, StrictModel
 
 ENTRY_POINT_GROUP = "regimex.models"
@@ -159,8 +159,7 @@ def configured_parameter_count(
             )
         if architecture_id == "persistence":
             width = PersistenceParameters.model_validate_json(json.dumps(parameters)).hidden_width
-            # Accumulation (133), block mixing (721), and a 36 -> width -> 3 context head.
-            return 133 + 721 + 40 * width + 3
+            return segment_moe_layout.trainable_parameter_count(width)
         if architecture_id == "baseline":
             return baseline_layout.trainable_parameter_count(
                 LogisticParameters.model_validate_json(json.dumps(parameters))
@@ -712,6 +711,6 @@ def persistence_descriptor() -> ArchitectureDescriptor:
         supported_optimizers=("adamw",),
         required_observation_fields=("last_price",),
         dependency_modules=("numpy", "torch"),
-        backend_factory="regimex.backends.persistence:create_backend",
-        worker_probe="regimex.backends.persistence:probe_runtime",
+        backend_factory="regimex.backends.segment_moe:create_backend",
+        worker_probe="regimex.backends.segment_moe:probe_runtime",
     )

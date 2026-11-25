@@ -166,6 +166,13 @@ context width of 32, AdamW and up to 24 epochs, with validation after each
 epoch. Six consecutive checks without improvement stop training. The saved
 checkpoint has the highest decoded validation interval macro-F1.
 
+The service worker runs on CPU. The
+[feature extractor](../src/regimex/backends/segment_moe_features.py) fits
+variable-length price segments with NumPy. The
+[experts and gate](../src/regimex/backends/segment_moe_network.py) operate
+on PyTorch tensors. The [backend](../src/regimex/backends/segment_moe.py)
+batches segments and returns the probabilities to the shared interval decoder.
+
 The [offline Segment MoE comparison](evaluations/neural-direction.md#segment-moe-on-exchange-prices-and-known-drift)
 used a separately fitted exchange expert and a pretrained drift expert.
 Its benchmark scores apply to the named offline bundle. A workspace fit
