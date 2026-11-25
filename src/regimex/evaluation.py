@@ -95,41 +95,51 @@ def _metrics(counts: IntArray) -> dict[str, JsonValue]:
     }
 
 
-def _point_counts(labels: IntArray, predicted: IntArray) -> tuple[IntArray, IntArray, IntArray]:
+def _point_table(labels: IntArray, predicted: IntArray) -> IntArray:
+    """Count (reference, prediction) pairs. Row and column zero represent unavailable steps."""
     if labels.shape != predicted.shape or labels.ndim != 1:
         raise ValueError("metrics require matching one-dimensional target arrays")
     if ((labels < -1) | (labels >= len(DIRECTION_NAMES))).any() or (
         (predicted < -1) | (predicted >= len(DIRECTION_NAMES))
     ).any():
         raise ValueError("metric targets must be direction indices or -1 for unavailable")
-    eligible = labels >= 0
-    covered = eligible & (predicted >= 0)
-    confusion = np.zeros((len(DIRECTION_NAMES), len(DIRECTION_NAMES)), dtype=np.int64)
-    np.add.at(confusion, (labels[covered], predicted[covered]), 1)
-    abstentions = np.bincount(labels[eligible & ~covered], minlength=len(DIRECTION_NAMES)).astype(
-        np.int64
-    )
+    width = len(DIRECTION_NAMES) + 1
+    bins = (labels + 1) * width + (predicted + 1)
+    return np.bincount(bins, minlength=width * width).reshape(width, width)
+
+
+def _point_direction_counts(table: IntArray) -> IntArray:
+    confusion = table[1:, 1:]
     correct = np.diag(confusion)
-    counts = np.column_stack(
-        (correct, confusion.sum(axis=0) - correct, confusion.sum(axis=1) + abstentions - correct)
-    ).astype(np.int64)
-    return counts, confusion, abstentions
+    return np.column_stack(
+        (correct, confusion.sum(axis=0) - correct, table[1:].sum(axis=1) - correct)
+    )
+
+
+def _point_counts(labels: IntArray, predicted: IntArray) -> tuple[IntArray, IntArray, IntArray]:
+    """Return per-class counts, the labeled confusion matrix and abstentions."""
+    table = _point_table(labels, predicted)
+    return _point_direction_counts(table), table[1:, 1:], table[1:, 0]
+
+
+def _point_metrics(table: IntArray) -> dict[str, JsonValue]:
+    sample_count = int(table[1:].sum())
+    result = _metrics(_point_direction_counts(table))
+    result.update(
+        {
+            "confusion_matrix": cast(JsonValue, table[1:, 1:].tolist()),
+            "abstentions_by_class": cast(JsonValue, table[1:, 0].tolist()),
+            "sample_count": sample_count,
+            "unavailable_reference_count": int(table[0].sum()),
+            "defined": sample_count > 0,
+        }
+    )
+    return result
 
 
 def scores(labels: IntArray, predicted: IntArray) -> dict[str, JsonValue]:
     """Point diagnostics exclude unavailable references and penalize abstention."""
-    counts, confusion, abstentions = _point_counts(labels, predicted)
-    result = _metrics(counts)
-    result.update(
-        {
-            "confusion_matrix": cast(JsonValue, confusion.tolist()),
-            "abstentions_by_class": cast(JsonValue, abstentions.tolist()),
-            "sample_count": int((labels >= 0).sum()),
-            "unavailable_reference_count": int((labels < 0).sum()),
-            "defined": bool((labels >= 0).any()),
-        }
-    )
-    return result
+    return _point_metrics(_point_table(labels, predicted))
 
 
 def interval_iou(expected: DirectionInterval, actual: DirectionInterval) -> float:
@@ -563,7 +573,7 @@ def report(
     grouped_lags: dict[str, list[int]] = {}
     reference_grids: dict[str, list[dict[str, JsonValue]]] = {}
     segment_total = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
-    all_predicted = np.full(len(sequences.labels), -1, dtype=np.int64)
+    point_total = np.zeros((len(DIRECTION_NAMES) + 1, len(DIRECTION_NAMES) + 1), dtype=np.int64)
     reference_lengths: list[int] = []
     predicted_lengths: list[int] = []
     boundary_correct = boundary_reference = boundary_predicted = 0
@@ -579,9 +589,10 @@ def report(
         if not np.array_equal(labels, sequences.labels[start:stop]):
             raise ValueError("evaluation references disagree with dense targets")
         predicted_labels = dense_labels(predicted, info.step_count)
-        all_predicted[start:stop] = predicted_labels
         segment_counts = _segment_counts(reference, predicted)
-        point_counts, _, _ = _point_counts(labels, predicted_labels)
+        point_table = _point_table(labels, predicted_labels)
+        point_total += point_table
+        point_counts = _point_direction_counts(point_table)
         expected_boundaries = _boundaries(reference)
         actual_boundaries = _boundaries(predicted)
         matched = _boundary_matches(expected_boundaries, actual_boundaries)
@@ -633,15 +644,15 @@ def report(
         boundary_correct += matched
         boundary_reference += len(expected_boundaries)
         boundary_predicted += len(actual_boundaries)
-    point_metrics = scores(sequences.labels, all_predicted)
+    point_metrics = _point_metrics(point_total)
     segment_metrics = _metrics(segment_total)
     segment_metrics["iou_threshold"] = IOU_THRESHOLD
     segment_metrics["matching"] = (
         "Maximum-cardinality one-to-one matching within experiment, instrument and direction."
     )
-    eligible = sequences.labels >= 0
-    covered = all_predicted >= 0
-    eligible_count = int(eligible.sum())
+    eligible_count = int(point_total[1:, :].sum())
+    predicted_count = int(point_total[:, 1:].sum())
+    covered_count = int(point_total[1:, 1:].sum())
     boundary_denominator = boundary_reference + boundary_predicted
     return {
         "evaluation_version": "2.5",
@@ -686,17 +697,17 @@ def report(
         "coverage": {
             "observed_step_count": len(sequences.labels),
             "reference_classified_step_count": eligible_count,
-            "predicted_classified_step_count": int(covered.sum()),
+            "predicted_classified_step_count": predicted_count,
             "reference_classified_fraction": eligible_count / len(sequences.labels),
-            "predicted_classified_fraction": float(covered.mean()),
-            "eligible_prediction_coverage": int((eligible & covered).sum()) / eligible_count
+            "predicted_classified_fraction": predicted_count / len(sequences.labels),
+            "eligible_prediction_coverage": covered_count / eligible_count
             if eligible_count
             else None,
         },
         "experiment_count": len(grouped),
         "instrument_sequence_count": len(sequences.info),
         "observed_step_count": len(sequences.labels),
-        "classified_step_count": int(covered.sum()),
+        "classified_step_count": predicted_count,
         "sample_count": eligible_count,
         "confidence_intervals": _bootstrap(grouped, bootstrap_repetitions),
         "experiment_statistics": [

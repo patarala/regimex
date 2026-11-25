@@ -250,6 +250,44 @@ def test_experiment_bootstrap_is_reproducible_and_does_not_reorder_arrays() -> N
     assert one["confidence_intervals"]["experiment_count"] == 2
 
 
+def test_pooled_coverage_counts_predictions_on_unlabeled_steps() -> None:
+    a, b = rows(6), rows(4, "B/Q")
+    reference = (
+        intervals(a, [(0, 2, None), (2, 4, Direction.GROWTH), (4, 6, Direction.DECLINE)]),
+        intervals(b, [(0, 2, Direction.SIDEWAYS), (2, 4, None)]),
+    )
+    predicted = (
+        intervals(
+            a,
+            [
+                (0, 1, None),
+                (1, 2, Direction.SIDEWAYS),
+                (2, 3, Direction.GROWTH),
+                (3, 5, None),
+                (5, 6, Direction.SIDEWAYS),
+            ],
+        ),
+        intervals(
+            b, [(0, 1, Direction.SIDEWAYS), (1, 2, Direction.DECLINE), (2, 4, Direction.GROWTH)]
+        ),
+    )
+    data = sequences(reference, ("shared", "shared"))
+    result = evaluation.report(data, predicted, bootstrap_repetitions=0)
+    metrics = result["point_metrics"]
+    assert metrics["confusion_matrix"] == [[1, 0, 1], [0, 1, 0], [1, 0, 0]]
+    assert metrics["abstentions_by_class"] == [0, 1, 1]
+    assert metrics["unavailable_reference_count"] == 4
+    assert result["coverage"] == {
+        "observed_step_count": 10,
+        "reference_classified_step_count": 6,
+        "predicted_classified_step_count": 7,
+        "reference_classified_fraction": 0.6,
+        "predicted_classified_fraction": 0.7,
+        "eligible_prediction_coverage": 4 / 6,
+    }
+    assert result["experiment_statistics"][0]["point_counts"] == [[1, 1, 1], [1, 0, 1], [0, 1, 2]]
+
+
 def test_inconsistent_evaluation_grids_and_targets_fail_explicitly() -> None:
     reference = intervals(rows(64), [(0, 64, Direction.GROWTH)])
     data = sequences((reference,))
