@@ -42,16 +42,21 @@ were generated.
 
 ### Reproduce the comparison
 
-Run from the checkout with an unused output directory. Generation writes
-snapshots and a split manifest. Fitting records the environment, training
+Run from the repository root with an unused output directory. The worktree
+uses the source and lockfile recorded in the original training plan. Generation
+writes snapshots and a split manifest. Fitting records the environment, training
 settings and bundle digests. Scoring verifies the freeze before computing test
 references and writes per-length reports and paired differences to the output
 directory.
 
 ```sh
-uv run --locked --extra ml python scripts/compare_profile_21.py prepare var/profile21
-uv run --locked --extra ml python scripts/compare_profile_21.py fit var/profile21
-uv run --locked --extra ml python scripts/compare_profile_21.py score var/profile21
+git worktree add --detach var/profile21-source 99c5bf7455c4efd2b31af5b778a0922a19332408
+uv run --directory var/profile21-source --locked --extra ml \
+  python scripts/compare_profile_21.py prepare ../profile21
+uv run --directory var/profile21-source --locked --extra ml \
+  python scripts/compare_profile_21.py fit ../profile21
+uv run --directory var/profile21-source --locked --extra ml \
+  python scripts/compare_profile_21.py score ../profile21
 ```
 
 All three commands use the same deterministic population. The recorded

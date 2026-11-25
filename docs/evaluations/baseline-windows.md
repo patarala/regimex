@@ -65,18 +65,20 @@ unmeasured for these candidates.
 
 ## Reproduce
 
-Prepare the comparison corpus and its frozen baseline using the first two
-commands in [the profile-2.1 protocol](reference-releases.md#reproduce-the-comparison).
-The first command below writes a plan in a new output directory, compares
-the validation predictions and freezes the selected model. The second
-checks the recorded code, environment, bundle identities and data before
-generating the final references.
+Prepare the comparison corpus and its frozen baseline using the worktree,
+`prepare`, and `fit` commands in [the profile-2.1 protocol](reference-releases.md#reproduce-the-comparison).
+From the repository root, check out the window comparison revision that matches
+the recorded source hashes. The `fit` command writes a plan in a new output
+directory, compares validation predictions and freezes the selected model.
+The `score` command checks the recorded code, environment, bundle identities
+and data before generating the final references.
 
 ```sh
-uv run --locked --extra ml python scripts/compare_baseline_context.py fit \
-  --corpus var/profile21 --output var/baseline-context
-uv run --locked --extra ml python scripts/compare_baseline_context.py score \
-  --corpus var/profile21 --output var/baseline-context
+git worktree add --detach var/baseline-context-source eb23ccb79b7d786093c3fd008a5364f2ca5908c3
+uv run --directory var/baseline-context-source --locked --extra ml \
+  python scripts/compare_baseline_context.py fit --corpus ../profile21 --output ../baseline-context
+uv run --directory var/baseline-context-source --locked --extra ml \
+  python scripts/compare_baseline_context.py score --corpus ../profile21 --output ../baseline-context
 ```
 
 The selected model bundle is under `var/baseline-context/local_observed/`.

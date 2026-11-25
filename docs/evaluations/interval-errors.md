@@ -61,8 +61,8 @@ this particular miss sits close to the scoring threshold.
 
 ## Reproduce the report
 
-Prepare the comparison corpus and fit its models using the first two commands
-in [model quality](../evaluations/reference-releases.md#reproduce-the-comparison). Run the diagnosis from
+Use the worktree and the `prepare` and `fit` steps from the
+[reference comparison](reference-releases.md#reproduce-the-comparison). Run the diagnosis from
 the repository root, choosing a new or empty output directory.
 
 ```sh

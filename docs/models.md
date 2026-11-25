@@ -103,6 +103,12 @@ available price in the block. It accepts movements within floating-point
 roundoff of the threshold so that changing quote units preserves a borderline
 label. Other runs receive sideways.
 
+When using a custom movement threshold, profiles 2.0–2.2 assign R² = 0 if
+the sum of squared deviations of log price within the fitted piece (after
+adjusting for a level change, if selected) is at most `1e-18`. For example,
+a steady rise of `1e-10` across 16 steps can still receive a sideways label
+with a movement threshold of `1e-11` and the default fit requirement.
+
 To prepare an independent review with predictions hidden, run the following
 from the checkout with a new output directory.
 
