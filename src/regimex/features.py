@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from math import isfinite
 from sys import float_info
+from typing import Self
 
 import numpy as np
 from numpy.typing import NDArray
@@ -84,28 +85,36 @@ class Preprocessor:
     scale: DoubleArray
 
     @classmethod
-    def fit(cls, training: FloatArray) -> Preprocessor:
-        if training.ndim != 2 or training.shape[1] != len(FEATURE_NAMES) or not len(training):
+    def fit(cls, training: FloatArray) -> Self:
+        return cls._fit_channels(training, len(NUMERIC_NAMES))
+
+    @classmethod
+    def _fit_channels(cls, training: FloatArray, numeric_width: int) -> Self:
+        if training.ndim != 2 or training.shape[1] != 2 * numeric_width or not len(training):
             raise ValueError("invalid training feature matrix")
         if np.isinf(training).any():
             raise ValueError("features contain infinite values")
         fill = np.zeros(training.shape[1], dtype=np.float64)
-        for column in range(len(NUMERIC_NAMES)):
+        for column in range(numeric_width):
             known = training[np.isfinite(training[:, column]), column]
             if len(known):
-                fill[column] = np.median(known)
+                # Keep the input precision without overflowing the sum of the middle pair.
+                fill[column] = np.median(known.astype(np.float64)).astype(known.dtype)
         complete = np.where(np.isnan(training), fill, training)
         mean = complete.mean(axis=0)
         scale = complete.std(axis=0)
         scale[scale < 1e-12] = 1.0
-        mean[len(NUMERIC_NAMES) :] = 0.0
-        scale[len(NUMERIC_NAMES) :] = 1.0
+        mean[numeric_width:] = 0.0
+        scale[numeric_width:] = 1.0
         return cls(fill, mean, scale)
 
     def transform(self, values: FloatArray) -> FloatArray:
         if values.ndim != 2 or values.shape[1] != len(self.fill) or np.isinf(values).any():
             raise ValueError("incompatible features")
-        result = (np.where(np.isnan(values), self.fill, values) - self.mean) / self.scale
+        with np.errstate(over="ignore"):
+            result = (
+                (np.where(np.isnan(values), self.fill, values) - self.mean) / self.scale
+            ).astype(np.float32)
         if not np.isfinite(result).all():
             raise ValueError("preprocessing produced nonfinite values")
-        return result.astype(np.float32)
+        return result

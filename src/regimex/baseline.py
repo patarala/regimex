@@ -16,13 +16,22 @@ from regimex.prediction_inputs import PreparedPredictionInputs, require_prepared
 
 logger = logging.getLogger(__name__)
 Scorer = Callable[[DoubleArray], float]
+AccumulationDtype = type[np.float32] | type[np.float64]
 _BASELINE_BATCH_ROWS = 8192
 
 
-def _statistics(block: FloatArray, observed_only: bool) -> FloatArray:
+def _statistics(
+    block: FloatArray, observed_only: bool, accumulation_dtype: AccumulationDtype
+) -> FloatArray:
     if not observed_only:
         return np.concatenate(
-            (block.mean(axis=0), block.std(axis=0), block.min(axis=0), block.max(axis=0))
+            (
+                block.mean(axis=0, dtype=accumulation_dtype),
+                block.std(axis=0, dtype=accumulation_dtype),
+                block.min(axis=0),
+                block.max(axis=0),
+            ),
+            dtype=np.float32,
         )
 
     # Numeric channels precede their missingness indicators. Indicators remain
@@ -43,30 +52,39 @@ def _statistics(block: FloatArray, observed_only: bool) -> FloatArray:
     ).astype(np.float32)
 
 
-def _sequence_aggregates(
-    values: FloatArray, context_sizes: tuple[int, ...], summaries: SummaryMode
-) -> FloatArray:
+def _fill_sequence_aggregates(
+    values: FloatArray,
+    context_sizes: tuple[int, ...],
+    summaries: SummaryMode,
+    steps: range | IntArray,
+    output: FloatArray | DoubleArray,
+    accumulation_dtype: AccumulationDtype,
+    check_budget: Callable[[], None] | None,
+) -> None:
     width = values.shape[1] * 4
-    result = np.empty(
-        (len(values), summaries.width(values.shape[1], context_sizes)), dtype=np.float32
-    )
     for index, size in enumerate(context_sizes):
-        for step in range(len(values)):
+        columns = slice(index * width, (index + 1) * width)
+        for row, step in enumerate(steps):
+            if check_budget is not None and row % 128 == 0:
+                check_budget()
             left = max(0, step - size // 2)
             right = min(len(values), step + (size + 1) // 2)
-            block = values[left:right]
-            result[step, index * width : (index + 1) * width] = _statistics(
-                block, summaries.observed_only
+            output[row, columns] = _statistics(
+                values[left:right], summaries.observed_only, accumulation_dtype
             )
     if summaries.whole_sequence:
-        result[:, -width:] = _statistics(values, summaries.observed_only)
-    return result
+        if check_budget is not None:
+            check_budget()
+        output[:, -width:] = _statistics(values, summaries.observed_only, accumulation_dtype)
 
 
 def aggregate(
     sequences: PreparedPredictionInputs,
     context_sizes: tuple[int, ...],
     summaries: SummaryMode = SummaryMode.LOCAL_AND_GLOBAL,
+    *,
+    accumulation_dtype: AccumulationDtype = np.float64,
+    check_budget: Callable[[], None] | None = None,
 ) -> FloatArray:
     """Mean, std, min and max in the configured per-instrument windows.
 
@@ -77,8 +95,15 @@ def aggregate(
     width = summaries.width(sequences.values.shape[1], context_sizes)
     result = np.empty((len(sequences.values), width), dtype=np.float32)
     for start, stop in zip(sequences.offsets[:-1], sequences.offsets[1:], strict=True):
-        result[start:stop] = _sequence_aggregates(
-            sequences.values[start:stop], context_sizes, summaries
+        values = sequences.values[start:stop]
+        _fill_sequence_aggregates(
+            values,
+            context_sizes,
+            summaries,
+            range(len(values)),
+            result[start:stop],
+            accumulation_dtype,
+            check_budget,
         )
     return result
 
@@ -88,19 +113,27 @@ def _training_aggregates(
     targets: IntArray,
     context_sizes: tuple[int, ...],
     summaries: SummaryMode,
+    check_budget: Callable[[], None],
 ) -> DoubleArray:
     eligible = targets >= 0
     width = summaries.width(sequences.values.shape[1], context_sizes)
     result = np.empty((int(eligible.sum()), width), dtype=np.float64)
     position = 0
     for start, stop in zip(sequences.offsets[:-1], sequences.offsets[1:], strict=True):
-        selected = eligible[start:stop]
-        count = int(selected.sum())
-        if count:
-            result[position : position + count] = _sequence_aggregates(
-                sequences.values[start:stop], context_sizes, summaries
-            )[selected]
-            position += count
+        steps = np.flatnonzero(eligible[start:stop])
+        if len(steps):
+            end = position + len(steps)
+            # Unlabeled neighbors still contribute to a labeled step's context.
+            _fill_sequence_aggregates(
+                sequences.values[start:stop],
+                context_sizes,
+                summaries,
+                steps,
+                result[position:end],
+                np.float64,
+                check_budget,
+            )
+            position = end
     return result
 
 
@@ -112,9 +145,17 @@ class LinearModel:
     scale: DoubleArray
     context_sizes: tuple[int, ...]
     summaries: SummaryMode = SummaryMode.LOCAL_AND_GLOBAL
+    accumulation_dtype: AccumulationDtype = np.float64
 
     def predict(self, sequences: PreparedPredictionInputs) -> DoubleArray:
-        return self.predict_aggregates(aggregate(sequences, self.context_sizes, self.summaries))
+        return self.predict_aggregates(
+            aggregate(
+                sequences,
+                self.context_sizes,
+                self.summaries,
+                accumulation_dtype=self.accumulation_dtype,
+            )
+        )
 
     def predict_aggregates(self, values: FloatArray | DoubleArray) -> DoubleArray:
         result = np.empty((len(values), len(DIRECTION_NAMES)), dtype=np.float64)
@@ -150,20 +191,24 @@ def fit_baseline(
 
     require_prepared_inputs(training)
     require_prepared_inputs(validation)
+    if targets.shape != (len(training.values),):
+        raise ValueError("baseline training targets must align with every observation")
     eligible = targets >= 0
     y = targets[eligible]
     if not np.array_equal(np.unique(y), np.arange(len(DIRECTION_NAMES))):
         raise ValueError("baseline requires all three training directions")
     logger.info("Building baseline aggregates for %s eligible training rows", len(y))
-    x = _training_aggregates(training, targets, context_sizes, summaries)
+    x = _training_aggregates(training, targets, context_sizes, summaries, check_budget)
     # All eligible rows contribute. Batching bounds scaling memory; only the
     # floating-point reduction order differs from a single full-matrix fit.
     scaler = StandardScaler(copy=False)
     for start in range(0, len(x), _BASELINE_BATCH_ROWS):
+        check_budget()
         scaler.partial_fit(x[start : start + _BASELINE_BATCH_ROWS])
     for start in range(0, len(x), _BASELINE_BATCH_ROWS):
+        check_budget()
         scaler.transform(x[start : start + _BASELINE_BATCH_ROWS])
-    valid = aggregate(validation, context_sizes, summaries).astype(np.float64)
+    valid = aggregate(validation, context_sizes, summaries, check_budget=check_budget)
     best: LinearModel | None = None
     best_score = -1.0
     best_c = 0.0
@@ -178,28 +223,31 @@ def fit_baseline(
             max_iter=2000,
             random_state=seed,
         )
-        with threadpool_limits(limits=threads), warnings.catch_warnings():
-            warnings.simplefilter("error", ConvergenceWarning)
-            try:
-                fitted.fit(x, y)
-            except ConvergenceWarning as exc:
-                raise ValueError(f"baseline did not converge for C={regularization}") from exc
-        model = LinearModel(
-            np.asarray(fitted.coef_, dtype=np.float64),
-            np.asarray(fitted.intercept_, dtype=np.float64),
-            np.asarray(scaler.mean_, dtype=np.float64),
-            np.asarray(scaler.scale_, dtype=np.float64),
-            context_sizes,
-            summaries,
-        )
-        probabilities = model.predict_aggregates(valid)
-        for start in range(0, len(valid), _BASELINE_BATCH_ROWS):
-            stop = start + _BASELINE_BATCH_ROWS
-            expected = fitted.predict_proba(scaler.transform(valid[start:stop], copy=True))
-            if not np.allclose(expected, probabilities[start:stop], atol=1e-10, rtol=1e-10):
-                raise ValueError("restored baseline probabilities differ from scikit-learn")
-        check_budget()
-        score = scorer(probabilities)
+        with threadpool_limits(limits=threads):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", ConvergenceWarning)
+                try:
+                    fitted.fit(x, y)
+                except ConvergenceWarning as exc:
+                    raise ValueError(f"baseline did not converge for C={regularization}") from exc
+            model = LinearModel(
+                np.asarray(fitted.coef_, dtype=np.float64),
+                np.asarray(fitted.intercept_, dtype=np.float64),
+                np.asarray(scaler.mean_, dtype=np.float64),
+                np.asarray(scaler.scale_, dtype=np.float64),
+                context_sizes,
+                summaries,
+            )
+            probabilities = model.predict_aggregates(valid)
+            for start in range(0, len(valid), _BASELINE_BATCH_ROWS):
+                check_budget()
+                stop = start + _BASELINE_BATCH_ROWS
+                reference = scaler.transform(valid[start:stop].astype(np.float64), copy=False)
+                expected = fitted.predict_proba(reference)
+                if not np.allclose(expected, probabilities[start:stop], atol=1e-10, rtol=1e-10):
+                    raise ValueError("restored baseline probabilities differ from scikit-learn")
+            check_budget()
+            score = scorer(probabilities)
         if not np.isfinite(score):
             raise ValueError("nonfinite baseline validation score")
         entry: dict[str, JsonValue] = {

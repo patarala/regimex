@@ -233,6 +233,25 @@ def test_tcn_reproduces_selected_validation_checkpoint() -> None:
     assert (history, seed) == (repeated_history, repeated_seed)
 
 
+@pytest.mark.parametrize("invalid_score", [-0.1, 1.1])
+def test_epoch_training_rejects_out_of_range_checkpoint_scores(invalid_score: float) -> None:
+    raw = sequence([100.0, 102.0, 99.0])
+    values = temporal_features(raw)
+    prepared = PreparedPredictionInputs(
+        TemporalPreprocessor.fit(values).transform(values), raw.offsets, raw.info
+    )
+    with pytest.raises(ValueError, match="validation score"):
+        fit_tcn(
+            prepared,
+            np.arange(3, dtype=np.int64),
+            prepared,
+            parameters=TCNParameters(channels=4, dilations=(1,)),
+            policy=TrainingPolicy(optimizer="adamw", seeds=(11,), epochs=1),
+            runtime=TrainingRuntime(threads=1),
+            scorer=lambda _: invalid_score,
+        )
+
+
 def loss_and_gradient(
     logits: list[list[list[float]]],
     targets: list[list[int]],

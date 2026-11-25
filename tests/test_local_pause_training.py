@@ -37,6 +37,29 @@ def test_extra_channels_start_at_zero_with_identical_native_parameters_and_rng(
             assert torch.equal(actual, expected)
 
 
+def test_pause_features_use_the_native_price_inputs_for_each_instrument(
+    fitting: ModuleType,
+) -> None:
+    np = pytest.importorskip("numpy")
+    from test_tcn_backend import inputs, raw
+
+    from regimex.temporal import TemporalPreprocessor, temporal_features
+
+    observations = inputs("pause", lengths=(34, 157, 125))
+    matrix = raw(observations)
+    native = temporal_features(matrix)
+    preprocessing = TemporalPreprocessor.fit(native)
+    prepared, extras = fitting.features(observations, preprocessing)
+    assert np.isfinite(extras).any()
+    np.testing.assert_array_equal(prepared.values, preprocessing.transform(native))
+    np.testing.assert_array_equal(prepared.offsets, matrix.offsets)
+    assert prepared.info == matrix.info
+    for left, right in zip(matrix.offsets[:-1], matrix.offsets[1:], strict=True):
+        np.testing.assert_array_equal(
+            extras[left:right], fitting.local_pause_features(matrix.values[left:right, 0])
+        )
+
+
 def test_extra_features_fit_on_training_and_keep_missing_value_masks(fitting: ModuleType) -> None:
     np = pytest.importorskip("numpy")
     from regimex.prediction_inputs import PredictionSequenceInfo

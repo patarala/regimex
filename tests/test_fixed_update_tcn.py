@@ -17,7 +17,12 @@ from test_tcn_backend import inputs, provenance, rehash
 from regimex.admin_api import TrainingRunRequest
 from regimex.admin_contracts import AdminSpec, TrainingSpec
 from regimex.application.training import observation_inputs, train_candidate
-from regimex.backends.tcn import FixedUpdateTCNConfiguration, TCNBackend, TCNPredictor
+from regimex.backends.tcn import (
+    FixedUpdateTCNConfiguration,
+    TCNBackend,
+    TCNPredictor,
+    prepare_observations,
+)
 from regimex.directions import AnalysisConfig
 from regimex.features import DoubleArray
 from regimex.model_contracts import FitResult, ObservationInputs, TrainingInputs
@@ -176,9 +181,7 @@ def test_rehashed_inconsistent_update_history_cannot_load(tmp_path: Path, damage
 def test_one_complete_pass_matches_existing_epoch_optimizer_exactly() -> None:
     _, fitted, _ = fitted_updates()
     predictor = cast(TCNPredictor, fitted.predictor)
-    from regimex.backends.tcn import _prepared
-
-    prepared = _prepared(inputs("synthetic"), predictor.preprocessor)
+    prepared = prepare_observations(inputs("synthetic"), predictor.preprocessor)
     targets = np.repeat(np.arange(3), (24, 32, 28)).astype(np.int64)
     parameters = TCNParameters(channels=4, dilations=(1, 2))
     runtime = TrainingRuntime(threads=1)
@@ -210,9 +213,9 @@ def test_updates_ignore_unlabelled_batches_and_restore_first_tie(
 ) -> None:
     _, fitted, _ = fitted_updates()
     predictor = cast(TCNPredictor, fitted.predictor)
-    from regimex.backends.tcn import _prepared
-
-    prepared = _prepared(inputs("synthetic", lengths=(8, 9, 10, 11)), predictor.preprocessor)
+    prepared = prepare_observations(
+        inputs("synthetic", lengths=(8, 9, 10, 11)), predictor.preprocessor
+    )
     targets = np.repeat(np.asarray([-1, 0, 1, 2]), (8, 9, 10, 11)).astype(np.int64)
     observed, calls = [], []
     original = torch.optim.AdamW.step

@@ -3,7 +3,6 @@
 import argparse
 import hashlib
 from dataclasses import dataclass
-from itertools import pairwise
 from pathlib import Path
 from statistics import mean
 
@@ -24,12 +23,13 @@ from fit_pause_targets import training_protocol as target_protocol
 from local_pause_features import PAUSE_FEATURE_NAMES, local_pause_features
 
 from regimex.application.training import observation_inputs
-from regimex.backends.tcn import TCNPredictor, _feature_inputs
+from regimex.backends.tcn import TCNPredictor, prepare_observations
 from regimex.backends.tcn_layout import TEMPORAL_NAMES
 from regimex.backends.tcn_update_records import UpdateHistoryRecord
+from regimex.features import log_price_channels
 from regimex.prediction_inputs import PreparedPredictionInputs
 from regimex.storage import output_directory
-from regimex.temporal import TCNClassifier, TemporalPreprocessor, predict_tcn, temporal_features
+from regimex.temporal import SELECTION_BATCH_SIZE, TCNClassifier, TemporalPreprocessor, predict_tcn
 from regimex.temporal_updates import fit_temporal_updates
 
 
@@ -67,12 +67,11 @@ def extra_preprocessor(training):
 
 
 def features(inputs, native_preprocessor):
-    raw = _feature_inputs(inputs)
-    native = native_preprocessor.transform(temporal_features(raw))
+    native = prepare_observations(inputs, native_preprocessor)
     extras = np.concatenate(
-        [local_pause_features(raw.values[left:right, 0]) for left, right in pairwise(raw.offsets)]
+        [local_pause_features(log_price_channels(rows)[:, 0]) for rows in inputs.observations]
     )
-    return PreparedPredictionInputs(native, raw.offsets, raw.info), extras
+    return native, extras
 
 
 def extend(raw, extras, preprocessor):
@@ -201,8 +200,11 @@ def fit(output, populations, previous):
             scale=preprocessing.scale,
         )
         restored = read_candidate(folder, control)
-        proba = predict_tcn(model, validating, batch_size=RUNTIME.max_batch_size)
-        np.testing.assert_array_equal(restored.predict(validation.inputs, runtime=RUNTIME), proba)
+        selection_runtime = RUNTIME.model_copy(update={"max_batch_size": SELECTION_BATCH_SIZE})
+        proba = predict_tcn(model, validating, batch_size=SELECTION_BATCH_SIZE)
+        np.testing.assert_array_equal(
+            restored.predict(validation.inputs, runtime=selection_runtime), proba
+        )
         per_seed = per_seed_history(folder / "history.json", POLICY)
         best = max(per_seed, key=lambda row: row["interval_macro_f1"])
         if best["seed"] != seed or validation(proba) != best["interval_macro_f1"]:

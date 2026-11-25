@@ -87,6 +87,27 @@ def test_preprocessing_retains_missingness_and_uses_training_only() -> None:
     )
 
 
+def test_preprocessing_imputes_a_finite_float32_median_at_the_range_limit() -> None:
+    training = np.zeros((3, len(FEATURE_NAMES)), dtype=np.float32)
+    maximum = np.finfo(np.float32).max
+    training[:, 0] = [maximum, maximum, np.nan]
+    training[2, len(NUMERIC_NAMES)] = 1
+    with np.errstate(over="raise", invalid="raise"):
+        fitted = Preprocessor.fit(training)
+        assert fitted.fill[0] == maximum
+        np.testing.assert_array_equal(fitted.transform(training)[:, 0], [0, 0, 0])
+
+
+def test_preprocessing_rejects_standardized_values_outside_float32_range() -> None:
+    training = np.zeros((2, len(FEATURE_NAMES)), dtype=np.float32)
+    training[:, 0] = [-1e-8, 1e-8]
+    fitted = Preprocessor.fit(training)
+    values = training.copy()
+    values[0, 0] = np.finfo(np.float32).max
+    with np.errstate(over="raise"), pytest.raises(ValueError, match="nonfinite"):
+        fitted.transform(values)
+
+
 def test_aggregate_contexts_never_cross_instruments_or_experiments() -> None:
     from regimex.baseline import aggregate
 

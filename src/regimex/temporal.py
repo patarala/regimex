@@ -25,7 +25,7 @@ from regimex.backends.tcn_layout import (
     feature_names as feature_names,
 )
 from regimex.directions import DIRECTION_NAMES
-from regimex.features import FEATURE_NAMES, DoubleArray, FloatArray, IntArray
+from regimex.features import FEATURE_NAMES, DoubleArray, FloatArray, IntArray, Preprocessor
 from regimex.model_contracts import HistoryCallback
 from regimex.model_registry import TCNParameters, TrainingPolicy, TrainingRuntime
 from regimex.prediction_inputs import (
@@ -150,41 +150,10 @@ def temporal_features(sequences: PredictionInputs, *, side_slopes: bool = False)
 
 
 @dataclass(frozen=True)
-class TemporalPreprocessor:
-    fill: DoubleArray
-    mean: DoubleArray
-    scale: DoubleArray
-
+class TemporalPreprocessor(Preprocessor):
     @classmethod
     def fit(cls, training: FloatArray, *, side_slopes: bool = False) -> TemporalPreprocessor:
-        width = len(feature_names(side_slopes))
-        if (
-            training.ndim != 2
-            or training.shape[1] != width
-            or not len(training)
-            or np.isinf(training).any()
-        ):
-            raise ValueError("invalid temporal training features")
-        fill = np.zeros(width, dtype=np.float64)
-        for column in range(width // 2):
-            known = training[np.isfinite(training[:, column]), column]
-            if len(known):
-                fill[column] = np.median(known)
-        complete = np.where(np.isnan(training), fill, training)
-        mean = complete.mean(axis=0)
-        scale = complete.std(axis=0)
-        scale[scale < 1e-12] = 1.0
-        mean[width // 2 :] = 0.0
-        scale[width // 2 :] = 1.0
-        return cls(fill, mean, scale)
-
-    def transform(self, values: FloatArray) -> FloatArray:
-        if values.ndim != 2 or values.shape[1] != len(self.fill) or np.isinf(values).any():
-            raise ValueError("incompatible temporal features")
-        result = (np.where(np.isnan(values), self.fill, values) - self.mean) / self.scale
-        if not np.isfinite(result).all():
-            raise ValueError("temporal preprocessing produced nonfinite values")
-        return result.astype(np.float32)
+        return cls._fit_channels(training, len(feature_names(side_slopes)) // 2)
 
 
 class _ResidualBlock(nn.Module):
@@ -274,15 +243,31 @@ def _interval_weights(targets: IntArray, offsets: IntArray, power: float) -> Flo
     return weights
 
 
-def _supervised_batch(
-    training: PreparedPredictionInputs, targets: IntArray, selected: IntArray
-) -> tuple[Tensor, Tensor, Tensor]:
+@dataclass(slots=True)
+class SupervisedBatch:
+    inputs: Tensor
+    lengths: Tensor
+    targets: Tensor
+    weights: Tensor
+
+    @property
+    def eligible_rows(self) -> int:
+        return int((self.targets >= 0).sum())
+
+
+def supervised_batch(
+    training: PreparedPredictionInputs, targets: IntArray, weights: FloatArray, selected: IntArray
+) -> SupervisedBatch:
     inputs, lengths = _prediction_batch(training, selected)
     labels = np.full(inputs.shape[:2], -1, dtype=np.int64)
+    sample_weights = np.zeros(inputs.shape[:2], dtype=np.float32)
     for row, index in enumerate(selected):
         start, stop = training.offsets[index : index + 2]
         labels[row, : stop - start] = targets[start:stop]
-    return inputs, torch.from_numpy(labels), lengths
+        sample_weights[row, : stop - start] = weights[start:stop]
+    return SupervisedBatch(
+        inputs, lengths, torch.from_numpy(labels), torch.from_numpy(sample_weights)
+    )
 
 
 def _boundary_weights(targets: IntArray, offsets: IntArray) -> FloatArray:
@@ -333,6 +318,26 @@ def _supervised_loss(
         )
         loss = loss + smoothing * changes[within_direction].mean()
     return loss
+
+
+def train_batch(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    batch: SupervisedBatch,
+    class_weights: Tensor,
+    smoothing: float,
+) -> float:
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    loss = _supervised_loss(
+        model(batch.inputs, batch.lengths), batch.targets, class_weights, batch.weights, smoothing
+    )
+    if not bool(torch.isfinite(loss)):
+        raise ValueError("nonfinite TCN training loss")
+    torch.autograd.backward(loss)
+    nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
+    optimizer.step()
+    return float(loss.detach())
 
 
 def fit_tcn(
@@ -387,7 +392,6 @@ def fit_tcn(
         seed_best = -1.0
         stale = 0
         for epoch in range(1, policy.epochs + 1):
-            model.train()
             ordering = rng.permutation(len(training.info)).astype(np.int64)
             total_loss = 0.0
             total_labeled = 0
@@ -395,27 +399,12 @@ def fit_tcn(
                 if check_budget is not None:
                     check_budget()
                 selected: IntArray = ordering[first : first + policy.batch_size]
-                inputs, batch_targets, lengths = _supervised_batch(training, targets, selected)
-                count = int((batch_targets >= 0).sum())
+                batch = supervised_batch(training, targets, interval_weights, selected)
+                count = batch.eligible_rows
                 if not count:
                     continue
-                sample_weights = torch.zeros_like(batch_targets, dtype=torch.float32)
-                for row, index in enumerate(selected):
-                    start, stop = training.offsets[index : index + 2]
-                    sample_weights[row, : stop - start] = torch.from_numpy(
-                        interval_weights[start:stop]
-                    )
-                optimizer.zero_grad(set_to_none=True)
-                logits = model(inputs, lengths)
-                loss = _supervised_loss(
-                    logits, batch_targets, class_weights, sample_weights, parameters.smoothing
-                )
-                if not bool(torch.isfinite(loss)):
-                    raise ValueError("nonfinite TCN training loss")
-                torch.autograd.backward(loss)
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
-                optimizer.step()
-                total_loss += float(loss.detach()) * count
+                loss = train_batch(model, optimizer, batch, class_weights, parameters.smoothing)
+                total_loss += loss * count
                 total_labeled += count
             entry: dict[str, JsonValue] = {
                 "seed": seed,
@@ -429,8 +418,10 @@ def fit_tcn(
                 if check_budget is not None:
                     check_budget()
                 score = scorer(predict_tcn(model, validation, batch_size=SELECTION_BATCH_SIZE))
-                if not np.isfinite(score):
-                    raise ValueError("nonfinite TCN validation score")
+                if check_budget is not None:
+                    check_budget()
+                if not np.isfinite(score) or not 0 <= score <= 1:
+                    raise ValueError("TCN validation score must be segment macro F1 in [0, 1]")
                 entry["validation_segment_macro_f1"] = score
                 logger.info(
                     "TCN seed=%s epoch=%s loss=%.4f validation_segment_macro_f1=%.4f",

@@ -4,6 +4,7 @@ import hashlib
 import platform
 import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from importlib.metadata import version
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Literal, Self, cast
 import numpy as np
 from pydantic import Field, JsonValue, model_validator
 
-from regimex.baseline import LinearModel, fit_baseline
+from regimex.baseline import AccumulationDtype, LinearModel, fit_baseline
 from regimex.contracts import StrictModel
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig
 from regimex.features import (
@@ -49,15 +50,9 @@ from regimex.storage import digest, json_bytes, output_directory, write_json
 ARCHITECTURE_ID = "baseline"
 IMPLEMENTATION_VERSION = "0.1.0"
 PREPROCESSING_VERSION = "baseline-standardization/1.0"
-BaselineCodec = Literal["aggregate-logistic/1.0", "aggregate-logistic/2.0"]
-
-
-def _codec(summaries: SummaryMode) -> BaselineCodec:
-    return (
-        "aggregate-logistic/1.0"
-        if summaries == SummaryMode.LOCAL_AND_GLOBAL
-        else "aggregate-logistic/2.0"
-    )
+BaselineCodec = Literal[
+    "aggregate-logistic/1.0", "aggregate-logistic/2.0", "aggregate-logistic/3.0"
+]
 
 
 _MEMBERS: dict[BundleRole, str] = {
@@ -82,9 +77,17 @@ class BaselineConfiguration(StrictModel):
 
     @model_validator(mode="after")
     def require_summary_codec(self) -> Self:
-        if self.codec_version != _codec(self.parameters.summaries):
+        default_mode = self.parameters.summaries == SummaryMode.LOCAL_AND_GLOBAL
+        if (self.codec_version == "aggregate-logistic/1.0" and not default_mode) or (
+            self.codec_version == "aggregate-logistic/2.0" and default_mode
+        ):
             raise ValueError("baseline summary mode differs from its codec")
         return self
+
+    @property
+    def accumulation_dtype(self) -> AccumulationDtype:
+        # Older weights were fitted on summaries reduced in single precision.
+        return np.float64 if self.codec_version == "aggregate-logistic/3.0" else np.float32
 
 
 class ValidationRecord(StrictModel):
@@ -113,13 +116,20 @@ def _environment() -> dict[str, JsonValue]:
     }
 
 
-def _feature_inputs(observations: ObservationInputs) -> PredictionInputs:
-    require_observation_inputs(observations)
-    return PredictionInputs(
-        np.concatenate([compute_features(rows) for rows in observations.observations]),
-        np.r_[0, np.cumsum([item.step_count for item in observations.info])].astype(np.int64),
-        observations.info,
-    )
+def _feature_inputs(
+    observations: ObservationInputs,
+    sequences: slice = slice(None),
+    *,
+    check_budget: Callable[[], None] | None = None,
+) -> PredictionInputs:
+    info = observations.info[sequences]
+    offsets = np.r_[0, np.cumsum([item.step_count for item in info])].astype(np.int64)
+    values = np.empty((int(offsets[-1]), len(FEATURE_NAMES)), dtype=np.float32)
+    for index, rows in enumerate(observations.observations[sequences]):
+        if check_budget is not None:
+            check_budget()
+        values[offsets[index] : offsets[index + 1]] = compute_features(rows)
+    return PredictionInputs(values, offsets, info)
 
 
 def _freeze(array: DoubleArray, shape: tuple[int, ...], *, positive: bool = False) -> DoubleArray:
@@ -150,6 +160,8 @@ class BaselinePredictor:
         width = parameters.summaries.width(size, parameters.context_sizes)
         if self.model.summaries != parameters.summaries:
             raise ValueError("baseline summary configuration disagrees with weights")
+        if self.model.accumulation_dtype != self.configuration.accumulation_dtype:
+            raise ValueError("baseline summary precision disagrees with its codec")
         if self.model.context_sizes != self.configuration.parameters.context_sizes:
             raise ValueError("baseline context configuration disagrees with weights")
         preprocessor = Preprocessor(
@@ -171,6 +183,7 @@ class BaselinePredictor:
             _freeze(self.model.scale, (width,), positive=True),
             self.model.context_sizes,
             self.model.summaries,
+            self.model.accumulation_dtype,
         )
         object.__setattr__(self, "preprocessor", preprocessor)
         object.__setattr__(self, "model", model)
@@ -201,19 +214,18 @@ class BaselinePredictor:
         InferenceRuntime.model_validate(runtime.model_dump())
         if self.numeric_bytes > runtime.model_cache_budget_bytes:
             raise ResourceBudgetExceeded("baseline model exceeds the inference model cache budget")
-        features = _feature_inputs(inputs)
-        output = np.empty((len(features.values), len(DIRECTION_NAMES)), dtype=np.float64)
+        output = np.empty((inputs.row_count, len(DIRECTION_NAMES)), dtype=np.float64)
+        start = 0
         # Process-global BLAS limits belong in an isolated worker computation.
         with threadpool_limits(limits=runtime.threads):
             for first in range(0, len(inputs.info), runtime.max_batch_size):
-                last = min(first + runtime.max_batch_size, len(inputs.info))
-                start, stop = int(features.offsets[first]), int(features.offsets[last])
+                features = _feature_inputs(inputs, slice(first, first + runtime.max_batch_size))
                 prepared = PreparedPredictionInputs(
-                    self.preprocessor.transform(features.values[start:stop]),
-                    features.offsets[first : last + 1] - start,
-                    inputs.info[first:last],
+                    self.preprocessor.transform(features.values), features.offsets, features.info
                 )
+                stop = start + len(features.values)
                 output[start:stop] = self.model.predict(prepared)
+                start = stop
         if (
             not np.isfinite(output).all()
             or (output < 0).any()
@@ -316,8 +328,8 @@ class BaselineBackend:
                 raise ValueError("baseline validation score must be segment macro F1 in [0, 1]")
             return score
 
-        raw_training = _feature_inputs(training.observations)
-        raw_validation = _feature_inputs(validation)
+        raw_training = _feature_inputs(training.observations, check_budget=check_budget)
+        raw_validation = _feature_inputs(validation, check_budget=check_budget)
         preprocessor = Preprocessor.fit(raw_training.values)
         train = PreparedPredictionInputs(
             preprocessor.transform(raw_training.values),
@@ -351,7 +363,7 @@ class BaselineBackend:
             raise ValueError("baseline evaluator must return segment macro F1 between zero and one")
         environment = _environment()
         configuration = BaselineConfiguration(
-            codec_version=_codec(parameters.summaries),
+            codec_version="aggregate-logistic/3.0",
             parameters=parameters,
             training_policy=policy,
             training_runtime=runtime,
@@ -537,6 +549,7 @@ class BaselineBackend:
                 weights["scale"],
                 configuration.parameters.context_sizes,
                 configuration.parameters.summaries,
+                configuration.accumulation_dtype,
             ),
             configuration,
         )

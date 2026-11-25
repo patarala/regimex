@@ -45,7 +45,11 @@ explicit publication.
 {"regularization": [1.0], "context_sizes": [32, 128], "summaries": "local_observed"}
 ```
 
-Requests that omit `summaries` use `local_and_global`. The
-`aggregate-logistic/1.0` bundle format uses this fixed configuration.
-The `aggregate-logistic/2.0` format records the requested
-summary mode with the numeric weights and fitted preprocessing.
+Requests that omit `summaries` use `local_and_global`. New fits write
+`aggregate-logistic/3.0` bundles. They accumulate means and standard deviations
+in double precision before storing the summaries as float32. This keeps a
+constant channel's standard deviation at zero in long windows.
+
+Inference restores the arithmetic used during training. Version 1 bundles use
+`local_and_global`. Version 2 bundles record the other summary modes. Both
+retain their original single-precision reductions for windows with imputed data.

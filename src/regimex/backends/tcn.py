@@ -121,25 +121,39 @@ def _environment() -> dict[str, JsonValue]:
 def _feature_inputs(
     observations: ObservationInputs,
     *,
-    side_slopes: bool,
+    side_slopes: bool = False,
+    selection: slice = slice(None),
 ) -> tuple[FloatArray, IntArray]:
     require_observation_inputs(observations)
     sequences = [
         temporal_price_features(log_price_channels(rows), side_slopes=side_slopes)
-        for rows in observations.observations
+        for rows in observations.observations[selection]
     ]
     offsets = np.r_[0, np.cumsum([len(sequence) for sequence in sequences], dtype=np.int64)]
     return np.concatenate(sequences), offsets
 
 
-def _prepared(
+def fit_preprocessing(
+    observations: ObservationInputs, *, side_slopes: bool = False
+) -> tuple[TemporalPreprocessor, PreparedPredictionInputs]:
+    """Fit on training instruments and transform them with the same statistics."""
+    values, offsets = _feature_inputs(observations, side_slopes=side_slopes)
+    preprocessing = TemporalPreprocessor.fit(values, side_slopes=side_slopes)
+    prepared = PreparedPredictionInputs(preprocessing.transform(values), offsets, observations.info)
+    return preprocessing, prepared
+
+
+def prepare_observations(
     observations: ObservationInputs,
     preprocessing: TemporalPreprocessor,
     *,
     side_slopes: bool = False,
+    selection: slice = slice(None),
 ) -> PreparedPredictionInputs:
-    values, offsets = _feature_inputs(observations, side_slopes=side_slopes)
-    return PreparedPredictionInputs(preprocessing.transform(values), offsets, observations.info)
+    values, offsets = _feature_inputs(observations, side_slopes=side_slopes, selection=selection)
+    return PreparedPredictionInputs(
+        preprocessing.transform(values), offsets, observations.info[selection]
+    )
 
 
 def _feature_version(parameters: TCNParameters) -> str:
@@ -259,13 +273,18 @@ class TCNPredictor:
         torch.set_num_threads(runtime.threads)
         # Eager operators honor error mode without loading TorchInductor in each fresh worker.
         torch.set_deterministic_debug_mode("error")
-        result = predict_tcn(
-            self.model,
-            _prepared(
-                inputs, self.preprocessor, side_slopes=self.configuration.parameters.side_slopes
-            ),
-            runtime.max_batch_size,
-        )
+        result = np.empty((inputs.row_count, len(DIRECTION_NAMES)), dtype=np.float64)
+        start = 0
+        for first in range(0, len(inputs.info), runtime.max_batch_size):
+            batch = prepare_observations(
+                inputs,
+                self.preprocessor,
+                side_slopes=self.configuration.parameters.side_slopes,
+                selection=slice(first, first + runtime.max_batch_size),
+            )
+            stop = start + len(batch.values)
+            result[start:stop] = predict_tcn(self.model, batch, batch_size=runtime.max_batch_size)
+            start = stop
         if (
             not np.isfinite(result).all()
             or (result < 0).any()
@@ -435,12 +454,10 @@ class TCNBackend:
                 raise ValueError("TCN validation score must be segment macro F1 in [0, 1]")
             return score
 
-        values, offsets = _feature_inputs(training.observations, side_slopes=parameters.side_slopes)
-        preprocessing = TemporalPreprocessor.fit(values, side_slopes=parameters.side_slopes)
-        prepared_training = PreparedPredictionInputs(
-            preprocessing.transform(values), offsets, training.observations.info
+        preprocessing, prepared_training = fit_preprocessing(
+            training.observations, side_slopes=parameters.side_slopes
         )
-        prepared_validation = _prepared(
+        prepared_validation = prepare_observations(
             validation, preprocessing, side_slopes=parameters.side_slopes
         )
         check_budget()

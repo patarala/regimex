@@ -22,7 +22,7 @@ from regimex.backends.tcn import TCNBackend, TCNPredictor
 from regimex.backends.tcn_layout import feature_names, trainable_parameter_count
 from regimex.directions import AnalysisConfig
 from regimex.exports import ExportInstrument, ExportObservation, InstrumentUnits, ModelTimeGrid
-from regimex.features import compute_features
+from regimex.features import FloatArray, compute_features
 from regimex.model_bundles import ModelBundle, ReferenceIdentity, TrainingEvidence
 from regimex.model_contracts import BundleProvenance, FitResult, ObservationInputs, TrainingInputs
 from regimex.model_registry import (
@@ -294,6 +294,28 @@ def test_feature_layout_is_bound_to_the_manifest(tmp_path: Path, side_slopes: bo
     write_json(config_path, config)
     with pytest.raises(ValueError, match="configuration and manifest"):
         backend.load_bundle(path, manifest_sha256=rehash(path), runtime=InferenceRuntime())
+
+
+def test_feature_preparation_respects_the_inference_batch_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, fitted, validation = fit()
+    predictor = cast(TCNPredictor, fitted.predictor)
+    runtime = InferenceRuntime(threads=1, max_batch_size=2)
+    original = TemporalPreprocessor.transform
+    batch_rows: list[int] = []
+
+    def transform(preprocessing: TemporalPreprocessor, values: FloatArray) -> FloatArray:
+        batch_rows.append(len(values))
+        return original(preprocessing, values)
+
+    monkeypatch.setattr(TemporalPreprocessor, "transform", transform)
+    probabilities = predictor.predict(validation, runtime=runtime)
+    assert batch_rows == [
+        sum(info.step_count for info in validation.info[:2]),
+        validation.info[2].step_count,
+    ]
+    assert probabilities.shape == (validation.row_count, 3)
 
 
 def test_predictions_preserve_grid_and_ignore_activity_and_other_instruments() -> None:

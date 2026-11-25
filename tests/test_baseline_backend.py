@@ -15,10 +15,18 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("sklearn")
 
 from regimex.backends.baseline import BaselineBackend, BaselinePredictor
-from regimex.baseline import aggregate, fit_baseline
+from regimex.baseline import LinearModel, aggregate, fit_baseline
+from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig
 from regimex.exports import ExportInstrument, ExportObservation, InstrumentUnits, ModelTimeGrid
-from regimex.features import FEATURE_NAMES, NUMERIC_NAMES, Preprocessor, compute_features
+from regimex.features import (
+    FEATURE_NAMES,
+    NUMERIC_NAMES,
+    DoubleArray,
+    FloatArray,
+    Preprocessor,
+    compute_features,
+)
 from regimex.model_bundles import ModelBundle, ReferenceIdentity, TrainingEvidence
 from regimex.model_contracts import BundleProvenance, FitResult, ObservationInputs, TrainingInputs
 from regimex.model_registry import (
@@ -226,6 +234,54 @@ def test_backend_matches_numeric_fit_and_training_only_preprocessing() -> None:
     np.testing.assert_array_equal(fitted.preprocessor.mean, prior)
 
 
+def test_inference_extracts_only_the_current_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, result, validation = fit()
+    events: list[tuple[str, int]] = []
+    predict = LinearModel.predict
+
+    def extract(rows: tuple[Observation, ...]) -> FloatArray:
+        events.append(("extract", len(rows)))
+        return compute_features(rows)
+
+    def score(model: LinearModel, data: PreparedPredictionInputs) -> DoubleArray:
+        events.append(("predict", len(data.values)))
+        return predict(model, data)
+
+    monkeypatch.setattr("regimex.backends.baseline.compute_features", extract)
+    monkeypatch.setattr(LinearModel, "predict", score)
+    result.predictor.predict(validation, runtime=InferenceRuntime(threads=1, max_batch_size=2))
+    assert events == [
+        ("extract", 15),
+        ("extract", 21),
+        ("predict", 36),
+        ("extract", 18),
+        ("predict", 18),
+    ]
+
+
+def test_validation_obeys_the_training_blas_limit() -> None:
+    from threadpoolctl import threadpool_info, threadpool_limits  # type: ignore[import-untyped]
+
+    training, validation = inputs("train"), inputs("validation")
+
+    def evaluate(_: DoubleArray) -> float:
+        assert all(
+            pool["num_threads"] == 1 for pool in threadpool_info() if pool["user_api"] == "blas"
+        )
+        return 0.5
+
+    with threadpool_limits(limits=2):
+        BaselineBackend().fit(
+            TrainingInputs(training, np.repeat(np.arange(3), (15, 21, 18)).astype(np.int64)),
+            validation,
+            parameters=LogisticParameters(regularization=(1.0,), context_sizes=(4,)),
+            policy=TrainingPolicy(optimizer="lbfgs", seeds=(11,)),
+            analysis=AnalysisConfig(),
+            runtime=TrainingRuntime(threads=1),
+            evaluator=evaluate,
+        )
+
+
 def test_local_summaries_preserve_distant_features_when_a_price_is_missing() -> None:
     original = inputs("validation", (24,))
     rows = original.observations[0]
@@ -272,14 +328,11 @@ def test_summary_mode_survives_reload(tmp_path: Path, mode: SummaryMode) -> None
         fitted, root, provenance=provenance(fitted), analysis=fitted.predictor.analysis
     )
     saved = json.loads((root / "configuration.json").read_bytes())
-    if mode == SummaryMode.LOCAL_AND_GLOBAL:
-        assert saved["codec_version"] == "aggregate-logistic/1.0"
-        assert "summaries" not in saved["parameters"]
-    else:
-        assert saved["codec_version"] == "aggregate-logistic/2.0"
-        assert saved["parameters"]["summaries"] == mode
+    assert saved["codec_version"] == "aggregate-logistic/3.0"
+    assert saved["parameters"]["summaries"] == mode
     restored = backend.load_bundle(root, manifest_sha256=sha, runtime=runtime)
     assert restored.model.summaries == mode
+    assert restored.model.accumulation_dtype is np.float64
     np.testing.assert_array_equal(
         restored.predict(validation, runtime=runtime),
         fitted.predictor.predict(validation, runtime=runtime),
@@ -289,6 +342,55 @@ def test_summary_mode_survives_reload(tmp_path: Path, mode: SummaryMode) -> None
         write_json(root / "configuration.json", saved)
         with pytest.raises(ValueError, match="summary mode differs from its codec"):
             backend.load_bundle(root, manifest_sha256=rehash(root), runtime=runtime)
+
+
+@pytest.mark.parametrize(
+    ("mode", "codec"),
+    [
+        (SummaryMode.LOCAL_AND_GLOBAL, "aggregate-logistic/1.0"),
+        (SummaryMode.LOCAL, "aggregate-logistic/2.0"),
+    ],
+)
+def test_saved_weights_retain_their_window_arithmetic(
+    tmp_path: Path, mode: SummaryMode, codec: str
+) -> None:
+    backend, fitted, _ = fit(summaries=mode)
+    root = tmp_path / "bundle"
+    backend.write_bundle(
+        fitted, root, provenance=provenance(fitted), analysis=fitted.predictor.analysis
+    )
+    config = json.loads((root / "configuration.json").read_bytes())
+    if mode == SummaryMode.LOCAL_AND_GLOBAL:
+        del config["parameters"]["summaries"]
+    config["codec_version"] = codec
+    write_json(root / "configuration.json", config)
+
+    # Make the growth logit read the trade volume deviation in the 16-step window.
+    with np.load(root / "weights.npz") as weights:
+        state = dict(weights)
+    state["coefficients"].fill(0)
+    volume = FEATURE_NAMES.index("log_trade_volume")
+    state["coefficients"][1, 5 * len(FEATURE_NAMES) + volume] = 1e7
+    state["mean"].fill(0)
+    state["scale"].fill(1)
+    state["intercept"].fill(0)
+    np.savez(root / "weights.npz", **state)
+
+    data = inputs("validation", (32,))
+    rows = tuple(row.model_copy(update={"trade_volume": 4.0}) for row in data.observations[0])
+    data = replace(data, observations=(rows,))
+    runtime = InferenceRuntime(threads=1)
+    predictor = backend.load_bundle(root, manifest_sha256=rehash(root), runtime=runtime)
+    values = prepared(data, predictor.preprocessor).values[:16]
+    old_deviation = values.std(axis=0)[volume]
+    assert old_deviation > 0
+    odds = np.exp(float(old_deviation) * 1e7)
+    assert predictor.predict(data, runtime=runtime)[16, 1] == pytest.approx(odds / (odds + 2))
+
+    config["codec_version"] = "aggregate-logistic/3.0"
+    write_json(root / "configuration.json", config)
+    predictor = backend.load_bundle(root, manifest_sha256=rehash(root), runtime=runtime)
+    assert predictor.predict(data, runtime=runtime)[16, 1] == pytest.approx(1 / 3)
 
 
 def test_empty_contexts_require_whole_sequence_statistics() -> None:
@@ -545,6 +647,10 @@ def test_training_time_limit_is_a_resource_failure(monkeypatch: pytest.MonkeyPat
     training, validation = inputs("train"), inputs("validation")
     clock = iter((0.0, 2.0))
     monkeypatch.setattr(time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(
+        "regimex.backends.baseline.compute_features",
+        lambda _: pytest.fail("feature extraction continued after the deadline"),
+    )
     with pytest.raises(ResourceBudgetExceeded, match="time budget"):
         BaselineBackend().fit(
             TrainingInputs(training, np.repeat(np.arange(3), (15, 21, 18)).astype(np.int64)),

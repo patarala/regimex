@@ -17,9 +17,9 @@ from regimex.temporal import (
     TCNClassifier,
     _boundary_weights,
     _interval_weights,
-    _supervised_batch,
-    _supervised_loss,
     predict_tcn,
+    supervised_batch,
+    train_batch,
 )
 
 
@@ -110,39 +110,22 @@ def fit_temporal_updates[Network: nn.Module](
                 if check_budget is not None:
                     check_budget()
                 selected: IntArray = ordering[first : first + policy.batch_size]
-                inputs, batch_targets, lengths = _supervised_batch(training, targets, selected)
-                eligible = int((batch_targets >= 0).sum())
+                batch = supervised_batch(training, targets, weights, selected)
+                eligible = batch.eligible_rows
                 if not eligible:
                     continue
-                sample_weights = torch.zeros_like(batch_targets, dtype=torch.float32)
-                for row, index in enumerate(selected):
-                    start, stop = training.offsets[index : index + 2]
-                    sample_weights[row, : stop - start] = torch.from_numpy(weights[start:stop])
-                model.train()
-                optimizer.zero_grad(set_to_none=True)
-                loss = _supervised_loss(
-                    model(inputs, lengths),
-                    batch_targets,
-                    class_weights,
-                    sample_weights,
-                    smoothing,
-                )
-                if not bool(torch.isfinite(loss)):
-                    raise ValueError("nonfinite TCN training loss")
-                torch.autograd.backward(loss)
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
-                optimizer.step()
+                loss = train_batch(model, optimizer, batch, class_weights, smoothing)
                 update += 1
-                real_rows = int(lengths.sum())
+                real_rows = int(batch.lengths.sum())
                 entry: dict[str, JsonValue] = {
                     "seed": seed,
                     "update": update,
                     "pass_index": pass_index,
                     "batch_in_pass": batch_index,
-                    "training_loss": float(loss.detach()),
+                    "training_loss": loss,
                     "trained_sequences": len(selected),
                     "real_rows": real_rows,
-                    "padding_rows": int(inputs.shape[0] * inputs.shape[1]) - real_rows,
+                    "padding_rows": batch.targets.numel() - real_rows,
                     "eligible_rows": eligible,
                 }
                 if update in policy.validation_updates:
