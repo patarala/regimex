@@ -2,7 +2,7 @@
 
 import math
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from sys import float_info
 
 import numpy as np
@@ -415,27 +415,63 @@ def _decode_block(
     return result
 
 
-def _decoded_ranges(
-    probabilities: NDArray[np.float32] | NDArray[np.float64],
-    observations: tuple[Observation, ...],
-    config: AnalysisConfig | None,
-) -> Iterator[tuple[int, int, Direction | None, IntervalStatus]]:
-    config = config or AnalysisConfig()
+def _score_values(
+    probabilities: NDArray[np.float32] | NDArray[np.float64], size: int
+) -> NDArray[np.float64]:
     values = np.asarray(probabilities, dtype=np.float64)
-    if values.shape != (len(observations), len(DIRECTION_NAMES)):
+    if values.shape != (size, len(DIRECTION_NAMES)):
         raise ValueError("scores must have one row per observation and one column per direction")
     if not np.isfinite(values).all() or (values < 0).any() or (values > 1).any():
         raise ValueError("scores must be finite values between zero and one")
     if not np.allclose(values.sum(axis=1), 1.0, atol=1e-6, rtol=0):
         raise ValueError("each score row must sum to one")
-    for start, stop, status in observation_blocks(observations, config):
-        if status != "observed":
-            yield start, stop, None, status
-            continue
-        for left, right, direction in _decode_block(
-            values[start:stop], observations[start:stop], config
-        ):
-            yield start + left, start + right, direction, status
+    return values
+
+
+@dataclass(frozen=True, slots=True)
+class DecoderGrid:
+    """Availability of an immutable instrument series under one analysis profile."""
+
+    observations: tuple[Observation, ...]
+    config: AnalysisConfig
+    _blocks: tuple[tuple[int, int, IntervalStatus], ...] = field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_blocks", observation_blocks(self.observations, self.config))
+
+    def _ranges(
+        self, scores: NDArray[np.float64]
+    ) -> Iterator[tuple[int, int, Direction | None, IntervalStatus]]:
+        for start, stop, status in self._blocks:
+            if status != "observed":
+                yield start, stop, None, status
+                continue
+            for left, right, direction in _decode_block(
+                scores[start:stop], self.observations[start:stop], self.config
+            ):
+                yield start + left, start + right, direction, status
+
+    def spans_from_validated(self, scores: NDArray[np.float64]) -> tuple[DirectionSpan, ...]:
+        return tuple(
+            DirectionSpan(
+                instrument_id=self.observations[0].instrument_id,
+                start=start,
+                stop=stop,
+                direction=direction,
+                status=status,
+            )
+            for start, stop, direction, status in self._ranges(scores)
+        )
+
+    def intervals_from_validated(
+        self, scores: NDArray[np.float64]
+    ) -> tuple[DirectionInterval, ...]:
+        return tuple(
+            _interval(self.observations, start, stop, direction, status)
+            for start, stop, direction, status in self._ranges(scores)
+        )
 
 
 def decode_spans(
@@ -444,16 +480,8 @@ def decode_spans(
     config: AnalysisConfig | None = None,
 ) -> tuple[DirectionSpan, ...]:
     """Return the boundaries and directions needed to evaluate a model."""
-    return tuple(
-        DirectionSpan(
-            instrument_id=observations[0].instrument_id,
-            start=start,
-            stop=stop,
-            direction=direction,
-            status=status,
-        )
-        for start, stop, direction, status in _decoded_ranges(probabilities, observations, config)
-    )
+    values = _score_values(probabilities, len(observations))
+    return DecoderGrid(observations, config or AnalysisConfig()).spans_from_validated(values)
 
 
 def decode(
@@ -462,7 +490,5 @@ def decode(
     config: AnalysisConfig | None = None,
 ) -> tuple[DirectionInterval, ...]:
     """Decode each available block and summarize its intervals on the original grid."""
-    return tuple(
-        _interval(observations, start, stop, direction, status)
-        for start, stop, direction, status in _decoded_ranges(probabilities, observations, config)
-    )
+    values = _score_values(probabilities, len(observations))
+    return DecoderGrid(observations, config or AnalysisConfig()).intervals_from_validated(values)

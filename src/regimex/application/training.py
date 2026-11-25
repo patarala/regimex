@@ -7,7 +7,8 @@ limits belong to the persistent service boundary.
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from itertools import accumulate, pairwise
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -50,7 +51,7 @@ from regimex.model_registry import (
 )
 from regimex.operations import Sha256
 from regimex.prediction_inputs import PredictionSequenceInfo
-from regimex.segmentation import DECODER_VERSION, decode, decode_spans
+from regimex.segmentation import DECODER_VERSION, DecoderGrid
 from regimex.storage import output_directory
 from regimex.training_statistics import TrainingFitStatistics
 
@@ -118,39 +119,39 @@ class SharedSelectionEvaluator:
     references: tuple[tuple[DirectionInterval, ...], ...]
     analysis: AnalysisConfig
     reference_kind: Literal["automatic", "human"]
+    _grids: tuple[DecoderGrid, ...] = field(init=False, repr=False, compare=False)
+    _offsets: tuple[int, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.reference_kind not in {"automatic", "human"}:
             raise ValueError("unknown reference kind")
         for info, intervals in zip(self.inputs.info, self.references, strict=True):
             validate_interval_grid(intervals, info.instrument_id, info.step_count)
+        object.__setattr__(
+            self,
+            "_grids",
+            tuple(DecoderGrid(rows, self.analysis) for rows in self.inputs.observations),
+        )
+        object.__setattr__(
+            self, "_offsets", tuple(accumulate((i.step_count for i in self.inputs.info), initial=0))
+        )
 
     def _decode(
         self, probabilities: DoubleArray, *, with_statistics: bool = True
     ) -> tuple[IntArray, tuple[tuple[DirectionSpan, ...], ...]]:
         if not isinstance(probabilities, np.ndarray) or probabilities.dtype != np.float64:
             raise ValueError("backend probabilities must be a float64 array")
-        probabilities_valid(probabilities, self.inputs.row_count)
-        offsets = np.concatenate(
-            (
-                np.zeros(1, dtype=np.int64),
-                np.cumsum(
-                    [item.step_count for item in self.inputs.info],
-                    dtype=np.int64,
-                ),
-            )
+        probabilities_valid(probabilities, self._offsets[-1])
+        decode_sequence = (
+            DecoderGrid.intervals_from_validated
+            if with_statistics
+            else DecoderGrid.spans_from_validated
         )
-        decode_sequence = decode if with_statistics else decode_spans
         predicted = tuple(
-            decode_sequence(probabilities[start:stop], rows, self.analysis)
-            for start, stop, rows in zip(
-                offsets[:-1],
-                offsets[1:],
-                self.inputs.observations,
-                strict=True,
-            )
+            decode_sequence(grid, probabilities[start:stop])
+            for grid, (start, stop) in zip(self._grids, pairwise(self._offsets), strict=True)
         )
-        return offsets, predicted
+        return np.asarray(self._offsets, dtype=np.int64), predicted
 
     def evaluate(
         self, probabilities: DoubleArray, *, bootstrap_repetitions: int = 0

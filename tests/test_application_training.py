@@ -356,6 +356,10 @@ def test_checkpoint_score_matches_pooled_report_without_boundary_diagnostics(
     evaluator = SharedSelectionEvaluator(
         inputs, tuple(item.annotations.intervals for item in snapshots), PROFILE, "human"
     )
+    monkeypatch.setattr(
+        "regimex.segmentation.observation_blocks",
+        lambda *_: pytest.fail("evaluation rescanned an immutable observation grid"),
+    )
     flat = np.zeros((inputs.row_count, 3), dtype=np.float64)
     flat[:, 0] = 1
     _, full_intervals = evaluator._decode(flat)
@@ -373,3 +377,7 @@ def test_checkpoint_score_matches_pooled_report_without_boundary_diagnostics(
         lambda *_: pytest.fail("unused boundary diagnostics"),
     )
     assert evaluator(flat) == expected
+    # A reused grid still checks newly supplied scores, even on an unavailable step.
+    flat[-1, 0] = np.nan
+    with pytest.raises(ValueError, match="invalid class scores"):
+        evaluator(flat)
