@@ -40,7 +40,7 @@ export function createTrainingProgress(session, metrics) {
         }
         state.cursor = page.cursor;
         changed = true;
-        if (!page.has_more) break;
+        if (!page.has_more || document.hidden) break;
         if (firstPage) {
           metrics.show(state.history, null, policy);
           changed = false;

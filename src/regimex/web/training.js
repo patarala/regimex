@@ -589,10 +589,10 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   async function refresh(stamp, fetchRun = true) {
-    if (!selected(stamp) || !run || busy) return;
+    if (document.hidden || !selected(stamp) || !run || busy) return;
     clearTimeout(timer);
     const revision = ++pollRevision;
-    const valid = () => selected(stamp) && pollRevision === revision;
+    const valid = () => !document.hidden && selected(stamp) && pollRevision === revision;
     const before = run.job.state;
     try {
       if (fetchRun) {
@@ -682,7 +682,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   }
 
   async function loadRun(id, stamp, cached, focus = false) {
-    if (!selected(stamp)) return;
+    if (document.hidden || !selected(stamp)) return;
     clearTimeout(timer);
     try {
       const row = cached || await readRun(id);
@@ -839,7 +839,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function refreshAfterReturn() {
     if (!opened) return;
     void list();
-    if (run && finished(run.job)) void refreshDetail();
+    if (target && target !== "new" && target !== "compare") void refreshDetail();
   }
 
   return {close, reset, show, weightsRemoved, refreshAfterReturn};

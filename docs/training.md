@@ -34,12 +34,13 @@ configuration as JSON, choose **Edit JSON** at the top of the form. Select
 
 ## Read a run
 
-The run page updates while the job is running. Hover over a chart to inspect
-a measurement. Validation scores appear only for epochs or updates where a
-check ran. For repeated fits, **Training repeat** selects a curve and
-**used for this model** identifies
-the repeat that supplied the saved weights. The run shows when training stopped
-after consecutive checks without improvement.
+The run page checks for new measurements while it is visible. If you switch
+tabs, training continues and the charts catch up when you return. Hover over a
+chart to inspect a measurement. Validation scores appear only for epochs or
+updates where a check ran. For repeated fits, **Training repeat** selects a
+curve and **used for this model** identifies the repeat that supplied the saved
+weights. The run shows when training stopped after consecutive checks without
+improvement.
 
 To change a workspace run, choose **New run from this run**. The form opens
 with that run's data and settings. To compare two runs, choose **Select runs**

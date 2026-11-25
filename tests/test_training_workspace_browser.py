@@ -1815,6 +1815,41 @@ def test_training_repeat_explains_early_stopping_live_and_after_completion(brows
         page.close()
 
 
+def test_hidden_training_tab_waits_to_read_new_measurements(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run["job"].update(state="running", stage="training", attempt=1)
+    api.progress_rows = [{"epoch": 1, "training_loss": 0.8}]
+    path = f"training-runs/{RUN_ID}"
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.clock.install()
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        latest = page.get_by_role("img", name="Training loss by epoch").locator("[data-last] title")
+        expect(latest).to_have_text("Epoch 1: 0.8")
+
+        page.evaluate("""() => {
+            Object.defineProperty(document, 'hidden', {value: true, configurable: true});
+            document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        before = (api.pages.count(path), api.pages.count(path + "/progress"))
+        api.progress_rows.append({"epoch": 2, "training_loss": 0.6})
+        page.clock.fast_forward(30_000)
+        page.wait_for_load_state("networkidle")
+        assert (api.pages.count(path), api.pages.count(path + "/progress")) == before
+
+        with page.expect_response(lambda r: "/progress?attempt=1&after=1" in r.url):
+            page.evaluate("""() => {
+                delete document.hidden;
+                document.dispatchEvent(new Event('visibilitychange'));
+            }""")
+            page.clock.fast_forward(100)
+        expect(latest).to_have_text("Epoch 2: 0.6")
+    finally:
+        page.close()
+
+
 def test_live_updates_preserve_the_selected_repeat_and_open_table(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
