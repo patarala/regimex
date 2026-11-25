@@ -99,7 +99,8 @@ class Preprocessor:
             known = training[np.isfinite(training[:, column]), column]
             if len(known):
                 # Keep the input precision without overflowing the sum of the middle pair.
-                fill[column] = np.median(known.astype(np.float64)).astype(known.dtype)
+                median = np.median(known.astype(np.float64), overwrite_input=True)
+                fill[column] = median.astype(known.dtype)
         complete = np.where(np.isnan(training), fill, training)
         mean = complete.mean(axis=0)
         scale = complete.std(axis=0)
