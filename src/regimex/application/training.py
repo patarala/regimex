@@ -82,35 +82,9 @@ class CandidateTrainingResult(StrictModel):
 
 def observation_inputs(snapshots: tuple[LabeledSnapshot, ...]) -> ObservationInputs:
     """Keep original observations, timing and units; backends construct their features."""
-    info = []
-    observations = []
-    grids = []
-    instruments = []
-    for item in snapshots:
-        # Evaluation membership admits one revision per independent run. Its
-        # namespace and snapshot ID align instruments without exposing seed metadata.
-        experiment_id = content_hash([item.source_namespace, item.snapshot_id])
-        for instrument in item.export.instruments:
-            rows = tuple(
-                row
-                for row in item.export.observations
-                if row.instrument_id == instrument.instrument_id
-            )
-            info.append(
-                PredictionSequenceInfo(
-                    experiment_id=experiment_id,
-                    instrument_id=instrument.instrument_id,
-                    step_count=item.export.time_grid.step_count,
-                )
-            )
-            observations.append(rows)
-            grids.append(item.export.time_grid)
-            instruments.append(instrument)
-    return ObservationInputs(
-        info=tuple(info),
-        observations=tuple(observations),
-        time_grids=tuple(grids),
-        instruments=tuple(instruments),
+    # The namespace and revision align evaluation instruments without exposing seed metadata.
+    return ObservationInputs.from_exports(
+        (content_hash([item.source_namespace, item.snapshot_id]), item.export) for item in snapshots
     )
 
 

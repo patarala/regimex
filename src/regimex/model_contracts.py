@@ -1,6 +1,6 @@
 """Worker contracts shared by installed scientific backends and application code."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -10,7 +10,13 @@ from pydantic import JsonValue
 
 from regimex.contracts import Identifier, StrictModel
 from regimex.directions import AnalysisConfig
-from regimex.exports import ExportInstrument, ExportObservation, InstrumentUnits, ModelTimeGrid
+from regimex.exports import (
+    ExportInstrument,
+    ExportObservation,
+    ExportV2,
+    InstrumentUnits,
+    ModelTimeGrid,
+)
 from regimex.features import DoubleArray, IntArray
 from regimex.model_bundles import TrainingEvidence
 from regimex.model_registry import InferenceRuntime, TrainingPolicySpec, TrainingRuntime
@@ -33,6 +39,32 @@ class ObservationInputs:
     observations: tuple[tuple[ExportObservation, ...], ...]
     time_grids: tuple[ModelTimeGrid, ...]
     instruments: tuple[ExportInstrument, ...]
+
+    @classmethod
+    def from_exports(cls, exports: Iterable[tuple[str, ExportV2]]) -> ObservationInputs:
+        """Build the same instrument-major input grid for training and serving."""
+        info = []
+        observations = []
+        grids = []
+        instruments = []
+        for experiment_id, export in exports:
+            by_instrument: dict[str, list[ExportObservation]] = {
+                instrument.instrument_id: [] for instrument in export.instruments
+            }
+            for row in export.observations:
+                by_instrument[row.instrument_id].append(row)
+            for instrument in export.instruments:
+                info.append(
+                    PredictionSequenceInfo(
+                        experiment_id=experiment_id,
+                        instrument_id=instrument.instrument_id,
+                        step_count=export.time_grid.step_count,
+                    )
+                )
+                observations.append(tuple(by_instrument[instrument.instrument_id]))
+                grids.append(export.time_grid)
+                instruments.append(instrument)
+        return cls(tuple(info), tuple(observations), tuple(grids), tuple(instruments))
 
     def __post_init__(self) -> None:
         if (

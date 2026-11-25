@@ -16,7 +16,6 @@ from regimex.exports import ExportInstrument, ExportV2, parse_export_v2
 from regimex.model_bundles import ModelBundle, verify_model_bundle
 from regimex.model_contracts import LoadedPredictor, ModelBackend, ObservationInputs
 from regimex.model_registry import ArchitectureRegistry, InferenceRuntime, RegistryError
-from regimex.prediction_inputs import PredictionSequenceInfo
 from regimex.segmentation import DECODER_VERSION, decode
 from regimex.service_contracts import AnalysisRecord, ModelRecord, SnapshotRecord
 from regimex.storage import json_bytes
@@ -81,24 +80,7 @@ def restore_bundle(
 
 def snapshot_inputs(export: ExportV2) -> ObservationInputs:
     """Construct only the raw original grid, never labels or simulation parameters."""
-    return ObservationInputs(
-        info=tuple(
-            PredictionSequenceInfo(
-                experiment_id=export.content_sha256,
-                instrument_id=instrument.instrument_id,
-                step_count=export.time_grid.step_count,
-            )
-            for instrument in export.instruments
-        ),
-        observations=tuple(
-            tuple(
-                row for row in export.observations if row.instrument_id == instrument.instrument_id
-            )
-            for instrument in export.instruments
-        ),
-        time_grids=tuple(export.time_grid for _ in export.instruments),
-        instruments=export.instruments,
-    )
+    return ObservationInputs.from_exports(((export.content_sha256, export),))
 
 
 @dataclass(frozen=True, slots=True)
