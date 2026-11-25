@@ -354,6 +354,13 @@ def _length_summary(lengths: list[int]) -> dict[str, JsonValue]:
     }
 
 
+def point_macro_f1_from_counts(counts: IntArray) -> float:
+    """Return NaN without labeled steps. An all-abstaining prediction can score zero."""
+    if not (counts[:, 0].any() or counts[:, 2].any()):
+        return math.nan
+    return cast(float, _metrics(counts)["macro_f1"])
+
+
 def _bootstrap(
     grouped: dict[str, ExperimentCounts], repetitions: int
 ) -> dict[str, JsonValue] | None:
@@ -376,6 +383,7 @@ def _bootstrap(
             **metadata,
             "segment_macro_f1_percentile_interval": None,
             "point_macro_f1_percentile_interval": None,
+            "point_macro_f1_undefined_draws": 0,
             "boundary_f1_percentile_interval": None,
             "typed_boundary_f1_percentile_interval": None,
             "boundary_f1_undefined_draws": 0,
@@ -394,11 +402,12 @@ def _bootstrap(
     for _ in range(repetitions):
         chosen = rng.integers(0, len(groups), size=len(groups))
         segment_values.append(_metrics(segment_counts[chosen].sum(axis=0))["macro_f1"])
-        point_values.append(_metrics(point_counts[chosen].sum(axis=0))["macro_f1"])
+        point_values.append(point_macro_f1_from_counts(point_counts[chosen].sum(axis=0)))
         boundary_values.append(
             _boundary_score(boundary_counts[chosen].sum(axis=0), undefined=math.nan)
         )
         typed_values.append(_boundary_score(typed_counts[chosen].sum(axis=0), undefined=math.nan))
+    undefined_point = sum(map(math.isnan, point_values))
     undefined_boundary = sum(map(math.isnan, boundary_values))
     undefined_typed = sum(map(math.isnan, typed_values))
     return {
@@ -407,7 +416,10 @@ def _bootstrap(
             JsonValue,
             np.quantile(np.asarray(segment_values, dtype=np.float64), [0.025, 0.975]).tolist(),
         ),
-        "point_macro_f1_percentile_interval": cast(
+        "point_macro_f1_undefined_draws": undefined_point,
+        "point_macro_f1_percentile_interval": None
+        if undefined_point
+        else cast(
             JsonValue,
             np.quantile(np.asarray(point_values, dtype=np.float64), [0.025, 0.975]).tolist(),
         ),
@@ -461,11 +473,11 @@ def paired_bootstrap(
     right_arrays = [np.stack([candidate[key][i] for key in identifiers]) for i in range(4)]
 
     def score(counts: IntArray, index: int) -> float:
-        return (
-            cast(float, _metrics(counts)["macro_f1"])
-            if index < 2
-            else _boundary_score(counts, undefined=math.nan)
-        )
+        if index == 0:
+            return cast(float, _metrics(counts)["macro_f1"])
+        if index == 1:
+            return point_macro_f1_from_counts(counts)
+        return _boundary_score(counts, undefined=math.nan)
 
     rng = np.random.Generator(np.random.PCG64(seed))
     draws = repetitions if len(identifiers) > 1 else 0
@@ -632,7 +644,7 @@ def report(
     eligible_count = int(eligible.sum())
     boundary_denominator = boundary_reference + boundary_predicted
     return {
-        "evaluation_version": "2.4",
+        "evaluation_version": "2.5",
         "reference_kind": reference_kind,
         "reference_limitation": (
             "Agreement with automatic observation rules; "

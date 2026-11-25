@@ -106,7 +106,7 @@ def test_perfect_three_direction_intervals_have_both_metrics_one(
     assert result["boundary_metrics"]["f1"] == 1
     assert result["primary_metric"] == "segment_macro_f1"
     assert result["reference_kind"] == reference_kind
-    assert result["evaluation_version"] == "2.4"
+    assert result["evaluation_version"] == "2.5"
     assert not any("acceptance" in key for key in result)
     assert result["confidence_intervals"] is None
 
@@ -312,6 +312,26 @@ def test_undefined_boundary_draws_do_not_become_zero_scores() -> None:
                 # Predicted boundaries with no reference matches have a defined zero F1.
                 assert confidence[f"{metric}_percentile_interval"] == [0.0, 0.0]
     assert report["confidence_intervals"]["typed_boundary_f1_undefined_draws"] == 100
+
+
+def test_point_uncertainty_distinguishes_no_labels_from_no_correct_predictions() -> None:
+    observations = rows(9)
+    labeled = intervals(observations, [(0, 9, Direction.GROWTH)])
+    empty = intervals(observations, [(0, 9, None)])
+    for references, expected_undefined in (
+        ((empty, empty), 100),
+        ((labeled, labeled), 0),
+        ((labeled, empty), None),
+    ):
+        report = evaluation.report(sequences(references), (empty, empty), bootstrap_repetitions=100)
+        confidence = report["confidence_intervals"]
+        missing = confidence["point_macro_f1_undefined_draws"]
+        if expected_undefined is None:
+            assert 0 < missing < 100
+        else:
+            assert missing == expected_undefined
+        assert confidence["point_macro_f1_percentile_interval"] == (None if missing else [0, 0])
+        assert report["point_metrics"]["defined"] is (expected_undefined != 100)
 
 
 def test_duplicate_experiment_instrument_cannot_inflate_evaluation_support() -> None:

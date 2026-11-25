@@ -307,8 +307,9 @@ def qualification(control, winner, paired):
     candidate = winner["short_sideways_recall"]
     return {
         "positive_interval_gain": paired["interval_macro_f1"]["interval_95pct"][0] > 0,
-        "point_f1": winner["point_macro_f1"]
-        >= control["point_macro_f1"] - MARGINS["point_macro_f1"],
+        "point_f1": winner["point_macro_f1"] is not None
+        and control["point_macro_f1"] is not None
+        and winner["point_macro_f1"] >= control["point_macro_f1"] - MARGINS["point_macro_f1"],
         "class_f1": all(
             winner["interval_per_class"][k]["f1"] >= v["f1"] - MARGINS["class_f1"]
             for k, v in control["interval_per_class"].items()

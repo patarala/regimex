@@ -37,6 +37,12 @@ with neither reference cases nor predictions contributes zero. A pooled score us
 counts across the whole population. Some offline reports also give equal weight to
 each experiment length or observation condition and label this average separately.
 
+Confidence intervals resample whole experiments, keeping their instruments
+together. If a draw contains no labeled steps, per-step F1 is undefined.
+Evaluation reports from version 2.5 omit the per-step confidence interval
+in that case and record how many draws lacked labels. Predictions that miss
+every labeled step still score zero.
+
 ## Compare models
 
 Compare candidates on the same experiments, reference labels, analysis profile

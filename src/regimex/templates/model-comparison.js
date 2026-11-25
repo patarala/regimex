@@ -45,14 +45,14 @@
     ? "Sampling intervals require at least two independent experiments."
     : "Brackets show 95% whole-experiment intervals.";
   const boundaryIntervalNote = first.experiment_count === 1 ? ""
-    : first.evaluation_version === "2.4"
-      ? " A boundary interval requires a defined F1 in every bootstrap draw."
-      : " The saved version 2.3 intervals count boundary-free draws as zero F1.";
+    : first.evaluation_version === "2.3"
+      ? " The saved version 2.3 intervals count boundary-free draws as zero F1."
+      : " A boundary interval requires a defined F1 in every bootstrap draw.";
   document.getElementById("metric-note").textContent = `Higher F1 is better. Interval IoU ≥ 0.50; boundary tolerance ${first.boundary_metrics.tolerance_steps} steps. Typed boundaries also require both directions to agree. ${intervalNote}${boundaryIntervalNote} Lag is prediction − reference among aligned typed transitions, without a distance cutoff; positive means later. Distant pairs can represent different events.`;
   table("overview", ["Model", "Interval macro-F1 ↑", "Step macro-F1 ↑", "Boundary timing F1 ↑", "Typed boundary F1 ↑", "Median typed lag, steps"], evaluations.map(item => [
     item.model_version_id,
     score(item.segment_macro_f1, item.confidence_intervals.segment_macro_f1_percentile_interval),
-    score(item.point_macro_f1, item.confidence_intervals.point_macro_f1_percentile_interval),
+    score(item.coverage.reference_classified_step_count ? item.point_macro_f1 : null, item.confidence_intervals.point_macro_f1_percentile_interval),
     score(item.boundary_metrics.defined ? item.boundary_metrics.f1 : null, item.confidence_intervals.boundary_f1_percentile_interval),
     score(item.typed_boundary_metrics.defined ? item.typed_boundary_metrics.f1 : null, item.confidence_intervals.typed_boundary_f1_percentile_interval),
     number(item.typed_boundary_metrics.alignment.signed_lag_steps.median_steps)
@@ -103,7 +103,8 @@
     const entry = item.experiment_statistics.find(value => value.experiment_id === selector.value);
     const hasBoundaries = entry.boundary_counts.some(value => value > 0);
     const hasTyped = entry.typed_boundary_counts.some(value => value > 0);
-    return [item.model_version_id, number(entry.segment_macro_f1), number(entry.point_macro_f1), hasBoundaries ? number(entry.boundary_f1) : "—", hasTyped ? number(entry.typed_boundary_f1) : "—"];
+    const hasLabeledSteps = entry.point_counts.some(([matched, , missed]) => matched + missed > 0);
+    return [item.model_version_id, number(entry.segment_macro_f1), number(hasLabeledSteps ? entry.point_macro_f1 : null), hasBoundaries ? number(entry.boundary_f1) : "—", hasTyped ? number(entry.typed_boundary_f1) : "—"];
   }));
   selector.addEventListener("change", experiment);
   experiment();

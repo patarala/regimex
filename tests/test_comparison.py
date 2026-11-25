@@ -72,7 +72,7 @@ def test_comparison_preserves_downloads_and_escapes_embedded_script(tmp_path: Pa
             "paired-comparisons.json",
         )
     }
-    assert manifest["version"] == "model-comparison/2.1"
+    assert manifest["version"] == "model-comparison/2.2"
     paired = json.loads((target / "paired-comparisons.json").read_text())
     assert paired[0]["reference_model_version_id"] == "baseline"
     assert paired[0]["candidate_model_version_id"] == "tcn"
@@ -334,18 +334,42 @@ def test_comparison_distinguishes_undefined_boundary_deltas_from_ties(tmp_path: 
         assert values["tied_experiments"] == 0
 
 
-def test_comparison_supports_saved_v23_evaluations(tmp_path: Path) -> None:
+def test_paired_per_step_f1_omits_unlabeled_experiments_from_ties(tmp_path: Path) -> None:
+    from test_evaluation import intervals, rows, sequences
+
+    from regimex.evaluation import report
+
+    observations = rows(12)
+    labeled = intervals(observations, [(0, 12, Direction.GROWTH)])
+    empty = intervals(observations, [(0, 12, None)])
+    references = (labeled, empty)
     first, second = evaluation("baseline"), evaluation("tcn")
     for item in (first, second):
-        item["evaluation_version"] = "2.3"
+        item.update(report(sequences(references), references, bootstrap_repetitions=100))
+    render_model_comparison((first, second), tmp_path / "mixed")
+    detail = json.loads((tmp_path / "mixed/paired-comparisons.json").read_text())[0]
+    point = detail["metrics"]["point_macro_f1"]
+    assert point["delta"] == 0
+    assert point["tied_experiments"] == point["undefined_experiments"] == 1
+    assert 0 < point["undefined_draws"] < 100
+    assert point["percentile_interval"] is None
+
+
+@pytest.mark.parametrize("version", ["2.3", "2.4"])
+def test_comparison_supports_saved_evaluations(tmp_path: Path, version: str) -> None:
+    first, second = evaluation("baseline"), evaluation("tcn")
+    for item in (first, second):
+        item["evaluation_version"] = version
         confidence = cast(dict[str, JsonValue], item["confidence_intervals"])
-        del (
-            confidence["boundary_f1_undefined_draws"],
-            confidence["typed_boundary_f1_undefined_draws"],
-        )
-    # Early version 2.3 reports stored degenerate intervals for a single experiment.
-    for name in tuple(confidence):
-        if name.endswith("_percentile_interval"):
-            confidence[name] = [1.0, 1.0]
+        del confidence["point_macro_f1_undefined_draws"]
+        if version == "2.3":
+            del (
+                confidence["boundary_f1_undefined_draws"],
+                confidence["typed_boundary_f1_undefined_draws"],
+            )
+            # Early 2.3 reports stored degenerate intervals for a single experiment.
+            for name in tuple(confidence):
+                if name.endswith("_percentile_interval"):
+                    confidence[name] = [1.0, 1.0]
     render_model_comparison((first, second), tmp_path / "old")
     assert json.loads((tmp_path / "old/evaluations.json").read_bytes()) == [first, second]

@@ -113,6 +113,8 @@ def test_uncertain_gain_and_local_regressions_block_qualification(comparison: Mo
     results["context"] = scores(0.79, 0.80, 0.79)
     comparisons[comparison.CONTROL]["interval_macro_f1"]["interval_95pct"] = [0.01, 0.02]
     assert all(comparison.qualification("context", results, comparisons).values())
+    results[comparison.CONTROL]["point_macro_f1"] = None
+    assert not comparison.qualification("context", results, comparisons)["point_f1"]
 
 
 def test_confirmation_verifies_choice_before_first_open_and_records_access(

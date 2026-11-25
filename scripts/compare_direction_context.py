@@ -363,7 +363,9 @@ def qualification(winner, results, comparisons):
             comparisons[name]["interval_macro_f1"]["interval_95pct"][0] > 0
             for name in (CONTROL, "release-native")
         ),
-        "point_f1": selected["point_macro_f1"] >= baseline["point_macro_f1"] - 0.02,
+        "point_f1": selected["point_macro_f1"] is not None
+        and baseline["point_macro_f1"] is not None
+        and selected["point_macro_f1"] >= baseline["point_macro_f1"] - 0.02,
         "per_class_interval_f1": all(
             selected["interval_per_class"][k]["f1"] >= v["f1"] - 0.03
             for k, v in baseline["interval_per_class"].items()

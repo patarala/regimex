@@ -91,7 +91,9 @@ union of at least 0.5, with one match per interval. Short-sideways recall is
 the share of reference sideways intervals shorter than 64 steps that match.
 Sideways precision includes predicted sideways intervals of all lengths.
 Confidence intervals for differences use 2,000 paired draws of whole
-experiments, retaining 40 draws of each length. They describe variation
+experiments, retaining 40 draws of each length. The report records how many
+draws support each metric. A range appears when the metric is defined in every
+draw. For example, point F1 needs at least one labeled step. The ranges describe variation
 across this population for the frozen fits. The validation repeats separately
 show how much checkpoint scores varied with the training seed.
 

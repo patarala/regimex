@@ -70,6 +70,9 @@ def test_positive_pooled_gain_cannot_mask_short_sideways_or_length_regression(
     assert not trial.qualification(baseline, candidate, paired)["short_sideways_recall"]
     candidate = {**baseline, "by_length": {"1024": {"interval_macro_f1": 0.70}}}
     assert not trial.qualification(baseline, candidate, paired)["length_f1"]
+    assert not trial.qualification(baseline, {**baseline, "point_macro_f1": None}, paired)[
+        "point_f1"
+    ]
     paired["interval_macro_f1"]["interval_95pct"][0] = 0.0
     assert not trial.qualification(baseline, baseline, paired)["positive_interval_gain"]
 

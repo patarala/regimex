@@ -18,7 +18,7 @@ from temporal_candidates import CANDIDATES
 from regimex.admin_contracts import GenerationSpec, RawGenerationPlan
 from regimex.application.training import SharedSelectionEvaluator, _references, observation_inputs
 from regimex.backends.baseline import BaselineBackend
-from regimex.backends.tcn import _feature_inputs, _prepared
+from regimex.backends.tcn import fit_preprocessing, prepare_observations
 from regimex.data_catalog import _load_partition, content_hash
 from regimex.evaluation import (
     _metrics,
@@ -26,11 +26,11 @@ from regimex.evaluation import (
     _segment_counts,
     dense_labels,
     matched_interval_indices,
+    point_macro_f1_from_counts,
 )
 from regimex.model_registry import TrainingRuntime
-from regimex.prediction_inputs import PreparedPredictionInputs
 from regimex.storage import output_directory
-from regimex.temporal import TemporalPreprocessor, predict_tcn, temporal_features
+from regimex.temporal import TemporalPreprocessor, predict_tcn
 from regimex.temporal_updates import fit_temporal_updates
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -141,9 +141,10 @@ def experiment_counts(evaluation, probabilities):
 
 def summary(counts):
     pooled = counts.sum(axis=0)
+    point_f1 = point_macro_f1_from_counts(pooled[11:].reshape(3, 3))
     return {
         **metrics(pooled[:11]),
-        "point_macro_f1": _metrics(pooled[11:].reshape(3, 3))["macro_f1"],
+        "point_macro_f1": point_f1 if np.isfinite(point_f1) else None,
         "interval_per_class": _metrics(pooled[:9].reshape(3, 3))["per_class"],
     }
 
@@ -167,7 +168,9 @@ def paired(control, candidate):
     return {
         key: {
             "defined_draws": len(values),
-            "interval_95pct": np.quantile(values, [0.025, 0.975]).tolist() if values else None,
+            "interval_95pct": np.quantile(values, [0.025, 0.975]).tolist()
+            if len(values) == DRAWS
+            else None,
         }
         for key, values in differences.items()
     }
@@ -203,11 +206,8 @@ def fit(output, development):
     targets = np.concatenate(
         [dense_labels(ref, info.step_count) for ref, info in zip(refs, inputs.info, strict=True)]
     )
-    raw = _feature_inputs(inputs)
-    features = temporal_features(raw)
-    pre = TemporalPreprocessor.fit(features)
-    training = PreparedPredictionInputs(pre.transform(features), raw.offsets, raw.info)
-    valid = _prepared(validation.inputs, pre)
+    pre, training = fit_preprocessing(inputs)
+    valid = prepare_observations(validation.inputs, pre)
     runtime = TrainingRuntime(threads=2)
     with output_directory(output / "fitted") as dest:
         np.savez(dest / "preprocessing.npz", fill=pre.fill, mean=pre.mean, scale=pre.scale)
@@ -259,9 +259,7 @@ def fit(output, development):
             np.savez(
                 path, **{key: tensor.detach().numpy() for key, tensor in model.state_dict().items()}
             )
-            values = summary(
-                experiment_counts(validation, predict_tcn(model, valid, batch_size=8))[2]
-            )
+            values = summary(experiment_counts(validation, predict_tcn(model, valid))[2])
             if not np.isclose(
                 values["interval_macro_f1"], max(row["score"] for row in bests), atol=1e-12, rtol=0
             ):
@@ -327,7 +325,7 @@ def score(output, development):
             )
         )
     evaluation = evaluator(tuple(samples))
-    prepared = _prepared(evaluation.inputs, pre)
+    prepared = prepare_observations(evaluation.inputs, pre)
     torch.set_num_threads(RUNTIME.threads)
     torch.use_deterministic_algorithms(True)
     counts = {
