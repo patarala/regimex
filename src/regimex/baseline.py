@@ -4,6 +4,8 @@ import logging
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import chain
+from typing import cast
 
 import numpy as np
 from pydantic import JsonValue
@@ -18,38 +20,54 @@ logger = logging.getLogger(__name__)
 Scorer = Callable[[DoubleArray], float]
 AccumulationDtype = type[np.float32] | type[np.float64]
 _BASELINE_BATCH_ROWS = 8192
+# Bound work arrays for masked reductions and variance to a batch of windows.
+_WINDOW_BATCH_ELEMENTS = 65_536
 
 
 def _statistics(
     block: FloatArray, observed_only: bool, accumulation_dtype: AccumulationDtype
 ) -> FloatArray:
+    """Reduce the time axis of one window or a batch of equal-length windows."""
     if not observed_only:
+        mean = cast(
+            FloatArray | DoubleArray, block.mean(axis=-2, dtype=accumulation_dtype, keepdims=True)
+        )
         return np.concatenate(
             (
-                block.mean(axis=0, dtype=accumulation_dtype),
-                block.std(axis=0, dtype=accumulation_dtype),
-                block.min(axis=0),
-                block.max(axis=0),
+                mean.squeeze(axis=-2),
+                block.std(axis=-2, dtype=accumulation_dtype, mean=mean),
+                block.min(axis=-2),
+                block.max(axis=-2),
             ),
+            axis=-1,
             dtype=np.float32,
         )
 
     # Numeric channels precede their missingness indicators. Indicators remain
     # observed even when their corresponding numeric channel is absent.
-    channels = block.shape[1] // 2
+    channels = block.shape[-1] // 2
     known = np.ones(block.shape, dtype=np.bool_)
-    known[:, :channels] = block[:, channels:] == 0
-    count = known.sum(axis=0)
+    known[..., :channels] = block[..., channels:] == 0
+    count = known.sum(axis=-2)
     denominator = np.maximum(1, count)
-    mean = block.sum(axis=0, where=known, dtype=np.float64) / denominator
-    variance = np.square(block - mean).sum(axis=0, where=known) / denominator
-    minimum = block.min(axis=0, where=known, initial=np.inf)
-    maximum = block.max(axis=0, where=known, initial=-np.inf)
+    observed_mean = block.sum(axis=-2, where=known, dtype=np.float64) / denominator
+    residual = block - np.expand_dims(observed_mean, -2)
+    np.square(residual, out=residual)
+    variance = residual.sum(axis=-2, where=known) / denominator
+    minimum = block.min(axis=-2, where=known, initial=np.inf)
+    maximum = block.max(axis=-2, where=known, initial=-np.inf)
     # Empty numeric windows use zero in standardized feature space. Their
     # missingness channels retain the distinction from genuine observed zeros.
     return np.concatenate(
-        (mean, np.sqrt(variance), np.where(count, minimum, 0), np.where(count, maximum, 0))
-    ).astype(np.float32)
+        (
+            observed_mean,
+            np.sqrt(variance),
+            np.where(count, minimum, 0),
+            np.where(count, maximum, 0),
+        ),
+        axis=-1,
+        dtype=np.float32,
+    )
 
 
 def _fill_sequence_aggregates(
@@ -62,20 +80,52 @@ def _fill_sequence_aggregates(
     check_budget: Callable[[], None] | None,
 ) -> None:
     width = values.shape[1] * 4
+    centers = np.asarray(steps, dtype=np.int64)
+    # Even a window centered on the first or last step covers the full sequence at this size.
+    whole_sequence_size = 2 * len(values) - 1
+    whole = None
+    if summaries.whole_sequence or any(size >= whole_sequence_size for size in context_sizes):
+        if check_budget is not None:
+            check_budget()
+        whole = _statistics(values, summaries.observed_only, accumulation_dtype)
+        if summaries.whole_sequence:
+            output[:, -width:] = whole
     for index, size in enumerate(context_sizes):
         columns = slice(index * width, (index + 1) * width)
-        for row, step in enumerate(steps):
+        if whole is not None and size >= whole_sequence_size:
+            if check_budget is not None:
+                check_budget()
+            output[:, columns] = whole
+            continue
+        left_width, right_width = size // 2, (size + 1) // 2
+        # Only fully contained windows have the common shape needed for a batched reduction.
+        first, last = centers.searchsorted([left_width, len(values) - right_width + 1])
+        last = max(first, last)
+        for row in chain(range(first), range(last, len(centers))):
             if check_budget is not None and row % 128 == 0:
                 check_budget()
-            left = max(0, step - size // 2)
-            right = min(len(values), step + (size + 1) // 2)
+            step = centers[row]
+            left = max(0, step - left_width)
+            right = min(len(values), step + right_width)
             output[row, columns] = _statistics(
                 values[left:right], summaries.observed_only, accumulation_dtype
             )
-    if summaries.whole_sequence:
-        if check_budget is not None:
-            check_budget()
-        output[:, -width:] = _statistics(values, summaries.observed_only, accumulation_dtype)
+        if first < last:
+            windows = np.lib.stride_tricks.sliding_window_view(values, size, axis=0).swapaxes(1, 2)
+            batch_elements = min(values.size, _WINDOW_BATCH_ELEMENTS)
+            batch_size = max(1, min(128, batch_elements // (size * values.shape[1])))
+            for start in range(first, last, batch_size):
+                if check_budget is not None:
+                    check_budget()
+                stop = min(start + batch_size, last)
+                starts = centers[start:stop] - left_width
+                if starts[-1] - starts[0] + 1 == len(starts):
+                    batch = windows[starts[0] : starts[-1] + 1]
+                else:
+                    batch = windows[starts]
+                output[start:stop, columns] = _statistics(
+                    batch, summaries.observed_only, accumulation_dtype
+                )
 
 
 def aggregate(

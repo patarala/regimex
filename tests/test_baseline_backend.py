@@ -15,7 +15,14 @@ np = pytest.importorskip("numpy")
 pytest.importorskip("sklearn")
 
 from regimex.backends.baseline import BaselineBackend, BaselinePredictor
-from regimex.baseline import LinearModel, aggregate, fit_baseline
+from regimex.baseline import (
+    AccumulationDtype,
+    LinearModel,
+    _fill_sequence_aggregates,
+    _statistics,
+    aggregate,
+    fit_baseline,
+)
 from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig
 from regimex.exports import ExportInstrument, ExportObservation, InstrumentUnits, ModelTimeGrid
@@ -317,6 +324,39 @@ def test_observed_statistics_exclude_fill_and_preserve_missing_indicators() -> N
     np.testing.assert_array_equal(window[:, 1], np.zeros(4))
     np.testing.assert_allclose(window[:, len(NUMERIC_NAMES)], [1 / 3, np.sqrt(2) / 3, 0, 1])
     np.testing.assert_array_equal(window[:, len(NUMERIC_NAMES) + 1], [1, 0, 1, 1])
+
+
+@pytest.mark.parametrize("observed_only", [False, True])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_batched_summaries_match_individual_windows(
+    observed_only: bool, dtype: AccumulationDtype
+) -> None:
+    mode = SummaryMode.LOCAL_OBSERVED if observed_only else SummaryMode.LOCAL
+    rng = np.random.default_rng(129)
+    values = rng.standard_normal((129, 8), dtype=np.float32)
+    values[:, 4:] = rng.random((129, 4)) < 0.3
+    values[32:96, 4] = 1  # Some windows have no observations for the first channel.
+    sizes = (8, 31, 256, 257)
+    expected = np.array(
+        [
+            np.concatenate(
+                [
+                    _statistics(
+                        values[max(0, step - size // 2) : step + (size + 1) // 2],
+                        observed_only,
+                        dtype,
+                    )
+                    for size in sizes
+                ]
+            )
+            for step in range(len(values))
+        ]
+    )
+    # Inference scores every step. Fitting can select nonconsecutive training targets.
+    for steps in (range(len(values)), np.flatnonzero(rng.random(len(values)) < 0.65)):
+        result = np.empty((len(steps), expected.shape[1]), dtype=np.float32)
+        _fill_sequence_aggregates(values, sizes, mode, steps, result, dtype, None)
+        np.testing.assert_array_equal(result, expected[steps])
 
 
 @pytest.mark.parametrize("mode", list(SummaryMode))
