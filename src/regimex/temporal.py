@@ -111,41 +111,42 @@ def _contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
     return contexts
 
 
-def temporal_features(sequences: PredictionInputs, *, side_slopes: bool = False) -> FloatArray:
-    """Derive price-only inputs independently within each completed sequence.
-
-    Centered contexts and complete-sequence normalization are retrospective.
-    Activity, labels, reference boundaries and simulator settings are unused.
-    """
-    require_raw_inputs(sequences)
-    if sequences.values.ndim != 2 or sequences.values.shape[1] != len(FEATURE_NAMES):
-        raise ValueError("temporal representation requires raw observation features")
-    result = np.full((len(sequences.values), len(feature_names(side_slopes)) // 2), np.nan)
-    for start, stop in zip(sequences.offsets[:-1], sequences.offsets[1:], strict=True):
-        price = sequences.values[start:stop, 0].astype(np.float64)
-        returns = sequences.values[start:stop, 1].astype(np.float64)
-        observed = np.isfinite(price)
-        standardized = np.full(len(price), np.nan)
-        scale = np.full(len(price), np.nan)
-        if observed.any():
-            deviation = float(price[observed].std())
-            standardized[observed] = (price[observed] - price[observed].mean()) / max(
-                deviation, 0.001
-            )
-            scale[:] = np.log1p(deviation / 0.001)
-        result[start:stop] = np.column_stack(
-            (
-                np.arcsinh(price / 0.01),
-                np.arcsinh(returns / 0.001),
-                np.arcsinh(np.abs(returns) / 0.001),
-                standardized,
-                scale,
-                *_contexts(price, side_slopes),
-            )
+def temporal_price_features(channels: FloatArray, *, side_slopes: bool) -> FloatArray:
+    """Price context for one completed instrument, including centered windows."""
+    price, returns = channels.astype(np.float64).T
+    observed = np.isfinite(price)
+    standardized = np.full(len(price), np.nan)
+    scale = np.full(len(price), np.nan)
+    if observed.any():
+        deviation = float(price[observed].std())
+        standardized[observed] = (price[observed] - price[observed].mean()) / max(deviation, 0.001)
+        scale[:] = np.log1p(deviation / 0.001)
+    result = np.column_stack(
+        (
+            np.arcsinh(price / 0.01),
+            np.arcsinh(returns / 0.001),
+            np.arcsinh(np.abs(returns) / 0.001),
+            standardized,
+            scale,
+            *_contexts(price, side_slopes),
         )
+    )
     if np.isinf(result).any():
         raise ValueError("temporal representation produced infinite values")
     return np.concatenate((result, np.isnan(result)), axis=1).astype(np.float32)
+
+
+def temporal_features(sequences: PredictionInputs, *, side_slopes: bool = False) -> FloatArray:
+    """Derive temporal features from raw observation matrices on their original grids."""
+    require_raw_inputs(sequences)
+    if sequences.values.ndim != 2 or sequences.values.shape[1] != len(FEATURE_NAMES):
+        raise ValueError("temporal representation requires raw observation features")
+    return np.concatenate(
+        [
+            temporal_price_features(sequences.values[start:stop, :2], side_slopes=side_slopes)
+            for start, stop in pairwise(sequences.offsets)
+        ]
+    )
 
 
 @dataclass(frozen=True)

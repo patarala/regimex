@@ -24,7 +24,7 @@ from regimex.backends.tcn_update_records import (
 )
 from regimex.contracts import StrictModel
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig
-from regimex.features import DoubleArray, compute_features
+from regimex.features import DoubleArray, FloatArray, IntArray, log_price_channels
 from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, verify_model_bundle
 from regimex.model_contracts import (
     BundleProvenance,
@@ -43,7 +43,7 @@ from regimex.model_registry import (
     TrainingRuntime,
     validate_tcn_policy,
 )
-from regimex.prediction_inputs import PredictionInputs, PreparedPredictionInputs
+from regimex.prediction_inputs import PreparedPredictionInputs
 from regimex.resource_limits import ResourceBudgetExceeded
 from regimex.segmentation import DECODER_VERSION
 from regimex.storage import digest, json_bytes, output_directory, write_json
@@ -56,7 +56,7 @@ from regimex.temporal import (
     feature_names,
     fit_tcn,
     predict_tcn,
-    temporal_features,
+    temporal_price_features,
 )
 from regimex.temporal_updates import fit_tcn_updates
 
@@ -118,14 +118,18 @@ def _environment() -> dict[str, JsonValue]:
     }
 
 
-def _feature_inputs(observations: ObservationInputs) -> PredictionInputs:
+def _feature_inputs(
+    observations: ObservationInputs,
+    *,
+    side_slopes: bool,
+) -> tuple[FloatArray, IntArray]:
     require_observation_inputs(observations)
-    # temporal_features reads relative log price and adjacent return from the first two columns.
-    return PredictionInputs(
-        np.concatenate([compute_features(rows) for rows in observations.observations]),
-        np.r_[0, np.cumsum([item.step_count for item in observations.info])].astype(np.int64),
-        observations.info,
-    )
+    sequences = [
+        temporal_price_features(log_price_channels(rows), side_slopes=side_slopes)
+        for rows in observations.observations
+    ]
+    offsets = np.r_[0, np.cumsum([len(sequence) for sequence in sequences], dtype=np.int64)]
+    return np.concatenate(sequences), offsets
 
 
 def _prepared(
@@ -134,12 +138,8 @@ def _prepared(
     *,
     side_slopes: bool = False,
 ) -> PreparedPredictionInputs:
-    raw = _feature_inputs(observations)
-    return PreparedPredictionInputs(
-        preprocessing.transform(temporal_features(raw, side_slopes=side_slopes)),
-        raw.offsets,
-        raw.info,
-    )
+    values, offsets = _feature_inputs(observations, side_slopes=side_slopes)
+    return PreparedPredictionInputs(preprocessing.transform(values), offsets, observations.info)
 
 
 def _feature_version(parameters: TCNParameters) -> str:
@@ -435,11 +435,10 @@ class TCNBackend:
                 raise ValueError("TCN validation score must be segment macro F1 in [0, 1]")
             return score
 
-        raw = _feature_inputs(training.observations)
-        values = temporal_features(raw, side_slopes=parameters.side_slopes)
+        values, offsets = _feature_inputs(training.observations, side_slopes=parameters.side_slopes)
         preprocessing = TemporalPreprocessor.fit(values, side_slopes=parameters.side_slopes)
         prepared_training = PreparedPredictionInputs(
-            preprocessing.transform(values), raw.offsets, raw.info
+            preprocessing.transform(values), offsets, training.observations.info
         )
         prepared_validation = _prepared(
             validation, preprocessing, side_slopes=parameters.side_slopes

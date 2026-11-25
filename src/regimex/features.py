@@ -30,21 +30,28 @@ def _imbalance(buy: float | None, sell: float | None) -> float:
     return (buy_scaled - sell_scaled) / (buy_scaled + sell_scaled)
 
 
-def compute_features(rows: tuple[Observation, ...]) -> FloatArray:
+def log_price_channels(rows: tuple[Observation, ...]) -> FloatArray:
+    """Relative log price and adjacent log return on one instrument's original grid."""
     if not rows or any(
         row.instrument_id != rows[0].instrument_id or row.step != i for i, row in enumerate(rows)
     ):
         raise ValueError("features require one ordered contiguous instrument sequence")
+    prices = np.fromiter(
+        (np.log(row.last_price) if row.last_price is not None else np.nan for row in rows),
+        dtype=np.float64,
+        count=len(rows),
+    )
+    known = np.flatnonzero(np.isfinite(prices))
+    reference = prices[known[0]] if len(known) else np.nan
+    return np.column_stack((prices - reference, np.diff(prices, prepend=np.nan))).astype(np.float32)
+
+
+def compute_features(rows: tuple[Observation, ...]) -> FloatArray:
+    prices = log_price_channels(rows)
     values = np.full((len(rows), len(NUMERIC_NAMES)), np.nan, dtype=np.float64)
-    reference = next((row.last_price for row in rows if row.last_price is not None), None)
+    values[:, :2] = prices
+    values[:, 11] = np.abs(prices[:, 1])
     for step, row in enumerate(rows):
-        if row.last_price is not None and reference is not None:
-            values[step, 0] = np.log(row.last_price) - np.log(reference)
-        if step and row.last_price is not None and rows[step - 1].last_price is not None:
-            previous = rows[step - 1].last_price
-            assert previous is not None
-            values[step, 1] = np.log(row.last_price) - np.log(previous)
-        values[step, 11] = abs(values[step, 1])
         activity = (
             row.trade_count,
             row.trade_volume,
