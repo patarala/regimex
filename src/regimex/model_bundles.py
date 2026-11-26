@@ -76,10 +76,20 @@ class ParentModelEvidence(StrictModel):
     additional_dataset_hashes: tuple[Sha256, ...] = Field(
         default=(), exclude_if=lambda values: not values
     )
+    # An older parent record can name additional datasets without identifying their labels.
+    additional_training_reference_hashes: tuple[Sha256, ...] | None = Field(
+        default=None, exclude_if=lambda values: values is None
+    )
+    parent_models: tuple[ParentModelEvidence, ...] = Field(
+        default=(), exclude_if=lambda models: not models
+    )
 
     @classmethod
     def from_bundle(cls, bundle: ModelBundle, manifest_sha256: str) -> Self:
         training = bundle.training
+        additional_datasets = tuple(
+            h for h in training.training_dataset_hashes if h != training.dataset_sha256
+        )
         return cls(
             model_version_id=bundle.model_version_id,
             manifest_sha256=manifest_sha256,
@@ -87,9 +97,13 @@ class ParentModelEvidence(StrictModel):
             split_manifest_sha256=training.split_manifest_sha256,
             labels=training.labels,
             validation_references=training.validation_references,
-            additional_dataset_hashes=tuple(
-                h for h in training.training_dataset_hashes if h != training.dataset_sha256
+            additional_dataset_hashes=additional_datasets,
+            additional_training_reference_hashes=(
+                tuple(s.references_sha256 for s in training.additional_training_sources)
+                if additional_datasets
+                else None
             ),
+            parent_models=training.parent_models,
         )
 
 
@@ -114,6 +128,13 @@ class TrainingEvidence(StrictModel):
         default=(), exclude_if=lambda models: not models
     )
 
+    def iter_parent_models(self) -> Iterator[ParentModelEvidence]:
+        pending = list(reversed(self.parent_models))
+        while pending:
+            parent = pending.pop()
+            yield parent
+            pending.extend(reversed(parent.parent_models))
+
     @property
     def training_dataset_hashes(self) -> tuple[str, ...]:
         datasets = [
@@ -122,7 +143,7 @@ class TrainingEvidence(StrictModel):
         ]
         if self.validation_dataset_sha256:
             datasets.append(self.validation_dataset_sha256)
-        for parent in self.parent_models:
+        for parent in self.iter_parent_models():
             datasets.extend((parent.dataset_sha256, *parent.additional_dataset_hashes))
         return tuple(dict.fromkeys(datasets))
 

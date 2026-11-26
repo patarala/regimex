@@ -24,6 +24,7 @@ from regimex.backends.adaptive_forest import features, fit, fit_training_rows, t
 from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig
 from regimex.features import DoubleArray
+from regimex.model_bundles import AdditionalTrainingSource, ModelBundle, ParentModelEvidence
 from regimex.model_contracts import BundleProvenance, FitResult, ObservationInputs, TrainingInputs
 from regimex.model_registry import (
     AdaptiveParameters,
@@ -42,10 +43,10 @@ def blended_bundle(
     tmp_path: Path,
     *,
     legacy_multiscale: bool = False,
+    additional_source: AdditionalTrainingSource | None = None,
 ) -> tuple[str, ObservationInputs, AdaptivePredictor, AdaptivePredictor]:
     from regimex.backends.adaptive_blend import blend_environment, pack_bundle
     from regimex.data_catalog import content_hash
-    from regimex.model_bundles import ModelBundle, ParentModelEvidence
 
     greedy, valid, train = fitted()
     assert isinstance(greedy.predictor, AdaptivePredictor)
@@ -76,6 +77,11 @@ def blended_bundle(
     parents = []
     for name, candidate in (("greedy", greedy), ("multiscale", multi)):
         origin = provenance(candidate).model_copy(update={"model_version_id": name})
+        if name == "greedy" and additional_source is not None:
+            training = origin.training.model_copy(
+                update={"additional_training_sources": (additional_source,)}
+            )
+            origin = origin.model_copy(update={"training": training})
         sha = AdaptiveBackend().write_bundle(
             candidate, tmp_path / name, provenance=origin, analysis=config.analysis
         )
@@ -106,6 +112,57 @@ def blended_bundle(
     )
     assert isinstance(multi.predictor, AdaptivePredictor)
     return sha, valid, greedy.predictor, multi.predictor
+
+
+def test_blend_supplemental_training_labels_survive_pack_and_restore(tmp_path: Path) -> None:
+    from test_direction_quality import cohort, report
+
+    from regimex.storage import digest
+
+    source = AdditionalTrainingSource(
+        source_id="extra",
+        exports_sha256="5" * 64,
+        references_sha256="6" * 64,
+        recipe_sha256="7" * 64,
+        manifest_sha256="8" * 64,
+        experiment_count=1,
+        classified_steps=12,
+        weight_fraction=0.25,
+    )
+    sha, _, _, _ = blended_bundle(tmp_path, additional_source=source)
+    folder = tmp_path / "blend"
+    manifest = folder / "manifest.json"
+    data = json.loads(manifest.read_bytes())
+    parent = data["training"]["parent_models"][0]
+    assert parent["additional_training_reference_hashes"] == [source.references_sha256]
+    blend = ModelBundle.model_validate_json(manifest.read_bytes())
+    training = blend.training
+    row = cohort().model_copy(update={"reference_sha256": source.references_sha256})
+    report(row, bundle=sha).summarize("a" * 64).validate_for(sha, training)
+    independent = row.model_copy(update={"split": "independent"})
+    with pytest.raises(ValueError, match="refer to training"):
+        report(independent, bundle=sha).summarize("a" * 64).validate_for(sha, training)
+    descendant = training.model_copy(
+        update={"parent_models": (ParentModelEvidence.from_bundle(blend, sha),)}
+    )
+    report(row, bundle=sha).summarize("a" * 64).validate_for(sha, descendant)
+    with pytest.raises(ValueError, match="refer to training"):
+        report(independent, bundle=sha).summarize("a" * 64).validate_for(sha, descendant)
+
+    # A previously saved ensemble has the parent datasets but no supplemental label hashes.
+    del parent["additional_training_reference_hashes"]
+    write_json(manifest, data)
+    sha = digest(manifest)
+    AdaptiveBackend().load_bundle(folder, manifest_sha256=sha, runtime=InferenceRuntime())
+    training = ModelBundle.model_validate_json(manifest.read_bytes()).training
+    with pytest.raises(ValueError, match="supplemental training references"):
+        report(independent, bundle=sha).summarize("a" * 64).validate_for(sha, training)
+    parent["additional_training_reference_hashes"] = []
+    write_json(manifest, data)
+    with pytest.raises(ValueError, match="provenance differs"):
+        AdaptiveBackend().load_bundle(
+            folder, manifest_sha256=digest(manifest), runtime=InferenceRuntime()
+        )
 
 
 @pytest.mark.parametrize("legacy_multiscale", [False, True])

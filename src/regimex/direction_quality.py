@@ -51,14 +51,19 @@ class DirectionQualityEvidence(StrictModel):
     def validate_for(self, bundle_sha256: str, training: TrainingEvidence) -> None:
         if self.bundle_sha256 != bundle_sha256:
             raise ValueError("Direction scores belong to another bundle.")
-        train_labels = [training.labels, *(p.labels for p in training.parent_models)]
-        validation_labels = [
-            training.validation_references,
-            *(p.validation_references for p in training.parent_models),
-        ]
+        train_labels = [training.labels]
+        validation_labels = [training.validation_references]
+        train = {s.references_sha256 for s in training.additional_training_sources}
+        complete_lineage = True
+        for parent in training.iter_parent_models():
+            train_labels.append(parent.labels)
+            validation_labels.append(parent.validation_references)
+            if parent.additional_training_reference_hashes is not None:
+                train.update(parent.additional_training_reference_hashes)
+            elif parent.additional_dataset_hashes:
+                complete_lineage = False
         catalogued = {r.content_sha256: r.kind for r in (*train_labels, *validation_labels)}
-        train = {r.content_sha256 for r in train_labels}
-        train.update(s.references_sha256 for s in training.additional_training_sources)
+        train.update(r.content_sha256 for r in train_labels)
         validation = {r.content_sha256 for r in validation_labels}
         for row in self.rows:
             if row.split == "train" and row.reference_sha256 not in train:
@@ -78,8 +83,13 @@ class DirectionQualityEvidence(StrictModel):
                 raise ValueError(
                     "Full validation scores must reproduce the bundle's selection score."
                 )
-            if row.split == "independent" and row.reference_sha256 in train | validation:
-                raise ValueError("Independent scores refer to training or validation labels.")
+            if row.split == "independent":
+                if row.reference_sha256 in train or row.reference_sha256 in validation:
+                    raise ValueError("Independent scores refer to training or validation labels.")
+                if not complete_lineage:
+                    raise ValueError(
+                        "Independent scores require the parents' supplemental training references."
+                    )
             kind = catalogued.get(row.reference_sha256)
             if kind is not None and (kind != "automatic" or row.reference != "simulator"):
                 raise ValueError("Direction reference type differs from the bundle's labels.")

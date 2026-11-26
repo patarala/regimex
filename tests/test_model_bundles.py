@@ -281,6 +281,8 @@ def test_supplemental_training_populations_are_bound_to_inventory(tmp_path: Path
     assert mixed.model_dump(mode="json")["additional_training_sources"] == [source]
     with pytest.raises(ValidationError, match="unique identity"):
         load(source, source)
+    with pytest.raises(ValidationError, match="unique identity"):
+        load({**source, "exports_sha256": training.dataset_sha256})
     with pytest.raises(ValidationError, match="leave weight"):
         load({**source, "weight_fraction": 0.75}, {**source, "exports_sha256": "e" * 64})
 

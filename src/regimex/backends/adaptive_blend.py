@@ -224,15 +224,27 @@ def _lineage(
     config: BlendConfiguration,
     training: TrainingEvidence,
     profile_sha: str,
+    *,
+    restore: bool = False,
 ) -> None:
-    greedy, multi = parents
-    evidence = (
-        ParentModelEvidence.from_bundle(greedy, config.greedy_sha256),
-        ParentModelEvidence.from_bundle(multi, config.multiscale_sha256),
-    )
+    multi = parents[1]
+    if len(training.parent_models) != len(parents):
+        raise ValueError("adaptive blend must identify both fitted forests")
+    for parent, sha, recorded in zip(
+        parents,
+        (config.greedy_sha256, config.multiscale_sha256),
+        training.parent_models,
+        strict=True,
+    ):
+        expected = ParentModelEvidence.from_bundle(parent, sha)
+        # A saved blend can predate the supplemental label digests. Its forest weights
+        # still restore, while direction scoring checks what the outer manifest records.
+        if restore and recorded.additional_training_reference_hashes is None:
+            expected = expected.model_copy(update={"additional_training_reference_hashes": None})
+        if recorded != expected:
+            raise ValueError("adaptive blend provenance differs from the two fitted forests")
     if (
-        training.parent_models != evidence
-        or training.additional_training_sources
+        training.additional_training_sources
         or training.dataset_sha256 != multi.training.dataset_sha256
         or training.split_manifest_sha256 != multi.training.split_manifest_sha256
         or training.labels != multi.training.labels
@@ -330,7 +342,7 @@ def load_blend(
             runtime.model_copy(update={"model_cache_budget_bytes": remaining}),
         )
     parents = (greedy_manifest, multi_manifest)
-    _lineage(parents, config, bundle.training, bundle.analysis_profile_sha256)
+    _lineage(parents, config, bundle.training, bundle.analysis_profile_sha256, restore=True)
     for name, record in _records(parents, bundle.training).items():
         expected = json_bytes(record)
         with (root / name).open("rb") as stream:
