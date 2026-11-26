@@ -701,6 +701,42 @@ def test_one_repeat_workspace_keeps_tcn_epoch_controls(browser: Any) -> None:
         page.close()
 
 
+def test_json_policy_requires_integer_tokens_in_both_editors(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        page.goto(ORIGIN + "/training/new")
+        page.get_by_role("button", name="Edit JSON").click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        use_form = page.get_by_role("button", name="Use form")
+        start = page.get_by_role("button", name="Start training")
+        for field, literal in (
+            ("epochs", "2.0"),
+            ("seeds", "[11e0]"),
+            ("validation_updates", "[3.0]"),
+        ):
+            editor.fill('{"optimizer":"adamw","' + field + '":' + literal + "}")
+            use_form.click()
+            expect(editor).to_be_visible()
+            expect(page.locator("#training-prerequisite")).to_contain_text(
+                "JSON integer for " + field
+            )
+            start.click()
+            expect(page.locator("#training-notice")).to_contain_text("JSON integer for " + field)
+        assert not api.posts
+        editor.fill('{"optimizer":"adamw","epochs":2,"weight_decay":2.0}')
+        use_form.click()
+        expect(editor).to_be_hidden()
+        expect(page.get_by_label("Maximum epochs")).to_have_value("2")
+        start.click()
+        expect(page.locator("#training-detail")).to_be_visible()
+        assert api.posts[0][1]["policy"]["epochs"] == 2
+    finally:
+        page.close()
+
+
 def test_repeat_count_and_generated_seeds_round_trip_through_run_json(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()

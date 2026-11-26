@@ -49,8 +49,9 @@ with that run's data and settings. To compare two runs, choose **Select runs**
 in the history, select both runs, then choose **Compare**. The comparison
 updates while either run is in progress. For workspace runs,
 the score difference appears when both used the same development dataset,
-validation labels and analysis profile. Two imported runs can also be
-compared when their recorded validation data, splits and references match.
+validation labels and analysis profile. Imported runs can use different training
+datasets and still be compared when their validation dataset, validation
+partition, labels and analysis profile match.
 
 ## Evaluate and publish
 

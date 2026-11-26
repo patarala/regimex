@@ -179,6 +179,18 @@ def test_import_comparison_checks_validation_evidence_and_preserves_exact_settin
         expect(status).to_contain_text("+0.0400")
         expect(page.get_by_role("row", name="Status")).to_contain_text("Imported")
         expect(page.get_by_role("row", name="parameters.seed")).to_contain_text("9007199254740993")
+        first_evidence, second_evidence = (run["training"]["evidence"] for run in (first, second))
+        second_evidence["split_manifest_sha256"] = "3" * 64
+        page.reload()
+        expect(status).to_contain_text("Comparing validation scores requires the same")
+        first_evidence["validation_dataset_sha256"] = "7" * 64
+        second_evidence.update(validation_dataset_sha256="7" * 64, dataset_sha256="6" * 64)
+        page.reload()
+        expect(status).to_contain_text("+0.0400")
+        second_evidence["validation_dataset_sha256"] = "5" * 64
+        page.reload()
+        expect(status).to_contain_text("Comparing validation scores requires the same")
+        second_evidence["validation_dataset_sha256"] = first_evidence["validation_dataset_sha256"]
         second["training"]["evidence"]["validation_references"]["content_sha256"] = "8" * 64
         page.reload()
         expect(status).to_contain_text("Comparing validation scores requires the same")

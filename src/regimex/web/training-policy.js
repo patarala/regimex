@@ -18,6 +18,12 @@ const numbers = {
 const commonNumbers = ["batch_size", "learning_rate", "weight_decay"];
 const epochNumbers = ["epochs", "validation_interval", "patience"];
 const selectionMetric = "validation_segment_macro_f1";
+
+export function requiresPolicyInteger(field) {
+  return field === "seeds" || field === "validation_updates" ||
+    (Object.hasOwn(numbers, field) && numbers[field].step !== "any");
+}
+
 const help = {
   budget: "An epoch is one pass over the training data. A fixed update budget gives each repeat the same number of weight updates.",
   epochs: "Maximum number of passes over the training data per repeat. Early stopping can finish a repeat sooner.",

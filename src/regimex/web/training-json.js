@@ -1,3 +1,5 @@
+import {requiresPolicyInteger} from "./training-policy.js";
+
 const identifiers = [
   "dataset_id", "architecture_id", "labels_reference_set_id",
   "validation_reference_set_id", "benchmark_selection_id",
@@ -12,7 +14,7 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function readTrainingRequest(text, base, {fromRun = false} = {}) {
+export function readTrainingRequest(text, base, {fromRun = false, forForm = false} = {}) {
   let input;
   try { input = JSON.parse(text); }
   catch { throw new Error("Enter valid JSON for the run configuration or training policy."); }
@@ -37,9 +39,11 @@ export function readTrainingRequest(text, base, {fromRun = false} = {}) {
     throw new Error("Provide a nonempty string for analysis_profile_id.");
   if (request.display_name != null && typeof request.display_name !== "string")
     throw new Error("Provide a string or null for display_name.");
+  const inputTokens = JSON.parse(taggedTokens(text));
+  checkPolicyNumbers(standalone ? inputTokens : inputTokens.spolicy, forForm);
   if (!standalone) return {request, body: text};
   const tagged = JSON.parse(taggedTokens(base));
-  tagged.spolicy = JSON.parse(taggedTokens(text));
+  tagged.spolicy = inputTokens;
   return {request, body: formatTagged(tagged)};
 }
 
@@ -137,21 +141,24 @@ export function setParameterOverrides(text, overrides) {
   return formatTagged(parameters);
 }
 
-function checkPolicyNumbers(value) {
-  if (value && typeof value === "object") {
-    for (const child of Object.values(value)) checkPolicyNumbers(child);
-    return;
+function checkPolicyNumbers(policy, forForm) {
+  for (const [key, value] of Object.entries(policy)) {
+    const field = key.slice(1);
+    for (const token of Array.isArray(value) ? value : [value]) {
+      if (typeof token !== "string" || !token.startsWith("n")) continue;
+      const literal = token.slice(1);
+      if (requiresPolicyInteger(field) && !/^-?\d+$/.test(literal))
+        throw new Error(`Use a JSON integer for ${field}. Write whole numbers without a decimal point or exponent.`);
+      const number = Number(literal);
+      if (forForm && (!Number.isFinite(number) || decimalValue(literal) !== decimalValue(String(number))))
+        throw new Error("A number would change precision in the form. Use Start training from the JSON editor to keep it exact.");
+    }
   }
-  if (typeof value !== "string" || !value.startsWith("n")) return;
-  const literal = value.slice(1), number = Number(literal), formatted = String(number);
-  if (!Number.isFinite(number) || decimalValue(literal) !== decimalValue(formatted))
-    throw new Error("A number would change precision in the form. Use Start training from the JSON editor to keep it exact.");
 }
 
 export function parseTrainingJSON(text, base, options) {
-  const {request, body} = readTrainingRequest(text, base, options);
+  const {request, body} = readTrainingRequest(text, base, {...options, forForm: true});
   const tagged = JSON.parse(taggedTokens(body));
-  checkPolicyNumbers(tagged.spolicy);
   const settings = Object.fromEntries(["parameters", "training_runtime", "inference_runtime", "policy"]
     .filter(key => Object.hasOwn(tagged, "s" + key))
     .map(key => [key, formatTagged(tagged["s" + key])]));

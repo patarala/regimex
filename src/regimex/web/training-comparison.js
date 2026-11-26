@@ -10,8 +10,13 @@ function sameValidation(left, right) {
   if (left.origin === "external" || right.origin === "external") {
     if (left.origin !== right.origin) return false;
     const a = left.evidence, b = right.evidence;
-    return (a.validation_dataset_sha256 || a.dataset_sha256) === (b.validation_dataset_sha256 || b.dataset_sha256)
-      && a.split_manifest_sha256 === b.split_manifest_sha256
+    const aValidation = a.validation_dataset_sha256 || a.dataset_sha256;
+    const bValidation = b.validation_dataset_sha256 || b.dataset_sha256;
+    // The split manifest describes the primary corpus. A separate validation dataset
+    // binds its own partitions in its content digest.
+    const bothUsePrimary = aValidation === a.dataset_sha256 && bValidation === b.dataset_sha256;
+    return aValidation === bValidation
+      && (!bothUsePrimary || a.split_manifest_sha256 === b.split_manifest_sha256)
       && a.validation_references.content_sha256 === b.validation_references.content_sha256
       && a.validation_references.direction_semantics_sha256 === b.validation_references.direction_semantics_sha256;
   }
