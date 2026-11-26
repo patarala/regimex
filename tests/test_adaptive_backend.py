@@ -20,8 +20,10 @@ from regimex.application.training import (
     train_candidate,
 )
 from regimex.backends.adaptive import AdaptiveBackend, AdaptivePredictor
-from regimex.backends.adaptive_forest import features, fit
+from regimex.backends.adaptive_forest import features, fit, fit_training_rows, training_rows
+from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig
+from regimex.features import DoubleArray
 from regimex.model_contracts import BundleProvenance, FitResult, ObservationInputs, TrainingInputs
 from regimex.model_registry import (
     AdaptiveParameters,
@@ -212,6 +214,70 @@ def test_only_training_rows_enter_the_forest_and_every_instrument_keeps_its_grid
     assert result.selected_settings == {"trees": 3, "max_depth": 3}
     assert result.selected_seed == 11
     assert result.validation_score == pytest.approx(float(expected[:, 0].mean()))
+
+
+@pytest.mark.parametrize("interval_weights", [False, True], ids=["per-step", "interval"])
+def test_unlabeled_sequence_uses_no_forest_workspace_and_partial_labels_keep_their_context(
+    interval_weights: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex.backends import adaptive
+
+    train = inputs("train", (32, 1024, 40))
+    valid = inputs("validation")
+    analysis = AnalysisConfig(min_duration=4)
+    first = np.repeat([0, -1, 1], [8, 12, 12]).astype(np.int64)
+    last = np.repeat([2, 0, -1, 1], [16, 4, 12, 8]).astype(np.int64)
+    targets = np.concatenate((first, np.full(1024, -1, dtype=np.int64), last))
+    feature_set = adaptive.forest_feature_set("multiscale")
+    expected = fit_training_rows(
+        [
+            training_rows(feature_set.extract(train.observations[0], analysis), first),
+            training_rows(feature_set.extract(train.observations[2], analysis), last),
+        ],
+        interval_weighting=interval_weights,
+        trees=4,
+        max_depth=4,
+        seed=11,
+    )
+
+    def extract(rows: tuple[Observation, ...], config: AnalysisConfig) -> DoubleArray:
+        assert rows is not train.observations[1]
+        return feature_set.extract(rows, config)
+
+    monkeypatch.setitem(adaptive._FEATURE_SETS, "multiscale", replace(feature_set, extract=extract))
+    result = AdaptiveBackend().fit(
+        TrainingInputs(train, targets),
+        valid,
+        parameters=AdaptiveParameters(
+            feature_set="multiscale",
+            sample_weighting="interval" if interval_weights else "per_step",
+            trees=4,
+            max_depth=4,
+        ),
+        policy=SingleFitPolicy(optimizer="extra_trees", seeds=(11,)),
+        analysis=analysis,
+        runtime=TrainingRuntime(threads=1, memory_budget_bytes=1024**2),
+        evaluator=lambda p: float(p[:, 0].mean()),
+    )
+    assert isinstance(result.predictor, AdaptivePredictor)
+    for name in ("offsets", "children", "columns", "thresholds", "votes"):
+        np.testing.assert_array_equal(
+            getattr(result.predictor.model, name), getattr(expected, name)
+        )
+
+
+def test_forest_rejects_training_without_any_labeled_sequence() -> None:
+    train = inputs("train")
+    with pytest.raises(ValueError, match="three directions"):
+        AdaptiveBackend().fit(
+            TrainingInputs(train, np.full(train.row_count, -1, dtype=np.int64)),
+            inputs("validation"),
+            parameters=AdaptiveParameters(),
+            policy=SingleFitPolicy(optimizer="extra_trees"),
+            analysis=AnalysisConfig(),
+            runtime=TrainingRuntime(memory_budget_bytes=1),
+            evaluator=lambda _: 0.5,
+        )
 
 
 @pytest.mark.parametrize(

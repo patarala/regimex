@@ -320,14 +320,33 @@ class AdaptiveBackend:
         }:
             raise ValueError("adaptive training and validation experiments must be disjoint")
 
-        train_rows = training.observations.row_count
+        deadline = time.monotonic() + runtime.time_budget_seconds
+
+        def check_time() -> None:
+            if time.monotonic() >= deadline:
+                raise ResourceBudgetExceeded("adaptive exceeded the training time budget")
+
+        supervised_sequences = []
+        first = 0
+        for rows in training.observations.observations:
+            check_time()
+            stop = first + len(rows)
+            targets = training.targets[first:stop]
+            # Unlabeled neighbors still determine the price features at labeled steps.
+            if targets.max() >= 0:
+                supervised_sequences.append((rows, targets))
+            first = stop
+        if not supervised_sequences:
+            raise ValueError("Training requires all three directions")
+
+        train_rows = sum(len(rows) for rows, _ in supervised_sequences)
         feature_set = forest_feature_set(parameters.feature_set)
         width = len(feature_set.names)
         max_nodes = min(max_nodes_per_tree(parameters.max_depth), 2 * train_rows - 1)
         # In the worst case every step has a different feature/target pair. Count the
         # sequence tables, concatenation, sort and unique workspaces before allocating.
         maximum_sequence = max(
-            max(item.step_count for item in training.observations.info),
+            max(len(rows) for rows, _ in supervised_sequences),
             max(item.step_count for item in validation.info),
         )
         required = (
@@ -340,22 +359,10 @@ class AdaptiveBackend:
             raise ResourceBudgetExceeded(
                 "adaptive feature and tree allocations exceed the memory budget"
             )
-        deadline = time.monotonic() + runtime.time_budget_seconds
-
-        def check_time() -> None:
-            if time.monotonic() >= deadline:
-                raise ResourceBudgetExceeded("adaptive exceeded the training time budget")
-
         examples = []
-        first = 0
-        for rows in training.observations.observations:
+        for rows, targets in supervised_sequences:
             check_time()
-            examples.append(
-                training_rows(
-                    feature_set.extract(rows, analysis), training.targets[first : first + len(rows)]
-                )
-            )
-            first += len(rows)
+            examples.append(training_rows(feature_set.extract(rows, analysis), targets))
         check_time()
         model = fit_training_rows(
             examples,
