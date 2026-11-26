@@ -44,7 +44,8 @@ improvement.
 
 To change a workspace run, choose **New run from this run**. The form opens
 with that run's data and settings. To compare two runs, choose **Select runs**
-in the history, select both runs, then choose **Compare**. For workspace runs,
+in the history, select both runs, then choose **Compare**. The comparison
+updates while either run is in progress. For workspace runs,
 the score difference appears when both used the same development dataset,
 validation labels and analysis profile. Two imported runs can also be
 compared when their recorded validation data, splits and references match.

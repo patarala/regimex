@@ -159,7 +159,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     }
     return "/training" + (id ? "/" + encodeURIComponent(id) : "") + (query.size ? "?" + query : "");
   }
-  const comparison = createTrainingComparison({readRun, session, runPath, duration});
+  const comparison = createTrainingComparison({readRun, session, runPath, duration, onStateChange: list});
   const pending = new Map();
   const isAdmin = () => session.value?.principal.role === "admin";
   const current = (stamp) => opened && stamp === epoch && isAdmin();
@@ -173,7 +173,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     return readTrainingRuns(text);
   }
 
-  function readRun(id) { return readRecords(route(id)); }
+  function readRun(id, options) { return readRecords(route(id), options); }
 
   function message(value = "", error = false) {
     $("training-notice").textContent = value;
@@ -430,7 +430,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
 
   function refreshDetail() {
     benchmark.invalidate();
-    if (target === "compare") return comparison.show(comparedIds, false);
+    if (target === "compare") return comparison.refresh();
     if (run) {
       // Verified evidence can be attached after a run finishes.
       if (run.job.state === "succeeded") metricsLoaded = false;
@@ -839,7 +839,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   function refreshAfterReturn() {
     if (!opened) return;
     void list();
-    if (target && target !== "new" && target !== "compare") void refreshDetail();
+    if (target && target !== "new") void refreshDetail();
   }
 
   return {close, reset, show, weightsRemoved, refreshAfterReturn};

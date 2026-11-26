@@ -1,4 +1,6 @@
 import {$, analysisStateLabel, element, shortDate} from "./ui.js";
+import {finished} from "./training-archive.js";
+import {isTransientRequestError} from "./session.js";
 import {architectureName} from "./training-form.js";
 import {differentSettings} from "./training-json.js";
 import {isImported} from "./training-import.js";
@@ -16,110 +18,173 @@ function sameValidation(left, right) {
   return ["dataset_id", "validation_reference_set_id"].every(key => left[key] && left[key] === right[key]);
 }
 
-function table(caption, links, rows) {
+function setText(node, value) {
+  if (node.textContent !== value) node.textContent = value;
+}
+
+function table(caption, headings) {
   const result = element("table");
   result.append(element("caption", caption, "visually-hidden"));
-  const heading = result.createTHead().insertRow();
-  for (const value of ["", ...links]) {
+  const header = result.createTHead().insertRow();
+  for (const heading of [null, ...headings]) {
     const cell = element("th");
     cell.scope = "col";
-    cell.append(value);
-    heading.append(cell);
+    if (heading) {
+      const link = element("a", heading.name);
+      link.href = heading.href;
+      link.dataset.workspaceLink = "";
+      cell.append(link);
+    }
+    header.append(cell);
   }
-  const body = result.createTBody();
-  for (const [label, left, right] of rows) {
-    const row = body.insertRow(), name = element("th", label);
-    name.scope = "row";
-    row.append(name, element("td", left), element("td", right));
-  }
+  result.createTBody();
   return result;
 }
 
-export function createTrainingComparison({readRun, session, runPath, duration}) {
+function updateHeadings(result, headings) {
+  const links = result.tHead.querySelectorAll("a");
+  headings.forEach(({name, href}, index) => {
+    setText(links[index], name);
+    if (links[index].getAttribute("href") !== href) links[index].setAttribute("href", href);
+  });
+}
+
+function updateRows(result, rows) {
+  const body = result.tBodies[0];
+  rows.forEach(([label, left, right], index) => {
+    let row = body.rows[index];
+    if (!row) {
+      row = body.insertRow();
+      const name = element("th");
+      name.scope = "row";
+      row.append(name, element("td"), element("td"));
+    }
+    [label, left, right].forEach((value, column) => setText(row.cells[column], value));
+  });
+  while (body.rows.length > rows.length) body.deleteRow(-1);
+}
+
+const pollInterval = 2500;
+
+export function createTrainingComparison({readRun, session, runPath, duration, onStateChange}) {
   const panel = $("training-comparison"), status = $("training-comparison-status");
   const content = $("training-comparison-results"), retry = $("training-comparison-retry");
-  let generation = 0, pair = [];
+  let current = null, timer;
 
   function close() {
-    generation++;
-    pair = [];
+    clearTimeout(timer);
+    current?.request?.abort();
+    current = null;
     panel.hidden = true;
     content.replaceChildren();
     status.textContent = "";
     retry.hidden = true;
   }
 
-  async function show(ids, focus = true) {
-    const stamp = ++generation;
-    pair = ids;
+  function render(view, runs) {
+    const names = runs.map(run => run.display_name || (isImported(run) ? run.training.model_version_id
+      : architectureName(run.training.architecture_id, true)));
+    const headings = runs.map((run, index) => ({
+      name: (index === 0 ? "A · " : "B · ") + names[index] + (names[0] === names[1] ? " #" + run.run_id.slice(-8) : ""),
+      href: runPath(run.run_id),
+    }));
+    const row = (name, select) => [name, ...runs.map(run => select(run) ?? "—")];
+    const rows = [
+      row("Status", r => isImported(r) ? "Imported" : analysisStateLabel(r.job.state)),
+      row(runs.some(isImported) ? "Recorded" : "Created", r => shortDate(r.job.created_at)),
+      row("Dataset", r => isImported(r) ? r.training.evidence.dataset_sha256 : r.training.dataset_id),
+      row("Architecture", r => architectureName(r.training.architecture_id, true)),
+      row("Trainable parameters", r => r.trainable_parameters?.toLocaleString()),
+      ...[["Elapsed", "elapsed_seconds"], ["In queue", "queued_seconds"],
+        ["With worker", "running_seconds"], ["Model fit time", "fit_seconds"]].map(([name, key]) =>
+        row(name, r => r.statistics?.[key] == null || (isImported(r) && key !== "fit_seconds")
+          ? null : duration(r.statistics[key]))),
+    ];
+    if (view.scores) rows.push(["Validation interval macro-F1", ...view.scores.map(value => value.toFixed(4))]);
+    if (!view.overview) {
+      view.overview = table("Run results", headings);
+      content.append(view.overview);
+      if (isImported(runs[0]) === isImported(runs[1]) && runs.every(run => run.configuration)) {
+        const differences = differentSettings(runs[0].configuration, runs[1].configuration);
+        content.append(element("h3", "Settings that differ"));
+        if (differences.length) {
+          view.settings = table("Settings that differ", headings);
+          content.append(view.settings);
+          updateRows(view.settings, differences);
+        } else content.append(element("p", "Both runs used the same settings.", "hint"));
+      }
+    } else {
+      updateHeadings(view.overview, headings);
+      if (view.settings) updateHeadings(view.settings, headings);
+    }
+    updateRows(view.overview, rows);
+  }
+
+  async function refresh(poll = false) {
+    clearTimeout(timer);
+    const view = current;
+    if (!view || view.request || document.hidden) return;
+    const request = new AbortController();
+    view.request = request;
+    const timeout = setTimeout(() => request.abort(), 15000);
+    let delay = null;
+    try {
+      const runs = await Promise.all(view.ids.map((id, i) =>
+        poll && view.runs && finished(view.runs[i].job) ? view.runs[i] : readRun(id, {signal: request.signal})));
+      if (current !== view || document.hidden) return;
+      if (poll && view.runs?.some((run, i) => run.job.state !== runs[i].job.state)) onStateChange();
+      view.runs = runs;
+      retry.hidden = true;
+      render(view, runs);
+      if (!runs.every(run => run.job.state === "succeeded")) {
+        setText(status, "Both runs must succeed to compare their validation scores.");
+        if (runs.some(run => !finished(run.job))) delay = pollInterval;
+      } else if (!sameValidation(runs[0].training, runs[1].training)) {
+        setText(status, "Comparing validation scores requires the same dataset, validation labels and analysis profile.");
+      } else {
+        if (!view.scores) {
+          setText(status, "Loading validation scores…");
+          const scores = await Promise.all(runs.map(async run => {
+            if (run.output?.validation_segment_macro_f1 != null) return run.output.validation_segment_macro_f1;
+            const path = "/api/v1/training-runs/" + encodeURIComponent(run.run_id) + "/validation-score";
+            return (await session.json(path, {signal: request.signal})).validation_segment_macro_f1;
+          }));
+          if (current !== view || document.hidden) return;
+          view.scores = scores;
+          render(view, runs);
+        }
+        const change = view.scores[1] - view.scores[0];
+        setText(status, "Validation interval macro-F1 (B − A): " + (change > 0 ? "+" : "") + change.toFixed(4));
+      }
+      view.retryDelay = pollInterval;
+    } catch (error) {
+      request.abort();
+      if (current !== view || document.hidden) return;
+      setText(status, error.message);
+      retry.hidden = false;
+      if (isTransientRequestError(error)) {
+        delay = view.retryDelay;
+        view.retryDelay = Math.min(delay * 2, 30000);
+      }
+    } finally {
+      clearTimeout(timeout);
+      view.request = null;
+      if (current === view && !document.hidden && delay !== null) timer = setTimeout(() => refresh(true), delay);
+    }
+  }
+
+  function show(ids) {
+    close();
     panel.hidden = false;
-    content.replaceChildren();
-    retry.hidden = true;
-    if (focus) $("training-comparison-title").focus();
+    $("training-comparison-title").focus();
     if (ids.length !== 2 || ids[0] === ids[1]) {
       status.textContent = "Select two different runs in the history and choose Compare.";
       return;
     }
+    current = {ids, retryDelay: pollInterval};
     status.textContent = "Loading runs…";
-    try {
-      const runs = await Promise.all(ids.map(readRun));
-      if (generation !== stamp) return;
-      const names = runs.map(run => run.display_name || (isImported(run) ? run.training.model_version_id
-        : architectureName(run.training.architecture_id, true)));
-      const links = () => runs.map((run, index) => {
-        const suffix = names[0] === names[1] ? " #" + run.run_id.slice(-8) : "";
-        const link = element("a", (index === 0 ? "A · " : "B · ") + names[index] + suffix);
-        link.href = runPath(run.run_id);
-        link.dataset.workspaceLink = "";
-        return link;
-      });
-      const row = (name, select) => [name, ...runs.map(run => select(run) ?? "—")];
-      const rows = [
-        row("Status", r => isImported(r) ? "Imported" : analysisStateLabel(r.job.state)),
-        row(runs.some(isImported) ? "Recorded" : "Created", r => shortDate(r.job.created_at)),
-        row("Dataset", r => isImported(r) ? r.training.evidence.dataset_sha256 : r.training.dataset_id),
-        row("Architecture", r => architectureName(r.training.architecture_id, true)),
-        row("Trainable parameters", r => r.trainable_parameters?.toLocaleString()),
-        ...[["Elapsed", "elapsed_seconds"], ["In queue", "queued_seconds"],
-          ["With worker", "running_seconds"], ["Model fit time", "fit_seconds"]].map(([name, key]) =>
-          row(name, r => r.statistics?.[key] == null || (isImported(r) && key !== "fit_seconds")
-            ? null : duration(r.statistics[key]))),
-      ];
-      const overview = table("Run results", links(), rows);
-      content.append(overview);
-      if (isImported(runs[0]) === isImported(runs[1]) && runs.every(run => run.configuration)) {
-        const differences = differentSettings(runs[0].configuration, runs[1].configuration);
-        content.append(element("h3", "Settings that differ"), differences.length
-          ? table("Settings that differ", links(), differences)
-          : element("p", "Both runs used the same settings.", "hint"));
-      }
-      if (!runs.every(run => run.job.state === "succeeded")) {
-        status.textContent = "Both runs must succeed to compare their validation scores.";
-        return;
-      }
-      const [a, b] = runs.map(run => run.training);
-      if (!sameValidation(a, b)) {
-        status.textContent = "Comparing validation scores requires the same dataset, validation labels and analysis profile.";
-        return;
-      }
-      status.textContent = "Loading validation scores…";
-      const values = await Promise.all(runs.map(async run => {
-        if (run.output?.validation_segment_macro_f1 != null) return run.output.validation_segment_macro_f1;
-        const score = await session.json("/api/v1/training-runs/" + encodeURIComponent(run.run_id) + "/validation-score");
-        return score.validation_segment_macro_f1;
-      }));
-      if (generation !== stamp) return;
-      const scoreRow = overview.tBodies[0].insertRow(), label = element("th", "Validation interval macro-F1");
-      label.scope = "row";
-      scoreRow.append(label, ...values.map(value => element("td", value.toFixed(4))));
-      const change = values[1] - values[0];
-      status.textContent = "Validation interval macro-F1 (B − A): " + (change > 0 ? "+" : "") + change.toFixed(4);
-    } catch (error) {
-      if (generation !== stamp) return;
-      status.textContent = error.message;
-      retry.hidden = false;
-    }
+    return refresh();
   }
-  retry.addEventListener("click", () => show(pair, false));
-  return {close, show};
+  retry.addEventListener("click", () => refresh());
+  return {close, show, refresh};
 }

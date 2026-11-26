@@ -165,6 +165,7 @@ def test_pending_runs_can_be_compared_without_archiving_or_reading_scores(browse
     page = browser.new_page()
     page.route(ORIGIN + "/**", api.dispatch)
     try:
+        page.clock.install()
         page.goto(f"{ORIGIN}/training/new")
         page.get_by_role("button", name="Select runs").click()
         page.get_by_role("checkbox", name="Select Pending").check()
@@ -176,8 +177,73 @@ def test_pending_runs_can_be_compared_without_archiving_or_reading_scores(browse
         expect(page.locator("#training-comparison-status")).to_contain_text(
             "Both runs must succeed"
         )
+        api.run["job"]["state"] = "failed"
+        page.clock.fast_forward(3000)
+        expect(page.get_by_role("row", name="Status")).to_contain_text("Failed")
+        reads = api.pages.count(f"training-runs/{RUN_ID}")
+        page.clock.fast_forward(30_000)
+        page.wait_for_load_state("networkidle")
+        assert reads == api.pages.count(f"training-runs/{RUN_ID}")
         assert not any(path.endswith("/validation-score") for path in api.pages)
         assert not api.archive_requests
+    finally:
+        page.close()
+
+
+def test_comparison_polls_active_run_and_refreshes_on_return(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run.update(display_name="Control", output={"validation_segment_macro_f1": 0.7})
+    api.run["training"]["analysis_profile_id"] = DEFAULT_ANALYSIS_PROFILE
+    other = deepcopy(api.run)
+    other.update(
+        run_id=OTHER_ID, display_name="Candidate", output={"validation_segment_macro_f1": 0.8}
+    )
+    api.run["job"]["state"] = "queued"
+    api.runs = [api.run, other]
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    first_path, second_path = (f"training-runs/{id_}" for id_ in (RUN_ID, OTHER_ID))
+    try:
+        page.clock.install()
+        page.goto(f"{ORIGIN}/training/compare?left={RUN_ID}&right={OTHER_ID}")
+        table = page.get_by_role("table", name="Run results")
+        state = table.get_by_role("row", name="Status")
+        link = table.get_by_role("link", name="A · Control")
+        expect(state).to_contain_text("Queued")
+        link.focus()
+        completed_reads = api.pages.count(second_path)
+        page.route(f"**/{first_path}", lambda r: r.fulfill(status=503, json={}), times=1)
+        page.clock.fast_forward(3000)
+        expect(page.locator("#training-comparison-retry")).to_be_visible()
+        expect(state).to_contain_text("Queued")
+        api.run["job"]["state"] = "running"
+        page.clock.fast_forward(3000)
+        expect(state).to_contain_text("Running")
+        expect(link).to_be_focused()
+        expect(page.locator("#training-comparison-retry")).to_be_hidden()
+        assert api.pages.count(second_path) == completed_reads
+
+        page.evaluate("""() => {
+            Object.defineProperty(document, 'hidden', {value: true, configurable: true});
+            document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        api.run["job"]["state"] = "succeeded"
+        reads = api.pages.count(first_path)
+        page.clock.fast_forward(30_000)
+        page.wait_for_load_state("networkidle")
+        assert api.pages.count(first_path) == reads
+        page.evaluate("""() => {
+            delete document.hidden;
+            document.dispatchEvent(new Event('visibilitychange'));
+        }""")
+        page.clock.fast_forward(100)
+        expect(page.locator("#training-comparison-status")).to_contain_text("+0.1000")
+        expect(link).to_be_focused()
+        final_reads = api.pages.count(first_path), api.pages.count(second_path)
+        page.clock.fast_forward(30_000)
+        page.wait_for_load_state("networkidle")
+        assert final_reads == (api.pages.count(first_path), api.pages.count(second_path))
     finally:
         page.close()
 
