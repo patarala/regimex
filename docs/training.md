@@ -22,8 +22,10 @@ link printed by the command. [Terminal workflows](cli.md#find-a-run-started-in-t
 Choose an architecture and review **Training policy**. A run name is optional.
 The form fills in defaults for the chosen model. **Advanced settings** lets
 you override model parameters and runtime limits. To enter the whole run
-configuration as JSON, choose **Edit JSON** at the top of the form. Select
-**Start training** to submit the run.
+configuration as JSON, choose **Edit JSON** at the top of the form. **Use form**
+applies your JSON edits to the controls. If a value cannot be shown in the
+form, you can correct it in the editor or choose **Discard JSON edits** to
+return to your previous settings. **Start training** submits from either view.
 
 | Architecture | What to look for during training |
 | --- | --- |

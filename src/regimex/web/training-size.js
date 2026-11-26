@@ -1,8 +1,35 @@
 import {$, addFieldHelp, element, option} from "./ui.js";
-import {setParameterOverrides} from "./training-json.js";
+import {integerParameterKeys, setParameterOverrides} from "./training-json.js";
 
 export function parameterCountLabel(count) {
   return count.toLocaleString("en-US") + " parameters";
+}
+
+function editableFields(architecture) {
+  if (architecture?.default_training_policy?.budget !== "fit") return [];
+  return Object.entries(architecture.parameter_schema?.properties ?? {}).filter(([, field]) =>
+    field.type === "integer" || (field.type === "string" && Array.isArray(field.enum)));
+}
+
+export function validateModelFields(architecture, text) {
+  const fields = editableFields(architecture);
+  if (!fields.length) return;
+  const parameters = JSON.parse(text), integers = integerParameterKeys(text);
+  for (const [key, field] of fields) {
+    const present = Object.hasOwn(parameters, key);
+    const value = present ? parameters[key] : field.default;
+    if (field.type === "string") {
+      if (!field.enum.includes(value))
+        throw new Error(`${field.title} must be one of ${field.enum.join(", ")}.`);
+    } else if ((present && !integers.has(key)) || !Number.isSafeInteger(value) ||
+        value < field.minimum || value > field.maximum) {
+      let range = "";
+      if (field.minimum != null && field.maximum != null) range = ` from ${field.minimum} to ${field.maximum}`;
+      else if (field.minimum != null) range = ` of at least ${field.minimum}`;
+      else if (field.maximum != null) range = ` of at most ${field.maximum}`;
+      throw new Error(`${field.title} must be a whole number${range}.`);
+    }
+  }
 }
 
 export function createSizePicker() {
@@ -78,37 +105,34 @@ export function createSizePicker() {
       layoutKeys = [...new Set(sizes.flatMap(preset => Object.keys(preset.parameters)))];
       controls.clear();
       modelFields.replaceChildren();
-      if (architecture?.default_training_policy?.budget === "fit") {
-        for (const [key, field] of Object.entries(properties)) {
-          const choices = field.type === "string" && Array.isArray(field.enum);
-          if (field.type !== "integer" && !choices) continue;
-          const input = element(choices ? "select" : "input"), label = element("label", field.title), wrapper = element("div");
-          if (choices) {
-            for (const value of field.enum) {
-              const name = value.replaceAll("_", " ");
-              input.append(option(value, name[0].toUpperCase() + name.slice(1)));
-            }
-          } else {
-            input.type = "number";
-            input.min = field.minimum;
-            input.max = field.maximum;
+      for (const [key, field] of editableFields(architecture)) {
+        const choices = field.type === "string";
+        const input = element(choices ? "select" : "input"), label = element("label", field.title), wrapper = element("div");
+        if (choices) {
+          for (const value of field.enum) {
+            const name = value.replaceAll("_", " ");
+            input.append(option(value, name[0].toUpperCase() + name.slice(1)));
           }
-          input.id = "training-parameter-" + key;
-          input.required = true;
-          label.htmlFor = input.id;
-          wrapper.append(label, input);
-          if (field.description) addFieldHelp(label, input, field.description);
-          controls.set(key, input);
-          modelFields.append(wrapper);
-          input.addEventListener("input", () => {
-            if (!input.validity.valid) return;
-            const value = choices ? input.value : input.valueAsNumber;
-            parametersField.value = setParameterOverrides(parametersField.value, {
-              [key]: value === field.default ? undefined : value,
-            });
-            parametersField.dispatchEvent(new Event("input", {bubbles: true}));
-          });
+        } else {
+          input.type = "number";
+          input.min = field.minimum;
+          input.max = field.maximum;
         }
+        input.id = "training-parameter-" + key;
+        input.required = true;
+        label.htmlFor = input.id;
+        wrapper.append(label, input);
+        if (field.description) addFieldHelp(label, input, field.description);
+        controls.set(key, input);
+        modelFields.append(wrapper);
+        input.addEventListener("input", () => {
+          if (!input.validity.valid) return;
+          const value = choices ? input.value : input.valueAsNumber;
+          parametersField.value = setParameterOverrides(parametersField.value, {
+            [key]: value === field.default ? undefined : value,
+          });
+          parametersField.dispatchEvent(new Event("input", {bubbles: true}));
+        });
       }
       modelFields.hidden = !controls.size;
       refresh();

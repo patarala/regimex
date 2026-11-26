@@ -171,7 +171,7 @@ export function policyDraft(architecture, rawPolicy, previousDraft = null) {
       automatic.every((step, i) => step === policy.validation_updates[i]);
     draft.validation_updates = keepAutomatic ? "" : policy.validation_updates.join(", ");
   }
-  return draft;
+  return {draft, policy};
 }
 
 function reject(field, message) {

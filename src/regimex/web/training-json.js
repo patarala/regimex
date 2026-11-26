@@ -58,6 +58,12 @@ function taggedTokens(text) {
     token.startsWith('"') ? '"s' + token.slice(1) : '"n' + token + '"');
 }
 
+export function integerParameterKeys(text) {
+  const entries = Object.entries(JSON.parse(taggedTokens(text)));
+  return new Set(entries.filter(([, token]) => typeof token === "string" && /^n-?\d+$/.test(token))
+    .map(([key]) => key.slice(1)));
+}
+
 function formatTagged(value) {
   return JSON.stringify(value, null, 2).replace(stringsAndNumbers, token =>
     token.startsWith('"n') ? token.slice(2, -1) : '"' + token.slice(2));

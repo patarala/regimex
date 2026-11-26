@@ -909,6 +909,110 @@ def test_run_json_returns_to_the_form_with_the_selected_dataset_and_references(
         page.close()
 
 
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ('{"trees":999}', "Number of trees must be a whole number from 1 to 128."),
+        ('{"trees":30.00000000000000001}', "Number of trees"),
+        ('{"feature_set":"unavailable"}', "Price features"),
+    ],
+)
+def test_discard_after_invalid_json_import_restores_original_draft(
+    browser: Any, parameters: str, message: str
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    forest = adaptive_descriptor().describe().model_dump(mode="json")
+    page.route(
+        ORIGIN + "/api/v1/architectures*", lambda r: r.fulfill(json={"items": [TCN, forest]})
+    )
+    try:
+        page.goto(ORIGIN + "/training/new")
+        architecture = page.get_by_label("Architecture")
+        trees = page.get_by_label("Number of trees", exact=True)
+        architecture.select_option("adaptive")
+        trees.fill("24")
+        architecture.select_option("tcn")
+        edit = page.get_by_role("button", name="Edit JSON")
+        edit.click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        original = {
+            **json.loads(editor.input_value()),
+            "display_name": "Original TCN",
+            "policy": {"optimizer": "adamw", "seeds": [17, 31], "epochs": 7},
+            "training_runtime": {"memory_budget_bytes": 9007199254740993},
+        }
+        text = json.dumps(original, indent=1)
+        editor.fill(text)
+        use_form = page.get_by_role("button", name="Use form")
+        use_form.click()
+        expect(editor).to_be_hidden()
+        edit.click()
+        expect(editor).to_have_value(text)
+        pasted = json.dumps(
+            {
+                **original,
+                "architecture_id": "adaptive",
+                "display_name": "Changed forest",
+                "policy": {"optimizer": "extra_trees", "seeds": [99]},
+                "parameters": {},
+            }
+        ).replace('"parameters": {}', '"parameters": ' + parameters)
+        editor.fill(pasted)
+        use_form.click()
+        expect(editor).to_be_focused()
+        expect(editor).to_have_value(pasted)
+        expect(editor).to_have_attribute("aria-invalid", "true")
+        expect(editor).to_have_attribute("aria-errormessage", "training-prerequisite")
+        expect(page.locator("#training-prerequisite")).to_contain_text(message)
+        page.get_by_role("button", name="Discard JSON edits").click()
+        expect(architecture).to_have_value("tcn")
+        expect(page.get_by_label("Run name (optional)")).to_have_value("Original TCN")
+        expect(page.get_by_label("Random seeds", exact=True)).to_have_value("17, 31")
+        architecture.select_option("adaptive")
+        expect(trees).to_have_value("24")
+        architecture.select_option("tcn")
+        edit.click()
+        expect(editor).to_have_value(text)
+        use_form.click()
+        page.get_by_role("button", name="Start training").click()
+        expect(page.locator("#training-detail")).to_be_visible()
+        assert api.posts[0][1] == original
+    finally:
+        page.close()
+
+
+def test_copy_opens_unrepresentable_settings_in_json_with_a_working_form(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    forest = adaptive_descriptor().describe().model_dump(mode="json")
+    api.run["training"].update(
+        architecture_id="adaptive",
+        parameters={"trees": 999},
+        policy=forest["default_training_policy"],
+    )
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        ORIGIN + "/api/v1/architectures*", lambda r: r.fulfill(json={"items": [TCN, forest]})
+    )
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        page.get_by_role("button", name="New run from this run").click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        expect(editor).to_be_focused()
+        expect(page.locator("#training-prerequisite")).to_contain_text("Number of trees")
+        assert json.loads(editor.input_value())["parameters"] == {"trees": 999}
+        page.get_by_role("button", name="Discard JSON edits").click()
+        expect(page.get_by_label("Architecture")).to_have_value("tcn")
+        expect(page.get_by_role("button", name="Start training")).to_be_enabled()
+        assert not api.posts
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("edit_json", [False, True], ids=["form", "policy-paste"])
 def test_advanced_json_preserves_numeric_literals(browser: Any, edit_json: bool) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
