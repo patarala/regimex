@@ -31,7 +31,7 @@ _MEASURES = (
     "next_fit",
 )
 FEATURE_NAMES = tuple(f"scale_{scale:g}_{name}" for scale in _SCALES for name in _MEASURES)
-FEATURE_VERSION = "adaptive-multiscale/1.1"
+FEATURE_VERSION = "adaptive-multiscale/1.2"
 LEGACY_FEATURE_VERSION = "adaptive-multiscale/1.0"
 
 
@@ -193,12 +193,16 @@ def _support(moves: Floats, fits: Floats) -> Floats:
 
 
 def features(
-    rows: tuple[Observation, ...], config: AnalysisConfig, *, legacy_coverage: bool = False
+    rows: tuple[Observation, ...],
+    config: AnalysisConfig,
+    *,
+    legacy_coverage: bool = False,
+    legacy_prices: bool = False,
 ) -> Floats:
     """Describe each step from observed prices in its own instrument and available block."""
     output = np.zeros((len(rows), len(FEATURE_NAMES)))
     scale = math.log1p(config.minimum_relative_change)
-    for start, values, prefix, noise in price_blocks(rows, config):
+    for start, values, prefix, noise in price_blocks(rows, config, legacy_prices=legacy_prices):
         measures = {}
         partitions = _partitions(
             prefix, start, config, noise, _SCALES, legacy_coverage=legacy_coverage

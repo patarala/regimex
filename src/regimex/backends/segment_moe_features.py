@@ -25,6 +25,7 @@ class SegmentFeatureVersion(StrEnum):
     OBSERVED_PRICES = "direction-persistence/1.0"
     ORIGINAL_STEPS = "direction-persistence/1.1"
     INCLUSIVE_COVERAGE = "direction-persistence/1.2"
+    STABLE_LOG_RATIOS = "direction-persistence/1.3"
 
 
 def _piece_evidence(values: Floats) -> tuple[float, float, float, float]:
@@ -92,19 +93,22 @@ def segment_features(
     rows: tuple[Observation, ...],
     config: AnalysisConfig,
     *,
-    version: SegmentFeatureVersion = SegmentFeatureVersion.INCLUSIVE_COVERAGE,
+    version: SegmentFeatureVersion = SegmentFeatureVersion.STABLE_LOG_RATIOS,
 ) -> tuple[NDArray[np.int64], Float32Array, Float32Array]:
     """Return original-grid spans, adjacent-piece evidence and block evidence per span."""
     spans = []
     contexts = []
     blocks = []
-    for start, prices, prefix, noise in price_blocks(rows, config):
+    for start, prices, prefix, noise in price_blocks(
+        rows, config, legacy_prices=version != SegmentFeatureVersion.STABLE_LOG_RATIOS
+    ):
         cuts = profile_partition(
             prefix,
             start,
             config,
             noise,
-            legacy_coverage=version != SegmentFeatureVersion.INCLUSIVE_COVERAGE,
+            legacy_coverage=version
+            in (SegmentFeatureVersion.OBSERVED_PRICES, SegmentFeatureVersion.ORIGINAL_STEPS),
         )
         pieces = np.array([_piece_evidence(prices[a:b]) for a, b in pairwise(cuts)], np.float32)
         # Reset the window at each availability boundary.

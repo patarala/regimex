@@ -13,6 +13,7 @@ from typing import Literal, Self, cast
 import numpy as np
 from pydantic import Field, JsonValue, model_validator
 
+from regimex.backends.baseline_layout import LEGACY_FEATURE_VERSION
 from regimex.baseline import AccumulationDtype, LinearModel, fit_baseline
 from regimex.contracts import StrictModel
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig
@@ -127,6 +128,7 @@ def _feature_inputs(
     sequences: slice = slice(None),
     *,
     check_budget: Callable[[], None] | None = None,
+    legacy_prices: bool = False,
 ) -> PredictionInputs:
     info = observations.info[sequences]
     offsets = np.r_[0, np.cumsum([item.step_count for item in info])].astype(np.int64)
@@ -134,7 +136,9 @@ def _feature_inputs(
     for index, rows in enumerate(observations.observations[sequences]):
         if check_budget is not None:
             check_budget()
-        values[offsets[index] : offsets[index + 1]] = compute_features(rows)
+        values[offsets[index] : offsets[index + 1]] = compute_features(
+            rows, legacy_prices=legacy_prices
+        )
     return PredictionInputs(values, offsets, info)
 
 
@@ -159,6 +163,7 @@ class BaselinePredictor:
     architecture_id: str = ARCHITECTURE_ID
     implementation_version: str = IMPLEMENTATION_VERSION
     class_names: tuple[str, ...] = DIRECTION_NAMES
+    legacy_prices: bool = False
 
     def __post_init__(self) -> None:
         size = len(FEATURE_NAMES)
@@ -225,7 +230,11 @@ class BaselinePredictor:
         # Process-global BLAS limits belong in an isolated worker computation.
         with threadpool_limits(limits=runtime.threads):
             for first in range(0, len(inputs.info), runtime.max_batch_size):
-                features = _feature_inputs(inputs, slice(first, first + runtime.max_batch_size))
+                features = _feature_inputs(
+                    inputs,
+                    slice(first, first + runtime.max_batch_size),
+                    legacy_prices=self.legacy_prices,
+                )
                 prepared = PreparedPredictionInputs(
                     self.preprocessor.transform(features.values), features.offsets, features.info
                 )
@@ -449,7 +458,9 @@ class BaselineBackend:
                 implementation_version=self.implementation_version,
                 interface_version="1.0",
                 observation_version="2.1",
-                feature_version=FEATURE_VERSION,
+                feature_version=LEGACY_FEATURE_VERSION
+                if predictor.legacy_prices
+                else FEATURE_VERSION,
                 preprocessing_version=PREPROCESSING_VERSION,
                 decoder_version=DECODER_VERSION,
                 analysis_profile=provenance.analysis_profile,
@@ -494,7 +505,7 @@ class BaselineBackend:
         )
         if (
             {member.role: member.path for member in bundle.members} != _MEMBERS
-            or bundle.feature_version != FEATURE_VERSION
+            or bundle.feature_version not in (FEATURE_VERSION, LEGACY_FEATURE_VERSION)
             or bundle.preprocessing_version != PREPROCESSING_VERSION
             or bundle.decoder_version != DECODER_VERSION
         ):
@@ -550,6 +561,7 @@ class BaselineBackend:
                 configuration.accumulation_dtype,
             ),
             configuration,
+            legacy_prices=bundle.feature_version == LEGACY_FEATURE_VERSION,
         )
 
 

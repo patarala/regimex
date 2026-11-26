@@ -53,6 +53,35 @@ def test_returns_do_not_bridge_missing_observations() -> None:
         compute_features((row(0, 100.0), row(1, 110.0).model_copy(update={"instrument_id": "B/Q"})))
 
 
+def test_price_features_retain_representable_changes_at_large_price_levels() -> None:
+    from test_segmentation import experiment
+
+    from regimex.backends.price_segments import price_blocks
+    from regimex.directions import AnalysisConfig
+    from regimex.features import log_price_channels
+
+    low, high = 1e9, 1e9 + 0.000001
+    rows = experiment([low, high, low, low] * 8).observations
+    up, down = np.log1p((high - low) / low), np.log1p((low - high) / high)
+    channels = log_price_channels(rows)
+    np.testing.assert_allclose(channels[:4, 0], [0, up, 0, 0], atol=0, rtol=1e-7)
+    np.testing.assert_allclose(channels[1:4, 1], [up, down, 0], atol=0, rtol=1e-7)
+    ((_, levels, _, _),) = price_blocks(rows, AnalysisConfig())
+    np.testing.assert_array_equal(levels[:4], [0, up, 0, 0])
+    assert not log_price_channels(rows, legacy_prices=True)[1:].any()
+    ((_, old_levels, _, _),) = price_blocks(rows, AnalysisConfig(), legacy_prices=True)
+    assert not old_levels.any()
+
+    # A tick is still visible in the segment coordinates after a twofold price change.
+    shifted = experiment([low] + [2 * low, 2 * low + 0.000001, 2 * low] * 12).observations
+    ((_, levels, _, _),) = price_blocks(shifted, AnalysisConfig())
+    assert levels[1] < levels[2] > levels[3]
+
+    extreme = log_price_channels((row(0, 5e-324), row(1, 1e308), row(2, 5e-324)))
+    expected = np.log(1e308) - np.log(5e-324)
+    np.testing.assert_allclose(extreme[1:, 1], [expected, -expected], rtol=1e-7)
+
+
 def test_large_finite_observations_do_not_overflow_ratios() -> None:
     observation = Observation(
         instrument_id="A/Q",

@@ -69,7 +69,12 @@ def extra_preprocessor(training):
 def features(inputs, native_preprocessor):
     native = prepare_observations(inputs, native_preprocessor)
     extras = np.concatenate(
-        [local_pause_features(log_price_channels(rows)[:, 0]) for rows in inputs.observations]
+        [
+            local_pause_features(
+                log_price_channels(rows, legacy_prices=native_preprocessor.legacy_prices)[:, 0]
+            )
+            for rows in inputs.observations
+        ]
     )
     return native, extras
 

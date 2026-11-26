@@ -246,9 +246,9 @@ def test_inference_extracts_only_the_current_batch(monkeypatch: pytest.MonkeyPat
     events: list[tuple[str, int]] = []
     predict = LinearModel.predict
 
-    def extract(rows: tuple[Observation, ...]) -> FloatArray:
+    def extract(rows: tuple[Observation, ...], *, legacy_prices: bool) -> FloatArray:
         events.append(("extract", len(rows)))
-        return compute_features(rows)
+        return compute_features(rows, legacy_prices=legacy_prices)
 
     def score(model: LinearModel, data: PreparedPredictionInputs) -> DoubleArray:
         events.append(("predict", len(data.values)))
@@ -421,6 +421,12 @@ def test_saved_weights_retain_their_window_arithmetic(
     data = replace(data, observations=(rows,))
     runtime = InferenceRuntime(threads=1)
     predictor = backend.load_bundle(root, manifest_sha256=rehash(root), runtime=runtime)
+    manifest = json.loads((root / "manifest.json").read_bytes())
+    assert manifest["feature_version"] == "3.1"
+    manifest["feature_version"] = "3.0"
+    write_json(root / "manifest.json", manifest)
+    predictor = backend.load_bundle(root, manifest_sha256=rehash(root), runtime=runtime)
+    assert predictor.legacy_prices
     values = prepared(data, predictor.preprocessor).values[:16]
     old_deviation = values.std(axis=0)[volume]
     assert old_deviation > 0

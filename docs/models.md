@@ -144,6 +144,8 @@ reject snapshots that repeat a complete instrument series from another snapshot,
 even when the run and instrument IDs differ. Their references require one
 snapshot per source run, split group and generator-scoped seed. When a run has
 several revisions, choose the one to evaluate before registering its reference set.
+For exports from `regimex generate`, both local catalogs and the API verify the
+declared seed against the run ID and generator configuration.
 
 The packaged backends need every direction in their training targets. Learned
 weights and preprocessing use training data only. Model selection requires at
@@ -176,7 +178,10 @@ The segment features and the two expert designs are specific to Regimex.
 The worker starts both experts and the gate from scratch. It fits the block
 feature scaling on training experiments, then updates all three networks
 together using the cross-entropy of their mixed prediction. A segment’s target
-is the share of its labeled steps in each direction. The default run uses a
+is the share of its labeled steps in each direction. Its loss is weighted by
+the square root of its labeled step count. Each minibatch uses the same mean
+segment weight from the training set, so even a batch of one retains that weight.
+The default run uses a
 context width of 32, AdamW and up to 24 epochs, with validation after each
 epoch. Six consecutive checks without improvement stop training. The saved
 checkpoint has the highest decoded validation interval macro-F1.

@@ -151,6 +151,7 @@ def fit(
     analysis: AnalysisConfig | None = None,
     side_slopes: bool = False,
     legacy_regression: bool = False,
+    legacy_prices: bool = False,
     fit_policy: TrainingPolicy | FixedUpdatePolicy | None = None,
 ) -> tuple[TCNBackend, FitResult, ObservationInputs]:
     backend = TCNBackend()
@@ -166,6 +167,7 @@ def fit(
         runtime=TrainingRuntime(threads=1),
         evaluator=lambda probabilities: float(probabilities[:, 0].mean()),
         legacy_regression=legacy_regression,
+        legacy_prices=legacy_prices,
     )
     return backend, fitted, validation
 
@@ -273,16 +275,19 @@ def test_backend_matches_scientific_fit_and_training_only_preprocessing() -> Non
 
 
 @pytest.mark.parametrize("side_slopes", [False, True])
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("minor", [0, 1, 2])
 @pytest.mark.parametrize("fixed", [False, True])
 def test_feature_layout_is_bound_to_the_manifest(
-    tmp_path: Path, side_slopes: bool, legacy: bool, fixed: bool
+    tmp_path: Path, side_slopes: bool, minor: int, fixed: bool
 ) -> None:
     settings = (
         FixedUpdatePolicy(seeds=(11, 23), updates=1, validation_updates=(1,)) if fixed else policy()
     )
     backend, result, observations = fit(
-        side_slopes=side_slopes, legacy_regression=legacy, fit_policy=settings
+        side_slopes=side_slopes,
+        legacy_regression=minor == 0,
+        legacy_prices=minor < 2,
+        fit_policy=settings,
     )
     path = tmp_path / "model"
     sha = backend.write_bundle(
@@ -290,10 +295,7 @@ def test_feature_layout_is_bound_to_the_manifest(
     )
     expected = result.predictor.predict(observations, runtime=InferenceRuntime(threads=1))
     manifest = json.loads((path / "manifest.json").read_bytes())
-    assert (
-        manifest["feature_version"]
-        == f"temporal-price-shape/{2 if side_slopes else 1}.{0 if legacy else 1}"
-    )
+    assert manifest["feature_version"] == f"temporal-price-shape/{2 if side_slopes else 1}.{minor}"
     config_path = path / "configuration.json"
     config = json.loads(config_path.read_bytes())
     assert len(config["feature_names"]) == (58 if side_slopes else 50)
@@ -303,7 +305,8 @@ def test_feature_layout_is_bound_to_the_manifest(
         write_json(config_path, config)
         sha = rehash(path)
     restored = backend.load_bundle(path, manifest_sha256=sha, runtime=InferenceRuntime(threads=1))
-    assert restored.preprocessor.legacy_regression == legacy
+    assert restored.preprocessor.legacy_regression == (minor == 0)
+    assert restored.preprocessor.legacy_prices == (minor < 2)
     np.testing.assert_array_equal(
         restored.predict(observations, runtime=InferenceRuntime(threads=1)), expected
     )

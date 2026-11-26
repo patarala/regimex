@@ -239,6 +239,12 @@ def temporal_features(sequences: PredictionInputs, *, side_slopes: bool = False)
 @dataclass(frozen=True)
 class TemporalPreprocessor(Preprocessor):
     legacy_regression: bool = False
+    legacy_prices: bool = False
+
+    def __post_init__(self) -> None:
+        # Historical callers selected the first feature version with this flag alone.
+        if self.legacy_regression:
+            object.__setattr__(self, "legacy_prices", True)
 
     @classmethod
     def fit(cls, training: FloatArray, *, side_slopes: bool = False) -> TemporalPreprocessor:

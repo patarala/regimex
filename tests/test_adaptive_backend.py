@@ -173,7 +173,7 @@ def test_blend_restores_exact_mixture_without_parent_directories_and_enforces_co
     from regimex.backends.adaptive_blend import BlendedAdaptivePredictor
 
     sha, valid, greedy, multi = blended_bundle(tmp_path, legacy_multiscale=legacy_multiscale)
-    version = "adaptive-multiscale/1.0" if legacy_multiscale else "adaptive-multiscale/1.1"
+    version = "adaptive-multiscale/1.0" if legacy_multiscale else "adaptive-multiscale/1.2"
     assert (
         json.loads((tmp_path / "multiscale" / "manifest.json").read_bytes())["feature_version"]
         == version

@@ -122,11 +122,12 @@ def features(
     config: AnalysisConfig,
     *,
     partition: PartitionRule = _greedy_partitions,
+    legacy_prices: bool = False,
 ) -> Floats:
     """Extract a row at each original step, keeping each available block independent."""
     result = np.zeros((len(rows), _WIDTH))
     scale = float(np.log1p(config.minimum_relative_change))
-    for start, log_price, prefix, noise in price_blocks(rows, config):
+    for start, log_price, prefix, noise in price_blocks(rows, config, legacy_prices=legacy_prices):
         try:
             variance = noise**2
         except OverflowError:

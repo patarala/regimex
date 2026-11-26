@@ -86,8 +86,8 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
     # All feature versions use the same flat weights. The manifest selects the extractor.
     manifest_path = tmp_path / "bundle" / "manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
-    assert manifest["feature_version"] == SegmentFeatureVersion.INCLUSIVE_COVERAGE.value
-    for version in (SegmentFeatureVersion.OBSERVED_PRICES, SegmentFeatureVersion.ORIGINAL_STEPS):
+    assert manifest["feature_version"] == SegmentFeatureVersion.STABLE_LOG_RATIOS.value
+    for version in SegmentFeatureVersion:
         manifest["feature_version"] = version.value
         write_json(manifest_path, manifest)
         restored_legacy = backend.load_bundle(
@@ -109,6 +109,41 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
         backend.load_bundle(
             manifest_path.parent, manifest_sha256=digest(manifest_path), runtime=runtime
         )
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+def test_segment_weight_affects_updates_even_in_a_singleton_batch(batch_size: int) -> None:
+    from copy import deepcopy
+
+    from torch import Tensor
+    from torch.nn.utils import parameters_to_vector
+
+    from regimex.backends.segment_moe import TrainingSegments, _train_epoch
+    from regimex.backends.segment_moe_network import SegmentMoE
+
+    with torch.random.fork_rng(devices=[]):
+        torch.default_generator.manual_seed(7)
+        initial = SegmentMoE(8)
+        contexts = torch.rand(3, 9, 4)
+        blocks = torch.rand(3, 28)
+    last = np.random.default_rng(17).permutation(3)[-1]
+
+    def epoch(last_weight: float) -> Tensor:
+        model = deepcopy(initial)
+        weights = torch.ones(3)
+        weights[last] = last_weight
+        data = TrainingSegments(contexts, blocks, torch.eye(3), weights)
+        _train_epoch(
+            model,
+            torch.optim.SGD(model.parameters(), lr=0.01),
+            data,
+            np.random.default_rng(17),
+            batch_size,
+            lambda: None,
+        )
+        return parameters_to_vector(model.parameters())
+
+    assert not torch.equal(epoch(1.0), epoch(4.0))
 
 
 def test_context_network_reflects_direction_and_reports_bounded_state() -> None:

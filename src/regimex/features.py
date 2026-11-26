@@ -31,24 +31,40 @@ def _imbalance(buy: float | None, sell: float | None) -> float:
     return (buy_scaled - sell_scaled) / (buy_scaled + sell_scaled)
 
 
-def log_price_channels(rows: tuple[Observation, ...]) -> FloatArray:
+def log_price_changes(prices: DoubleArray, reference: float | DoubleArray) -> DoubleArray:
+    """Compute log price ratios, retaining small changes and extreme finite endpoints."""
+    # Separate logs cover ratios outside the normal float range. For other prices
+    # take the log after division, preserving relative precision across price levels.
+    result = np.log(prices) - np.log(reference)
+    with np.errstate(over="ignore", under="ignore"):
+        ratio = prices / reference
+        change = (prices - reference) / reference
+    np.log(ratio, out=result, where=np.isfinite(ratio) & (ratio >= np.finfo(np.float64).tiny))
+    np.log1p(change, out=result, where=np.abs(change) <= 0.5)
+    return result
+
+
+def log_price_channels(rows: tuple[Observation, ...], *, legacy_prices: bool = False) -> FloatArray:
     """Relative log price and adjacent log return on one instrument's original grid."""
     if not rows or any(
         row.instrument_id != rows[0].instrument_id or row.step != i for i, row in enumerate(rows)
     ):
         raise ValueError("features require one ordered contiguous instrument sequence")
-    prices = np.fromiter(
-        (np.log(row.last_price) if row.last_price is not None else np.nan for row in rows),
-        dtype=np.float64,
-        count=len(rows),
-    )
+    prices = np.fromiter((row.last_price for row in rows), dtype=np.float64, count=len(rows))
+    if legacy_prices:
+        prices = np.fromiter((np.log(price) for price in prices), dtype=np.float64, count=len(rows))
     known = np.flatnonzero(np.isfinite(prices))
-    reference = prices[known[0]] if len(known) else np.nan
-    return np.column_stack((prices - reference, np.diff(prices, prepend=np.nan))).astype(np.float32)
+    reference = float(prices[known[0]]) if len(known) else np.nan
+    if legacy_prices:
+        relative, returns = prices - reference, np.diff(prices, prepend=np.nan)
+    else:
+        relative = log_price_changes(prices, reference)
+        returns = np.r_[np.nan, log_price_changes(prices[1:], prices[:-1])]
+    return np.column_stack((relative, returns)).astype(np.float32)
 
 
-def compute_features(rows: tuple[Observation, ...]) -> FloatArray:
-    prices = log_price_channels(rows)
+def compute_features(rows: tuple[Observation, ...], *, legacy_prices: bool = False) -> FloatArray:
+    prices = log_price_channels(rows, legacy_prices=legacy_prices)
     values = np.full((len(rows), len(NUMERIC_NAMES)), np.nan, dtype=np.float64)
     values[:, :2] = prices
     values[:, 11] = np.abs(prices[:, 1])

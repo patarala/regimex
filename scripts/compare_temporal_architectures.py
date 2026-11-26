@@ -21,6 +21,7 @@ from regimex.backends.baseline import BaselineBackend
 from regimex.backends.tcn import (
     FEATURE_VERSION,
     LEGACY_FEATURE_VERSION,
+    PREVIOUS_FEATURE_VERSION,
     fit_preprocessing,
     prepare_observations,
 )
@@ -307,7 +308,7 @@ def score(output, development):
     ):
         raise ValueError("Frozen comparison inputs changed")
     feature_version = freeze.get("feature_version", LEGACY_FEATURE_VERSION)
-    if feature_version not in (LEGACY_FEATURE_VERSION, FEATURE_VERSION):
+    if feature_version not in (LEGACY_FEATURE_VERSION, PREVIOUS_FEATURE_VERSION, FEATURE_VERSION):
         raise ValueError("Unrecognized TCN feature version in the frozen comparison")
     with np.load(dest / "preprocessing.npz", allow_pickle=False) as arrays:
         pre = TemporalPreprocessor(
@@ -315,6 +316,7 @@ def score(output, development):
             arrays["mean"],
             arrays["scale"],
             legacy_regression=feature_version == LEGACY_FEATURE_VERSION,
+            legacy_prices=feature_version != FEATURE_VERSION,
         )
     models = {}
     for candidate in CANDIDATES:

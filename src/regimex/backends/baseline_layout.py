@@ -8,7 +8,8 @@ if TYPE_CHECKING:
     from regimex.model_registry import LogisticParameters
 
 
-FEATURE_VERSION = "3.0"
+FEATURE_VERSION = "3.1"
+LEGACY_FEATURE_VERSION = "3.0"
 NUMERIC_NAMES = (
     "relative_log_price",
     "log_return",

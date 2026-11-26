@@ -114,7 +114,7 @@ class SegmentTable:
         config: AnalysisConfig,
         check_budget: Callable[[], None] | None = None,
         *,
-        feature_version: SegmentFeatureVersion = SegmentFeatureVersion.INCLUSIVE_COVERAGE,
+        feature_version: SegmentFeatureVersion = SegmentFeatureVersion.STABLE_LOG_RATIOS,
     ) -> SegmentTable:
         require_observation_inputs(inputs)
         spans, contexts, blocks = [], [], []
@@ -160,7 +160,7 @@ class SegmentMoEPredictor:
     model: SegmentMoE
     scale: BlockScale
     configuration: Configuration
-    feature_version: SegmentFeatureVersion = SegmentFeatureVersion.INCLUSIVE_COVERAGE
+    feature_version: SegmentFeatureVersion = SegmentFeatureVersion.STABLE_LOG_RATIOS
     architecture_id = ARCHITECTURE
     implementation_version = VERSION
     class_names = DIRECTION_NAMES
@@ -251,6 +251,8 @@ def _train_epoch(
     device = next(model.parameters()).device
     order = torch.from_numpy(rng.permutation(len(segments.weights)))
     total_loss = 0.0
+    total_weight = float(segments.weights.sum())
+    mean_weight = total_weight / len(order)
     for start in range(0, len(order), batch_size):
         check_budget()
         batch = order[start : start + batch_size]
@@ -260,11 +262,12 @@ def _train_epoch(
         cross_entropy = -(targets * predictions.clamp_min(1e-7).log()).sum(dim=1)
         weighted_loss = cross_entropy.dot(weights)
         optimizer.zero_grad(set_to_none=True)
-        torch.autograd.backward(weighted_loss / weights.sum())
+        # A batch estimates the full weighted objective, even if it has only one segment.
+        torch.autograd.backward(weighted_loss / (len(batch) * mean_weight))
         nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=True)
         optimizer.step()
         total_loss += float(weighted_loss.detach())
-    return total_loss / float(segments.weights.sum())
+    return total_loss / total_weight
 
 
 @dataclass(frozen=True)

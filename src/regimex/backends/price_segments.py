@@ -8,13 +8,14 @@ from numpy.typing import NDArray
 
 from regimex.contracts import Observation
 from regimex.directions import AnalysisConfig, observation_blocks
+from regimex.features import log_price_changes
 
 Floats = NDArray[np.float64]
 Ints = NDArray[np.int64]
 
 
 def price_blocks(
-    rows: tuple[Observation, ...], config: AnalysisConfig
+    rows: tuple[Observation, ...], config: AnalysisConfig, *, legacy_prices: bool = False
 ) -> Iterator[tuple[int, Floats, Floats, float]]:
     """Prepare log prices, line-fit moments and noise from each available block."""
     for start, stop, status in observation_blocks(rows, config):
@@ -22,14 +23,18 @@ def price_blocks(
             continue
         raw = np.array([row.last_price for row in rows[start:stop]], dtype=np.float64)
         present = np.isfinite(raw)
-        log_price = np.log(raw)
-        log_price -= log_price[present][0]
+        if legacy_prices:
+            log_price = np.log(raw)
+            log_price -= log_price[present][0]
+            diff = np.diff(log_price)
+        else:
+            log_price = log_price_changes(raw, float(raw[present][0]))
+            diff = log_price_changes(raw[1:], raw[:-1])
         size = len(raw)
         x = np.arange(size, dtype=np.float64) * present
         y = np.where(present, log_price, 0.0)
         moments = np.column_stack((present, x, y, x * x, x * y, y * y))
         prefix = np.vstack((np.zeros(6), moments.cumsum(axis=0)))
-        diff = np.diff(log_price)
         diff = diff[np.isfinite(diff)]
         noise = config.noise_floor
         if len(diff):

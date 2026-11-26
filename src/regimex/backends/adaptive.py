@@ -59,7 +59,7 @@ if TYPE_CHECKING:
 
 ARCHITECTURE_ID = "adaptive"
 IMPLEMENTATION_VERSION = "0.1.0"
-FEATURE_VERSION = "adaptive-segments/1.0"
+FEATURE_VERSION = "adaptive-segments/1.1"
 PREPROCESSING_VERSION: Final = "block-log-price/1.0"
 _MEMBERS: dict[BundleRole, str] = {
     "configuration": "configuration.json",
@@ -85,19 +85,23 @@ _FEATURE_SETS = {
         multiscale_segments.features,
     ),
 }
-_LEGACY_MULTISCALE = _FeatureSet(
-    multiscale_segments.LEGACY_FEATURE_VERSION,
-    multiscale_segments.FEATURE_NAMES,
-    partial(multiscale_segments.features, legacy_coverage=True),
-)
+_PREVIOUS_FEATURE_SETS = {
+    ("greedy", "adaptive-segments/1.0"): partial(features, legacy_prices=True),
+    ("multiscale", "adaptive-multiscale/1.1"): partial(
+        multiscale_segments.features, legacy_prices=True
+    ),
+    ("multiscale", multiscale_segments.LEGACY_FEATURE_VERSION): partial(
+        multiscale_segments.features, legacy_coverage=True, legacy_prices=True
+    ),
+}
 
 
 def forest_feature_set(name: str, version: str | None = None) -> _FeatureSet:
     current = _FEATURE_SETS[name]
     if version is None or version == current.version:
         return current
-    if name == "multiscale" and version == _LEGACY_MULTISCALE.version:
-        return _LEGACY_MULTISCALE
+    if (extract := _PREVIOUS_FEATURE_SETS.get((name, version))) is not None:
+        return _FeatureSet(version, current.names, extract)
     raise ValueError("adaptive feature version disagrees with the configured feature set")
 
 
@@ -268,9 +272,13 @@ def fit_result_from_forest(
         training_runtime=runtime,
         environment=environment,
     )
-    # Receipts from the first offline multiscale fits did not record their feature version.
-    if feature_version is None and parameters.feature_set == "multiscale":
-        feature_version = _LEGACY_MULTISCALE.version
+    # Receipts from the first offline fits did not record their feature version.
+    if feature_version is None:
+        feature_version = (
+            multiscale_segments.LEGACY_FEATURE_VERSION
+            if parameters.feature_set == "multiscale"
+            else "adaptive-segments/1.0"
+        )
     return _fit_result(
         AdaptivePredictor(model, config, feature_version=feature_version),
         [_record(config, parameters.trees, validation_score)],

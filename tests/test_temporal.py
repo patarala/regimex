@@ -162,6 +162,8 @@ def test_temporal_preprocessing_restores_training_state_and_masks() -> None:
     restored = TemporalPreprocessor(
         preprocessing.fill.copy(), preprocessing.mean.copy(), preprocessing.scale.copy()
     )
+    old = TemporalPreprocessor(restored.fill, restored.mean, restored.scale, legacy_regression=True)
+    assert old.legacy_prices
     np.testing.assert_array_equal(preprocessing.transform(changed), restored.transform(changed))
     np.testing.assert_array_equal(preprocessing.mean, original_mean)
     transformed = preprocessing.transform(values)
