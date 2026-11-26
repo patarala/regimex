@@ -19,6 +19,10 @@ indicator for each one.
 The feature builder compresses large log-price changes and returns with scaled
 inverse hyperbolic sine transforms. Windows stop at the instrument boundaries.
 Within a window, the fit uses observed prices at their original step numbers.
+The `temporal-price-shape/1.1` and `temporal-price-shape/2.1` features compute
+the slope and R² from centered values within each window. This preserves small
+local movements after a change in price level. Bundles that specify version
+`1.0` or `2.0` use the cumulative sums they were trained with.
 Two equal endpoint prices give a zero change. A single price leaves that
 feature missing and still contributes to coverage. The backend fills missing numeric features
 with training medians (zero for a feature absent throughout training) and

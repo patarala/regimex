@@ -1,5 +1,6 @@
 """Price representation isolation, missingness and padded temporal inference."""
 
+from collections.abc import Sequence
 from dataclasses import replace
 
 import pytest
@@ -33,7 +34,7 @@ from regimex.temporal import (
 )
 
 
-def sequence(prices: list[float | None], name: str = "example") -> PredictionInputs:
+def sequence(prices: Sequence[float | None], name: str = "example") -> PredictionInputs:
     rows = tuple(
         Observation(
             instrument_id="A/Q",
@@ -168,6 +169,84 @@ def test_temporal_preprocessing_restores_training_state_and_masks() -> None:
     np.testing.assert_array_equal(
         transformed[:, len(TEMPORAL_NUMERIC_NAMES) :], values[:, len(TEMPORAL_NUMERIC_NAMES) :]
     )
+
+
+def test_centered_regression_on_slow_drift_is_independent_of_prices_outside_its_window() -> None:
+    prices: list[float | None] = [100.0, *(105.0 + i * 5e-8 for i in range(1, 256))]
+    changed = [100.0] * 224 + prices[224:]
+    current, other = sequence(prices), sequence(changed)
+    window = current.values[224:, 0].astype(np.float64)
+    expected = np.corrcoef(window, np.arange(len(window)))[0, 1] ** 2
+    assert expected > 0.94
+    column = TEMPORAL_NAMES.index("context_32_linear_fit")
+    for raw in (current, other):
+        assert temporal_features(raw)[240, column] == pytest.approx(expected)
+
+
+def test_small_nonconstant_prices_keep_their_linear_fit() -> None:
+    raw = sequence([100.0 + 1e-8 * i for i in range(32)])
+    y = raw.values[:, 0].astype(np.float64)
+    assert 0 < ((y - y.mean()) ** 2).sum() < 1e-16
+    fit = temporal_features(raw)[16, TEMPORAL_NAMES.index("context_32_linear_fit")]
+    assert fit == pytest.approx(1.0)
+
+
+def test_centered_and_side_slopes_retain_small_changes_after_a_price_level_shift() -> None:
+    prices = [100000.0] + [150000.0] * 2015 + [100000.0 + i * 1e-8 for i in range(32)]
+    raw = sequence(prices)
+    matrix = temporal_features(raw, side_slopes=True)
+    x = np.arange(32, dtype=float) - 15.5
+    y = raw.values[-32:, 0].astype(float)
+    expected = np.arcsinh(31 * (x @ (y - y.mean())) / (x @ x) / 0.01)
+    for name, step in (("past", -1), ("future", -32), ("context", -16)):
+        column = feature_names(True).index(f"{name}_32_slope_change_asinh")
+        assert matrix[step, column] == pytest.approx(expected, rel=1e-6, abs=0)
+
+
+def test_all_window_regressions_match_direct_fits_on_observed_steps() -> None:
+    rng = np.random.default_rng(92)
+    n = 301
+    prices = np.cumsum(rng.normal(0, 2e-7, n)) + 105
+    prices[0] = 100
+    prices[80:188] = 104
+    prices[1:65] = np.nan
+    prices[191::7] = np.nan
+    raw = sequence([None if np.isnan(p) else p for p in prices])
+    matrix = temporal_features(raw, side_slopes=True)
+    values = raw.values[:, 0].astype(np.float64)
+    names = feature_names(True)
+    for step in (0, 5, 32, 65, 96, 128, 160, 191, 224, n - 1):
+        for size in (16, 32, 64, 128, 256, 512):
+            windows = []
+            if size >= 32:
+                windows.append((f"context_{size}", step - size // 2, step + size // 2))
+            if size in (16, 32):
+                windows.extend(
+                    (
+                        (f"past_{size}", step - size + 1, step + 1),
+                        (f"future_{size}", step, step + size),
+                    )
+                )
+            for name, left, right in windows:
+                left, right = max(0, left), min(n, right)
+                y = values[left:right]
+                x = np.flatnonzero(np.isfinite(y)).astype(float)
+                slope = matrix[step, names.index(f"{name}_slope_change_asinh")]
+                if len(x) < 2:
+                    assert np.isnan(slope)
+                    continue
+                x -= x.mean()
+                y = y[np.isfinite(y)]
+                y -= y.mean()
+                xx, xy, yy = x @ x, x @ y, y @ y
+                assert slope == pytest.approx(
+                    np.arcsinh((right - left - 1) * xy / xx / 0.01), rel=1e-6, abs=1e-10
+                )
+                if name.startswith("context_"):
+                    fit = matrix[step, names.index(f"{name}_linear_fit")]
+                    assert fit == pytest.approx(
+                        xy**2 / (xx * yy) if yy > 0 else 0.0, rel=1e-6, abs=1e-9
+                    )
 
 
 def test_tcn_padding_cannot_influence_observed_sequence() -> None:

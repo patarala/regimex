@@ -81,7 +81,7 @@ def _price_context(
     return result
 
 
-def _contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
+def _legacy_contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
     prefix = _context_prefix(price)
     positions = np.arange(len(price), dtype=np.int64)
     # Before each boundary, the count indexes the next observed price in the packed array.
@@ -109,7 +109,96 @@ def _contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
     return contexts
 
 
-def temporal_price_features(channels: FloatArray, *, side_slopes: bool) -> FloatArray:
+@dataclass(slots=True)
+class _WindowMoments:
+    count: DoubleArray
+    mean_step: DoubleArray
+    mean_price: DoubleArray
+    xx: DoubleArray
+    xy: DoubleArray
+    yy: DoubleArray
+
+    def join_halves(self, half_width: int) -> _WindowMoments:
+        """Merge adjacent windows using their means and centered sums of products."""
+        left, right = slice(None, -half_width), slice(half_width, None)
+        count = self.count[left] + self.count[right]
+        fraction = self.count[right] / np.maximum(count, 1)
+        weight = self.count[left] * fraction
+        dx = self.mean_step[right] - self.mean_step[left]
+        dy = self.mean_price[right] - self.mean_price[left]
+        return _WindowMoments(
+            count,
+            self.mean_step[left] + fraction * dx,
+            self.mean_price[left] + fraction * dy,
+            self.xx[left] + self.xx[right] + weight * dx * dx,
+            self.xy[left] + self.xy[right] + weight * dx * dy,
+            self.yy[left] + self.yy[right] + weight * dy * dy,
+        )
+
+
+def _contexts(price: DoubleArray, side_slopes: bool) -> list[DoubleArray]:
+    # All feature windows have power-of-two widths. Padding with zero-weight steps
+    # lets the same merges handle instrument edges and missing prices.
+    pad = max(CONTEXT_SIZES) // 2
+    padded = np.pad(price, pad, constant_values=np.nan)
+    observed = np.isfinite(padded)
+    zero = np.zeros(len(padded))
+    moments = _WindowMoments(
+        observed.astype(np.float64),
+        np.arange(len(padded), dtype=np.float64),
+        np.where(observed, padded, 0),
+        zero,
+        zero,
+        zero,
+    )
+    known = np.append(padded[observed], np.nan)
+    counts = np.r_[0, np.cumsum(observed, dtype=np.int64)]
+    first_price, last_price = known[counts], known[counts - 1]
+    boundaries = np.clip(np.arange(-pad, len(price) + pad + 1), 0, len(price))
+    centered = []
+    sides = []
+    width = 1
+    while width < max(CONTEXT_SIZES):
+        moments = moments.join_halves(width)
+        width *= 2
+        if width not in CONTEXT_SIZES and (not side_slopes or width not in SIDE_WINDOW_SIZES):
+            continue
+        valid = moments.count >= 2
+        slope = np.divide(moments.xy, moments.xx, out=np.full(len(valid), np.nan), where=valid)
+        if width in CONTEXT_SIZES:
+            offset = pad - width // 2
+            start = slice(offset, offset + len(price))
+            stop = slice(offset + width, offset + width + len(price))
+            length = boundaries[stop] - boundaries[start]
+            fit = np.divide(
+                moments.xy**2,
+                moments.xx * moments.yy,
+                out=np.zeros(len(valid)),
+                where=valid & (moments.yy > 0),
+            )
+            change = last_price[stop] - first_price[start]
+            centered.append(
+                np.column_stack(
+                    (
+                        np.arcsinh(slope[start] * (length - 1) / 0.01),
+                        np.where(valid[start], np.clip(fit[start], 0, 1), np.nan),
+                        np.where(valid[start], np.arcsinh(change / 0.01), np.nan),
+                        moments.count[start] / length,
+                    )
+                )
+            )
+        if side_slopes and width in SIDE_WINDOW_SIZES:
+            for offset in (pad - width + 1, pad):
+                start = slice(offset, offset + len(price))
+                stop = slice(offset + width, offset + width + len(price))
+                length = boundaries[stop] - boundaries[start]
+                sides.append(np.arcsinh(slope[start] * (length - 1) / 0.01)[:, None])
+    return centered + sides
+
+
+def temporal_price_features(
+    channels: FloatArray, *, side_slopes: bool, legacy_regression: bool = False
+) -> FloatArray:
     """Price context for one completed instrument, including centered windows."""
     price, returns = channels.astype(np.float64).T
     observed = np.isfinite(price)
@@ -126,7 +215,7 @@ def temporal_price_features(channels: FloatArray, *, side_slopes: bool) -> Float
             np.arcsinh(np.abs(returns) / 0.001),
             standardized,
             scale,
-            *_contexts(price, side_slopes),
+            *(_legacy_contexts if legacy_regression else _contexts)(price, side_slopes),
         )
     )
     if np.isinf(result).any():
@@ -149,6 +238,8 @@ def temporal_features(sequences: PredictionInputs, *, side_slopes: bool = False)
 
 @dataclass(frozen=True)
 class TemporalPreprocessor(Preprocessor):
+    legacy_regression: bool = False
+
     @classmethod
     def fit(cls, training: FloatArray, *, side_slopes: bool = False) -> TemporalPreprocessor:
         return cls._fit_channels(training, len(feature_names(side_slopes)) // 2)

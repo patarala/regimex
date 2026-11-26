@@ -5,7 +5,7 @@ import pickle
 import platform
 import time
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib.metadata import version
 from itertools import batched
 from pathlib import Path
@@ -69,8 +69,10 @@ from regimex.temporal_updates import fit_tcn_updates
 
 ARCHITECTURE_ID = "tcn"
 IMPLEMENTATION_VERSION = "0.2.0"
-FEATURE_VERSION = "temporal-price-shape/1.0"
-SIDE_SLOPE_FEATURE_VERSION = "temporal-price-shape/2.0"
+FEATURE_VERSION = "temporal-price-shape/1.1"
+SIDE_SLOPE_FEATURE_VERSION = "temporal-price-shape/2.1"
+LEGACY_FEATURE_VERSION = "temporal-price-shape/1.0"
+LEGACY_SIDE_SLOPE_FEATURE_VERSION = "temporal-price-shape/2.0"
 PREPROCESSING_VERSION = "temporal-standardization/1.0"
 CODEC_VERSION: Literal["temporal-tcn/2.0"] = "temporal-tcn/2.0"
 _JSON_LIMIT = 16 * 1024**2
@@ -130,10 +132,13 @@ def _feature_inputs(
     *,
     side_slopes: bool = False,
     selection: slice = slice(None),
+    legacy_regression: bool = False,
 ) -> tuple[FloatArray, IntArray]:
     require_observation_inputs(observations)
     sequences = [
-        temporal_price_features(log_price_channels(rows), side_slopes=side_slopes)
+        temporal_price_features(
+            log_price_channels(rows), side_slopes=side_slopes, legacy_regression=legacy_regression
+        )
         for rows in observations.observations[selection]
     ]
     offsets = np.r_[0, np.cumsum([len(sequence) for sequence in sequences], dtype=np.int64)]
@@ -141,11 +146,14 @@ def _feature_inputs(
 
 
 def fit_preprocessing(
-    observations: ObservationInputs, *, side_slopes: bool = False
+    observations: ObservationInputs, *, side_slopes: bool = False, legacy_regression: bool = False
 ) -> tuple[TemporalPreprocessor, PreparedPredictionInputs]:
     """Fit on training instruments and transform them with the same statistics."""
-    values, offsets = _feature_inputs(observations, side_slopes=side_slopes)
+    values, offsets = _feature_inputs(
+        observations, side_slopes=side_slopes, legacy_regression=legacy_regression
+    )
     preprocessing = TemporalPreprocessor.fit(values, side_slopes=side_slopes)
+    preprocessing = replace(preprocessing, legacy_regression=legacy_regression)
     prepared = PreparedPredictionInputs(preprocessing.transform(values), offsets, observations.info)
     return preprocessing, prepared
 
@@ -157,13 +165,22 @@ def prepare_observations(
     side_slopes: bool = False,
     selection: slice = slice(None),
 ) -> PreparedPredictionInputs:
-    values, offsets = _feature_inputs(observations, side_slopes=side_slopes, selection=selection)
+    values, offsets = _feature_inputs(
+        observations,
+        side_slopes=side_slopes,
+        selection=selection,
+        legacy_regression=preprocessing.legacy_regression,
+    )
     return PreparedPredictionInputs(
         preprocessing.transform(values), offsets, observations.info[selection]
     )
 
 
-def _feature_version(parameters: TCNParameters) -> str:
+def _feature_version(parameters: TCNParameters, *, legacy_regression: bool) -> str:
+    if legacy_regression:
+        return (
+            LEGACY_SIDE_SLOPE_FEATURE_VERSION if parameters.side_slopes else LEGACY_FEATURE_VERSION
+        )
     return SIDE_SLOPE_FEATURE_VERSION if parameters.side_slopes else FEATURE_VERSION
 
 
@@ -247,6 +264,7 @@ class TCNPredictor:
             _freeze(self.preprocessor.fill, width),
             _freeze(self.preprocessor.mean, width),
             _freeze(self.preprocessor.scale, width, positive=True),
+            legacy_regression=self.preprocessor.legacy_regression,
         )
         mask = width // 2
         if (
@@ -397,6 +415,7 @@ class TCNBackend:
         analysis: AnalysisConfig,
         runtime: TrainingRuntime,
         evaluator: SelectionEvaluator,
+        legacy_regression: bool = False,
     ) -> FitResult:
         require_observation_inputs(validation)
         if type(training) is not TrainingInputs or type(parameters) is not TCNParameters:
@@ -446,7 +465,9 @@ class TCNBackend:
             return score
 
         preprocessing, prepared_training = fit_preprocessing(
-            training.observations, side_slopes=parameters.side_slopes
+            training.observations,
+            side_slopes=parameters.side_slopes,
+            legacy_regression=legacy_regression,
         )
         prepared_validation = prepare_observations(
             validation, preprocessing, side_slopes=parameters.side_slopes
@@ -609,7 +630,10 @@ class TCNBackend:
                 implementation_version=self.implementation_version,
                 interface_version="1.0",
                 observation_version="2.1",
-                feature_version=_feature_version(configuration.parameters),
+                feature_version=_feature_version(
+                    configuration.parameters,
+                    legacy_regression=predictor.preprocessor.legacy_regression,
+                ),
                 preprocessing_version=PREPROCESSING_VERSION,
                 decoder_version=DECODER_VERSION,
                 analysis_profile=provenance.analysis_profile,
@@ -664,8 +688,12 @@ class TCNBackend:
             )
             history = read_bundle_json(root / _MEMBERS["history"], HistoryRecord, limit=_JSON_LIMIT)
             self._validate_selection(configuration, validation, history)
+        legacy_regression = bundle.feature_version == _feature_version(
+            configuration.parameters, legacy_regression=True
+        )
         if (
-            bundle.feature_version != _feature_version(configuration.parameters)
+            bundle.feature_version
+            != _feature_version(configuration.parameters, legacy_regression=legacy_regression)
             or configuration.feature_names != feature_names(configuration.parameters.side_slopes)
             or configuration.context_sizes != CONTEXT_SIZES
             or hashlib.sha256(
@@ -687,6 +715,7 @@ class TCNBackend:
         preprocessing = _read_preprocessing(
             root / _MEMBERS["preprocessing"], len(configuration.feature_names)
         )
+        preprocessing = replace(preprocessing, legacy_regression=legacy_regression)
         state = _read_state(root / _MEMBERS["weights"], configuration.parameters)
         torch.set_num_threads(runtime.threads)
         # Loading restores weights; it must not consume the training RNG stream.

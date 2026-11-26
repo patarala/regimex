@@ -18,7 +18,12 @@ from temporal_candidates import CANDIDATES
 from regimex.admin_contracts import GenerationSpec, RawGenerationPlan
 from regimex.application.training import SharedSelectionEvaluator, _references, observation_inputs
 from regimex.backends.baseline import BaselineBackend
-from regimex.backends.tcn import fit_preprocessing, prepare_observations
+from regimex.backends.tcn import (
+    FEATURE_VERSION,
+    LEGACY_FEATURE_VERSION,
+    fit_preprocessing,
+    prepare_observations,
+)
 from regimex.data_catalog import _load_partition, content_hash
 from regimex.evaluation import (
     _metrics,
@@ -215,6 +220,7 @@ def fit(output, development):
             "plan": reservation["plan"],
             "holdout": reservation["dataset_sha256"],
             "preprocessing": sha256(dest / "preprocessing.npz"),
+            "feature_version": FEATURE_VERSION,
             "reservation": sha256(output / "reservation.json"),
             "candidates": {},
         }
@@ -300,8 +306,16 @@ def score(output, development):
         or sha256(dest / "preprocessing.npz") != freeze["preprocessing"]
     ):
         raise ValueError("Frozen comparison inputs changed")
+    feature_version = freeze.get("feature_version", LEGACY_FEATURE_VERSION)
+    if feature_version not in (LEGACY_FEATURE_VERSION, FEATURE_VERSION):
+        raise ValueError("Unrecognized TCN feature version in the frozen comparison")
     with np.load(dest / "preprocessing.npz", allow_pickle=False) as arrays:
-        pre = TemporalPreprocessor(arrays["fill"], arrays["mean"], arrays["scale"])
+        pre = TemporalPreprocessor(
+            arrays["fill"],
+            arrays["mean"],
+            arrays["scale"],
+            legacy_regression=feature_version == LEGACY_FEATURE_VERSION,
+        )
     models = {}
     for candidate in CANDIDATES:
         path = dest / (candidate.name + ".npz")

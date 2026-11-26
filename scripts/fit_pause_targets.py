@@ -165,6 +165,7 @@ def fit(output: Path, populations: Path) -> None:
                 analysis=PROFILE,
                 runtime=TRAIN_RUNTIME,
                 evaluator=validation,
+                legacy_regression=control.preprocessor.legacy_regression,
             )
             fitted = result.predictor
             check_preprocessing(control, fitted)
