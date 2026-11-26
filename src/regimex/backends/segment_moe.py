@@ -27,7 +27,13 @@ from regimex.contracts import StrictModel
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig
 from regimex.evaluation import probabilities_valid
 from regimex.features import DoubleArray, IntArray
-from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, verify_model_bundle
+from regimex.model_bundles import (
+    BundleMember,
+    BundleRole,
+    ModelBundle,
+    read_bundle_json,
+    verify_model_bundle,
+)
 from regimex.model_contracts import (
     BundleProvenance,
     FitResult,
@@ -169,14 +175,6 @@ class SegmentMoEPredictor:
         torch.set_num_threads(runtime.threads)
         table = SegmentTable.prepare(inputs, self.analysis, feature_version=self.feature_version)
         return table.standardized(self.scale).predict(self.model, runtime.max_batch_size)
-
-
-def _read_json[T: StrictModel](path: Path, kind: type[T], limit: int = 128 * 1024) -> T:
-    with path.open("rb") as stream:
-        data = stream.read(limit + 1)
-    if len(data) > limit:
-        raise ValueError("Segment MoE JSON member exceeds its codec size limit")
-    return kind.model_validate_json(data)
 
 
 def _hash(document: dict[str, JsonValue]) -> str:
@@ -497,10 +495,12 @@ class SegmentMoEBackend:
             or bundle.decoder_version != DECODER_VERSION
         ):
             raise ValueError("incompatible Segment MoE bundle codec or feature layout")
-        config = _read_json(root / _ROLES["configuration"], Configuration)
-        scale = _read_json(root / _ROLES["preprocessing"], BlockScale)
-        validation = _read_json(root / _ROLES["validation"], ValidationRecord)
-        history = _read_json(root / _ROLES["history"], HistoryRecord, 16 << 20)
+        config = read_bundle_json(root / _ROLES["configuration"], Configuration, limit=128 << 10)
+        scale = read_bundle_json(root / _ROLES["preprocessing"], BlockScale, limit=128 << 10)
+        validation = read_bundle_json(
+            root / _ROLES["validation"], ValidationRecord, limit=128 << 10
+        )
+        history = read_bundle_json(root / _ROLES["history"], HistoryRecord, limit=16 << 20)
         validate_persistence_policy(config.training_policy)
         validate_epoch_selection("Segment MoE", config.training_policy, validation, history)
         if (

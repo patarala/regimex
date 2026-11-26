@@ -20,7 +20,6 @@ from regimex.backends.adaptive import (
     PREPROCESSING_VERSION,
     AdaptiveBackend,
     AdaptivePredictor,
-    _read_json,
 )
 from regimex.contracts import StrictModel
 from regimex.data_catalog import content_hash
@@ -33,6 +32,7 @@ from regimex.model_bundles import (
     ModelBundle,
     ParentModelEvidence,
     TrainingEvidence,
+    read_bundle_json,
     verify_model_bundle,
 )
 from regimex.model_contracts import BundleProvenance, ObservationInputs, require_observation_inputs
@@ -313,7 +313,7 @@ def load_blend(
         or bundle.preprocessing_version != PREPROCESSING_VERSION
     ):
         raise ValueError("adaptive blend codec or scientific contract differs")
-    config = _read_json(root / "configuration.json", BlendConfiguration)
+    config = read_bundle_json(root / "configuration.json", BlendConfiguration)
     if bundle.environment_sha256 != content_hash(config.model_dump(mode="json")):
         raise ValueError("adaptive blend environment differs from its sources or mixture")
     with _open_forests(root / "forests.zip") as packed:

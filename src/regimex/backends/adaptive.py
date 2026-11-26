@@ -26,7 +26,13 @@ from regimex.data_catalog import analysis_profile_hash, content_hash
 from regimex.directions import DECODER_VERSION, DIRECTION_NAMES, AnalysisConfig
 from regimex.evaluation import probabilities_valid
 from regimex.features import DoubleArray
-from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, verify_model_bundle
+from regimex.model_bundles import (
+    BundleMember,
+    BundleRole,
+    ModelBundle,
+    read_bundle_json,
+    verify_model_bundle,
+)
 from regimex.model_contracts import (
     BundleProvenance,
     FitResult,
@@ -125,14 +131,6 @@ def environment() -> dict[str, JsonValue]:
         "python": platform.python_version(),
         "packages": {name: version(name) for name in ("regimex", "numpy", "scikit-learn")},
     }
-
-
-def _read_json[T: StrictModel](path: Path, record: type[T]) -> T:
-    with path.open("rb") as stream:
-        raw = stream.read(1024 * 1024 + 1)
-    if len(raw) > 1024 * 1024:
-        raise ValueError("adaptive bundle JSON member exceeds its size limit")
-    return record.model_validate_json(raw)
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,10 +465,10 @@ class AdaptiveBackend:
             or bundle.decoder_version != DECODER_VERSION
         ):
             raise ValueError("adaptive bundle has an incompatible codec or scientific contract")
-        config = _read_json(root / _MEMBERS["configuration"], AdaptiveConfiguration)
-        preprocessing = _read_json(root / _MEMBERS["preprocessing"], PreprocessingRecord)
-        history = _read_json(root / _MEMBERS["history"], HistoryRecord)
-        validation = _read_json(root / _MEMBERS["validation"], ValidationRecord)
+        config = read_bundle_json(root / _MEMBERS["configuration"], AdaptiveConfiguration)
+        preprocessing = read_bundle_json(root / _MEMBERS["preprocessing"], PreprocessingRecord)
+        history = read_bundle_json(root / _MEMBERS["history"], HistoryRecord)
+        validation = read_bundle_json(root / _MEMBERS["validation"], ValidationRecord)
         feature_set = _FEATURE_SETS[config.parameters.feature_set]
         if (
             preprocessing.feature_names != feature_set.names

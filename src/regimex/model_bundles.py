@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from regimex.contracts import Identifier, Seed, StrictModel
 from regimex.operations import Sha256
@@ -183,6 +183,23 @@ class ModelBundle(StrictModel):
         return self
 
 
+def _read_json_bytes(descriptor: int, limit: int) -> bytes:
+    size = os.fstat(descriptor).st_size
+    if size > limit:
+        raise ValueError("bundle JSON exceeds its input size limit")
+    with os.fdopen(descriptor, "rb", closefd=False) as stream:
+        data = stream.read(size + 1)
+    if len(data) != size:
+        raise ValueError("bundle JSON size changed while reading")
+    return data
+
+
+def read_bundle_json[T: BaseModel](path: Path, record: type[T], *, limit: int = 1 << 20) -> T:
+    """Read a verified bundle member within its codec's size limit."""
+    with _directory(path.parent) as parent, _regular_file(parent, path.name) as descriptor:
+        return record.model_validate_json(_read_json_bytes(descriptor, limit))
+
+
 def verify_model_bundle(
     root: Path, *, manifest_sha256: str, architecture_id: str, implementation_version: str
 ) -> ModelBundle:
@@ -194,12 +211,7 @@ def verify_model_bundle(
     try:
         with _directory(root) as root_descriptor:
             with _regular_file(root_descriptor, "manifest.json") as manifest_descriptor:
-                if os.fstat(manifest_descriptor).st_size > MAX_BUNDLE_MANIFEST_BYTES:
-                    raise ValueError("bundle manifest exceeds its input size limit")
-                with os.fdopen(os.dup(manifest_descriptor), "rb") as stream:
-                    manifest_bytes = stream.read(MAX_BUNDLE_MANIFEST_BYTES + 1)
-            if len(manifest_bytes) > MAX_BUNDLE_MANIFEST_BYTES:
-                raise ValueError("bundle manifest exceeds its input size limit")
+                manifest_bytes = _read_json_bytes(manifest_descriptor, MAX_BUNDLE_MANIFEST_BYTES)
             if hashlib.sha256(manifest_bytes).hexdigest() != manifest_sha256:
                 raise ValueError("bundle manifest differs from its committed digest")
             bundle = ModelBundle.model_validate_json(manifest_bytes)

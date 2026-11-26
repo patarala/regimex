@@ -24,7 +24,13 @@ from regimex.features import (
     Preprocessor,
     compute_features,
 )
-from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, verify_model_bundle
+from regimex.model_bundles import (
+    BundleMember,
+    BundleRole,
+    ModelBundle,
+    read_bundle_json,
+    verify_model_bundle,
+)
 from regimex.model_contracts import (
     BundleProvenance,
     FitResult,
@@ -271,14 +277,6 @@ def _read_arrays(path: Path, shapes: dict[str, tuple[int, ...]]) -> dict[str, Do
         raise ValueError("invalid baseline numeric archive") from exc
 
 
-def _load_json[T: StrictModel](path: Path, model: type[T]) -> T:
-    with path.open("rb") as stream:
-        data = stream.read(1024 * 1024 + 1)
-    if len(data) > 1024 * 1024:
-        raise ValueError("baseline JSON member exceeds its codec size limit")
-    return model.model_validate_json(data)
-
-
 class BaselineBackend:
     architecture_id = ARCHITECTURE_ID
     implementation_version = IMPLEMENTATION_VERSION
@@ -501,9 +499,9 @@ class BaselineBackend:
             or bundle.decoder_version != DECODER_VERSION
         ):
             raise ValueError("baseline bundle uses an incompatible codec or scientific contract")
-        configuration = _load_json(root / _MEMBERS["configuration"], BaselineConfiguration)
-        validation = _load_json(root / _MEMBERS["validation"], ValidationRecord)
-        history = _load_json(root / _MEMBERS["history"], HistoryRecord)
+        configuration = read_bundle_json(root / _MEMBERS["configuration"], BaselineConfiguration)
+        validation = read_bundle_json(root / _MEMBERS["validation"], ValidationRecord)
+        history = read_bundle_json(root / _MEMBERS["history"], HistoryRecord)
         if (
             configuration.feature_names != FEATURE_NAMES
             or hashlib.sha256(

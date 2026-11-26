@@ -25,7 +25,13 @@ from regimex.backends.tcn_update_records import (
 from regimex.contracts import StrictModel
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig
 from regimex.features import DoubleArray, FloatArray, IntArray, log_price_channels
-from regimex.model_bundles import BundleMember, BundleRole, ModelBundle, verify_model_bundle
+from regimex.model_bundles import (
+    BundleMember,
+    BundleRole,
+    ModelBundle,
+    read_bundle_json,
+    verify_model_bundle,
+)
 from regimex.model_contracts import (
     BundleProvenance,
     FitResult,
@@ -292,22 +298,6 @@ class TCNPredictor:
         ):
             raise ValueError("TCN returned invalid original-grid probabilities")
         return result
-
-
-def _load_json[T: StrictModel](path: Path, model: type[T]) -> T:
-    with path.open("rb") as stream:
-        data = stream.read(_JSON_LIMIT + 1)
-    if len(data) > _JSON_LIMIT:
-        raise ValueError("TCN JSON member exceeds its codec size limit")
-    return model.model_validate_json(data)
-
-
-def _load_configuration(path: Path) -> NativeTCNConfiguration:
-    with path.open("rb") as stream:
-        data = stream.read(_JSON_LIMIT + 1)
-    if len(data) > _JSON_LIMIT:
-        raise ValueError("TCN JSON member exceeds its codec size limit")
-    return RootModel[NativeTCNConfiguration].model_validate_json(data).root
 
 
 def _read_preprocessing(path: Path, width: int) -> TemporalPreprocessor:
@@ -649,12 +639,18 @@ class TCNBackend:
             or bundle.decoder_version != DECODER_VERSION
         ):
             raise ValueError("TCN bundle uses an incompatible codec or scientific contract")
-        configuration = _load_configuration(root / _MEMBERS["configuration"])
+        configuration = read_bundle_json(
+            root / _MEMBERS["configuration"], RootModel[NativeTCNConfiguration], limit=_JSON_LIMIT
+        ).root
         validation: ValidationRecord | UpdateValidationRecord
         history: HistoryRecord | UpdateHistoryRecord
         if isinstance(configuration, FixedUpdateTCNConfiguration):
-            validation = _load_json(root / _MEMBERS["validation"], UpdateValidationRecord)
-            history = _load_json(root / _MEMBERS["history"], UpdateHistoryRecord)
+            validation = read_bundle_json(
+                root / _MEMBERS["validation"], UpdateValidationRecord, limit=_JSON_LIMIT
+            )
+            history = read_bundle_json(
+                root / _MEMBERS["history"], UpdateHistoryRecord, limit=_JSON_LIMIT
+            )
             validate_update_selection(
                 configuration.training_policy,
                 configuration.training_sequence_count,
@@ -662,8 +658,10 @@ class TCNBackend:
                 history,
             )
         else:
-            validation = _load_json(root / _MEMBERS["validation"], ValidationRecord)
-            history = _load_json(root / _MEMBERS["history"], HistoryRecord)
+            validation = read_bundle_json(
+                root / _MEMBERS["validation"], ValidationRecord, limit=_JSON_LIMIT
+            )
+            history = read_bundle_json(root / _MEMBERS["history"], HistoryRecord, limit=_JSON_LIMIT)
             self._validate_selection(configuration, validation, history)
         if (
             bundle.feature_version != _feature_version(configuration.parameters)

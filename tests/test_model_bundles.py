@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import RootModel, ValidationError
 
 from regimex.model_bundles import (
     MAX_BUNDLE_MANIFEST_BYTES,
@@ -13,9 +13,32 @@ from regimex.model_bundles import (
     ModelBundle,
     ReferenceIdentity,
     TrainingEvidence,
+    read_bundle_json,
     verify_model_bundle,
 )
 from regimex.storage import digest, write_json
+
+
+def test_codec_json_accepts_its_exact_size_limit(tmp_path: Path) -> None:
+    path = tmp_path / "configuration.json"
+    path.write_bytes(b"42")
+    assert read_bundle_json(path, RootModel[int], limit=2).root == 42
+    with pytest.raises(ValueError, match="size limit"):
+        read_bundle_json(path, RootModel[int], limit=1)
+
+
+@pytest.mark.parametrize("changed", [b"3", b"3  "])
+def test_codec_json_rejects_a_size_change_even_for_valid_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, changed: bytes
+) -> None:
+    path = tmp_path / "history.json"
+    path.write_bytes(b"3 ")
+    original = path.stat()
+    path.write_bytes(changed)
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fstat", lambda descriptor: original)
+        with pytest.raises(ValueError, match="size changed"):
+            read_bundle_json(path, RootModel[int], limit=4)
 
 
 def bundle(root: Path) -> ModelBundle:
