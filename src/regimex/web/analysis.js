@@ -225,28 +225,33 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     retry(null);
     clearReport();
     notice();
+    let historyChanged = false;
     try {
       if (!submission.snapshotId) {
         const uploaded = await session.json("/api/v1/snapshots", { method: "POST", body: submission.exportText });
         submission.snapshotId = uploaded.snapshot_id;
+        historyChanged = true;
         if (workspace === session.epoch && exportText === submission.exportText) snapshot = uploaded;
       }
       if (workspace !== session.epoch) return;
       const analysis = await admitAnalysis(submission);
+      historyChanged = true;
       if (current === selection) await openAnalysis(analysis.analysis_id, {focus: false});
-      if (workspace === session.epoch) await history.load();
     } catch (error) {
       if (current !== selection || workspace !== session.epoch) return;
       const recoverable = isTransientRequestError(error);
       $("progress").hidden = true;
-      $("job-detail").textContent = recoverable
+      const status = recoverable
         ? "The request was not confirmed. Retry to check or continue it."
         : "The service rejected the request.";
+      $("job-detail").textContent = submission.snapshotId && submission.exportText
+        ? `The experiment was saved. ${status}` : status;
       $("job-guidance").textContent = error.message;
       $("job-guidance").hidden = false;
       retry(recoverable ? () => submitRequest(submission) : null);
     } finally {
       if (workspace === session.epoch) {
+        if (historyChanged) void history.load();
         onStorageChange();
         busy = false;
         models.updateActions();

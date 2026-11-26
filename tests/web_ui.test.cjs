@@ -35,6 +35,7 @@ class Element {
   showModal() { this.open = true; }
   close() { this.open = false; }
   reset() {}
+  reportValidity() { return true; }
   contains(node) { return this === node || this.children.some((child) => child.contains(node)); }
   addEventListener(name, handler) {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
@@ -1112,11 +1113,14 @@ test("a rejected analysis shows the reason and lets the user choose another mode
   ui.pending("/api/v1/snapshots").reply({snapshot_id: id(2000)});
   await flush();
   const rejected = ui.pending("/api/v1/analyses");
+  const historyReads = () => ui.calls.filter(call => call.url.startsWith("/api/v1/experiments?")).length;
+  const beforeRejection = historyReads();
   rejected.reply({error: {message: "This model is no longer published."}}, 404);
   await flush();
+  assert.equal(historyReads(), beforeRejection + 1, "The uploaded experiment is already saved");
   assert.equal(ui.get("job-guidance").textContent, "This model is no longer published.");
   assert.equal(ui.get("retry").hidden, true);
-  assert.match(ui.get("job-detail").textContent, /rejected/i);
+  assert.equal(ui.get("job-detail").textContent, "The experiment was saved. The service rejected the request.");
 
   ui.get("upload-model").value = "baseline-1";
   await ui.get("upload-model").emit("change");

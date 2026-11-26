@@ -198,7 +198,7 @@
             </div>
             <form id="history-filters" class="history-filters" role="search">
               <label for="history-search">Search experiments</label>
-              <input id="history-search" type="search" maxlength="128" placeholder="Name, instrument or model" />
+              <input id="history-search" type="search" pattern="[\s\S]{1,128}" title="Use up to 128 characters." placeholder="Name, instrument or model" />
               <label for="history-state">Status</label>
               <select id="history-state">
                 <option value="">All statuses</option>
@@ -462,11 +462,11 @@
               <summary>Add connection</summary>
               <form id="connection-create" class="connection-form">
                 <label for="connection-new-name">Name</label>
-                <input id="connection-new-name" maxlength="120" required />
+                <input id="connection-new-name" pattern=".{1,120}" title="Use up to 120 characters." required />
                 <label for="connection-new-owner">Integration account</label>
-                <input id="connection-new-owner" maxlength="128" required autocomplete="off" spellcheck="false" />
+                <input id="connection-new-owner" pattern=".{1,128}" title="Use up to 128 characters." required autocomplete="off" spellcheck="false" />
                 <label for="connection-new-source">Export source ID</label>
-                <input id="connection-new-source" maxlength="128" required autocomplete="off" spellcheck="false" />
+                <input id="connection-new-source" pattern=".{1,128}" title="Use up to 128 characters." required autocomplete="off" spellcheck="false" />
                 <button type="submit">Add connection</button>
               </form>
             </details>
@@ -488,7 +488,7 @@
             </details>
             <form id="connection-edit" class="connection-form connection-name-form">
               <label for="connection-name">Name</label>
-              <input id="connection-name" maxlength="120" aria-describedby="connection-edit-status" required />
+              <input id="connection-name" pattern=".{1,120}" title="Use up to 120 characters." aria-describedby="connection-edit-status" required />
               <button type="submit" class="quiet">Save name</button>
               <p id="connection-edit-status" class="hint" role="status" hidden></p>
               <button id="connection-use-saved-name" type="button" class="quiet" hidden>Use saved name</button>
@@ -511,7 +511,7 @@
                 <summary id="connection-key-summary">Create service key</summary>
                 <form id="connection-key-create" class="connection-form">
                   <label for="connection-key-name">Key name</label>
-                  <input id="connection-key-name" maxlength="120" required />
+                  <input id="connection-key-name" pattern=".{1,120}" title="Use up to 120 characters." required />
                   <label for="connection-key-days">Expires in days</label>
                   <input id="connection-key-days" type="number" min="1" max="365" value="30" required />
                   <fieldset class="connection-scopes">

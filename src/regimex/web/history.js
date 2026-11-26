@@ -109,6 +109,7 @@ export function createHistory({session, getSelection, openAnalysis, chooseExperi
   }
   function applyHistoryFilters(event) {
     event?.preventDefault();
+    if (!$("history-search").reportValidity()) return;
     historyQuery = $("history-search").value.trim();
     historyState = $("history-state").value;
     historyOffset = 0;

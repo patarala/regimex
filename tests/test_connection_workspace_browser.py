@@ -9,6 +9,34 @@ from test_offline_report_browser import browser as browser
 from test_training_workspace_browser import ORIGIN, TrainingAPI
 
 
+def test_connection_source_id_preserves_unicode_at_the_api_limit(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", TrainingAPI().dispatch)
+    page.route("**/api/v1/admin/integrations?*", lambda route: route.fulfill(json={"items": []}))
+    try:
+        page.goto(ORIGIN + "/connections")
+        page.locator("#connection-create-details summary").click()
+        form = page.locator("#connection-create")
+        form.get_by_label("Name", exact=True).fill("Simulator")
+        form.get_by_label("Integration account").fill("desk")
+        source = form.get_by_label("Export source ID")
+        identifier = "𠀋" * 128
+        source.focus()
+        page.keyboard.insert_text(identifier + "x")
+        expect(source).to_have_value(identifier + "x")
+        assert not source.evaluate("input => input.checkValidity()")
+        source.press("Backspace")
+        expect(source).to_have_value(identifier)
+        assert source.evaluate("input => input.checkValidity()")
+        page.route("**/api/v1/admin/integrations", lambda route: route.fulfill(status=409, json={}))
+        with page.expect_request(ORIGIN + "/api/v1/admin/integrations") as sent:
+            form.get_by_role("button", name="Add connection").click()
+        assert sent.value.post_data_json["source_namespace"] == identifier
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("width", [320, 1280])
 def test_keyboard_key_handoff_and_backend_setup(browser: Any, width: int) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
