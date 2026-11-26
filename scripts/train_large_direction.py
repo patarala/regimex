@@ -12,7 +12,7 @@ import numpy as np
 
 from regimex.application.analysis_computation import snapshot_inputs
 from regimex.backends import adaptive_forest, multiscale_segments, price_segments
-from regimex.backends.adaptive import environment
+from regimex.backends.adaptive import environment, forest_feature_set
 from regimex.data_catalog import (
     DatasetManifest,
     ReferenceSet,
@@ -53,7 +53,7 @@ def extract(item, *, folder, feature_sets=("greedy", "multiscale")):
         raise ValueError(f"Unregistered export or training targets for {member.snapshot_id}")
     labels.validate_for(SnapshotGrid.from_export(export), export_sha256=member.export_sha256)
     inputs = snapshot_inputs(export)
-    extractors = {"greedy": adaptive_forest.features, "multiscale": multiscale_segments.features}
+    extractors = {name: forest_feature_set(name).extract for name in feature_sets}
     output = {name: [] for name in feature_sets}
     for info, rows in zip(inputs.info, inputs.observations, strict=True):
         intervals = tuple(i for i in labels.intervals if i.instrument_id == info.instrument_id)
@@ -146,6 +146,7 @@ def train(data: Path, workers: int) -> None:
                 {
                     **evidence,
                     "parameters": settings.model_dump(mode="json"),
+                    "feature_version": forest_feature_set(settings.feature_set).version,
                     "weights_sha256": digest(path),
                     "numeric_bytes": forest.numeric_bytes,
                     "compressed_training_rows": sum(len(row.table) for row in table),

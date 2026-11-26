@@ -24,6 +24,7 @@ type Float32Array = NDArray[np.float32]
 class SegmentFeatureVersion(StrEnum):
     OBSERVED_PRICES = "direction-persistence/1.0"
     ORIGINAL_STEPS = "direction-persistence/1.1"
+    INCLUSIVE_COVERAGE = "direction-persistence/1.2"
 
 
 def _piece_evidence(values: Floats) -> tuple[float, float, float, float]:
@@ -63,7 +64,7 @@ def _block_evidence(values: Floats, version: SegmentFeatureVersion) -> Float32Ar
     features: list[float] = []
     for lag in RETURN_LAGS:
         changes = prices[lag:] - prices[:-lag]
-        if version == SegmentFeatureVersion.ORIGINAL_STEPS:
+        if version != SegmentFeatureVersion.OBSERVED_PRICES:
             changes = changes[np.isfinite(changes)]
         if len(changes) < 2:
             features.extend([0.0] * 7)
@@ -91,14 +92,20 @@ def segment_features(
     rows: tuple[Observation, ...],
     config: AnalysisConfig,
     *,
-    version: SegmentFeatureVersion = SegmentFeatureVersion.ORIGINAL_STEPS,
+    version: SegmentFeatureVersion = SegmentFeatureVersion.INCLUSIVE_COVERAGE,
 ) -> tuple[NDArray[np.int64], Float32Array, Float32Array]:
     """Return original-grid spans, adjacent-piece evidence and block evidence per span."""
     spans = []
     contexts = []
     blocks = []
     for start, prices, prefix, noise in price_blocks(rows, config):
-        cuts = profile_partition(prefix, start, config, noise)
+        cuts = profile_partition(
+            prefix,
+            start,
+            config,
+            noise,
+            legacy_coverage=version != SegmentFeatureVersion.INCLUSIVE_COVERAGE,
+        )
         pieces = np.array([_piece_evidence(prices[a:b]) for a, b in pairwise(cuts)], np.float32)
         # Reset the window at each availability boundary.
         neighbors = np.pad(pieces, ((NEIGHBOR_RADIUS, NEIGHBOR_RADIUS), (0, 0)))

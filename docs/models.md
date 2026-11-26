@@ -211,6 +211,13 @@ then considers its two sides separately. **Multiscale** fits a sequence of
 spans at three boundary penalties. It measures the slope both with and without
 an adjustment for a shift in the price level.
 
+Both the multiscale forest and Segment MoE accept a candidate segment when
+its observed price fraction meets the profile's minimum coverage. For example,
+55 observed prices across 100 steps qualify at a threshold of 0.55. Older
+bundles (`adaptive-multiscale/1.0`, `direction-persistence/1.0` and
+`direction-persistence/1.1`) retain a rounding rule that can exclude a segment
+exactly at the threshold. A blended forest uses the version of each parent.
+
 **Training weights** controls how much each labeled step contributes to the
 fit. **Per step** weights all steps equally. **Interval** gives more weight
 to steps in shorter reference intervals while preserving the total weight

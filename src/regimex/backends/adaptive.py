@@ -3,7 +3,8 @@
 import platform
 import time
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 from importlib.metadata import version
 from itertools import pairwise
 from pathlib import Path
@@ -79,9 +80,25 @@ class _FeatureSet:
 _FEATURE_SETS = {
     "greedy": _FeatureSet(FEATURE_VERSION, FEATURE_NAMES, features),
     "multiscale": _FeatureSet(
-        "adaptive-multiscale/1.0", multiscale_segments.FEATURE_NAMES, multiscale_segments.features
+        multiscale_segments.FEATURE_VERSION,
+        multiscale_segments.FEATURE_NAMES,
+        multiscale_segments.features,
     ),
 }
+_LEGACY_MULTISCALE = _FeatureSet(
+    multiscale_segments.LEGACY_FEATURE_VERSION,
+    multiscale_segments.FEATURE_NAMES,
+    partial(multiscale_segments.features, legacy_coverage=True),
+)
+
+
+def forest_feature_set(name: str, version: str | None = None) -> _FeatureSet:
+    current = _FEATURE_SETS[name]
+    if version is None or version == current.version:
+        return current
+    if name == "multiscale" and version == _LEGACY_MULTISCALE.version:
+        return _LEGACY_MULTISCALE
+    raise ValueError("adaptive feature version disagrees with the configured feature set")
 
 
 class AdaptiveConfiguration(StrictModel):
@@ -137,9 +154,14 @@ def environment() -> dict[str, JsonValue]:
 class AdaptivePredictor:
     model: DirectionContextModel
     configuration: AdaptiveConfiguration
+    feature_version: str | None = field(default=None, kw_only=True)
     architecture_id: str = ARCHITECTURE_ID
     implementation_version: str = IMPLEMENTATION_VERSION
     class_names: tuple[str, ...] = DIRECTION_NAMES
+
+    @property
+    def feature_set(self) -> _FeatureSet:
+        return forest_feature_set(self.configuration.parameters.feature_set, self.feature_version)
 
     @property
     def analysis(self) -> AnalysisConfig:
@@ -150,8 +172,7 @@ class AdaptivePredictor:
         return self.model.numeric_bytes
 
     def predict_sequence(self, rows: tuple[Observation, ...]) -> DoubleArray:
-        features = _FEATURE_SETS[self.configuration.parameters.feature_set].extract
-        return self.model.predict(features(rows, self.analysis))
+        return self.model.predict(self.feature_set.extract(rows, self.analysis))
 
     def predict(self, inputs: ObservationInputs, *, runtime: InferenceRuntime) -> DoubleArray:
         require_observation_inputs(inputs)
@@ -177,7 +198,7 @@ class AdaptivePredictor:
     ) -> Iterator[tuple[int, DoubleArray]]:
         """Yield probabilities on the original grid for tree prefixes and the complete forest."""
         require_observation_inputs(inputs)
-        feature_set = _FEATURE_SETS[self.configuration.parameters.feature_set]
+        feature_set = self.feature_set
         maximum_sequence = max(info.step_count for info in inputs.info)
         feature_bytes = maximum_sequence * len(feature_set.names) * 8 * 4
         matrix_bytes = inputs.row_count * len(DIRECTION_NAMES) * 8
@@ -237,6 +258,7 @@ def fit_result_from_forest(
     runtime: TrainingRuntime,
     validation_score: float,
     environment: dict[str, JsonValue],
+    feature_version: str | None = None,
 ) -> FitResult:
     """Bind an independently evaluated numeric forest to its original fit and selection."""
     config = AdaptiveConfiguration(
@@ -246,8 +268,12 @@ def fit_result_from_forest(
         training_runtime=runtime,
         environment=environment,
     )
+    # Receipts from the first offline multiscale fits did not record their feature version.
+    if feature_version is None and parameters.feature_set == "multiscale":
+        feature_version = _LEGACY_MULTISCALE.version
     return _fit_result(
-        AdaptivePredictor(model, config), [_record(config, parameters.trees, validation_score)]
+        AdaptivePredictor(model, config, feature_version=feature_version),
+        [_record(config, parameters.trees, validation_score)],
     )
 
 
@@ -295,7 +321,7 @@ class AdaptiveBackend:
             raise ValueError("adaptive training and validation experiments must be disjoint")
 
         train_rows = training.observations.row_count
-        feature_set = _FEATURE_SETS[parameters.feature_set]
+        feature_set = forest_feature_set(parameters.feature_set)
         width = len(feature_set.names)
         max_nodes = min(max_nodes_per_tree(parameters.max_depth), 2 * train_rows - 1)
         # In the worst case every step has a different feature/target pair. Count the
@@ -347,7 +373,7 @@ class AdaptiveBackend:
             analysis=analysis,
             environment=environment(),
         )
-        predictor = AdaptivePredictor(model, config)
+        predictor = AdaptivePredictor(model, config, feature_version=feature_set.version)
         history = []
         for count, predictions in predictor.validation_predictions(
             validation, memory_budget_bytes=runtime.memory_budget_bytes, check_time=check_time
@@ -395,7 +421,7 @@ class AdaptiveBackend:
         predictor.model.validate(
             trees=config.parameters.trees, max_depth=config.parameters.max_depth
         )
-        feature_set = _FEATURE_SETS[config.parameters.feature_set]
+        feature_set = predictor.feature_set
         preprocessing = PreprocessingRecord(
             version=PREPROCESSING_VERSION, feature_names=feature_set.names
         )
@@ -469,10 +495,9 @@ class AdaptiveBackend:
         preprocessing = read_bundle_json(root / _MEMBERS["preprocessing"], PreprocessingRecord)
         history = read_bundle_json(root / _MEMBERS["history"], HistoryRecord)
         validation = read_bundle_json(root / _MEMBERS["validation"], ValidationRecord)
-        feature_set = _FEATURE_SETS[config.parameters.feature_set]
+        feature_set = forest_feature_set(config.parameters.feature_set, bundle.feature_version)
         if (
             preprocessing.feature_names != feature_set.names
-            or bundle.feature_version != feature_set.version
             or bundle.analysis_profile_sha256 != analysis_profile_hash(config.analysis)
             or bundle.environment_sha256 != content_hash(config.environment)
             or bundle.training.seeds != config.training_policy.seeds
@@ -488,7 +513,7 @@ class AdaptiveBackend:
             max_depth=config.parameters.max_depth,
             max_bytes=runtime.model_cache_budget_bytes,
         )
-        return AdaptivePredictor(model, config)
+        return AdaptivePredictor(model, config, feature_version=feature_set.version)
 
 
 def create_backend() -> AdaptiveBackend:

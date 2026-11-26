@@ -31,14 +31,31 @@ _MEASURES = (
     "next_fit",
 )
 FEATURE_NAMES = tuple(f"scale_{scale:g}_{name}" for scale in _SCALES for name in _MEASURES)
+FEATURE_VERSION = "adaptive-multiscale/1.1"
+LEGACY_FEATURE_VERSION = "adaptive-multiscale/1.0"
+
+
+def _required_prices(size: int, config: AnalysisConfig, legacy_coverage: bool) -> Ints:
+    """Minimum observed prices for every possible span length."""
+    lengths = np.arange(size + 1)
+    threshold = config.minimum_price_coverage
+    product = lengths * threshold
+    if legacy_coverage:
+        counts = np.ceil(product).astype(np.int64)
+    else:
+        counts = product.astype(np.int64)
+        # Compare the attainable fraction exactly as the decoder does. Rounding
+        # the product upward would, for example, require 56 prices for 55% of 100.
+        counts[1:] += counts[1:] / lengths[1:] < threshold
+    return np.maximum(counts, config.minimum_observations)
 
 
 def _best_predecessors(
-    prefix: Floats, nodes: Ints, config: AnalysisConfig, penalties: Floats
+    prefix: Floats, nodes: Ints, min_duration: int, required_prices: Ints, penalties: Floats
 ) -> Ints:
     """Choose the lowest-cost previous cut for each penalty and grid endpoint."""
     moments = np.ascontiguousarray(prefix[nodes].T)
-    limits = nodes.searchsorted(nodes - config.min_duration, side="right")
+    limits = nodes.searchsorted(nodes - min_duration, side="right")
     costs = np.full((len(penalties), len(nodes)), np.inf)
     costs[:, 0] = 0
     parents = np.zeros(costs.shape, dtype=np.int64)
@@ -51,9 +68,7 @@ def _best_predecessors(
         limit = limits[stop - 1]
         spans = moments[:, first:stop, None] - moments[:, None, :limit]
         lengths = nodes[first:stop, None] - nodes[:limit]
-        enough = (spans[0] >= config.minimum_observations) & (
-            spans[0] >= lengths * config.minimum_price_coverage
-        )
+        enough = spans[0] >= required_prices[np.maximum(lengths, 0)]
         residual = line_residuals_from_moments(spans)
         residual[~enough] = np.inf
         for i in range(first, stop):
@@ -66,7 +81,13 @@ def _best_predecessors(
 
 
 def _partitions(
-    prefix: Floats, start: int, config: AnalysisConfig, noise: float, scales: tuple[float, ...]
+    prefix: Floats,
+    start: int,
+    config: AnalysisConfig,
+    noise: float,
+    scales: tuple[float, ...],
+    *,
+    legacy_coverage: bool = False,
 ) -> list[list[int]]:
     """Fit the requested scales jointly on a bounded grid, then refine cuts at single steps."""
     size = len(prefix) - 1
@@ -82,7 +103,8 @@ def _partitions(
         penalties = np.asarray(scales) * scaled_noise * scaled_noise
     if not np.isfinite(penalties).all():
         return [[0, size] for _ in scales]
-    parents = _best_predecessors(prefix, nodes, config, penalties)
+    required_prices = _required_prices(size, config, legacy_coverage)
+    parents = _best_predecessors(prefix, nodes, width, required_prices, penalties)
     results = []
     for previous in parents:
         i = len(nodes) - 1
@@ -98,11 +120,8 @@ def _partitions(
             )
             left_count = prefix[choices, 0] - prefix[left_edge, 0]
             right_count = prefix[right_edge, 0] - prefix[choices, 0]
-            allowed = (
-                (left_count >= config.minimum_observations)
-                & (right_count >= config.minimum_observations)
-                & (left_count >= (choices - left_edge) * config.minimum_price_coverage)
-                & (right_count >= (right_edge - choices) * config.minimum_price_coverage)
+            allowed = (left_count >= required_prices[choices - left_edge]) & (
+                right_count >= required_prices[right_edge - choices]
             )
             residual = line_residuals(prefix, left_edge, choices) + line_residuals(
                 prefix, choices, right_edge
@@ -113,10 +132,15 @@ def _partitions(
 
 
 def profile_partition(
-    prefix: Floats, start: int, config: AnalysisConfig, noise: float
+    prefix: Floats,
+    start: int,
+    config: AnalysisConfig,
+    noise: float,
+    *,
+    legacy_coverage: bool = False,
 ) -> list[int]:
     """Return the cuts at the profile's own boundary penalty for Segment MoE."""
-    return _partitions(prefix, start, config, noise, (1.0,))[0]
+    return _partitions(prefix, start, config, noise, (1.0,), legacy_coverage=legacy_coverage)[0]
 
 
 def _measure(values: Floats) -> tuple[float, float, float, float]:
@@ -168,13 +192,18 @@ def _support(moves: Floats, fits: Floats) -> Floats:
     return cumulative(moves, fits) + cumulative(moves[::-1], fits[::-1])[::-1] - moves
 
 
-def features(rows: tuple[Observation, ...], config: AnalysisConfig) -> Floats:
+def features(
+    rows: tuple[Observation, ...], config: AnalysisConfig, *, legacy_coverage: bool = False
+) -> Floats:
     """Describe each step from observed prices in its own instrument and available block."""
     output = np.zeros((len(rows), len(FEATURE_NAMES)))
     scale = math.log1p(config.minimum_relative_change)
     for start, values, prefix, noise in price_blocks(rows, config):
         measures = {}
-        for level, cuts in enumerate(_partitions(prefix, start, config, noise, _SCALES)):
+        partitions = _partitions(
+            prefix, start, config, noise, _SCALES, legacy_coverage=legacy_coverage
+        )
+        for level, cuts in enumerate(partitions):
             for a, b in pairwise(cuts):
                 if (a, b) not in measures:
                     measures[a, b] = _measure(values[a:b])

@@ -109,6 +109,7 @@ def read_fit(data, name, dataset, labels):
             path, trees=parameters.trees, max_depth=parameters.max_depth
         ),
         "parameters": parameters,
+        "feature_version": receipt.get("feature_version"),
         "policy": SingleFitPolicy(optimizer="extra_trees", seeds=(receipt["seed"],)),
         "analysis": native.PROFILE,
         "runtime": TrainingRuntime(threads=receipt["threads"]),

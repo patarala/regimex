@@ -15,11 +15,11 @@ from pydantic import JsonValue, field_validator
 
 from regimex.backends.adaptive import (
     ARCHITECTURE_ID,
-    FEATURE_VERSION,
     IMPLEMENTATION_VERSION,
     PREPROCESSING_VERSION,
     AdaptiveBackend,
     AdaptivePredictor,
+    forest_feature_set,
 )
 from regimex.contracts import StrictModel
 from regimex.data_catalog import content_hash
@@ -44,7 +44,6 @@ from regimex.storage import digest, json_bytes, output_directory, write_json
 BLEND_VERSION = "adaptive-probability-blend/1.0"
 FRACTIONS = (0.125, 0.25, 0.375, 0.5)
 _SOURCES = ("greedy", "multiscale")
-_FEATURES = (FEATURE_VERSION, "adaptive-multiscale/1.0")
 _FILES: dict[BundleRole, str] = {
     "configuration": "configuration.json",
     "preprocessing": "preprocessing.json",
@@ -193,20 +192,21 @@ def _records(
     }
 
 
-def _parent(root: Path, manifest_sha: str, feature: str) -> ModelBundle:
+def _parent(root: Path, manifest_sha: str, source: str) -> ModelBundle:
     parent = verify_model_bundle(
         root,
         manifest_sha256=manifest_sha,
         architecture_id=ARCHITECTURE_ID,
         implementation_version=IMPLEMENTATION_VERSION,
     )
-    if parent.feature_version != feature or parent.training.parent_models:
+    forest_feature_set(source, parent.feature_version)
+    if parent.training.parent_models:
         raise ValueError("adaptive blend requires one greedy and one multiscale base forest")
     return parent
 
 
 def _restore_component(
-    packed: zipfile.ZipFile, source: str, sha: str, feature: str, runtime: InferenceRuntime
+    packed: zipfile.ZipFile, source: str, sha: str, runtime: InferenceRuntime
 ) -> tuple[ModelBundle, AdaptivePredictor]:
     # Stage only this parent's original files. Its temporary weights are removed
     # before the second forest is restored; the outer archive stays in the model cache.
@@ -215,7 +215,7 @@ def _restore_component(
         for name in _PARENT_FILES:
             with packed.open(f"{source}/{name}") as entry, (folder / name).open("xb") as target:
                 shutil.copyfileobj(entry, target, length=128 * 1024)
-        manifest = _parent(folder, sha, feature)
+        manifest = _parent(folder, sha, source)
         return manifest, AdaptiveBackend()._restore_forest(folder, manifest, runtime)
 
 
@@ -259,8 +259,8 @@ def pack_bundle(
         greedy_sha256=greedy_sha256, multiscale_sha256=multiscale_sha256, fraction=fraction
     )
     parents = (
-        _parent(greedy_bundle, greedy_sha256, _FEATURES[0]),
-        _parent(multiscale_bundle, multiscale_sha256, _FEATURES[1]),
+        _parent(greedy_bundle, greedy_sha256, "greedy"),
+        _parent(multiscale_bundle, multiscale_sha256, "multiscale"),
     )
     _lineage(parents, config, provenance.training, provenance.analysis_profile_sha256)
     if provenance.environment_sha256 != content_hash(config.model_dump(mode="json")):
@@ -318,7 +318,7 @@ def load_blend(
         raise ValueError("adaptive blend environment differs from its sources or mixture")
     with _open_forests(root / "forests.zip") as packed:
         greedy_manifest, greedy = _restore_component(
-            packed, "greedy", config.greedy_sha256, _FEATURES[0], runtime
+            packed, "greedy", config.greedy_sha256, runtime
         )
         remaining = runtime.model_cache_budget_bytes - greedy.numeric_bytes
         if remaining < 1:
@@ -327,7 +327,6 @@ def load_blend(
             packed,
             "multiscale",
             config.multiscale_sha256,
-            _FEATURES[1],
             runtime.model_copy(update={"model_cache_budget_bytes": remaining}),
         )
     parents = (greedy_manifest, multi_manifest)

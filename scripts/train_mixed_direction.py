@@ -191,6 +191,7 @@ def fit(data, workers):
     additional["manifest_sha256"] = digest(latent_dir / "manifest.json")
     evidence = {
         "parameters": PARAMETERS.model_dump(mode="json"),
+        "feature_version": multiscale_segments.FEATURE_VERSION,
         "seed": SEED,
         "threads": 1,
         "feature_workers": workers,

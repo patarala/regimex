@@ -67,6 +67,23 @@ def test_geometry_preserves_original_steps_and_resets_at_unavailable_blocks() ->
     )
 
 
+def test_moe_partition_uses_coverage_rule_of_its_bundle() -> None:
+    from test_segmentation import experiment
+
+    from regimex.backends.segment_moe_features import SegmentFeatureVersion, segment_features
+    from regimex.directions import AnalysisConfig
+
+    known = np.rint(np.linspace(0, 99, 55)).astype(int)
+    prices = [
+        100 * np.exp(0.003 * min(i, 199 - i)) if i % 100 in known else None for i in range(200)
+    ]
+    rows = experiment(prices).observations
+    config = AnalysisConfig(min_duration=100, minimum_price_coverage=0.55)
+    assert segment_features(rows, config)[0].tolist() == [[0, 100], [100, 200]]
+    for version in (SegmentFeatureVersion.OBSERVED_PRICES, SegmentFeatureVersion.ORIGINAL_STEPS):
+        assert segment_features(rows, config, version=version)[0].tolist() == [[0, 200]]
+
+
 def test_moe_uses_the_forest_partition_at_the_profile_penalty() -> None:
     from test_segmentation import experiment
 

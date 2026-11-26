@@ -101,6 +101,37 @@ def test_multiscale_cuts_respect_missing_prices_and_the_shifted_grid() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("width", "start", "legacy_cuts"), [(100, 0, [0, 200]), (96, 1, [0, 101, 200])]
+)
+def test_exact_coverage_qualifies_on_the_coarse_grid_and_during_refinement(
+    width: int, start: int, legacy_cuts: list[int]
+) -> None:
+    np = pytest.importorskip("numpy")
+    from test_segmentation import experiment
+
+    from regimex.backends.multiscale_segments import _partitions
+    from regimex.backends.price_segments import price_blocks
+    from regimex.directions import AnalysisConfig
+
+    known = np.rint(np.linspace(0, 99, 55)).astype(int)
+    prices = [
+        100 * np.exp(0.003 * i if i < 100 else 0.23 - 0.003 * (i - 100))
+        if i in known or i >= 100
+        else None
+        for i in range(200)
+    ]
+    config = AnalysisConfig(min_duration=width, minimum_price_coverage=0.55)
+    ((_, _, prefix, noise),) = price_blocks(experiment(prices).observations, config)
+    # At start 0 the only candidate is 100. At start 1 the coarse grid has
+    # odd cuts, so the optimum at 100 can be chosen only by single-step refinement.
+    scales = (0.625, 1.0, 1.625)
+    assert _partitions(prefix, start, config, noise, scales) == [[0, 100, 200]] * 3
+    assert (
+        _partitions(prefix, start, config, noise, scales, legacy_coverage=True) == [legacy_cuts] * 3
+    )
+
+
 def test_training_weights_respect_unavailable_steps_and_each_instrument(
     adaptive: ModuleType,
 ) -> None:

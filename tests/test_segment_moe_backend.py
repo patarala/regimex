@@ -83,23 +83,26 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
             evaluator=lambda _: 0.1,
         )
 
-    # Both feature versions use the same flat weights. Only the manifest selects the lag grid.
+    # All feature versions use the same flat weights. The manifest selects the extractor.
     manifest_path = tmp_path / "bundle" / "manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
-    assert manifest["feature_version"] == SegmentFeatureVersion.ORIGINAL_STEPS.value
-    manifest["feature_version"] = SegmentFeatureVersion.OBSERVED_PRICES.value
-    write_json(manifest_path, manifest)
-    restored_legacy = backend.load_bundle(
-        manifest_path.parent, manifest_sha256=digest(manifest_path), runtime=runtime
-    )
-    legacy_input = SegmentTable.prepare(
-        validation, reloaded.analysis, feature_version=SegmentFeatureVersion.OBSERVED_PRICES
-    )
-    expected = legacy_input.standardized(reloaded.scale).predict(
-        reloaded.model, runtime.max_batch_size
-    )
-    assert np.any(raw != expected)
-    np.testing.assert_array_equal(restored_legacy.predict(validation, runtime=runtime), expected)
+    assert manifest["feature_version"] == SegmentFeatureVersion.INCLUSIVE_COVERAGE.value
+    for version in (SegmentFeatureVersion.OBSERVED_PRICES, SegmentFeatureVersion.ORIGINAL_STEPS):
+        manifest["feature_version"] = version.value
+        write_json(manifest_path, manifest)
+        restored_legacy = backend.load_bundle(
+            manifest_path.parent, manifest_sha256=digest(manifest_path), runtime=runtime
+        )
+        assert restored_legacy.feature_version == version
+        legacy_input = SegmentTable.prepare(validation, reloaded.analysis, feature_version=version)
+        expected = legacy_input.standardized(reloaded.scale).predict(
+            reloaded.model, runtime.max_batch_size
+        )
+        if version == SegmentFeatureVersion.OBSERVED_PRICES:
+            assert np.any(raw != expected)
+        np.testing.assert_array_equal(
+            restored_legacy.predict(validation, runtime=runtime), expected
+        )
     manifest["feature_version"] = "direction-persistence/unknown"
     write_json(manifest_path, manifest)
     with pytest.raises(ValueError, match="feature layout"):

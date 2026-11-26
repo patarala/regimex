@@ -38,6 +38,8 @@ from regimex.storage import write_json
 
 def blended_bundle(
     tmp_path: Path,
+    *,
+    legacy_multiscale: bool = False,
 ) -> tuple[str, ObservationInputs, AdaptivePredictor, AdaptivePredictor]:
     from regimex.backends.adaptive_blend import blend_environment, pack_bundle
     from regimex.data_catalog import content_hash
@@ -56,6 +58,19 @@ def blended_bundle(
         evaluator=lambda p: float(p[:, 1].mean()),
     )
     assert isinstance(multi.predictor, AdaptivePredictor)
+    if legacy_multiscale:
+        from regimex.backends.adaptive import fit_result_from_forest
+
+        # The original offline receipts identified the forest by settings without a feature version.
+        multi = fit_result_from_forest(
+            multi.predictor.model,
+            parameters=multi.predictor.configuration.parameters,
+            policy=config.training_policy,
+            analysis=config.analysis,
+            runtime=config.training_runtime,
+            validation_score=multi.validation_score,
+            environment=multi.environment,
+        )
     parents = []
     for name, candidate in (("greedy", greedy), ("multiscale", multi)):
         origin = provenance(candidate).model_copy(update={"model_version_id": name})
@@ -87,15 +102,23 @@ def blended_bundle(
         fraction=0.25,
         provenance=lineage,
     )
+    assert isinstance(multi.predictor, AdaptivePredictor)
     return sha, valid, greedy.predictor, multi.predictor
 
 
+@pytest.mark.parametrize("legacy_multiscale", [False, True])
 def test_blend_restores_exact_mixture_without_parent_directories_and_enforces_combined_budget(
     tmp_path: Path,
+    legacy_multiscale: bool,
 ) -> None:
     from regimex.backends.adaptive_blend import BlendedAdaptivePredictor
 
-    sha, valid, greedy, multi = blended_bundle(tmp_path)
+    sha, valid, greedy, multi = blended_bundle(tmp_path, legacy_multiscale=legacy_multiscale)
+    version = "adaptive-multiscale/1.0" if legacy_multiscale else "adaptive-multiscale/1.1"
+    assert (
+        json.loads((tmp_path / "multiscale" / "manifest.json").read_bytes())["feature_version"]
+        == version
+    )
     (tmp_path / "greedy").rename(tmp_path / "original-greedy")
     (tmp_path / "multiscale").rename(tmp_path / "original-multi")
     budget = greedy.numeric_bytes + multi.numeric_bytes

@@ -114,7 +114,7 @@ class SegmentTable:
         config: AnalysisConfig,
         check_budget: Callable[[], None] | None = None,
         *,
-        feature_version: SegmentFeatureVersion = SegmentFeatureVersion.ORIGINAL_STEPS,
+        feature_version: SegmentFeatureVersion = SegmentFeatureVersion.INCLUSIVE_COVERAGE,
     ) -> SegmentTable:
         require_observation_inputs(inputs)
         spans, contexts, blocks = [], [], []
@@ -160,7 +160,7 @@ class SegmentMoEPredictor:
     model: SegmentMoE
     scale: BlockScale
     configuration: Configuration
-    feature_version: SegmentFeatureVersion = SegmentFeatureVersion.ORIGINAL_STEPS
+    feature_version: SegmentFeatureVersion = SegmentFeatureVersion.INCLUSIVE_COVERAGE
     architecture_id = ARCHITECTURE
     implementation_version = VERSION
     class_names = DIRECTION_NAMES

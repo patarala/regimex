@@ -226,6 +226,7 @@ def load_fit(data, name, dataset, labels):
     return {
         "model": forest,
         "parameters": params,
+        "feature_version": receipt.get("feature_version"),
         "policy": SingleFitPolicy(optimizer="extra_trees", seeds=(receipt["seed"],)),
         "runtime": TrainingRuntime(threads=receipt["threads"]),
         "analysis": PROFILE,
