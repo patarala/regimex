@@ -9,12 +9,12 @@ import sys
 from collections import Counter
 from collections.abc import Sequence
 
-# Readers must be ready before an analysis worker can publish a newer report.
+# The API reads analysis reports. Analysis workers read models published by admin workers.
 BUILDERS = {
     "api": "api",
     "maintenance-worker": "api",
-    "admin-worker": "analysis-worker",
     "analysis-worker": "analysis-worker",
+    "admin-worker": "analysis-worker",
 }
 COMPOSE = ["docker", "compose", "--profile", "service"]
 

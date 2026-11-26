@@ -75,7 +75,7 @@ def test_update_checks_new_images_then_replaces_requested_roles_in_reader_order(
     result, calls = rollout(tmp_path, [*reversed(ROLES), "api"], states=states)
     assert result.returncode == 0, result.stderr
     changes = [args for args in calls if args[0] not in {"ps", "inspect"}]
-    ordered = ["api", "maintenance-worker", "admin-worker", "analysis-worker"]
+    ordered = ["api", "maintenance-worker", "analysis-worker", "admin-worker"]
     assert changes[0] == ["build", "api", "analysis-worker"]
     assert changes[1:5] == [
         ["run", "--rm", "--no-deps", "-T", role, "service", "health", "--component", "database"]

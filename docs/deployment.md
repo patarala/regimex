@@ -323,8 +323,11 @@ Run one update at a time.
 # Web UI or HTTP handlers
 python3 deploy/update_components.py api
 
-# Training code
+# Training changes compatible with running analysis workers
 python3 deploy/update_components.py admin-worker
+
+# Training that writes a new model format (the new reader must also load existing models)
+python3 deploy/update_components.py analysis-worker admin-worker
 
 # Report format that requires a new reader
 # Backup and restore validate saved report metadata with the operator image.
@@ -372,6 +375,12 @@ The adaptive forest's validation curve is one such change. Earlier releases
 expect a single fit record when loading a forest bundle. Upgrade the API,
 workers and operator image before resuming forest training or importing
 tree-count measurements.
+
+For an installation moving from generator 4.0 to 4.1, pause submissions of
+dataset and automatic reference jobs until the API and administrative workers
+have been upgraded. New jobs pin their generator or annotation policy in the
+queue payload. The upgraded worker can finish jobs already queued under the
+previous policy.
 
 Block intake, drain pending jobs, stop all writers and take a
 [coordinated backup](storage.md#backup-and-restore) with the current release

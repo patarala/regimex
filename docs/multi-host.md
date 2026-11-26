@@ -127,7 +127,11 @@ uv run --locked --extra service python tests/support/cluster_smoke.py \
 ```
 
 For a rollout, drain one API node from the balancer, update it, wait for
-readiness and return it before updating its peer. Coordinate schema migrations
+readiness and return it before updating its peer. When training writes a new
+model format, update every analysis worker before bringing the new training
+worker online or publishing a model in that format. For changes to the saved
+HTML format, update every API reader and the backup/restore image before the
+analysis workers. Coordinate schema migrations
 and [offline maintenance](storage.md#stop-writers-before-maintenance) across
 **all nodes**. Keep an inventory of API, worker and operator entry points.
 
