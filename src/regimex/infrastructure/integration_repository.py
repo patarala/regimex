@@ -247,47 +247,46 @@ def _issue_key(
 
 
 def provision_integration_token(
-    database: DatabaseRepository, owner_id: str, source_namespace: str
+    database: DatabaseRepository, connection: Connection, owner_id: str, source_namespace: str
 ) -> str:
     """Local operator provisioning shares the same state and checks as managed keys."""
     request = IntegrationCreate(
         owner_id=owner_id, source_namespace=source_namespace, display_name=source_namespace[:120]
     )
-    with database.connection() as connection:
-        reserve_integration_owner(connection, owner_id)
-        database._lock(connection, "integration-provision:" + owner_id + ":" + source_namespace)
-        row = connection.execute(
-            "SELECT integration_id FROM regimex_integrations WHERE owner_id=%s "
-            "AND source_namespace=%s FOR UPDATE",
-            (owner_id, source_namespace),
+    reserve_integration_owner(connection, owner_id)
+    database._lock(connection, "integration-provision:" + owner_id + ":" + source_namespace)
+    row = connection.execute(
+        "SELECT integration_id FROM regimex_integrations WHERE owner_id=%s "
+        "AND source_namespace=%s FOR UPDATE",
+        (owner_id, source_namespace),
+    ).fetchone()
+    if row is None:
+        integration_id = uuid4()
+        inserted = connection.execute(
+            "INSERT INTO regimex_integrations "
+            "(integration_id,owner_id,source_namespace,display_name) VALUES (%s,%s,%s,%s) "
+            "ON CONFLICT (owner_id,source_namespace) DO NOTHING RETURNING integration_id",
+            (integration_id, request.owner_id, request.source_namespace, request.display_name),
         ).fetchone()
-        if row is None:
-            integration_id = uuid4()
-            inserted = connection.execute(
-                "INSERT INTO regimex_integrations "
-                "(integration_id,owner_id,source_namespace,display_name) VALUES (%s,%s,%s,%s) "
-                "ON CONFLICT (owner_id,source_namespace) DO NOTHING RETURNING integration_id",
-                (integration_id, request.owner_id, request.source_namespace, request.display_name),
-            ).fetchone()
-            if inserted is not None:
-                _event(connection, integration_id, "integration.created", None)
-            else:
-                existing = connection.execute(
-                    "SELECT integration_id FROM regimex_integrations WHERE owner_id=%s "
-                    "AND source_namespace=%s FOR UPDATE",
-                    (owner_id, source_namespace),
-                ).fetchone()
-                assert existing is not None
-                integration_id = cast(UUID, existing[0])
+        if inserted is not None:
+            _event(connection, integration_id, "integration.created", None)
         else:
-            integration_id = cast(UUID, row[0])
-        issued = _issue_key(
-            connection,
-            _get(connection, integration_id, lock=True),
-            IntegrationKeyCreate(name="Provisioned key"),
-            None,
-        )
-        return issued.token.get_secret_value()
+            existing = connection.execute(
+                "SELECT integration_id FROM regimex_integrations WHERE owner_id=%s "
+                "AND source_namespace=%s FOR UPDATE",
+                (owner_id, source_namespace),
+            ).fetchone()
+            assert existing is not None
+            integration_id = cast(UUID, existing[0])
+    else:
+        integration_id = cast(UUID, row[0])
+    issued = _issue_key(
+        connection,
+        _get(connection, integration_id, lock=True),
+        IntegrationKeyCreate(name="Provisioned key"),
+        None,
+    )
+    return issued.token.get_secret_value()
 
 
 def revoke_token(database: DatabaseRepository, token_id: UUID) -> None:

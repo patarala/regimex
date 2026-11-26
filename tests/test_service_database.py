@@ -263,6 +263,41 @@ def test_credentials_are_hashed_revocable_and_source_bound(repository: DatabaseR
         repository.create_token("user", "user", source_namespace="untrusted")
 
 
+@pytest.mark.parametrize("role", ["user", "admin", "integration"])
+def test_token_file_failure_rolls_back_issuance(
+    repository: DatabaseRepository, role: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from typer.testing import CliRunner
+
+    from regimex.cli import app
+
+    def fail_write(_descriptor: int) -> None:
+        raise OSError("token file write failed")
+
+    output = tmp_path / "operator-token"
+    monkeypatch.setattr(os, "fsync", fail_write)
+    result = CliRunner().invoke(
+        app,
+        [
+            "service",
+            "token-create",
+            "--owner",
+            "issuer",
+            "--role",
+            role,
+            "--output",
+            str(output),
+            *(["--source", "test-source"] if role == "integration" else []),
+        ],
+        env={"REGIMEX_DATABASE_DSN": repository._dsn, "REGIMEX_DATABASE_SCHEMA": repository.schema},
+    )
+    assert result.exit_code != 0 and "token file write failed" in result.output
+    assert not output.exists()
+    with repository.connection() as connection:
+        assert connection.execute("SELECT count(*) FROM regimex_tokens").fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM regimex_integrations").fetchone() == (0,)
+
+
 def test_bulk_snapshots_preserve_requested_order_and_access_scope(
     repository: DatabaseRepository,
 ) -> None:

@@ -8,7 +8,7 @@ can make their result visible. The repository never deletes stored objects.
 import hashlib
 import re
 import secrets
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -220,6 +220,16 @@ class DatabaseRepository:
         self, owner_id: str, role: Role, *, source_namespace: str | None = None
     ) -> str:
         """Provision locally; the raw credential is returned once and never persisted."""
+        with self.connection() as connection:
+            return self._create_token(connection, owner_id, role, source_namespace)
+
+    def _create_token(
+        self,
+        connection: psycopg.Connection[tuple[object, ...]],
+        owner_id: str,
+        role: Role,
+        source_namespace: str | None,
+    ) -> str:
         token_id = uuid4()
         principal = Principal(
             owner_id=owner_id,
@@ -233,25 +243,24 @@ class DatabaseRepository:
             from regimex.infrastructure.integration_repository import provision_integration_token
 
             assert source_namespace is not None
-            return provision_integration_token(self, owner_id, source_namespace)
+            return provision_integration_token(self, connection, owner_id, source_namespace)
         token = "rgx_" + secrets.token_urlsafe(32)
-        with self.connection() as connection:
-            from regimex.infrastructure.identity_namespaces import reserve_local_owner
+        from regimex.infrastructure.identity_namespaces import reserve_local_owner
 
-            reserve_local_owner(connection, owner_id)
-            connection.execute(
-                "INSERT INTO regimex_tokens "
-                "(token_id,token_sha256,owner_id,role,source_namespace,created_at) "
-                "VALUES (%s,%s,%s,%s,%s,%s)",
-                (
-                    token_id,
-                    hashlib.sha256(token.encode()).hexdigest(),
-                    principal.owner_id,
-                    role,
-                    source_namespace,
-                    datetime.now(UTC),
-                ),
-            )
+        reserve_local_owner(connection, owner_id)
+        connection.execute(
+            "INSERT INTO regimex_tokens "
+            "(token_id,token_sha256,owner_id,role,source_namespace,created_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s)",
+            (
+                token_id,
+                hashlib.sha256(token.encode()).hexdigest(),
+                principal.owner_id,
+                role,
+                source_namespace,
+                datetime.now(UTC),
+            ),
+        )
         return token
 
     def authenticate(self, token: str) -> Principal:
@@ -266,10 +275,22 @@ class DatabaseRepository:
         revoke_token(self, token_id)
 
     def issue_token(
-        self, owner_id: str, role: Role, *, source_namespace: str | None = None
+        self,
+        owner_id: str,
+        role: Role,
+        *,
+        source_namespace: str | None = None,
+        save: Callable[[str], None] | None = None,
     ) -> tuple[Principal, str]:
-        token = self.create_token(owner_id, role, source_namespace=source_namespace)
-        return self.authenticate(token), token
+        from regimex.infrastructure.integration_repository import authenticate_token
+
+        with self.connection() as connection:
+            token = self._create_token(connection, owner_id, role, source_namespace)
+            principal = authenticate_token(connection, token)
+            # A local write failure must roll back both the token and its audit records.
+            if save is not None:
+                save(token)
+        return principal, token
 
     @staticmethod
     def _object(connection: psycopg.Connection[tuple[object, ...]], value: ObjectInfo) -> None:
