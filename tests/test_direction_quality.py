@@ -130,16 +130,17 @@ def test_evidence_binds_bundle_training_selection_and_reference_origin() -> None
             )
 
 
+@pytest.mark.parametrize("shared_source", [False, True], ids=["single-export", "multiple-exports"])
 def test_offline_scorer_verifies_native_inputs_before_reporting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shared_source: bool
 ) -> None:
     import importlib
     from types import SimpleNamespace
 
     np = pytest.importorskip("numpy")
-    from test_data_catalog import PROFILE, dataset, reference_set
+    from test_data_catalog import PROFILE, dataset, reference_set, snapshot
 
-    from regimex.data_catalog import SnapshotGrid
+    from regimex.data_catalog import SnapshotGrid, create_snapshot_member, seal_dataset
     from regimex.segmentation import annotate
 
     monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -147,8 +148,15 @@ def test_offline_scorer_verifies_native_inputs_before_reporting(
     measure = scorer.measure
     manifest, sources = dataset()
     source = sources[1]
-    labels = annotate(SnapshotGrid.from_export(source.export), PROFILE)
-    refs = reference_set(manifest, sources, "validation", documents=(labels,))
+    validation = [source]
+    if shared_source:
+        other = snapshot(3)
+        manifest = seal_dataset(
+            manifest.dataset_id, (*manifest.members, create_snapshot_member(other, "validation"))
+        )
+        validation.append(other)
+    labels = tuple(annotate(SnapshotGrid.from_export(s.export), PROFILE) for s in validation)
+    refs = reference_set(manifest, sources, "validation", documents=labels)
     bundle = SimpleNamespace(
         architecture_id="baseline",
         training=SimpleNamespace(
@@ -167,10 +175,23 @@ def test_offline_scorer_verifies_native_inputs_before_reporting(
     )
     dataset_path.write_text(manifest.model_dump_json())
     refs_path.write_text(refs.model_dump_json())
-    exports_path.write_text(json.dumps({source.source_namespace: "export"}))
-    export_path = tmp_path / "export"
-    export_path.write_text(source.export.model_dump_json())
+    locations = {}
+    for item in validation:
+        snapshot_id = item.export.source.snapshot_id
+        path = tmp_path / f"{snapshot_id}.json"
+        path.write_text(item.export.model_dump_json())
+        locations[snapshot_id] = path.name
+    export_path = tmp_path / locations[source.export.source.snapshot_id]
     paths = (dataset_path, refs_path, exports_path)
+    exports_path.write_text(json.dumps({source.source_namespace: export_path.name}))
+    if shared_source:
+        with pytest.raises(ValueError, match="multiple snapshots"):
+            measure(*paths, predictor, bundle, None, {})
+        first = source.export.source.snapshot_id
+        exports_path.write_text(json.dumps({source.source_namespace: {first: export_path.name}}))
+        with pytest.raises(ValueError, match=validation[-1].export.source.snapshot_id):
+            measure(*paths, predictor, bundle, None, {})
+        exports_path.write_text(json.dumps({source.source_namespace: locations}))
     score = measure(*paths, predictor, bundle, None, {})
     member = manifest.members[1]
     altered = member.model_copy(
@@ -181,8 +202,10 @@ def test_offline_scorer_verifies_native_inputs_before_reporting(
     with pytest.raises(ValueError, match="conflicting group or split"):
         scorer.record_group(altered, exposures)
     assert score.split == "validation"
-    assert len(score.groups) == 1
-    assert sum(tp + fn for tp, _, fn in score.groups[0].counts) == len(labels.intervals)
+    assert len(score.groups) == len(validation)
+    assert sum(tp + fn for g in score.groups for tp, _, fn in g.counts) == sum(
+        len(doc.intervals) for doc in labels
+    )
     export_path.write_text(sources[0].export.model_dump_json())
     with pytest.raises(ValueError, match="differ from the registered member"):
         measure(*paths, predictor, bundle, None, {})

@@ -2,7 +2,7 @@
 
 import argparse
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +12,7 @@ from regimex.data_catalog import (
     DatasetManifest,
     ReferenceSet,
     SnapshotGrid,
+    SnapshotMember,
     SourceSnapshot,
     content_hash,
     create_reference_member,
@@ -24,9 +25,30 @@ from regimex.evaluation import _segment_counts, probabilities_valid
 from regimex.exports import load_export_v2
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle
 from regimex.model_registry import ArchitectureRegistry, InferenceRuntime
-from regimex.segmentation import annotate, decode
+from regimex.segmentation import DecoderGrid, annotate
 from regimex.service_client import read_file
 from regimex.storage import digest, json_bytes, write_new_file
+
+
+def export_paths(index: Path, members: tuple[SnapshotMember, ...]) -> list[Path]:
+    locations = json.loads(index.read_bytes())
+    if not isinstance(locations, dict):
+        raise ValueError("Snapshot locations must be a JSON object keyed by source namespace.")
+    per_source = Counter(member.source_namespace for member in members)
+    paths = []
+    for member in members:
+        namespace, snapshot = member.source_namespace, member.snapshot_id
+        entry = locations.get(namespace)
+        if isinstance(entry, dict):
+            entry = entry.get(snapshot)
+        elif isinstance(entry, str) and per_source[namespace] > 1:
+            raise ValueError(
+                f"Source {namespace!r} has multiple snapshots. Supply a path for each snapshot ID."
+            )
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(f"Missing export path for {namespace!r}, snapshot {snapshot!r}.")
+        paths.append(index.parent / entry)
+    return paths
 
 
 def record_group(member, exposures):
@@ -62,12 +84,12 @@ def measure(dataset_path, references_path, locations_path, predictor, bundle, ru
     validate_reference_membership(dataset, references)
     dataset.require_native_seed_groups()
     descriptor = ArchitectureRegistry.discover().get(bundle.architecture_id)
-    locations = json.loads(locations_path.read_bytes())
     counts = defaultdict(lambda: np.zeros((3, 3), dtype=np.int64))
-    members = (member for member in dataset.members if member.partition == split)
-    for member, reference in zip(members, references.members, strict=True):
+    members = tuple(member for member in dataset.members if member.partition == split)
+    paths = export_paths(locations_path, members)
+    for member, reference, path in zip(members, references.members, paths, strict=True):
         identity = record_group(member, exposures)
-        export = load_export_v2(locations_path.parent / locations[member.source_namespace])
+        export = load_export_v2(path)
         source = SourceSnapshot(
             source_namespace=member.source_namespace, split_group=member.split_group, export=export
         )
@@ -79,12 +101,16 @@ def measure(dataset_path, references_path, locations_path, predictor, bundle, ru
             raise ValueError("Regenerated annotations differ from the original references.")
         inputs = snapshot_inputs(export)
         scores = predictor.predict(inputs, runtime=runtime)
+        if not isinstance(scores, np.ndarray) or scores.dtype != np.float64:
+            raise ValueError("backend probabilities must be a float64 array")
         probabilities_valid(scores, inputs.row_count)
         offset = 0
         for info, rows in zip(inputs.info, inputs.observations, strict=True):
             expected = tuple(i for i in labels.intervals if i.instrument_id == info.instrument_id)
             end = offset + len(rows)
-            predicted = decode(scores[offset:end], rows, predictor.analysis)
+            predicted = DecoderGrid(rows, predictor.analysis).spans_from_validated(
+                scores[offset:end]
+            )
             counts[identity] += _segment_counts(expected, predicted)
             offset = end
     return MeasuredCohort(

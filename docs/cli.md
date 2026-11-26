@@ -132,9 +132,22 @@ row to compare training, validation and fresh groups using the same kind of refe
 
 For a saved model with its original automatic reference sets, the following
 command scores the validation split offline. Set the paths to the files from
-the fit. The locations JSON maps each source namespace to its export path,
-relative to that JSON's directory. Add a second `--cohort` with the training
-references and locations to get both columns in one report.
+the fit. In the locations JSON, group exports by `source_namespace` and use
+each manifest member's `snapshot_id` as the key. Paths are relative to the
+locations file. A source with one snapshot in the measured split can also
+point directly to its file.
+
+```json
+{
+  "trade": {
+    "snapshot-17": "exports/run-17.json",
+    "snapshot-18": "exports/run-18.json"
+  }
+}
+```
+
+Add a second `--cohort` with the training references and locations to get
+both scores in one report.
 
 ```sh
 uv run --locked --extra ml python scripts/measure_direction_quality.py \
