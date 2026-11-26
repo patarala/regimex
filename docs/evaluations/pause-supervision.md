@@ -72,7 +72,8 @@ observation process than the exchange generator.
 
 ## Reproduce
 
-Use the frozen training bundles and panel data from the [training
+Use revision `f65e4ce` for the refined-target comparison. Use the frozen
+training bundles and panel data from the [training
 comparison](training-populations.md#choosing-a-model-on-different-experiment-lengths)
 and fresh output directories. The first two commands register the exchange
 holdout and bind the original bundle to the training protocol. The third
@@ -165,8 +166,8 @@ ranges overlapped. These are local warm-model timings.
 
 ### Reproduce the slope comparison
 
-Use the three completed datasets from the earlier comparisons and fresh
-directories for both new checks. The reserve phases fix the cohort and the
+At revision `f609e6d`, use the three completed datasets from the earlier
+comparisons and fresh directories for both new checks. The reserve phases fix the cohort and the
 rules before the new weights are fitted.
 
 ```sh
@@ -176,6 +177,12 @@ uv run --locked --extra ml python scripts/check_local_pause_transfer.py reserve 
 uv run --locked --extra ml python scripts/fit_local_pause_features.py var/local-pauses --previous var/pause-targets --populations var/populations
 uv run --locked --extra ml python scripts/confirm_local_pause_features.py score var/local-pauses --previous var/pause-targets --populations var/populations
 uv run --locked --extra ml python scripts/check_local_pause_transfer.py score var/local-transfer --training var/local-pauses --previous var/pause-targets --populations var/populations
+```
+
+Use revision `1b9d7c3` for timing and for the interactive preview below,
+keeping the output directories from the comparison.
+
+```sh
 uv run --locked --extra ml python scripts/time_local_pause_features.py var/local-pauses --panels var/selection --previous var/pause-targets --populations var/populations
 ```
 

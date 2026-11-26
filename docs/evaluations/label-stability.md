@@ -189,7 +189,8 @@ for offline comparison.
 
 ## Reproduce
 
-Use `direction-32/2.2` on the locked synthetic corpus with 96 training and 30
+Run the checks below at revision `f36c4ac`, which uses automatic reference
+policy 3.0. Use `direction-32/2.2` on the locked synthetic corpus with 96 training and 30
 validation experiments, 256 or 512 steps long, and 189 instrument sequences.
 The script verifies each snapshot against the manifest before relabeling it.
 

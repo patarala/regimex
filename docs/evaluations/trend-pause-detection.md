@@ -119,7 +119,7 @@ for the report before scoring the final paths.
 
 ## Reproduce
 
-Run the phases in order using a new output directory. The reservation binds
+Run the phases in order at revision `fbb0990` using a new output directory. The reservation binds
 the paths, seed groups, exchange simulator, scientific dependencies and scoring
 logic. Calibration records the detector digest, chosen settings and development
 counts. Scoring checks these receipts before opening the final groups and

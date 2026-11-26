@@ -99,7 +99,8 @@ show how much checkpoint scores varied with the training seed.
 
 ## Reproduce
 
-With the [development corpus and baseline bundle](tcn-widths.md)
+Use revision `d6df9d0` for the published comparison. With the
+[development corpus and baseline bundle](tcn-widths.md)
 in `var/tcn-widths`, run the following phases in order. Choose a new output
 directory for each comparison. Add `--exposure-index PATH` to the reservation
 when a prior inventory of seeds and identity digests is available.

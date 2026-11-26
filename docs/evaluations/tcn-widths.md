@@ -50,7 +50,8 @@ model was 0.0691. The paired 95% bootstrap interval ranged from −0.0109 to
 with its experiment. It describes sampling uncertainty for these two frozen
 models on this simulator.
 
-To reproduce both comparisons, pass an unused directory to the first command.
+Run the published recipe at revision `8c9bb32` with generator 4.0 and
+automatic reference policy 3.0. Pass an unused directory to the first command.
 It saves the training and validation data, plans, bundles and per-seed
 scores. The second command verifies the frozen bundles and evaluates them on
 the independent cohort. It checks for overlap with the first corpus before

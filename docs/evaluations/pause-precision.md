@@ -114,7 +114,7 @@ the one-sixth slope check.
 
 ## Reproduce
 
-Run from the checkout with the locked scientific dependencies. Each output
+Run from revision `2dd9a58` with its locked scientific dependencies. Each output
 directory must be new. Calibration, confirmation and replay write receipts
 binding the settings to the code and the data groups. The second confirmation
 checks the completed first comparison before opening its own groups.

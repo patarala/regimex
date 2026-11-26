@@ -44,7 +44,7 @@ two reserved comparisons.
 
 | On 320 fresh groups | Matched / 2,560 | Precision | False marks / 655,360 slowdown steps |
 | --- | ---: | ---: | ---: |
-| Current report (3.7) | 2,215 (86.5%) | 88.7% | 275 (0.420 per 1,000) |
+| Renderer 3.7 | 2,215 (86.5%) | 88.7% | 275 (0.420 per 1,000) |
 | Robust fit | 2,287 (89.3%) | 89.3% | 270 (0.412 per 1,000) |
 
 The paired 95% interval for the gain in recall was 1.7 to 4.0 percentage
@@ -55,7 +55,7 @@ slowdown false marks and precision.
 
 | With directions predicted by the release TCN | Matched / 384 | Precision | False marks on slowdowns | On pullbacks | On steady trends |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Current report (3.7) | 356 (92.7%) | 76.2% | 68 | 42 | 0 |
+| Renderer 3.7 | 356 (92.7%) | 76.2% | 68 | 42 | 0 |
 | Robust fit | 341 (88.8%) | 62.6% | 75 | 128 | 0 |
 
 Each control type contributed 98,304 steps. Before scoring, the transfer check
@@ -68,7 +68,7 @@ predictions from the same frozen model and decoder.
 
 ## Reproduce
 
-Use unused output directories. The main comparison freezes the selected
+Use revision `390b2b6` and unused output directories. The main comparison freezes the selected
 setting and both implementations before either confirmation is scored. The
 transfer check also verifies the released TCN bundle against its pinned digest.
 

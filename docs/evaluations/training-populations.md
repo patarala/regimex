@@ -93,10 +93,9 @@ and exclude padding.
 
 ## Reproduce
 
-The preparation and reservation commands need an inventory of previously
-used experiments. On a fresh checkout, recreate the two preceding populations
-with the commands below. They require the locked ML dependencies. If you
-already have these manifests, use their paths directly.
+At revision `2933493`, the three commands below recreate the two preceding
+populations and build their exposure index using the locked ML dependencies.
+If you already have both manifests, pass their paths to the third command.
 
 ```sh
 uv run --locked --extra ml python scripts/check_label_stability.py var/tcn-widths --generate
@@ -110,7 +109,8 @@ historical seeds and 36,005 identity keys before adding the development
 experiments. A locally rebuilt inventory can certify independence only
 against the inputs you supply.
 
-Choose a new destination. Preparation reuses the original training and
+Run the six-model comparison at revision `3e796ce` using the prepared data and
+a new destination. Preparation reuses the original training and
 validation populations. Reservation checks the independent holdout against
 the exposure inventory and the new training population. Fit freezes all six
 candidates before score can read the holdout reference intervals.
@@ -174,7 +174,7 @@ runs in alternating order. The timer covers prediction from in-memory
 observations through decoded intervals. Bundle loading, export I/O and
 HTTP handling add separate costs.
 
-To reproduce, use the same exposure-index file as in the source training
+Use revision `5957fe3` and the same exposure-index file as in the source training
 comparison.
 
 ```sh
