@@ -181,8 +181,8 @@
       current.base_asset + " · volume: " + current.base_asset + " per step";
     const grid = current.time_grid;
     $("time-guide").textContent =
-      "Step width: " + fmt(grid.bin_width, 6) + " " + grid.unit +
-      " · history [" + fmt(grid.origin, 6) + ", " + fmt(grid.completed_horizon, 6) + ")";
+      "Step width: " + grid.bin_width + " " + grid.unit +
+      " · history [" + grid.origin + ", " + grid.completed_horizon + ")";
     const provenance = [["Input SHA-256", blind ? report.experiment_hash : sources.get(current.experiment_id).export_sha256]];
     if (!blind) {
       const source = current.source;

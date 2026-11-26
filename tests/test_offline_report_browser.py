@@ -171,7 +171,8 @@ def test_offline_download_preserves_original_export(
 ) -> None:
     from test_analysis_report import digest, report_inputs
 
-    from regimex.application.report import render_analysis_report
+    from regimex.application.report import render_analysis_report, validate_analysis_result
+    from regimex.storage import json_bytes
 
     export, result = report_inputs(missing=True, interleaved=True)
     report = tmp_path / "analysis.html"
@@ -183,7 +184,10 @@ def test_offline_download_preserves_original_export(
             page.get_by_role("button", name="Download JSON").click()
         saved = json.loads(download.value.path().read_bytes())
         assert ExportV2.model_validate_json(json.dumps(saved["export"])) == export
-        assert saved["result"] == result.model_dump(mode="json")
+        validate_analysis_result(
+            export, json_bytes(saved["result"]), result_sha256=saved["report"]["result_sha256"]
+        )
+        assert json_bytes(saved["export"]) == json_bytes(export.model_dump(mode="json"))
         page.locator("#coverage .main-svg").first.wait_for()
         page.evaluate("() => Plotly.relayout('price', {'xaxis.range': [103, 108]})")
         page.wait_for_function(
@@ -347,6 +351,60 @@ def test_blind_review_shares_observations_under_an_opaque_id(
         observations = json.loads(page.locator("body").inner_text())
         assert observations["experiment_id"] == draft["experiment_id"]
         assert observations["observations"] == export.model_dump(mode="json")["observations"]
+    finally:
+        page.close()
+
+
+def test_single_bin_probabilities_and_submicrosecond_grid(browser: Any, tmp_path: Path) -> None:
+    from test_analysis_report import digest
+    from test_inspection import source
+
+    from regimex.application.report import render_analysis_report
+    from regimex.visualization import render_snapshot_report
+
+    raw = _export(steps=1).model_dump(mode="json", exclude={"content_sha256"})
+    raw["time_grid"].update(origin=0.0, bin_width=1e-9, completed_horizon=1e-9)
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(raw)))
+    result = prediction_for(export)
+    single = tmp_path / "analysis.html"
+    single.write_bytes(render_analysis_report(export, result, result_sha256=digest(result)).html)
+    folder = tmp_path / "cli"
+    render_snapshot_report(
+        (source(0).model_copy(update={"export": export}),), folder, results=(result,)
+    )
+    page = browser.new_page(offline=True)
+    try:
+        page.goto(single.as_uri())
+        points = page.locator("#probability .scatterlayer .point")
+        points.first.wait_for(state="visible")
+        assert points.count() == 3
+        page.goto((folder / "index.html").as_uri())
+        assert (
+            page.locator("#time-guide").text_content()
+            == "Step width: 1e-9 model_second · history [0, 1e-9)"
+        )
+    finally:
+        page.close()
+
+
+def test_comparison_retains_small_price_differences(browser: Any, tmp_path: Path) -> None:
+    raw = _export(steps=4).model_dump(mode="json", exclude={"content_sha256"})
+    for row in raw["observations"]:
+        row["last_price"] = (10_000_001 + row["step"]) / 100
+    export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(raw)))
+    first = prediction_for(export)
+    second = prediction_for(export, direction=Direction.DECLINE)
+    report = tmp_path / "comparison.html"
+    report.write_bytes(_render(export, first, second))
+    page = browser.new_page(offline=True)
+    try:
+        page.goto(report.as_uri())
+        ticks = page.locator("#chart .price-tick")
+        assert len(set(ticks.all_text_contents())) == 5
+        assert ticks.evaluate_all("nodes => nodes.every(node => node.getBBox().x >= 0)")
+        assert "Price 100000.01" in page.locator("#inspection").inner_text()
+        page.locator("#inspect-step").fill("3")
+        assert "Price 100000.04" in page.locator("#inspection").inner_text()
     finally:
         page.close()
 

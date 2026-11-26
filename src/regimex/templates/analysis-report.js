@@ -1,33 +1,35 @@
 "use strict";
 (() => {
   const $ = (id) => document.getElementById(id);
-  const data = JSON.parse($("analysis-data").textContent);
+  const packedJSON = $("analysis-data").textContent;
+  const packed = JSON.parse(packedJSON);
+  const fields = packed.observation_fields;
+  // The same expansion is used for plotting numbers and downloading their exact JSON literals.
+  function unpack({observations, sequences, export: input, result, report}) {
+    input.observations = observations.map(([instrumentIndex, ...values]) => {
+      const row = {instrument_id: input.instruments[instrumentIndex].instrument_id};
+      fields.forEach((field, index) => { row[field] = values[index]; });
+      return row;
+    });
+    result.sequences = sequences.map((sequence) => ({
+      ...sequence,
+      intervals: sequence.intervals.map((item) => ({...item, instrument_id: sequence.instrument_id})),
+    }));
+    return {export: input, result, report};
+  }
+  const data = unpack(packed);
   const input = data.export;
   const result = data.result;
   const grid = input.time_grid;
   $("dataset-counts").textContent =
     "1 experiment · " + input.instruments.length + " instrument" +
     (input.instruments.length === 1 ? "" : "s");
-  // Reconstruct named fields without changing nulls or observed zeros.
-  input.observations = data.observations.map(([instrumentIndex, ...values]) => {
-    const row = { instrument_id: input.instruments[instrumentIndex].instrument_id };
-    data.observation_fields.forEach((field, index) => { row[field] = values[index]; });
-    return row;
-  });
-  result.sequences = data.sequences.map((sequence) => ({
-    ...sequence,
-    intervals: sequence.intervals.map((item) => ({ ...item, instrument_id: sequence.instrument_id })),
-  }));
-  delete data.observation_fields;
-  delete data.observations;
-  delete data.sequences;
 
   const selector = $("instrument");
   const quotes = $("quotes");
   const pauseToggle = $("trend-pauses");
   const nodes = ["price", "timeline", "activity", "volume", "coverage", "probability"].map($);
-  const axis = reportTimeAxis(grid, data.last_bin_fraction);
-  delete data.last_bin_fraction;
+  const axis = reportTimeAxis(grid, packed.last_bin_fraction);
   const coordinate = axis.boundary;
   const timeUnit = axis.unit;
   const extent = [coordinate(0), coordinate(grid.step_count)];
@@ -160,8 +162,9 @@
       categoryarray: fields.map((field) => field.replaceAll("_", " ")), autorange: "reversed",
     };
     const probabilities = result.class_names.map((name, index) => ({
-      type: "scatter", mode: "lines", name: directionSymbols[name] + " " + name,
+      type: "scatter", mode: rows.length === 1 ? "markers" : "lines", name: directionSymbols[name] + " " + name,
       x: rows.map(sampleTime), y: sequence.probabilities.map((row) => row[index]),
+      marker: {color: colors[name]},
       line: { color: colors[name], width: 1.6 },
       hovertemplate: "%{x}<br>%{y:.4f}<extra>" + name + "</extra>",
     }));
@@ -261,15 +264,13 @@
     bounds.replaceChildren(button);
   }
   $("reset").addEventListener("click", () => setRange(extent));
-  // JSON.stringify normalizes -0 to 0. Preserve its sign for the content digest.
-  function savedJSON(value) {
-    if (typeof value === "number") return Object.is(value, -0) ? "-0.0" : JSON.stringify(value);
-    if (value === null || typeof value !== "object") return JSON.stringify(value);
-    if (Array.isArray(value)) return "[" + value.map(savedJSON).join(",") + "]";
-    return "{" + Object.keys(value).map((key) => JSON.stringify(key) + ":" + savedJSON(value[key])).join(",") + "}";
-  }
   $("download").addEventListener("click", () => {
-    const blob = new Blob([savedJSON(data)], { type: "application/json" });
+    // JSON.parse erases the distinction between 1 and 1.0. Preserve the original
+    // scalar tokens while expanding the compact rows for the digest-bound download.
+    const tokens = /"(?:\\.|[^"\\])*"(\s*:)?|-?\d+(?:\.\d+)?(?:e[+-]?\d+)?/gi;
+    const literals = JSON.parse(packedJSON.replace(tokens, (token, key) => key ? token : JSON.stringify(token)));
+    const json = JSON.stringify(unpack(literals)).replace(tokens, (token, key) => key ? token : JSON.parse(token));
+    const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;

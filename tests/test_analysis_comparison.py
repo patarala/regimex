@@ -121,7 +121,7 @@ def test_comparison_is_offline_and_preserves_missing_carried_prices_and_safe_lab
     report = _render(export, first, second)
     document = report.decode()
     payload = _payload(report)
-    assert payload["renderer_version"] == "analysis-comparison/1.3"
+    assert payload["renderer_version"] == "analysis-comparison/1.4"
     assert payload["snapshot_id"] == str(first.snapshot_id)
     assert payload["series"][0]["prices"][8:10] == [None, None]
     assert payload["series"][0]["prices"][14:16] == [101.3, 101.3]
@@ -164,6 +164,27 @@ def test_distinct_runs_of_the_same_model_can_agree_completely() -> None:
     second = first.model_copy(update={"analysis_id": uuid4()})
     payload = _payload(_render(export, first, second))
     assert all(series["differences"] == [] for series in payload["series"])
+
+
+def test_comparison_accepts_saved_statistics_from_previous_rounding() -> None:
+    export = _export()
+    current = prediction_for(export)
+    saved = current.model_copy(update={"analysis_id": uuid4()}).model_dump(mode="json")
+    for sequence in saved["sequences"]:
+        (interval,) = sequence["intervals"]
+        # Previously saved for the same prices, 100.0 through 103.1 in steps of 0.1.
+        interval["statistics"].update(
+            price_change_percent=3.0999999999999917, return_std=8.67479549153723e-06
+        )
+    raw = json_bytes(saved)
+    comparison = render_analysis_comparison(
+        export,
+        raw,
+        current,
+        first_sha256=hashlib.sha256(raw).hexdigest(),
+        second_sha256=_digest(current),
+    )
+    assert all(series["differences"] == [] for series in _payload(comparison.html)["series"])
 
 
 def test_comparison_distinguishes_availability_policies_from_direction_disagreement() -> None:
@@ -284,6 +305,6 @@ rendered = render_analysis_comparison(
     AnalysisResult.model_validate_json(json.dumps(data['second'])),
     first_sha256=data['first_sha256'], second_sha256=data['second_sha256'],
 )
-assert b'analysis-comparison/1.3' in rendered.html
+assert b'analysis-comparison/1.4' in rendered.html
 """
     subprocess.run([sys.executable, "-c", script, str(source)], check=True, timeout=15)

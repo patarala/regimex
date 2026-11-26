@@ -5,7 +5,7 @@
   const data = JSON.parse($("comparison-data").textContent);
   const svg = $("chart");
   const width = 1000;
-  const left = 82;
+  let left = 82;
   const right = 976;
   const top = 24;
   const priceBottom = 192;
@@ -27,7 +27,6 @@
   let drag = null;
   let brush = null;
   let cursor = null;
-  const number = (value) => value.toLocaleString(undefined, {maximumSignificantDigits: 6});
   function visibleDuration() {
     return stop === count ? count - 1 - start + axis.lastBinFraction : stop - start;
   }
@@ -73,25 +72,39 @@
     svg.append(defs);
   }
   function paintPrices(series) {
+    left = 82;
     const known = series.prices.slice(start, stop).filter((value) => value !== null);
     if (!known.length) {
       text("No observed prices in this range", {x: (left + right) / 2, y: 108, "text-anchor": "middle"});
       return;
     }
-    // Normalize before subtraction so every accepted finite price remains plottable.
-    const scale = Math.max(...known);
-    let low = Math.min(...known) / scale;
-    let high = Math.max(...known) / scale;
+    let low = Math.min(...known);
+    let high = Math.max(...known);
     if (low === high) {
-      low -= 0.01;
-      high = Math.min(high + 0.01, Number.MAX_VALUE / scale);
+      const padding = Math.max(low * 0.01, Number.MIN_VALUE);
+      low = Math.max(0, low - padding);
+      high = Math.min(Number.MAX_VALUE, high + padding);
     }
-    const y = (value) => priceBottom - (value / scale - low) / (high - low) * (priceBottom - top);
-    for (let tick = 0; tick <= 4; tick++) {
-      const value = low + (high - low) * tick / 4;
+    const span = high - low;
+    const y = (value) => priceBottom - (value - low) / span * (priceBottom - top);
+    const precision = Math.max(2, Math.min(17, 2 + Math.ceil(Math.log10(high) - Math.log10(span))));
+    const formatTick = new Intl.NumberFormat(undefined, {
+      maximumSignificantDigits: precision, useGrouping: false,
+      notation: high < 1e-5 || high >= 1e10 ? "scientific" : "standard",
+    });
+    const labels = Array.from({length: 5}, (_, tick) =>
+      formatTick.format(tick === 4 ? high : low + span * (tick / 4)));
+    const ticks = labels.map((label, tick) => {
+      if (label === labels[tick - 1]) return null;
       const position = priceBottom - tick / 4 * (priceBottom - top);
+      const node = element("text", {y: position + 5, class: "price-tick", "text-anchor": "end"}, label);
+      svg.append(node);
+      return {position, node};
+    }).filter(Boolean);
+    left = Math.max(left, ...ticks.map(({node}) => 12 + Math.ceil(node.getComputedTextLength())));
+    for (const {node, position} of ticks) {
+      node.setAttribute("x", left - 8);
       line(left, position, right, position, "grid");
-      text(number(value * scale), {x: left - 8, y: position + 5, "text-anchor": "end"});
     }
     const paths = {observed: [], carried: []};
     let previous = null;
@@ -170,7 +183,7 @@
     const labels = series.intervals.map((intervals) =>
       stateLabel(intervals.find((item) => item.start <= step && item.stop > step).state));
     const price = series.prices[step];
-    const priceText = price === null ? "unavailable" : `${number(price)} (${series.price_states[step]})`;
+    const priceText = price === null ? "unavailable" : `${price} (${series.price_states[step]})`;
     const bounds = `[${axis.boundary(step)}, ${axis.boundary(step + 1)})`;
     const interval = axis.relative ? `${axis.unit} ${bounds}` : `Time ${bounds} ${axis.unit}`;
     $("inspection").textContent =
@@ -310,7 +323,7 @@
       [`${label} model SHA-256`, analysis.model.bundle_sha256],
       [`${label} result SHA-256`, analysis.result_sha256],
       [`${label} decoder / profile`, `${analysis.decoder_version} · ${analysis.analysis_profile_id}`],
-      [`${label} interval settings`, `${analysis.analysis.min_duration} minimum steps · ${analysis.analysis.minimum_observations} required prices · ${number(analysis.analysis.minimum_price_coverage * 100)}% price coverage`],
+      [`${label} interval settings`, `${analysis.analysis.min_duration} minimum steps · ${analysis.analysis.minimum_observations} required prices · ${analysis.analysis.minimum_price_coverage.toLocaleString(undefined, {style: "percent", maximumSignificantDigits: 6})} price coverage`],
     );
   });
   provenance.forEach(([key, value]) => {
