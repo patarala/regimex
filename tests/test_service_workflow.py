@@ -1012,6 +1012,58 @@ def test_verified_external_fit_is_visible_in_training_and_replays_without_upload
         assert runs.training_metrics(admin, run.run_id).model_dump(mode="json") == metrics
 
 
+def test_existing_tcn_import_keeps_repeat_outcomes_after_weight_deletion(
+    service: AnalysisService, tmp_path: Path
+) -> None:
+    from psycopg.types.json import Json
+    from test_tcn_backend import bundle as tcn_bundle
+
+    from regimex.application.admin_service import AdminService
+    from regimex.application.deletion import DeletionService
+    from regimex.infrastructure.admin_repository import AdminRepository
+    from regimex.infrastructure.deletion_repository import DeletionRepository
+    from regimex.model_registry import tcn_descriptor
+
+    database = service.repository
+    owner = principal(database, "researcher", "admin")
+    service.registry = ArchitectureRegistry((tcn_descriptor(),))
+    runs = AdminService(
+        service, AdminRepository(database), ServiceSettings(database_dsn=SecretStr(database._dsn))
+    )
+    _, _, _, checksum = tcn_bundle(tmp_path)
+    service.register_bundle(
+        owner,
+        tmp_path / "bundle",
+        manifest_sha256=checksum,
+        inference_runtime=InferenceRuntime(threads=1),
+        record_training=True,
+    )
+    (run,) = runs.list_runs(owner, kind="training")
+    saved = runs.training_metrics(owner, run.run_id)
+    assert [(outcome.seed, outcome.step, outcome.reason) for outcome in saved.repeat_outcomes] == [
+        (11, 3, "epoch_limit"),
+        (23, 3, "epoch_limit"),
+    ]
+    # Recreate the checksummed history saved before imports recorded repeat outcomes.
+    old = saved.model_dump(mode="json")
+    old["repeat_outcomes"] = []
+    with database.connection() as connection:
+        connection.execute(
+            "UPDATE regimex_training_metrics SET document=%s WHERE operation_id=%s",
+            (
+                Json({"metrics": old, "sha256": hashlib.sha256(json_bytes(old)).hexdigest()}),
+                run.run_id,
+            ),
+        )
+    preview = runs.preview_weight_deletion(owner, run.run_id)
+    DeletionService(DeletionRepository(database), service.store).apply(
+        owner,
+        preview.plan_id,
+        expected_sha256=preview.sha256,
+    )
+    assert runs.training_metrics(owner, run.run_id) == saved
+
+
 def test_child_process_death_is_fenced_before_real_queue_redelivery(
     service: AnalysisService, tmp_path: Path
 ) -> None:

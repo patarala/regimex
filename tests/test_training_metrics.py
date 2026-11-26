@@ -3,14 +3,21 @@
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 from test_model_bundles import bundle
 
-from regimex.admin_contracts import TrainingSpec
+from regimex.admin_contracts import ImportedTrainingSpec, RepeatOutcome, TrainingSpec
 from regimex.application.training_metrics import build_training_metrics
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.object_store import ObjectIntegrityError
 from regimex.model_bundles import BundleMember, ModelBundle
-from regimex.model_registry import InferenceRuntime, TrainingPolicy, TrainingRuntime
+from regimex.model_registry import (
+    FixedUpdatePolicy,
+    InferenceRuntime,
+    TrainingPolicy,
+    TrainingRuntime,
+)
+from regimex.storage import json_bytes
 
 
 @pytest.fixture
@@ -66,3 +73,58 @@ def test_invalid_history_cannot_be_committed(
     manifest = manifest_with_history(tmp_path / "bundle", "history.json", len(invalid))
     with pytest.raises(ObjectIntegrityError, match="history is invalid JSON"):
         build_training_metrics(spec, manifest, read_history=lambda _: invalid)
+
+
+def imported_spec(
+    manifest: ModelBundle, architecture: str, policy: TrainingPolicy | FixedUpdatePolicy
+) -> ImportedTrainingSpec:
+    return ImportedTrainingSpec(
+        origin="external",
+        architecture_id=architecture,
+        model_version_id=manifest.model_version_id,
+        build_id=manifest.build_id,
+        implementation_version=manifest.implementation_version,
+        analysis_profile_id=manifest.analysis_profile,
+        evidence=manifest.training,
+        weights=next(member for member in manifest.members if member.role == "weights"),
+        inference_runtime=InferenceRuntime(),
+        configuration={"training_policy": policy.model_dump(mode="json")},
+    )
+
+
+@pytest.mark.parametrize("architecture", ("tcn", "persistence"))
+def test_imported_epoch_history_records_each_repeats_stopping_reason(
+    tmp_path: Path, architecture: str
+) -> None:
+    history: dict[str, JsonValue] = {
+        "epochs": [
+            {"seed": 11, "epoch": 1},
+            {"seed": 11, "epoch": 2},
+            {"seed": 23, "epoch": 1},
+            {"seed": 23, "epoch": 2},
+            {"seed": 23, "epoch": 3},
+        ]
+    }
+    payload = json_bytes(history)
+    manifest = manifest_with_history(tmp_path / "bundle", "history.json", len(payload))
+    policy = TrainingPolicy(optimizer="adamw", seeds=(11, 23), epochs=3, patience=1)
+    spec = imported_spec(manifest, architecture, policy)
+    metrics = build_training_metrics(spec, manifest, read_history=lambda _: payload)
+    assert metrics.repeat_outcomes == (
+        RepeatOutcome(seed=11, step=2, reason="early_stopping"),
+        RepeatOutcome(seed=23, step=3, reason="epoch_limit"),
+    )
+    assert not RepeatOutcome.from_history(spec.model_copy(update={"configuration": None}), history)
+
+
+def test_imported_update_history_records_the_update_limit(tmp_path: Path) -> None:
+    manifest = bundle(tmp_path / "bundle")
+    policy = FixedUpdatePolicy(seeds=(11, 23), updates=1, validation_updates=(1,))
+    spec = imported_spec(manifest, "tcn", policy)
+    history: dict[str, JsonValue] = {
+        "updates": [{"seed": 11, "update": 1}, {"seed": 23, "update": 1}]
+    }
+    assert RepeatOutcome.from_history(spec, history) == (
+        RepeatOutcome(seed=11, step=1, reason="update_limit"),
+        RepeatOutcome(seed=23, step=1, reason="update_limit"),
+    )

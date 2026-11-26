@@ -40,9 +40,7 @@ def build_training_metrics(
         validation_segment_macro_f1=manifest.training.validation_segment_macro_f1,
         history=history,
         history_note=note,
-        repeat_outcomes=RepeatOutcome.from_history(spec, history)
-        if isinstance(spec, TrainingSpec)
-        else (),
+        repeat_outcomes=RepeatOutcome.from_history(spec, history),
     )
 
 

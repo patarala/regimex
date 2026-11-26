@@ -6,7 +6,12 @@ from uuid import UUID
 import psycopg
 from psycopg.types.json import Json
 
-from regimex.admin_contracts import AdminRunRecord, TrainingMetrics
+from regimex.admin_contracts import (
+    AdminRunRecord,
+    ImportedTrainingSpec,
+    RepeatOutcome,
+    TrainingMetrics,
+)
 from regimex.direction_quality import DirectionQualityEvidence
 from regimex.service_contracts import Conflict, NotFound
 from regimex.storage import json_bytes
@@ -33,20 +38,33 @@ def read_training_metrics(
     connection: Connection, owner_id: str, run_id: UUID
 ) -> TrainingMetrics | None:
     row = connection.execute(
-        "SELECT o.state,t.committed_model_version_id,m.document FROM regimex_training_runs t "
+        "SELECT o.state,t.committed_model_version_id,m.document,a.request "
+        "FROM regimex_training_runs t "
         "JOIN regimex_operations o USING (operation_id) "
         "LEFT JOIN regimex_training_metrics m USING (operation_id) "
+        "LEFT JOIN regimex_admin_runs a ON a.operation_id=t.operation_id AND t.external "
         "WHERE t.operation_id=%s AND o.owner_id=%s",
         (run_id, owner_id),
     ).fetchone()
     if row is None:
         raise NotFound()
-    state, committed_model_version_id, document = row
+    state, committed_model_version_id, document, imported_request = row
     if document is None:
         return None
     if state != "succeeded":
         raise Conflict("Only a successful training run can have saved metrics.")
-    return verified_metrics(document, committed_model_version_id)
+    metrics = verified_metrics(document, committed_model_version_id)
+    # Earlier imports saved the policy and history separately, even after weight deletion.
+    if (
+        imported_request is not None
+        and not metrics.repeat_outcomes
+        and isinstance(metrics.history, dict)
+    ):
+        spec = ImportedTrainingSpec.model_validate_json(json_bytes(imported_request))
+        outcomes = RepeatOutcome.from_history(spec, metrics.history)
+        if outcomes:
+            return metrics.model_copy(update={"repeat_outcomes": outcomes})
+    return metrics
 
 
 def _metrics_document(metrics: TrainingMetrics) -> Json:

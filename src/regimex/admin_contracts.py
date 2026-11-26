@@ -3,7 +3,7 @@
 from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, JsonValue, model_validator
+from pydantic import AwareDatetime, Field, JsonValue, RootModel, ValidationError, model_validator
 
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
 from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup, content_hash
@@ -26,6 +26,7 @@ from regimex.model_registry import (
     TreeDepth,
 )
 from regimex.operations import Operation, Sha256
+from regimex.storage import json_bytes
 
 
 class RequestFingerprint(StrictModel):
@@ -257,6 +258,17 @@ class ImportedTrainingSpec(StrictModel):
     configuration: dict[str, JsonValue] | None
     inference_runtime: InferenceRuntime
 
+    @property
+    def recorded_policy(self) -> TrainingPolicySpec | None:
+        settings = (self.configuration or {}).get("training_policy")
+        if not isinstance(settings, dict):
+            return None
+        try:
+            policy = RootModel[TrainingPolicySpec].model_validate_json(json_bytes(settings)).root
+        except ValidationError:
+            return None
+        return policy if policy.seeds == self.evidence.seeds else None
+
 
 class PublicationSpec(StrictModel):
     kind: Literal["publication"] = "publication"
@@ -322,11 +334,13 @@ class RepeatOutcome(StrictModel):
     reason: Literal["early_stopping", "epoch_limit", "update_limit"]
 
     @classmethod
-    def from_history(cls, spec: TrainingSpec, history: JsonValue) -> tuple[Self, ...]:
+    def from_history(
+        cls, spec: TrainingSpec | ImportedTrainingSpec, history: JsonValue
+    ) -> tuple[Self, ...]:
         if spec.architecture_id not in ("tcn", "persistence") or not isinstance(history, dict):
             return ()
-        policy = spec.policy
-        if isinstance(policy, SingleFitPolicy):
+        policy = spec.recorded_policy if isinstance(spec, ImportedTrainingSpec) else spec.policy
+        if policy is None or isinstance(policy, SingleFitPolicy):
             return ()
         unit = "update" if isinstance(policy, FixedUpdatePolicy) else "epoch"
         rows = history.get(unit + "s")
