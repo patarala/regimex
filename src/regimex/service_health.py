@@ -1,6 +1,7 @@
 """Bounded operational probes, distinct from scientific worker capability."""
 
 import fcntl
+import ipaddress
 import json
 import os
 import socket
@@ -240,6 +241,7 @@ def api_healthy(
     *,
     component: Literal["ready", "models"],
     port: int,
+    connect_host: str | None = None,
     ca_file: Path | None = None,
 ) -> bool:
     """Probe the local listener while verifying its configured TLS name and CA."""
@@ -248,9 +250,15 @@ def api_healthy(
     assert host is not None
     if origin.scheme != "https" and ca_file is not None:
         raise ValueError("a CA file requires an HTTPS public origin")
+    if connect_host is None:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = host == "localhost"
+        connect_host = host if loopback else "127.0.0.1"
     try:
         context = ssl.create_default_context(cafile=None if ca_file is None else str(ca_file))
-        with socket.create_connection(("127.0.0.1", port), timeout=5) as raw:
+        with socket.create_connection((connect_host, port), timeout=5) as raw:
             connection = (
                 context.wrap_socket(raw, server_hostname=host) if origin.scheme == "https" else raw
             )

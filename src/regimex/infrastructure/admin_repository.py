@@ -3,7 +3,7 @@
 import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import NamedTuple, cast
 from uuid import UUID, uuid4
 
@@ -1013,7 +1013,7 @@ class AdminRepository:
             if cast(int, count[0]) >= max_pending:
                 raise CapacityExceeded()
             model = self._validate_spec(connection, principal.owner_id, spec)
-            now = datetime.now(UTC)
+            now = self.database._now(connection)
             run_id = uuid4()
             operation = Operation(
                 operation_id=run_id,
@@ -1120,7 +1120,7 @@ class AdminRepository:
             run.operation,
             token,
             hashlib.sha256(json_bytes(output)).hexdigest(),
-            self.database._now(run.operation),
+            self.database._now(connection, run.operation),
         )
         connection.execute(
             "UPDATE regimex_admin_runs SET output=%s WHERE operation_id=%s",
@@ -1473,7 +1473,7 @@ class AdminRepository:
         display_name: str | None,
         launch_source: LaunchSource | None,
     ) -> AdminRunRecord:
-        now = datetime.now(UTC)
+        now = self.database._now(connection)
         run_id = uuid4()
         request = spec.model_dump(mode="json")
         output: dict[str, JsonValue] = {

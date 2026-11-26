@@ -89,6 +89,7 @@ def health(
     ] = "ready",
     queue: Annotated[Literal["analysis", "admin", "maintenance"] | None, typer.Option()] = None,
     port: Annotated[int | None, typer.Option(min=1, max=65535)] = None,
+    host: Annotated[str | None, typer.Option(help="Address of the API listener to probe.")] = None,
     ca_file: Annotated[Path | None, typer.Option(exists=True, dir_okay=False)] = None,
 ) -> None:
     """Check the API, this worker's heartbeat, or the database schema for this release."""
@@ -98,7 +99,7 @@ def health(
 
         settings = ServiceSettings.from_env()
         if component == "database":
-            if any(option is not None for option in (queue, port, ca_file)):
+            if any(option is not None for option in (queue, port, host, ca_file)):
                 raise ValueError("Database health accepts no queue or HTTP settings")
             from regimex.infrastructure.database import DatabaseRepository
 
@@ -106,13 +107,15 @@ def health(
                 settings.database_dsn.get_secret_value(), schema=settings.database_schema
             ).readiness()
         elif component == "worker":
-            if queue is None or port is not None or ca_file is not None:
+            if queue is None or any(option is not None for option in (port, host, ca_file)):
                 raise ValueError("Worker health requires a queue and accepts no HTTP settings")
             healthy = worker_healthy(settings, queue)
         else:
             if queue is not None:
                 raise ValueError("An API health probe does not accept a worker queue")
-            healthy = api_healthy(settings, component=component, port=port or 8000, ca_file=ca_file)
+            healthy = api_healthy(
+                settings, component=component, port=port or 8000, connect_host=host, ca_file=ca_file
+            )
         typer.echo(
             json.dumps(
                 {

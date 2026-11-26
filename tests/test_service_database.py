@@ -452,15 +452,9 @@ def test_analysis_history_is_recent_before_pagination_with_owner_source_and_run_
     current_time = datetime(2026, 1, 1, tzinfo=UTC)
     next_id = UUID(int=1, version=4)
 
-    class Clock:
-        @staticmethod
-        def now(zone: tzinfo | None = None) -> datetime:
-            assert zone is UTC
-            return current_time
-
     # Deterministic clock/IDs make both UUID directions incorrect. All SQL,
     # transactional queue deliveries and resource authorization remain real.
-    monkeypatch.setattr(database_module, "datetime", Clock)
+    monkeypatch.setattr(repository, "_now", lambda connection: current_time)
     monkeypatch.setattr(database_module, "uuid4", lambda: next_id)
     order = []
     for index in range(24):
@@ -764,6 +758,47 @@ def test_cancelled_and_recovered_attempts_cannot_commit(repository: DatabaseRepo
     assert repository.get_operation(_principal(), operation_id).state == "cancelled"
     assert repository.get_analysis(_principal(), operation_id).result is None
     assert _counts(repository) == (1, 2)
+
+
+def test_lease_uses_database_time_when_api_worker_and_maintenance_clocks_differ(
+    repository: DatabaseRepository, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex import service_worker
+    from regimex.infrastructure import database
+    from regimex.service_bootstrap import create_service
+
+    offset = timedelta(days=1)
+
+    class HostClock:
+        @staticmethod
+        def now(tz: tzinfo | None = None) -> datetime:
+            return datetime.now(tz) + offset
+
+    monkeypatch.setattr(database, "datetime", HostClock)
+    monkeypatch.setattr(service_worker, "datetime", HostClock, raising=False)
+    settings = ServiceSettings(
+        database_dsn=SecretStr(repository._dsn),
+        database_schema=repository.schema,
+        object_root=tmp_path / "objects",
+        work_root=tmp_path / "work",
+    )
+    service = create_service(settings)
+    operation_id = _submit(repository)
+    offset = -timedelta(days=1)
+    attempt = repository.claim_operation(operation_id)
+    assert attempt is not None and attempt.attempt_token is not None
+    beat = repository.heartbeat_operation(operation_id, attempt.attempt_token, "predicting")
+    with repository.connection() as connection:
+        clock = connection.execute("SELECT clock_timestamp()").fetchone()
+    assert clock is not None and beat.heartbeat_at is not None
+    assert beat.created_at <= beat.heartbeat_at <= cast(datetime, clock[0])
+    assert cast(datetime, clock[0]) - beat.created_at < timedelta(minutes=1)
+
+    offset = timedelta(days=2)
+    assert service_worker.recover_operations(settings, service) == 0
+    assert repository.get_operation(_principal(), operation_id) == beat
+    (expired,) = repository.recover_operations(stale_after=timedelta())
+    assert expired.state == "queued"
 
 
 def test_exhausted_recovery_is_terminal_and_queued_cancel_never_starts(

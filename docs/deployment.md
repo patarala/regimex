@@ -291,6 +291,10 @@ See [storage](storage.md) for S3 settings, quotas and recovery.
 `/health/live` checks the API process. `/health/ready` requires a writable
 database, the expected schema and a completed restore.
 `/health/models` checks active deployment metadata without testing inference.
+`service health --component ready` and `--component models` use the host in
+the public origin when it is a loopback address or `localhost`. For other
+origins they connect to `127.0.0.1`. Use `--host` and `--port` to probe a
+particular listener. HTTPS still checks the certificate for the public origin.
 `service health --component worker --queue analysis` checks the registered local
 worker and fresh database heartbeat. A completed saved-model analysis is the
 functional check for backend loading, prediction, report rendering and persistence.
@@ -412,6 +416,11 @@ Verify a saved-model analysis before reopening intake.
 
 A worker's heartbeat can remain fresh for up to `REGIMEX_STALE_SECONDS` after
 an abrupt shutdown. A busy worker can pass diagnostics while every slot is in use.
+
+When upgrading a cluster whose hosts had different clocks, drain the workers
+first if possible. A running attempt stamped in the future by an older worker
+becomes eligible for recovery once PostgreSQL reaches its last recorded
+heartbeat plus `REGIMEX_STALE_SECONDS`.
 
 Logs are bounded JSON with route templates, status and elapsed time; credentials,
 request bodies and arbitrary query strings are excluded. Docker rotates its local

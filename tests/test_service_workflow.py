@@ -807,6 +807,46 @@ def test_actual_queue_executes_registered_baseline(
     assert report["phases"]["serial"]["median_ms"]["prediction"] == timing["prediction_ms"]
 
 
+def test_analysis_reports_rendering_during_render_and_verification_afterward(
+    service: AnalysisService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex.application import analysis_computation, report
+
+    published_model(service, tmp_path)
+    owner = principal(service.repository)
+    snapshot = service.create_snapshot(owner, source(2007).export)
+    queued = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key="progress")
+    operation_id = queued.operation.operation_id
+    stages = []
+    render = report.render_analysis_report
+    read_output = analysis_worker._read_output
+
+    def run_child(
+        payload: dict[str, Any], root: Path, *, heartbeat: Callable[[], None], **kwargs: object
+    ) -> dict[str, Any]:
+        heartbeat()
+        stages.append(service.repository.get_operation(owner, operation_id).stage)
+
+        def observe_render(*args: Any, **kwargs: Any) -> report.RenderedReport:
+            # Poll at the render boundary even on machines where rendering is faster than a tick.
+            heartbeat()
+            stages.append(service.repository.get_operation(owner, operation_id).stage)
+            return render(*args, **kwargs)
+
+        monkeypatch.setattr(report, "render_analysis_report", observe_render)
+        return analysis_computation.compute(payload, root)
+
+    def verify(path: Path, limit: int, digest: str) -> bytes:
+        stages.append(service.repository.get_operation(owner, operation_id).stage)
+        return read_output(path, limit, digest)
+
+    monkeypatch.setattr(analysis_worker, "supervise_child", run_child)
+    monkeypatch.setattr(analysis_worker, "_read_output", verify)
+    completed = service.run_analysis(operation_id)
+    assert completed is not None and completed.state == "succeeded"
+    assert stages == ["predicting", "rendering", "verifying", "verifying"]
+
+
 def test_unavailable_worker_model_and_cache_budget_fail_explicitly(
     service: AnalysisService, tmp_path: Path
 ) -> None:

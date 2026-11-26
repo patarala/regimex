@@ -199,17 +199,19 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
     )
     result_bytes = json_bytes(result.model_dump(mode="json"))
     result_sha256 = hashlib.sha256(result_bytes).hexdigest()
+    prediction_finished = time.perf_counter_ns()
+    # The supervisor uses this private output to observe the handoff to rendering.
+    (root / "analysis-result.json").write_bytes(result_bytes)
     report_started = time.perf_counter_ns()
     rendered = render_analysis_report(export, result, result_sha256=result_sha256)
     report_finished = time.perf_counter_ns()
-    (root / "analysis-result.json").write_bytes(result_bytes)
     (root / "analysis-report.html").write_bytes(rendered.html)
     return {
         "result_sha256": result_sha256,
         "report_sha256": hashlib.sha256(rendered.html).hexdigest(),
         "plotly_version": rendered.plotly_version,
         "model_load_ms": (prediction_started - load_started) / 1_000_000,
-        "prediction_ms": (report_started - prediction_started) / 1_000_000,
+        "prediction_ms": (prediction_finished - prediction_started) / 1_000_000,
         "backend_predict_ms": backend_predict_ms,
         "report_ms": (report_finished - report_started) / 1_000_000,
     }

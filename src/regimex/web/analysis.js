@@ -8,6 +8,7 @@ const stages = {
   loading: "Loading the experiment.",
   predicting: "Analyzing prices.",
   rendering: "Preparing the report.",
+  verifying: "Verifying the analysis and report.",
   committing: "Saving the analysis.",
   retry_wait: "Waiting to retry.",
 };

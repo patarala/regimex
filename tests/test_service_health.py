@@ -419,6 +419,33 @@ def test_api_probe_reports_incomplete_http_as_unhealthy(
         assert not api_healthy(config, component="ready", port=8000)
 
 
+def test_ready_probe_reaches_ipv6_loopback_listener(
+    database: DatabaseRepository, tmp_path: Path
+) -> None:
+    try:
+        with socket.socket(socket.AF_INET6) as selected:
+            selected.bind(("::1", 0))
+            port = selected.getsockname()[1]
+    except OSError as error:
+        pytest.skip(f"IPv6 loopback unavailable: {error}")
+    value = ServiceSettings(
+        database_dsn=SecretStr(database._dsn),
+        public_origin=f"http://[::1]:{port}",
+        allow_loopback_http=True,
+        object_root=tmp_path / "objects",
+        work_root=tmp_path / "work",
+    )
+    env = {**environment(value, tmp_path), "REGIMEX_ALLOW_LOOPBACK_HTTP": "true"}
+    with running(tmp_path, env, "serve", "--host", "::1", "--port", str(port)) as child:
+        deadline = time.monotonic() + 15
+        while not api_healthy(value, component="ready", port=port):
+            assert child.poll() is None and time.monotonic() < deadline
+            time.sleep(0.05)
+        result = CliRunner().invoke(app, ["service", "health", "--port", str(port)], env=env)
+        assert result.exit_code == 0, result.output
+        assert not api_healthy(value, component="ready", port=port, connect_host="127.0.0.1")
+
+
 def test_direct_tls_readiness_sni_ca_origin_and_redacted_request_logs(
     database: DatabaseRepository, tmp_path: Path
 ) -> None:
@@ -448,10 +475,26 @@ def test_direct_tls_readiness_sni_ca_origin_and_redacted_request_logs(
             time.sleep(0.05)
         assert not api_healthy(value, component="models", port=port, ca_file=cert)
         assert not api_healthy(value, component="ready", port=port, ca_file=wrong)
+        result = CliRunner().invoke(
+            app,
+            [
+                "service",
+                "health",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "--ca-file",
+                str(cert),
+            ],
+            env=env,
+        )
+        assert result.exit_code == 0, result.output
         assert not api_healthy(
             value.model_copy(update={"public_origin": f"https://wrong.example:{port}"}),
             component="ready",
             port=port,
+            connect_host="127.0.0.1",
             ca_file=cert,
         )
         request = Request(

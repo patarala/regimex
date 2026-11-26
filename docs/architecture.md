@@ -38,9 +38,11 @@ first, so it can be reused if analysis submission fails. Both paths enqueue
 the same worker task. [Simulator request sequence](integration.md#request-sequence)
 
 The worker renews its claim while downloading inputs, computing and saving the
-report. A retry gets a new attempt token. The database checks the token and
-cancellation state in the transaction that makes a result visible. If
-cancellation wins, the job ends as cancelled and the report stays unpublished.
+report. Both renewal and recovery use the PostgreSQL clock, so workers on
+different hosts share the same timeout. A retry gets a new attempt token. The
+database checks the token and cancellation state in the transaction that
+makes a result visible. If cancellation wins, the job ends as cancelled and
+the report stays unpublished.
 
 ## Where to find the code
 

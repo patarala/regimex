@@ -10,7 +10,7 @@ import re
 import secrets
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, cast
 from uuid import UUID, uuid4
@@ -789,7 +789,7 @@ class DatabaseRepository:
             if not self._published(connection, model.model_version_id):
                 raise NotFound("Analysis requires an explicitly published model version.")
             operation_id = uuid4()
-            now = datetime.now(UTC)
+            now = self._now(connection)
             operation = Operation(
                 operation_id=operation_id,
                 owner_id=principal.owner_id,
@@ -1038,8 +1038,15 @@ class DatabaseRepository:
             )
 
     @staticmethod
-    def _now(operation: Operation) -> datetime:
-        return max(datetime.now(UTC), operation.updated_at)
+    def _now(
+        connection: psycopg.Connection[tuple[object, ...]], operation: Operation | None = None
+    ) -> datetime:
+        # Read the database clock after taking the row lock. An older operation
+        # may have been stamped by a host whose clock was ahead of PostgreSQL.
+        row = connection.execute("SELECT clock_timestamp()").fetchone()
+        assert row is not None
+        now = cast(datetime, row[0])
+        return max(now, operation.updated_at) if operation is not None else now
 
     def get_operation(self, principal: Principal, operation_id: UUID) -> Operation:
         with self.connection() as connection:
@@ -1071,7 +1078,7 @@ class DatabaseRepository:
             if operation.owner_id != principal.owner_id:
                 raise NotFound()
             self._authorize_operation(connection, principal, operation)
-            operation = request_cancel(operation, self._now(operation))
+            operation = request_cancel(operation, self._now(connection, operation))
             self._save(connection, operation)
             return operation
 
@@ -1080,7 +1087,7 @@ class DatabaseRepository:
             operation = self._operation(connection, operation_id, lock=True)
             if operation.state != "queued":
                 return None
-            operation = start_attempt(operation, uuid4(), self._now(operation))
+            operation = start_attempt(operation, uuid4(), self._now(connection, operation))
             self._save(connection, operation)
             return operation
 
@@ -1088,7 +1095,7 @@ class DatabaseRepository:
         with self.connection(heartbeat=True) as connection:
             operation = self._operation(connection, operation_id, lock=True)
             try:
-                operation = heartbeat(operation, token, stage, self._now(operation))
+                operation = heartbeat(operation, token, stage, self._now(connection, operation))
             except ValueError as exc:
                 raise StaleAttempt() from exc
             self._save(connection, operation)
@@ -1128,7 +1135,9 @@ class DatabaseRepository:
                 return
             if operation.state != "cancel_requested":
                 raise StaleAttempt()
-            self._save(connection, acknowledge_cancel(operation, token, self._now(operation)))
+            self._save(
+                connection, acknowledge_cancel(operation, token, self._now(connection, operation))
+            )
         # Commit cancellation before telling the worker to discard its output.
         raise StaleAttempt()
 
@@ -1151,7 +1160,7 @@ class DatabaseRepository:
             connection,
             operation,
         ):
-            completed = succeed(operation, token, digest, self._now(operation))
+            completed = succeed(operation, token, digest, self._now(connection, operation))
             report = AnalysisReportRecord.model_validate_json(report.model_dump_json())
             analysis = self._analysis(connection, operation_id)
             snapshot = self._snapshot(connection, analysis.snapshot_id)
@@ -1204,7 +1213,7 @@ class DatabaseRepository:
         with self.connection() as connection:
             operation = self._operation(connection, operation_id, lock=True)
             try:
-                operation = fail(operation, token, failure, self._now(operation))
+                operation = fail(operation, token, failure, self._now(connection, operation))
             except ValueError as exc:
                 raise StaleAttempt() from exc
             self._save(connection, operation)
@@ -1213,15 +1222,28 @@ class DatabaseRepository:
             return operation
 
     def recover_operations(
-        self, stale_before: datetime, *, limit: int = 100
+        self,
+        stale_before: datetime | None = None,
+        *,
+        stale_after: timedelta | None = None,
+        limit: int = 100,
     ) -> tuple[Operation, ...]:
+        """Recover through a known cutoff, or measure lease age against the database clock."""
+        if (stale_before is None) == (stale_after is None):
+            raise ValueError("supply a recovery cutoff or lease age")
         if not 1 <= limit <= 1000:
             raise ValueError("recovery limit must be 1..1000")
-        if stale_before.tzinfo is None or stale_before.utcoffset() is None:
+        if stale_after is not None and stale_after < timedelta(0):
+            raise ValueError("stale age must not be negative")
+        if stale_before is not None and stale_before.utcoffset() is None:
             raise ValueError("stale cutoff must be timezone aware")
-        if stale_before > datetime.now(UTC):
-            raise ValueError("stale cutoff must not be in the future")
         with self.connection() as connection:
+            now = self._now(connection)
+            if stale_after is not None:
+                stale_before = now - stale_after
+            assert stale_before is not None
+            if stale_before > now:
+                raise ValueError("stale cutoff must not be in the future")
             rows = connection.execute(
                 "SELECT document FROM regimex_operations WHERE "
                 "state IN ('running','cancel_requested') AND heartbeat_at<=%s "
@@ -1232,7 +1254,7 @@ class DatabaseRepository:
             recovered: list[Operation] = []
             for row in rows:
                 operation = _read_operation(row[0])
-                operation = recover_stale(operation, stale_before, self._now(operation))
+                operation = recover_stale(operation, stale_before, max(now, operation.updated_at))
                 self._save(connection, operation)
                 if operation.state == "queued":
                     self._enqueue(connection, operation)
@@ -1296,7 +1318,7 @@ class DatabaseRepository:
                 operation = _read_operation(row[0])
                 token = uuid4()
                 # A lost delivery consumes an attempt without any time in a worker.
-                recovered_at = self._now(operation)
+                recovered_at = self._now(connection, operation)
                 operation = start_attempt(operation, token, recovered_at)
                 operation = fail(
                     operation,

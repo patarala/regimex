@@ -1,7 +1,7 @@
 """Queue entry points; operations, rather than deliveries, own result state."""
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
@@ -95,8 +95,9 @@ def create_worker_app(
 
 def recover_operations(settings: ServiceSettings, service: AnalysisService) -> int:
     """Fence stale attempts and repair operations whose queue deliveries were lost."""
-    cutoff = datetime.now(UTC) - timedelta(seconds=settings.stale_seconds)
-    recovered = service.repository.recover_stale(cutoff)
+    recovered = service.repository.recover_operations(
+        stale_after=timedelta(seconds=settings.stale_seconds)
+    )
     queued = service.repository.recover_queued_deliveries(
         stalled_worker_seconds=settings.stale_seconds
     )

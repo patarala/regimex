@@ -242,6 +242,17 @@ def run_analysis(
                     "descriptor": descriptor.model_dump(mode="json"),
                     "parameter_schema": descriptor.parameters_model.model_json_schema(),
                 }
+                result_path = root / "analysis-result.json"
+                rendering = False
+
+                def poll_child() -> None:
+                    nonlocal rendering
+                    if not rendering and result_path.exists():
+                        heartbeat.check("rendering")
+                        rendering = True
+                    else:
+                        heartbeat.poll()
+
                 remaining = heartbeat.remaining_seconds
                 child_started = time.perf_counter_ns()
                 files = _ComputedFiles.model_validate_json(
@@ -255,7 +266,7 @@ def run_analysis(
                                 service.scratch_budget_bytes,
                                 model.inference_runtime.threads,
                             ),
-                            heartbeat=heartbeat.poll,
+                            heartbeat=poll_child,
                             task="analysis",
                         )
                     )
@@ -273,10 +284,8 @@ def run_analysis(
                         "report_ms": files.report_ms,
                     },
                 )
-                heartbeat.check("rendering")
-                result_bytes = _read_output(
-                    root / "analysis-result.json", MAX_INPUT_BYTES, files.result_sha256
-                )
+                heartbeat.check("verifying")
+                result_bytes = _read_output(result_path, MAX_INPUT_BYTES, files.result_sha256)
                 result = AnalysisResult.model_validate_json(result_bytes)
                 if (
                     result.analysis_id != analysis.analysis_id
