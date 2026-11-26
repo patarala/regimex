@@ -262,7 +262,8 @@ export function createDeletion({session, onApplied}) {
         button.className = "quiet";
         button.textContent = `${targets[receipt.target_kind].label} ${receipt.target_id.slice(-8)} · ${bytes(receipt.pending_bytes)} pending`;
         button.addEventListener("click", () => {
-          if (active()) return showReceipt(receipt.target_kind, receipt.target_id, receipt.deletion_id, "", false);
+          if (session.value && epoch === session.epoch)
+            return showReceipt(receipt.target_kind, receipt.target_id, receipt.deletion_id, "", false);
         });
         row.append(button);
         return row;

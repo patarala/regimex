@@ -433,6 +433,10 @@ test("pending deletions survive workspace reload through server receipts", async
   ui.pending("/api/v1/deletions?limit=21&offset=0").reply({items: [receipt]});
   await flush();
   assert.equal(ui.get("pending-deletions").hidden, false);
+  await ui.get("pending-deletions-refresh").click();
+  ui.pending("/api/v1/deletions?limit=21&offset=0").reply({error: {message: "Try again."}}, 503);
+  await flush();
+  assert.match(ui.get("pending-deletion-status").textContent, /Try again/);
   void ui.get("pending-deletion-list").children[0].children[0].click();
   ui.pending(`/api/v1/deletions/${plan.plan_id}`).reply(receipt);
   await flush();
@@ -1162,18 +1166,26 @@ test("an old rerun response cannot replace another selected analysis", async () 
 test("model paging is bounded and preserves a version selected on another page", async () => {
   const ui = await workspace();
   await flush();
-  ui.models.splice(0, ui.models.length, ...Array.from({length: 120}, (_, index) => ({model_version_id: `model-${index}`})));
+  ui.models.splice(0, ui.models.length, ...Array.from({length: 100}, (_, index) => ({model_version_id: `model-${index}`})));
   ui.state.activeModelId = null;
   await ui.get("models-refresh").click();
   assert.equal(ui.get("upload-model").value, "");
   assert.equal(ui.get("models-next").hidden, false);
+  const saved = metadata("old-analysis", "failed");
+  saved.job.model.model_version_id = "model-88";
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(saved);
+  await flush();
+  assert.equal(ui.get("rerun-model").value, "model-88");
   ui.get("upload-model").value = "model-9";
   await ui.get("upload-model").emit("change");
   await ui.get("models-next").click();
   assert.equal(ui.get("upload-model").value, "model-9");
-  assert.equal(ui.get("upload-model").children.length, 22);
+  assert.equal(ui.get("rerun-model").value, "model-88");
+  assert.equal(ui.get("upload-model").children.length, 52);
+  assert.equal(ui.get("upload-model").children.at(-1).value, "model-99");
   assert.equal(ui.get("models-next").hidden, true);
-  assert.ok(ui.calls.some((call) => call.url === "/api/v1/models?published_only=true&limit=100&offset=100"));
+  assert.ok(ui.calls.some((call) => call.url === "/api/v1/models?published_only=true&limit=51&offset=50"));
 });
 
 test("comparisons page only completed matching snapshots and clear when selection changes", async () => {
@@ -1200,6 +1212,16 @@ test("comparisons page only completed matching snapshots and clear when selectio
   await ui.get("comparison-refresh").click();
   assert.equal(ui.get("comparison-target").value, id(21));
   assert.equal(ui.get("comparison-target").children.length, 11);
+  ui.state.holdHistory = true;
+  const refresh = ui.get("comparison-refresh").click();
+  const query = `/api/v1/analyses?snapshot_id=${id(1000)}&state=succeeded&limit=21&offset=20`;
+  assert.equal(ui.get("compare").disabled, true);
+  ui.pending(query).reply({error: {message: "Temporarily unavailable."}}, 503);
+  await refresh;
+  assert.equal(ui.get("comparison-status").textContent, "Temporarily unavailable.");
+  assert.equal(ui.get("comparison-target").disabled, false);
+  assert.equal(ui.get("comparison-target").value, id(21));
+  assert.equal(ui.get("compare").disabled, false);
   await ui.get("compare").click();
   assert.equal(ui.get("comparison-preview").src, `/api/v1/analyses/${id(1)}/comparison/preview?other=${id(21)}`);
   assert.equal(ui.get("download-comparison").href, `/api/v1/analyses/${id(1)}/comparison?other=${id(21)}`);
@@ -1431,6 +1453,36 @@ test("refreshing history updates the expanded analysis page and its comparison c
   checkbox.checked = true;
   await checkbox.emit("change");
   assert.equal(byClass(card, "experiment-compare").disabled, false);
+  await byClass(card, "experiment-clear-selection").click();
+  assert.equal(checkbox.checked, false);
+  await byClass(card, "experiment-run-pages").children[0].click();
+  assert.equal(runs.children[0].children[0].checked, false);
+  assert.equal(byClass(card, "experiment-clear-selection").hidden, true);
+});
+
+test("refresh releases comparison selections deleted in another session", async () => {
+  const ui = await workspace(3);
+  await flush();
+  for (const item of ui.items) {
+    item.snapshot_id = id(1000);
+    item.job.state = "succeeded";
+    item.result_available = true;
+  }
+  await ui.get("refresh-history").click();
+  const card = ui.get("history-list").children[0];
+  await byClass(card, "experiment-expand").click();
+  const list = byClass(card, "experiment-run-list");
+  for (const row of list.children.slice(0, 2)) {
+    row.children[0].checked = true;
+    await row.children[0].emit("change");
+  }
+  assert.equal(list.children[2].children[0].disabled, true);
+  ui.items.splice(0, 2);
+  await ui.get("refresh-history").click();
+  assert.equal(list.children.length, 1);
+  assert.equal(list.children[0].children[0].disabled, false);
+  assert.equal(byClass(card, "experiment-compare").disabled, true);
+  assert.equal(byClass(card, "experiment-clear-selection").hidden, true);
 });
 
 test("group comparison cannot replace an analysis selected while its first result loads", async () => {

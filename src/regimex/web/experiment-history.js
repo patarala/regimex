@@ -89,8 +89,18 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   pages.append(previous, next, reload);
   const compare = button("quiet experiment-compare", "Compare selected");
   compare.disabled = true;
+  const clear = button("quiet experiment-clear-selection", "Clear selection");
+  clear.hidden = true;
+  clear.addEventListener("click", () => {
+    selected.clear();
+    updateComparison();
+    const available = [...list.children].find(row => !row.children[0].disabled);
+    (available?.children[0] ?? expand).focus();
+  });
   const chosen = element("p", "hint comparison-selection");
-  runs.append(compare, chosen, list, runStatus, pages);
+  const selectionActions = element("div", "experiment-tools");
+  selectionActions.append(compare, clear);
+  runs.append(selectionActions, chosen, list, runStatus, pages);
   node.append(latest, tools, editor, runs);
 
   function title() {
@@ -132,6 +142,7 @@ export function createExperimentHistory({session, experiment, filters, isActive,
   }
   function updateComparison() {
     compare.disabled = selected.size !== 2;
+    clear.hidden = !selected.size;
     chosen.textContent = selected.size
       ? `${selected.size} selected · ${[...selected.values()].map((item) =>
         `${item.job.model?.model_version_id || "Model unavailable"} (${shortDate(item.job.created_at)})`).join(", ")}`
@@ -192,6 +203,11 @@ export function createExperimentHistory({session, experiment, filters, isActive,
       offset = page;
       hasMore = data.items.length > PAGE_SIZE;
       items = data.items.slice(0, PAGE_SIZE).filter((item) => item.snapshot_id === value.snapshot_id);
+      if (page === 0 && !hasMore) {
+        for (const id of selected.keys()) {
+          if (!items.some(item => item.analysis_id === id)) selected.delete(id);
+        }
+      }
       for (const item of items) {
         if (selected.has(item.analysis_id)) {
           if (item.job.state === "succeeded" && item.result_available) selected.set(item.analysis_id, item);

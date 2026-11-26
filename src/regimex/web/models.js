@@ -1,6 +1,6 @@
 import {$, option} from "./ui.js";
 
-const MODEL_PAGE_SIZE = 100;
+const MODEL_PAGE_SIZE = 50;
 
 export function createModels({session, getSelection, getBusy, getUploadReady, getBatchLocked}) {
   let models = [];
@@ -79,12 +79,12 @@ export function createModels({session, getSelection, getBusy, getUploadReady, ge
     modelStatus("Loading models…");
     updateActions();
     try {
-      const data = await session.json(`/api/v1/models?published_only=true&limit=${MODEL_PAGE_SIZE}&offset=${offset}`);
+      const data = await session.json(`/api/v1/models?published_only=true&limit=${MODEL_PAGE_SIZE + 1}&offset=${offset}`);
       if (workspace !== session.epoch || generation !== modelGeneration || !session.value) return;
-      models = data.items;
+      models = data.items.slice(0, MODEL_PAGE_SIZE);
       activeModelId = data.active_model_version_id;
       modelOffset = offset;
-      modelHasMore = models.length === MODEL_PAGE_SIZE;
+      modelHasMore = data.items.length > MODEL_PAGE_SIZE;
       modelsReady = true;
       fillModelSelect("upload-model");
       fillModelSelect("rerun-model", $("rerun-model").value || getSelection()?.metadata?.job.model?.model_version_id);

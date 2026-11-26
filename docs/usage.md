@@ -48,7 +48,8 @@ trigger the overlay.
 Open a result, select a model under **Analyze this experiment again** and
 choose **Run again**. Both analyses use the same saved snapshot. In
 **Experiments**, expand its analysis count, select two successful runs and
-choose **Compare selected**. Select a row of disagreements to zoom both
+choose **Compare selected**. You can select runs on different pages or use
+**Clear selection** to start again. Select a row of disagreements to zoom both
 predictions to the same steps. **Download comparison** saves the comparison
 for offline use.
 

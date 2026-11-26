@@ -84,7 +84,12 @@ export function createComparison({session, getSelection, rememberComparison}) {
       picker.disabled = comparisonItems.length === 0;
       selection.comparisonLoaded = true;
     } catch (error) {
-      if (active()) $("comparison-status").textContent = error.message;
+      if (!active()) return;
+      $("comparison-status").textContent = error.message;
+      if (selection.comparisonLoaded && isTransientRequestError(error)) {
+        $("comparison-target").disabled = comparisonItems.length === 0;
+        $("compare").disabled = !comparisonItems.some(item => item.analysis_id === $("comparison-target").value);
+      }
     } finally {
       if (active()) {
         $("comparison-previous").disabled = comparisonOffset === 0;
