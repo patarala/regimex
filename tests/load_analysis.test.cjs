@@ -215,6 +215,48 @@ function testJourney(name, values = {}) {
     REGIMEX_LOAD_SECOND_TOKEN: "test-second", ...values }, "load_journeys.js");
 }
 
+test("burst records refusals and checks admitted jobs after submission and polling failures", async () => {
+  const {client, http, metrics} = await testJourney("burst", {REGIMEX_LOAD_BURST_PER_OWNER: "2"});
+  const model = {model_version_id: "fixture-model", bundle_sha256: "ab".repeat(32),
+    inference_policy_sha256: "cd".repeat(32)};
+  const state = Object.fromEntries(["first", "second"].map(owner => [owner, {
+    anchor: {owner, kind: "anchor", id: owner, digest: "ef".repeat(32),
+      source: {run_id: "burst"}, grid: {step_count: 1}, instruments: []},
+  }]));
+  const admitted = new Map();
+  http.batch = requests => requests.map((request, index) => {
+    if (index === 0) return {status: 500};
+    if (index === 2) return {status: 429, json: () => "capacity_limit"};
+    const snapshot = state[request.params.tags.owner].anchor;
+    const id = "job-" + index;
+    const view = {analysis_id: id, snapshot_id: snapshot.id, snapshot_sha256: snapshot.digest,
+      job: {operation_id: id, state: "queued", model, launch_source: {channel: "api", command: null}}};
+    admitted.set(id, view);
+    return {status: 202, json: () => view};
+  });
+  const polled = [];
+  http.request = (_method, url, _body, {tags: {name, owner}}) => {
+    const id = new URL(url).pathname.split("/")[4];
+    const view = admitted.get(id);
+    if (name === "poll analysis") {
+      polled.push(id);
+      return {status: 200, json: () => ({...view, result_available: true,
+        job: {...view.job, state: id === "job-1" ? "failed" : "succeeded"}})};
+    }
+    assert.equal(name, "download result");
+    const {source, grid, instruments} = state[owner].anchor;
+    return {status: 200, json: () => ({...view, result_version: "2.0", model,
+      class_names: ["sideways", "growth", "decline"], source, time_grid: grid, instruments, sequences: []})};
+  };
+  assert.throws(() => client.default(state), /HTTP 500[\s\S]*job-1: Unexpected analysis state failed/);
+  assert.deepEqual(polled, ["job-1", "job-3"]);
+  assert.deepEqual(metrics.get("journey_jobs_requested"), [2, 2]);
+  assert.deepEqual(metrics.get("journey_jobs_accepted"), [1, 1]);
+  assert.deepEqual(metrics.get("journey_capacity_refusals"), [1]);
+  assert.deepEqual(metrics.get("journey_results_verified"), [1]);
+  assert.deepEqual(metrics.get("journeys_verified"), []);
+});
+
 test("journey deadlines include the terminal poll and the result download", async () => {
   for (const [pollEnd, downloadEnd, expectedDownloads] of [
     [189900, 197900, 0], [179950, 187950, 1], [180000, 180000, 2],

@@ -80,7 +80,9 @@ for example `--profile uploads`.
 | `uploads` | Concurrently upload a short and a long export for both owners. Repeat the four uploads, check ownership and stable snapshot IDs, then analyse two of the snapshots. |
 
 The runner generates new seeds for each scenario and records them in `inputs.json`.
-A burst defaults to four submissions per owner. The stand accepts
+A burst defaults to four submissions per owner. If a submission fails, the
+client still checks the other responses and follows the admitted jobs before
+reporting the failure. The stand accepts
 `--burst-per-owner 2` through `12`. The two-owner scenarios use bounded
 iterations. Use the sustained profile to find the arrival rate a deployment can
 maintain over time.
@@ -214,3 +216,8 @@ REGIMEX_LOAD_RATE_PER_MINUTE=12 REGIMEX_LOAD_DURATION_SECONDS=60 \
 ```
 
 With `--sustained`, `REGIMEX_LOAD_MAX_VUS` sets the preallocated client pool. Use `REGIMEX_LOAD_MAX_RESULT_MS` to impose a submit-to-download latency threshold.
+
+Each phase checks its accepted count against the analysis IDs returned to
+all virtual users. Reusing an ID within or across phases fails the run. The
+printed output directory contains the k6 summaries and a `jobs.jsonl` list
+that records each ID once, under the phase that first received it.

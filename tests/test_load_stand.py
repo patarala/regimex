@@ -7,8 +7,76 @@ import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from uuid import UUID
 
 import pytest
+
+
+def write_acceptances(path: Path, phase: str, identities: list[int], count: int) -> None:
+    records = [{"phase": phase, "analysis_id": str(UUID(int=i))} for i in identities]
+    (path / f"{phase}-console.log").write_text(
+        "".join("REGIMEX_ACCEPTED " + json.dumps(record) + "\n" for record in records)
+    )
+    (path / f"{phase}.json").write_text(
+        json.dumps({"metrics": {"analyses_accepted": {"count": count}}})
+    )
+
+
+@pytest.mark.parametrize(
+    ("identities", "count", "error"),
+    [
+        ([1, 2], 2, None),
+        ([1, 2, 1, 3], 4, "4 acceptances reused 3 unique analysis IDs"),
+        ([1, 2], 3, "expected 3 acceptance records, found 2"),
+    ],
+)
+def test_phase_checks_acceptance_marks_across_virtual_users(
+    tmp_path: Path, identities: list[int], count: int, error: str | None
+) -> None:
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    collect = runpy.run_path(str(scripts / "load_acceptances.py"))["collect_acceptances"]
+    write_acceptances(tmp_path, "sustained", identities, count)
+    if error:
+        with pytest.raises(ValueError, match=error):
+            collect(tmp_path, "sustained")
+    else:
+        collect(tmp_path, "sustained")
+    jobs = [json.loads(line) for line in (tmp_path / "jobs.jsonl").read_text().splitlines()]
+    assert [UUID(job["analysis_id"]).int for job in jobs] == list(dict.fromkeys(identities))
+    assert all(job["phase"] == "sustained" for job in jobs)
+
+
+def test_reconciling_a_phase_twice_preserves_unique_ids_across_phases(tmp_path: Path) -> None:
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    collect = runpy.run_path(str(scripts / "load_acceptances.py"))["collect_acceptances"]
+    write_acceptances(tmp_path, "warmup", [1], 1)
+    collect(tmp_path, "warmup")
+    collect(tmp_path, "warmup")
+    write_acceptances(tmp_path, "sustained", [2, 1, 3], 3)
+    for _ in range(2):
+        with pytest.raises(ValueError, match=f"{UUID(int=1)} already accepted in warmup"):
+            collect(tmp_path, "sustained")
+    jobs = [json.loads(line) for line in (tmp_path / "jobs.jsonl").read_text().splitlines()]
+    assert [(job["phase"], UUID(job["analysis_id"]).int) for job in jobs] == [
+        ("warmup", 1),
+        ("sustained", 2),
+        ("sustained", 3),
+    ]
+    write_acceptances(tmp_path, "sustained", [2], 1)
+    with pytest.raises(ValueError, match="missing a previously recorded acceptance"):
+        collect(tmp_path, "sustained")
+
+
+def test_bad_acceptance_marker_still_records_later_valid_ids(tmp_path: Path) -> None:
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    collect = runpy.run_path(str(scripts / "load_acceptances.py"))["collect_acceptances"]
+    write_acceptances(tmp_path, "parallel", [1, 2], 3)
+    log = tmp_path / "parallel-console.log"
+    log.write_text("REGIMEX_ACCEPTED {\n" + log.read_text())
+    with pytest.raises(ValueError, match="invalid acceptance marker"):
+        collect(tmp_path, "parallel")
+    jobs = [json.loads(line) for line in (tmp_path / "jobs.jsonl").read_text().splitlines()]
+    assert [UUID(job["analysis_id"]).int for job in jobs] == [1, 2]
 
 
 @pytest.mark.parametrize(("last_accounted", "window"), [(9, 12), (21, 18)])

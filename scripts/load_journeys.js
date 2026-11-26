@@ -167,13 +167,22 @@ function isDone(job) {
   fail(`Unexpected analysis state ${view.job.state}`);
 }
 
-function finish(jobs) {
-  if (new Set(jobs.map(j => j.id)).size !== jobs.length) fail("Distinct requests returned a duplicate analysis ID");
-  let pending = jobs;
+function finish(jobs, errors = []) {
+  const unique = new Map(jobs.map(job => [job.id, job]));
+  if (unique.size !== jobs.length) errors.push("Distinct requests returned a duplicate analysis ID");
+  let pending = [...unique.values()];
   while (pending.length) {
-    pending = pending.filter(j => !isDone(j));
+    pending = pending.filter(job => {
+      try {
+        return !isDone(job);
+      } catch (error) {
+        errors.push(`Analysis ${job.id}: ${error.message}`);
+        return false;
+      }
+    });
     if (pending.length) sleep(0.25);
   }
+  if (errors.length) fail(errors.join("\n"));
 }
 
 function active(owner) {
@@ -221,18 +230,23 @@ function burst(state) {
   }
   const start = Date.now();
   const jobs = [];
+  const errors = [];
   for (const owner of owners) requested.add(burstSize, { owner, kind: "anchor" });
   for (const [i, response] of http.batch(requests).entries()) {
     const snapshot = snapshots[i];
     if ((response.status === 429 || response.status === 503) && rejectionCode(response) === "capacity_limit") {
       refused.add(1, { owner: snapshot.owner, status: String(response.status) });
-    } else {
+      continue;
+    }
+    if (response.status === 202) accepted.add(1, { owner: snapshot.owner, kind: snapshot.kind });
+    try {
       jobs.push(jobFrom(response, snapshot, start));
-      accepted.add(1, { owner: snapshot.owner, kind: snapshot.kind });
+    } catch (error) {
+      errors.push(error.message);
     }
   }
-  if (!jobs.length) fail("The entire burst was refused");
-  finish(jobs);
+  if (!jobs.length && !errors.length) fail("The entire burst was refused");
+  finish(jobs, errors);
   // Fresh keys after the drain measure recovery for both accounts.
   finish(owners.map(owner => submit(state[owner].anchor)));
 }

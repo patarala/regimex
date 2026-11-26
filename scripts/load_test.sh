@@ -33,9 +33,12 @@ done
 
 phase() {
     echo "Running $1"
+    k6_error=
     REGIMEX_LOAD_TOKEN="$token" REGIMEX_LOAD_PHASE="$1" REGIMEX_LOAD_CLIENTS="$2" REGIMEX_LOAD_JOBS="$3" \
-        k6 run --no-usage-report --summary-export "$REGIMEX_LOAD_DIR/$1.json" \
-        scripts/load_analysis.js
+        k6 run --no-usage-report --log-format=raw --console-output "$REGIMEX_LOAD_DIR/$1-console.log" \
+        --summary-export "$REGIMEX_LOAD_DIR/$1.json" scripts/load_analysis.js || k6_error=$?
+    uv run --locked --extra ml python scripts/load_acceptances.py "$REGIMEX_LOAD_DIR" "$1" || return "${k6_error:-1}"
+    return "${k6_error:-0}"
 }
 
 phase warmup 1 1

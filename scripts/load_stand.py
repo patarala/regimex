@@ -21,7 +21,7 @@ from contextlib import ExitStack, contextmanager
 from datetime import datetime
 from pathlib import Path
 from urllib.request import urlopen
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import psycopg
 
@@ -241,6 +241,8 @@ def private_scratch(out, group):
 
 
 def phase(config, cell, env, name):
+    from load_acceptances import collect_acceptances
+
     summary = cell / f"{name}.json"
     events = cell / f"{name}-points.jsonl"
     console = cell / f"{name}-console.log"
@@ -254,26 +256,7 @@ def phase(config, cell, env, name):
         "REGIMEX_LOAD_MAX_VUS": str(config["max_vus"]),
     }
 
-    def save_accepted():
-        ids = set()
-        if console.is_file():
-            with (cell / "jobs.jsonl").open("a") as jobs:
-                for line in console.read_text().splitlines():
-                    if line.startswith("REGIMEX_ACCEPTED "):
-                        record = json.loads(line.removeprefix("REGIMEX_ACCEPTED "))
-                        if record["phase"] != name:
-                            raise ValueError("k6 acceptance marker has the wrong phase")
-                        identity = UUID(record["analysis_id"])
-                        if identity in ids:
-                            raise ValueError("k6 reused an analysis ID within a phase")
-                        ids.add(identity)
-                        jobs.write(json.dumps(record) + "\n")
-        if summary.exists():
-            accepted = json.loads(summary.read_bytes())["metrics"]["analyses_accepted"]["count"]
-            if len(ids) != accepted:
-                raise ValueError(f"Missing acceptance records for {name}. See {console}")
-
-    with finish_with(save_accepted):
+    with finish_with(lambda: collect_acceptances(cell, name)):
         once(
             [
                 config["k6"],
