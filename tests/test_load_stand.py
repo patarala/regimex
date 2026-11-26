@@ -365,10 +365,14 @@ def test_failed_journey_preserves_partial_counts_and_http_failure(
     metrics = {
         "journey_jobs_requested": {"count": 5},
         "journey_jobs_accepted": {"count": 4},
-        "journey_results_verified": {"count": 0},
+        "journey_results_verified": {"count": 1},
         "http_req_failed": {"passes": 1},
     }
     (tmp_path / "summary.json").write_text(json.dumps({"metrics": metrics}))
+    stages = {"queue_wait_ms": 123.4}
+    (tmp_path / "timings.json").write_text(
+        json.dumps({"phases": {"contention-first-short": {"median_ms": stages}}})
+    )
     point = {
         "type": "Point",
         "metric": "http_req_failed",
@@ -377,7 +381,8 @@ def test_failed_journey_preserves_partial_counts_and_http_failure(
     (tmp_path / "points.jsonl").write_text(json.dumps(point) + "\n")
     report = stand["failed_cell"](tmp_path, "journey-contention", 256, 2)
     assert report["status"] == "failed" and report["phase"] == "journey-contention"
-    assert report["requested"] == 5 and report["accepted"] == 4 and report["completed"] == 0
+    assert report["requested"] == 5 and report["accepted"] == 4 and report["completed"] == 1
+    assert report["stage_groups"] == {"contention-first-short": stages}
     assert report["result_median_ms"] is None and report["cancelled"] is None
     assert report["http_failure_samples"] == [
         {"request": "poll analysis", "status": "0", "count": 1}

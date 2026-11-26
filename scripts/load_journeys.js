@@ -132,17 +132,24 @@ function submit(snapshot, key = crypto.randomUUID()) {
   return job;
 }
 
+function checkDeadline(start, now = Date.now()) {
+  if (now - start > 180000) fail("Analysis exceeded its three-minute journey deadline");
+}
+
 function isDone(job) {
   const { snapshot, id, pinned, start } = job;
   const tags = { owner: snapshot.owner, kind: snapshot.kind };
   const path = `/analyses/${encodeURIComponent(id)}`;
+  checkDeadline(start);
   const view = request(snapshot.owner, "poll analysis", path).json();
+  checkDeadline(start);
   if (view.analysis_id !== id || view.job.operation_id !== job.operation) fail("Poll returned a different job");
   checkLaunchSource(view.job);
   if (view.job.state === "succeeded") {
     if (!view.result_available) fail("Successful job has no result");
     const response = request(snapshot.owner, "download result", path + "/result");
     const ended = Date.now();
+    checkDeadline(start, ended);
     checkResult(response.json(), id, snapshot, pinned, model);
     resultLatency.add(ended - start, tags);
     if (job.includesUpload) endToEnd.add(ended - snapshot.start, tags);
@@ -164,7 +171,6 @@ function finish(jobs) {
   if (new Set(jobs.map(j => j.id)).size !== jobs.length) fail("Distinct requests returned a duplicate analysis ID");
   let pending = jobs;
   while (pending.length) {
-    if (pending.some(j => Date.now() - j.start > 180000)) fail("Analysis did not reach a terminal state in three minutes");
     pending = pending.filter(j => !isDone(j));
     if (pending.length) sleep(0.25);
   }

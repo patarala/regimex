@@ -533,17 +533,23 @@ def run_cell(config_file, scratch, group, steps, workers, name):
                 cell / "timings.log",
             )
 
-        if name.startswith("journey-"):
+        journey = name.startswith("journey-")
+
+        def collect():
+            envelope["peak_bytes"] = int((group / "memory.peak").read_text())
+            save(cell / "envelope.json", envelope)
+            jobs = cell / ("verified.jsonl" if journey else "jobs.jsonl")
+            if not jobs.is_file() or not jobs.stat().st_size:
+                return
+            collect_stages(jobs)
+
+        if journey:
             from load_journeys import run_journey
 
             env["REGIMEX_LOAD_SECOND_TOKEN"] = (scratch / "second-user").read_text().strip()
             env["REGIMEX_LOAD_BURST_PER_OWNER"] = str(config["burst_per_owner"])
-            try:
+            with finish_with(collect):
                 outcome = run_journey(name.removeprefix("journey-"), cell, env, config["k6"])
-            finally:
-                envelope["peak_bytes"] = int((group / "memory.peak").read_text())
-                save(cell / "envelope.json", envelope)
-            collect_stages(cell / "verified.jsonl")
             phases = json.loads((cell / "timings.json").read_bytes())["phases"]
             save(
                 cell / "result.json",
@@ -561,14 +567,6 @@ def run_cell(config_file, scratch, group, steps, workers, name):
                 },
             )
             return
-
-        def collect():
-            envelope["peak_bytes"] = int((group / "memory.peak").read_text())
-            save(cell / "envelope.json", envelope)
-            jobs = cell / "jobs.jsonl"
-            if not jobs.is_file() or not jobs.stat().st_size:
-                return
-            collect_stages(jobs)
 
         with finish_with(collect):
             phase(config, cell, env, "warmup")
@@ -628,7 +626,11 @@ def failed_cell(cell, planned_phase, steps, workers):
         from load_journeys import journey_summary
 
         row.update(journey_summary(read_artifact("summary.json").get("metrics", {})))
-        row.update(phase=planned_phase, failure_stage="journey")
+        row.update(
+            phase=planned_phase,
+            failure_stage="journey",
+            stage_groups={key: value["median_ms"] for key, value in phases.items()},
+        )
         points = cell / "points.jsonl"
     if unreadable:
         row["unreadable_artifacts"] = unreadable

@@ -215,6 +215,62 @@ function testJourney(name, values = {}) {
     REGIMEX_LOAD_SECOND_TOKEN: "test-second", ...values }, "load_journeys.js");
 }
 
+test("journey deadlines include the terminal poll and the result download", async () => {
+  for (const [pollEnd, downloadEnd, expectedDownloads] of [
+    [189900, 197900, 0], [179950, 187950, 1], [180000, 180000, 2],
+  ]) {
+    const {client, http, clock, metrics} = await testJourney("browse", {REGIMEX_LOAD_DIR: "inputs"});
+    let now = 0, downloads = 0;
+    clock.now = () => now;
+    const digest = "ab".repeat(32);
+    const model = {model_version_id: "fixture-model", bundle_sha256: "cd".repeat(32), inference_policy_sha256: "ef".repeat(32)};
+    http.request = (_method, _url, _body, {tags: {name, owner}}) => {
+      const id = "job-" + owner;
+      const snapshot = "snapshot-" + owner;
+      const view = {analysis_id: id, snapshot_id: snapshot, snapshot_sha256: digest,
+        job: {operation_id: id, model, launch_source: {channel: "api", command: null}}};
+      switch (name) {
+        case "active analyses":
+          return {status: 200, json: () => []};
+        case "upload snapshot":
+          return {status: 201, timings: {duration: 1}, json: () => ({snapshot_id: snapshot, content_sha256: digest})};
+        case "submit analysis":
+          return {status: 202, json: () => view};
+        case "poll analysis":
+          if (owner === "first" && now < 179900) {
+            now = Math.min(179900, now + 10000);
+            view.job.state = "running";
+          } else if (owner === "second" && !downloads) {
+            view.job.state = "running";
+          } else {
+            if (owner === "first") now = pollEnd;
+            view.job.state = "succeeded";
+            view.result_available = true;
+          }
+          return {status: 200, json: () => view};
+        case "download result":
+          downloads++;
+          now = downloadEnd;
+          return {status: 200, json: () => ({
+            ...view, result_version: "2.0", model, class_names: ["sideways", "growth", "decline"],
+            source: {run_id: "inputs/anchor.json"}, time_grid: {step_count: 256}, instruments: [], sequences: [],
+          })};
+        default: assert.fail(name);
+      }
+    };
+    if (downloadEnd > 180000) {
+      assert.throws(() => client.setup(), /deadline/);
+      assert.deepEqual(metrics.get("journey_results_verified"), [0]);
+      assert.deepEqual(metrics.get("journey_submit_to_result_ms"), []);
+    } else {
+      client.setup();
+      assert.deepEqual(metrics.get("journey_results_verified"), [0, 1, 1]);
+      assert.deepEqual(metrics.get("journey_submit_to_result_ms"), [180000, 180000]);
+    }
+    assert.equal(downloads, expectedDownloads);
+  }
+});
+
 test("two-owner journeys require distinct owners even when the tokens differ", async () => {
   await assert.rejects(testJourney("contention", {REGIMEX_LOAD_SECOND_TOKEN: "test-first"}), /distinct|different/);
   const { client, http } = await testJourney("contention");

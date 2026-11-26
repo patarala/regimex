@@ -35,6 +35,30 @@ def journey_summary(metrics):
     }
 
 
+def collect_journey_evidence(out: Path, *, interrupted: bool = False):
+    seen = set()
+    console = out / "console.log"
+    if console.is_file():
+        with console.open("rb") as lines, (out / "verified.jsonl").open("x") as stream:
+            for line in lines:
+                if not line.startswith(b"REGIMEX_VERIFIED "):
+                    continue
+                # A killed k6 process may have written only part of its final record.
+                if interrupted and not line.endswith(b"\n"):
+                    break
+                job = json.loads(line.removeprefix(b"REGIMEX_VERIFIED "))
+                identity = UUID(job["analysis_id"])
+                if identity in seen:
+                    raise ValueError("Duplicate verified analysis in k6 output")
+                seen.add(identity)
+                stream.write(json.dumps(job) + "\n")
+    summary = out / "summary.json"
+    metrics = json.loads(summary.read_bytes())["metrics"] if summary.exists() else {}
+    results = journey_summary(metrics)
+    write_json(out / "journey.json", results)
+    return len(seen), results
+
+
 def run_journey(
     profile: str, out: Path, env: dict[str, str], k6: str
 ) -> dict[str, int | float | None]:
@@ -65,51 +89,42 @@ def run_journey(
         }
     write_json(out / "inputs.json", seeds)
     limits = {**env, "REGIMEX_LOAD_JOURNEY": profile, "REGIMEX_LOAD_DIR": str(inputs.resolve())}
-    with (out / "k6.log").open("wb") as log:
-        result = subprocess.run(
-            [
-                k6,
-                "run",
-                "--no-usage-report",
-                "--quiet",
-                "--log-format=raw",
-                "--console-output",
-                str(out / "console.log"),
-                "--summary-export",
-                str(out / "summary.json"),
-                "--out",
-                f"json={out / 'points.jsonl'}",
-                str(ROOT / "scripts/load_journeys.js"),
-            ],
-            env=limits,
-            stdout=log,
-            stderr=log,
-            timeout=1000,
-            check=False,
-        )
-    # Keep timings input even when another request or an acceptance threshold fails.
-    timings = out / "verified.jsonl"
-    seen = set()
-    if (out / "console.log").is_file():
-        with timings.open("x") as stream:
-            for line in (out / "console.log").read_text().splitlines():
-                if line.startswith("REGIMEX_VERIFIED "):
-                    job = json.loads(line.removeprefix("REGIMEX_VERIFIED "))
-                    identity = UUID(job["analysis_id"])
-                    if identity in seen:
-                        raise ValueError("Duplicate verified analysis in k6 output")
-                    seen.add(identity)
-                    stream.write(json.dumps(job) + "\n")
-    summary = out / "summary.json"
-    metrics = json.loads(summary.read_bytes())["metrics"] if summary.exists() else {}
-    results = journey_summary(metrics)
-    write_json(out / "journey.json", results)
-    if result.returncode:
-        raise RuntimeError(f"k6 {profile} exited {result.returncode}. See {out / 'k6.log'}")
+    try:
+        with (out / "k6.log").open("wb") as log:
+            result = subprocess.run(
+                [
+                    k6,
+                    "run",
+                    "--no-usage-report",
+                    "--quiet",
+                    "--log-format=raw",
+                    "--console-output",
+                    str(out / "console.log"),
+                    "--summary-export",
+                    str(out / "summary.json"),
+                    "--out",
+                    f"json={out / 'points.jsonl'}",
+                    str(ROOT / "scripts/load_journeys.js"),
+                ],
+                env=limits,
+                stdout=log,
+                stderr=log,
+                timeout=1000,
+                check=False,
+            )
+        if result.returncode:
+            raise RuntimeError(f"k6 {profile} exited {result.returncode}. See {out / 'k6.log'}")
+    except (subprocess.TimeoutExpired, RuntimeError) as failure:
+        try:
+            collect_journey_evidence(out, interrupted=True)
+        except Exception as error:
+            failure.add_note(f"Could not finish collecting k6 evidence: {error}")
+        raise
+    verified, results = collect_journey_evidence(out)
     completed, cancelled = results["completed"], results["cancelled"]
     accepted, refusals = results["accepted"], results["capacity_refusals"]
     if (
-        len(seen) != completed
+        verified != completed
         or accepted != completed + cancelled
         or results["requested"] != accepted + refusals
     ):

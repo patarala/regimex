@@ -107,12 +107,14 @@ Use its certificate hostname and set `SSL_CERT_FILE` when it uses a private CA.
 Each scenario directory contains `journey.json` (outcome counts), `summary.json`
 (k6 thresholds and timings), and `points.jsonl` (individual samples).
 `journey_upload_ms` times the upload HTTP exchange. `journey_submit_to_result_ms`
-ends at the return of the result download. `journey_upload_to_result_ms` includes
+ends at the return of the result download. Each submitted analysis has a
+three-minute deadline, including its final poll and download. `journey_upload_to_result_ms` includes
 the initial upload in a contention round. Check the `owner` and `kind` tags to
 compare the delays for each participant. `long_jobs_active_at_short_intake`
 counts the submitted long jobs still active when the client queries the queue
 right after the short submission. The disposable stand also writes exact median
-queue wait by scenario, owner and input kind to `timings.json`. The client-only
+queue wait by scenario, owner and input kind to `timings.json`, including
+verified results from a scenario that later failed. The client-only
 runner works without database access.
 
 ### Observed results
