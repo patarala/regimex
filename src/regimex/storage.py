@@ -16,6 +16,11 @@ def json_bytes(value: object) -> bytes:
     ).encode()
 
 
+def content_hash(value: object) -> str:
+    """SHA-256 of the repository's canonical JSON encoding, including its newline."""
+    return hashlib.sha256(json_bytes(value)).hexdigest()
+
+
 def write_json(path: Path, value: object) -> None:
     path.write_bytes(json_bytes(value))
 

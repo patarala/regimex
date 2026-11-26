@@ -286,6 +286,45 @@ def test_seed_namespaces_do_not_conflate_unrelated_generators() -> None:
     assert seal_dataset("independent-generators", (train, validation, test))
 
 
+def test_native_samples_of_different_lengths_cannot_disguise_a_shared_seed() -> None:
+    pytest.importorskip("numpy")
+    from regimex.market_export import sample_snapshot
+    from regimex.market_identity import market_seed_group
+
+    def source(seed: int, steps: int) -> SourceSnapshot:
+        return SourceSnapshot(
+            source_namespace="local",
+            split_group=market_seed_group(seed),
+            export=sample_snapshot(seed=seed, steps=steps, instruments=1),
+        )
+
+    short = create_snapshot_member(source(7, 20), "train")
+    long = source(7, 40)
+    validation = create_snapshot_member(long, "validation")
+    test = create_snapshot_member(source(9, 40), "test")
+    with pytest.raises(ValueError, match="overlap"):
+        seal_dataset("overlap", (short, validation, test))
+    with pytest.raises(ValueError, match="declared split group"):
+        create_snapshot_member(
+            long.model_copy(update={"split_group": market_seed_group(8)}), "validation"
+        )
+    # Earlier catalogs may already contain the incorrect declaration.
+    mislabeled = validation.model_copy(update={"split_group": market_seed_group(8)})
+    with pytest.raises(ValueError, match="declared split group"):
+        seal_dataset("overlap", (short, mislabeled, test))
+    old_payload = {
+        "version": "raw-dataset/1.0",
+        "dataset_id": "older-overlap",
+        "members": [m.model_dump(mode="json") for m in (short, mislabeled, test)],
+    }
+    saved = DatasetManifest.model_validate_json(
+        json.dumps({**old_payload, "content_sha256": content_hash(old_payload)})
+    )
+    assert not saved.has_native_seed_groups
+    with pytest.raises(ValueError, match="declared split group"):
+        saved.require_native_seed_groups()
+
+
 def test_raw_hash_detects_duplicates_after_renaming_source_and_instrument() -> None:
     first = create_snapshot_member(snapshot(0), "train")
     renamed = snapshot(0).model_dump(mode="json")

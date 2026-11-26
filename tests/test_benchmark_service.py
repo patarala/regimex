@@ -178,16 +178,24 @@ def dataset(
             )
         )
     partitions: tuple[Partition, ...] = ("train", "validation", "test")
+    members = tuple(
+        create_snapshot_member(source, partition)
+        for source, partition in zip(sources, partitions, strict=True)
+    )
+    if unknown_native_seed:
+        # Stored catalogs predate the requirement to verify native seeds when sealing a dataset.
+        from regimex.data_catalog import DatasetManifest, DatasetPayload
+
+        payload = DatasetPayload(dataset_id=name, members=members).model_dump(mode="json")
+        manifest = DatasetManifest.model_validate_json(
+            json.dumps({**payload, "content_sha256": content_hash(payload)})
+        )
+    else:
+        manifest = seal_dataset(name, members)
     record = DatasetRecord(
         dataset_id=name,
         owner_id=owner,
-        manifest=seal_dataset(
-            name,
-            tuple(
-                create_snapshot_member(source, partition)
-                for source, partition in zip(sources, partitions, strict=True)
-            ),
-        ),
+        manifest=manifest,
         snapshot_ids=tuple(snapshot.snapshot_id for snapshot in snapshots),
         created_at=datetime.now(UTC),
     )

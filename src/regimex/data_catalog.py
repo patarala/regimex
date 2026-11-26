@@ -6,7 +6,6 @@ requests only training labels and validation references; a final evaluator needs
 a separate, authorized path. Content hashes establish identity, not authenticity.
 """
 
-import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Literal, Self
@@ -14,7 +13,7 @@ from typing import Annotated, Literal, Self
 from pydantic import ConfigDict, Field, model_validator
 
 from regimex.benchmarks import DirectionSemantics, ReferenceProvenance
-from regimex.contracts import MAX_STEPS, Identifier, Observation, Seed, StrictModel
+from regimex.contracts import MAX_STEPS, Identifier, Observation, StrictModel
 from regimex.directions import (
     DECODER_VERSION,
     SAVED_DIRECTION_POLICIES,
@@ -23,7 +22,10 @@ from regimex.directions import (
     DirectionInterval,
 )
 from regimex.exports import SHA256, ExportInstrument, ExportObservation, ExportV2
+from regimex.market_identity import SplitGroup as SplitGroup
+from regimex.market_identity import imported_seed_group, native_seed_group
 from regimex.model_bundles import ReferenceIdentity
+from regimex.storage import content_hash as content_hash
 from regimex.storage import json_bytes
 
 Partition = Literal["train", "validation", "test"]
@@ -33,11 +35,6 @@ class CatalogRecord(StrictModel):
     model_config = ConfigDict(revalidate_instances="always")
 
 
-def content_hash(value: object) -> str:
-    """SHA-256 of the repository's canonical JSON encoding, including its newline."""
-    return hashlib.sha256(json_bytes(value)).hexdigest()
-
-
 def analysis_profile_hash(profile: AnalysisConfig) -> str:
     return content_hash(profile.model_dump(mode="json"))
 
@@ -45,19 +42,6 @@ def analysis_profile_hash(profile: AnalysisConfig) -> str:
 CURRENT_TRAINING_SEMANTICS = DirectionSemantics(
     profile_sha256=analysis_profile_hash(AnalysisConfig()), decoder_version=DECODER_VERSION
 )
-
-
-class SplitGroup(CatalogRecord):
-    """Source-controlled dependence group, separate from prediction observations.
-
-    A seed is meaningful only within its generator namespace. The namespace must
-    remain stable across dataset versions and source aliases. Missing seed means
-    an external run, not an observed seed of zero.
-    """
-
-    namespace: Identifier
-    group_id: Identifier
-    seed: Seed | None = None
 
 
 class SourceSnapshot(CatalogRecord):
@@ -134,6 +118,10 @@ def _member_from_validated_snapshot(
     snapshot: SourceSnapshot, partition: Partition
 ) -> SnapshotMember:
     export = snapshot.export
+    # Historical catalogs can lack a seed. They remain readable for inspection,
+    # but require_native_seed_groups excludes them from model selection.
+    if snapshot.split_group.seed is not None or export.source.run_id.startswith("sample:"):
+        imported_seed_group(export, snapshot.split_group)
     return SnapshotMember(
         source_namespace=snapshot.source_namespace,
         snapshot_id=export.source.snapshot_id,
@@ -191,17 +179,21 @@ class DatasetManifest(DatasetPayload):
 
     @property
     def has_native_seed_groups(self) -> bool:
-        return all(
-            member.source_id != "regimex-exchange" or member.split_group.seed is not None
-            for member in self.members
-        )
+        try:
+            self.require_native_seed_groups()
+        except ValueError:
+            return False
+        return True
 
     def require_native_seed_groups(self) -> None:
-        if not self.has_native_seed_groups:
-            raise ValueError(
-                "A native market snapshot in this dataset has no registered seed. "
-                "Regenerate it with its original seed and create a new dataset for model selection."
-            )
+        for member in self.members:
+            if member.source_id == "regimex-exchange":
+                if member.split_group.seed is None:
+                    raise ValueError(
+                        "A native market snapshot in this dataset has no registered seed. "
+                        "Regenerate it with its original seed before model selection."
+                    )
+                native_seed_group(member.run_id, member.split_group)
 
     @model_validator(mode="after")
     def immutable_identity(self) -> Self:
@@ -225,9 +217,11 @@ class DatasetManifest(DatasetPayload):
 def seal_dataset(dataset_id: str, members: tuple[SnapshotMember, ...]) -> DatasetManifest:
     payload = DatasetPayload(dataset_id=dataset_id, members=members)
     data = payload.model_dump(mode="json")
-    return DatasetManifest.model_validate_json(
+    manifest = DatasetManifest.model_validate_json(
         json_bytes({**data, "content_sha256": content_hash(data)})
     )
+    manifest.require_native_seed_groups()
+    return manifest
 
 
 class ReferenceMember(CatalogRecord):

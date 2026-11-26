@@ -7,15 +7,20 @@ robustness = pytest.importorskip("regimex.export_robustness")
 
 
 def test_masks_preserve_grid_and_leave_unmasked_fields_alone() -> None:
+    from regimex.data_catalog import SourceSnapshot, create_snapshot_member
     from regimex.market_export import sample_snapshot
+    from regimex.market_identity import market_seed_group
 
     pristine = sample_snapshot(seed=94001, steps=300, instruments=2)
+    group = market_seed_group(94001)
     start, stop = robustness.WINDOW
     for scenario in robustness.SCENARIOS:
         masked = robustness.masked_export(pristine, scenario)
         assert masked.time_grid == pristine.time_grid and masked.instruments == pristine.instruments
         assert masked.source.run_id == pristine.source.run_id
         assert masked.content_sha256 != pristine.content_sha256
+        source = SourceSnapshot(source_namespace="paired", split_group=group, export=masked)
+        assert create_snapshot_member(source, "test").split_group == group
         for before, after in zip(pristine.observations, masked.observations, strict=True):
             assert (before.step, before.instrument_id) == (after.step, after.instrument_id)
             if scenario == "price_only":

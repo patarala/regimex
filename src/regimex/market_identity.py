@@ -2,8 +2,25 @@
 
 from uuid import NAMESPACE_URL, uuid5
 
-from regimex.data_catalog import SplitGroup, content_hash
+from pydantic import ConfigDict
+
+from regimex.contracts import Identifier, Seed, StrictModel
 from regimex.exports import ExportV2
+from regimex.storage import content_hash
+
+
+class SplitGroup(StrictModel):
+    """Source-controlled dependence group, separate from prediction observations.
+
+    A seed is meaningful only within its generator namespace. The namespace must
+    remain stable across dataset versions and source aliases. Missing seed means
+    an external run, not an observed seed of zero.
+    """
+
+    model_config = ConfigDict(revalidate_instances="always")
+    namespace: Identifier
+    group_id: Identifier
+    seed: Seed | None = None
 
 
 def market_seed_group(seed: int) -> SplitGroup:
@@ -22,13 +39,10 @@ def sampled_run_id(seed: int, configuration_id: str) -> str:
     return f"sample:{seed}:{identifier}"
 
 
-def imported_seed_group(export: ExportV2, declared: SplitGroup | None) -> SplitGroup | None:
-    source = export.source
-    if source.source_id != "regimex-exchange":
-        return declared
+def native_seed_group(run_id: str, declared: SplitGroup | None) -> SplitGroup:
     seed = declared.seed if declared is not None else None
-    if source.run_id.startswith("sample:"):
-        parts = source.run_id.split(":")
+    if run_id.startswith("sample:"):
+        parts = run_id.split(":")
         if len(parts) != 3 or not parts[1].isascii() or not parts[1].isdecimal():
             raise ValueError("Invalid native sampled run identity.")
         seed = int(parts[1])
@@ -37,6 +51,16 @@ def imported_seed_group(export: ExportV2, declared: SplitGroup | None) -> SplitG
     group = market_seed_group(seed)
     if declared is not None and declared != group:
         raise ValueError("The declared split group differs from the native market seed group.")
+    return group
+
+
+def imported_seed_group(export: ExportV2, declared: SplitGroup | None) -> SplitGroup | None:
+    source = export.source
+    if source.source_id != "regimex-exchange":
+        return declared
+    group = native_seed_group(source.run_id, declared)
+    seed = group.seed
+    assert seed is not None
     previous_id = str(uuid5(NAMESPACE_URL, f"regimex:single-market:{source.configuration_id}"))
     if source.run_id.startswith("sample:") or source.run_id == previous_id:
         expected = sampled_configuration(
