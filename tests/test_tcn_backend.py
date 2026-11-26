@@ -26,6 +26,7 @@ from regimex.features import FloatArray, compute_features
 from regimex.model_bundles import ModelBundle, ReferenceIdentity, TrainingEvidence
 from regimex.model_contracts import BundleProvenance, FitResult, ObservationInputs, TrainingInputs
 from regimex.model_registry import (
+    FixedUpdatePolicy,
     InferenceRuntime,
     TCNParameters,
     TrainingPolicy,
@@ -629,6 +630,43 @@ def test_validation_length_and_batch_are_checked_before_feature_allocation(
             runtime=TrainingRuntime(memory_budget_bytes=32 * 1024**2),
             evaluator=lambda _: 0.5,
         )
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        TrainingPolicy(optimizer="adamw", seeds=(11,), epochs=1, batch_size=3),
+        FixedUpdatePolicy(seeds=(11,), updates=1, validation_updates=(1,), batch_size=3),
+    ],
+    ids=["epochs", "updates"],
+)
+def test_single_long_sequence_in_last_validation_batch_fits_within_budget(
+    settings: TrainingPolicy | FixedUpdatePolicy,
+) -> None:
+    training_lengths = (24, 32, 28)
+    targets = np.repeat(np.arange(3, dtype=np.int64), training_lengths)
+    train = TrainingInputs(inputs("train", training_lengths), targets)
+    validation = inputs("validation", (32,) * 16 + (2048,))
+
+    def fit_with_budget(mib: int) -> FitResult:
+        return TCNBackend().fit(
+            train,
+            validation,
+            parameters=TCNParameters(channels=32, dilations=(1, 2, 4, 8), dropout=0),
+            policy=settings,
+            analysis=AnalysisConfig(min_duration=4),
+            runtime=TrainingRuntime(threads=1, memory_budget_bytes=mib * 1024**2),
+            evaluator=lambda probabilities: float(probabilities[:, 0].mean()),
+        )
+
+    constrained = fit_with_budget(32)
+    reference = fit_with_budget(512)
+    assert constrained.history == reference.history
+    weights = cast(TCNPredictor, constrained.predictor).model.state_dict()
+    expected = cast(TCNPredictor, reference.predictor).model.state_dict()
+    assert weights.keys() == expected.keys()
+    for name, tensor in weights.items():
+        assert torch.equal(tensor, expected[name])
 
 
 def test_time_budget_and_inference_cache_budget_fail_explicitly(

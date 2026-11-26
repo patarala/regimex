@@ -7,6 +7,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from importlib.metadata import version
+from itertools import batched
 from pathlib import Path
 from typing import Annotated, Literal, cast
 
@@ -410,15 +411,15 @@ class TCNBackend:
         }:
             raise ValueError("TCN training and validation experiments must be disjoint")
         rows = training.observations.row_count + validation.row_count
+        # Training shuffles sequences, so the longest one can land in a full batch.
         training_activations = _activation_bytes(
             parameters,
             min(policy.batch_size, len(training.observations.info)),
             max(info.step_count for info in training.observations.info),
         )
-        validation_activations = _activation_bytes(
-            parameters,
-            min(SELECTION_BATCH_SIZE, len(validation.info)),
-            max(info.step_count for info in validation.info),
+        validation_activations = max(
+            _activation_bytes(parameters, len(batch), max(info.step_count for info in batch))
+            for batch in batched(validation.info, SELECTION_BATCH_SIZE, strict=False)
         )
         # Training and validation run in turn. Budget for the larger activation set.
         # Changing the validation batch size could change a close checkpoint score.
