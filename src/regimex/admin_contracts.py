@@ -8,12 +8,18 @@ from pydantic import AwareDatetime, Field, JsonValue, RootModel, ValidationError
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
 from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup, content_hash
 from regimex.direction_quality import DirectionQualityEvidence
-from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig, DirectionAnnotations
+from regimex.directions import (
+    DEFAULT_ANALYSIS_PROFILE,
+    PREVIOUS_DIRECTION_POLICY,
+    AnalysisConfig,
+    AutomaticPolicy,
+    DirectionAnnotations,
+)
 from regimex.external_evaluations import ExternalEvaluation
 from regimex.external_latency import ExternalLatencyEvidence
 from regimex.history_contracts import DisplayName
 from regimex.infrastructure.object_store import ObjectInfo
-from regimex.market_config import MarketConfig
+from regimex.market_config import GeneratorVersion, MarketConfig
 from regimex.model_bundles import BundleMember, TrainingEvidence
 from regimex.model_registry import (
     ArchitectureId,
@@ -82,6 +88,14 @@ class GenerationSpec(StrictModel):
     dataset_id: Identifier
     plan: RawGenerationPlan
     splits: SplitPolicy = Field(default_factory=SplitPolicy)
+    generator_version: GeneratorVersion | None = Field(
+        default=None, exclude_if=lambda version: version is None
+    )
+
+    @property
+    def saved_generator_version(self) -> GeneratorVersion:
+        # Queued jobs written before version pinning used generator 4.0.
+        return self.generator_version or "4.0"
 
 
 class CatalogBinding(StrictModel):
@@ -172,6 +186,11 @@ class ReferenceGenerationSpec(StrictModel):
     partition: Partition
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
+    policy: AutomaticPolicy | None = Field(default=None, exclude_if=lambda value: value is None)
+
+    @property
+    def saved_policy(self) -> AutomaticPolicy:
+        return self.policy or PREVIOUS_DIRECTION_POLICY
 
 
 class HumanAnnotation(StrictModel):

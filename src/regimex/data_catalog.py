@@ -17,7 +17,7 @@ from regimex.benchmarks import DirectionSemantics, ReferenceProvenance
 from regimex.contracts import MAX_STEPS, Identifier, Observation, Seed, StrictModel
 from regimex.directions import (
     DECODER_VERSION,
-    DIRECTION_POLICY,
+    SAVED_DIRECTION_POLICIES,
     AnalysisConfig,
     DirectionAnnotations,
     DirectionInterval,
@@ -280,7 +280,8 @@ class ReferencePayload(CatalogRecord):
             blind_review=self.blind_review,
             independent=self.independent,
         )
-        if self.policy != ("human-directions/1.0" if self.kind == "human" else DIRECTION_POLICY):
+        policies = ("human-directions/1.0",) if self.kind == "human" else SAVED_DIRECTION_POLICIES
+        if self.policy not in policies:
             raise ValueError("reference policy must match its declared annotation kind")
         if len({(m.source_namespace, m.snapshot_id) for m in self.members}) != len(self.members):
             raise ValueError("reference set contains duplicate snapshot membership")

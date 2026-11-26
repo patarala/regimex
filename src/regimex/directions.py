@@ -12,7 +12,10 @@ from pydantic import Field, JsonValue, model_validator
 from regimex.contracts import MAX_STEPS, Identifier, Instrument, Observation, StrictModel
 from regimex.observation_availability import known_no_executions
 
-DIRECTION_POLICY = "retrospective-directions/3.0"
+type AutomaticPolicy = Literal["retrospective-directions/3.0", "retrospective-directions/3.1"]
+PREVIOUS_DIRECTION_POLICY: Literal["retrospective-directions/3.0"] = "retrospective-directions/3.0"
+DIRECTION_POLICY: Literal["retrospective-directions/3.1"] = "retrospective-directions/3.1"
+SAVED_DIRECTION_POLICIES = (PREVIOUS_DIRECTION_POLICY, DIRECTION_POLICY)
 DEFAULT_ANALYSIS_PROFILE = "direction-32/2.2"
 DECODER_VERSION = "duration-viterbi/1.0"
 
@@ -113,8 +116,24 @@ class DirectionInterval(DirectionSpan):
     statistics: IntervalStatistics
 
 
+def _log_return(first: float, last: float) -> float:
+    change = (last - first) / first
+    if abs(change) <= 0.5:
+        return math.log1p(change)
+    # Separate logs also cover finite endpoints whose ratio overflows or underflows.
+    return math.log(last) - math.log(first)
+
+
+def _log_return_v3_0(first: float, last: float) -> float:
+    return math.log(last) - math.log(first)
+
+
 def summarize_interval(
-    observations: tuple[Observation, ...], start: int, stop: int
+    observations: tuple[Observation, ...],
+    start: int,
+    stop: int,
+    *,
+    policy: AutomaticPolicy = DIRECTION_POLICY,
 ) -> IntervalStatistics:
     """Summarize an interval in a complete, step-ordered instrument sequence."""
     if not 0 <= start < stop <= len(observations):
@@ -123,8 +142,9 @@ def summarize_interval(
     prices = [(row.step, row.last_price) for row in rows if row.last_price is not None]
     counts = [row.trade_count for row in rows if row.trade_count is not None]
     volumes = [row.trade_volume for row in rows if row.trade_volume is not None]
+    log_return = _log_return_v3_0 if policy == PREVIOUS_DIRECTION_POLICY else _log_return
     returns = [
-        math.log(right.last_price) - math.log(left.last_price)
+        log_return(left.last_price, right.last_price)
         for left, right in pairwise(rows)
         if left.last_price is not None and right.last_price is not None
     ]
@@ -132,7 +152,14 @@ def summarize_interval(
     for row in rows:
         run = run + 1 if row.trade_count == 0 else 0
         longest = max(longest, run)
-    change = 100 * (prices[-1][1] / prices[0][1] - 1) if len(prices) >= 2 else None
+    change = None
+    if len(prices) >= 2:
+        first, last = prices[0][1], prices[-1][1]
+        change = (
+            100 * (last / first - 1)
+            if policy == PREVIOUS_DIRECTION_POLICY
+            else 100 * ((last - first) / first)
+        )
     try:
         volume = math.fsum(volumes) if volumes else None
     except OverflowError:
@@ -301,7 +328,7 @@ class DirectionAnnotations(StrictModel):
                 raise ValueError(
                     "human references require a reviewer and human-directions/1.0 policy"
                 )
-        elif self.reviewer is not None or self.policy != DIRECTION_POLICY:
+        elif self.reviewer is not None or self.policy not in SAVED_DIRECTION_POLICIES:
             raise ValueError(
                 "automatic annotations require the automatic policy and no human reviewer"
             )

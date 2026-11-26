@@ -89,6 +89,33 @@ def test_prohibitive_split_penalty_keeps_one_eligible_piece(noise: float) -> Non
             segmentation._pieces(sparse, config)
 
 
+@pytest.mark.parametrize(("sign", "direction"), [(1, Direction.GROWTH), (-1, Direction.DECLINE)])
+def test_fit_quality_of_a_small_trend_scales_with_its_variance(
+    sign: int, direction: Direction
+) -> None:
+    prices = 100 * np.exp(sign * np.linspace(0, 2e-10, 32))
+    config = AnalysisConfig(minimum_relative_change=1e-10)
+    small_trend = segmentation.annotate(experiment(prices.tolist()), config)
+    assert [item.direction for item in small_trend.intervals] == [direction]
+    previous = segmentation.annotate(
+        experiment(prices.tolist()), config, policy="retrospective-directions/3.0"
+    )
+    assert [item.direction for item in previous.intervals] == [Direction.SIDEWAYS]
+    flat = segmentation.annotate(experiment([float(prices[0])] * 32), config)
+    assert [item.direction for item in flat.intervals] == [Direction.SIDEWAYS]
+
+
+def test_close_prices_preserve_change_and_return_variability() -> None:
+    first = 9_000_000_000_000_000.0
+    last = first + 1
+    rows = experiment([first, last, first]).observations
+    change = summarize_interval(rows, 0, 2).price_change_percent
+    assert change == pytest.approx(100 / first, rel=1e-15, abs=0)
+    stats = summarize_interval(rows, 0, 3)
+    assert stats.return_count == 2
+    assert stats.return_std == pytest.approx(math.log1p(1 / first), rel=1e-15, abs=0)
+
+
 def test_small_weight_offsets_an_unrepresentable_noise_variance() -> None:
     values = np.r_[np.linspace(0, 1, 48), np.linspace(1, 0, 48)]
     pieces = segmentation._pieces(
@@ -387,7 +414,7 @@ def test_previous_annotation_shape_is_rejected(change: str) -> None:
 @pytest.mark.parametrize("previous", ["1.0", "2.0"])
 def test_previous_automatic_policy_is_not_silently_reinterpreted(previous: str) -> None:
     payload = segmentation.annotate(experiment([100.0] * 32)).model_dump(mode="json")
-    assert payload["policy"] == "retrospective-directions/3.0"
+    assert payload["policy"] == "retrospective-directions/3.1"
     payload["policy"] = f"retrospective-directions/{previous}"
     with pytest.raises(ValidationError, match="automatic policy"):
         DirectionAnnotations.model_validate_json(json.dumps(payload))

@@ -46,7 +46,7 @@ from regimex.data_catalog import (
     seal_reference_set,
     validate_reference_membership,
 )
-from regimex.directions import DIRECTION_POLICY, DirectionAnnotations
+from regimex.directions import DirectionAnnotations
 from regimex.exports import ExportInstrument, ExportObservation, ExportV2
 from regimex.market_export import simulate_export
 from regimex.market_identity import market_seed_group
@@ -129,9 +129,15 @@ def _raw_sources(
 
 
 def _generation(spec: GenerationSpec, root: Path, owner: str) -> dict[str, JsonValue]:
-    identity = content_hash(
-        {"version": "service-exchange/2.0", "plan": spec.plan.model_dump(mode="json")}
-    )
+    recipe: dict[str, JsonValue] = {
+        "version": "service-exchange/2.0",
+        "plan": spec.plan.model_dump(mode="json"),
+    }
+    # Jobs created before version pinning must reproduce their original snapshots on retry.
+    version = spec.saved_generator_version
+    if version != "4.0":
+        recipe.update(version="service-exchange/2.1", generator_version=version)
+    identity = content_hash(recipe)
     seeds = [
         int(np.random.SeedSequence([spec.plan.seed, index]).generate_state(1)[0])
         for index in range(spec.plan.experiment_count)
@@ -169,6 +175,7 @@ def _generation(spec: GenerationSpec, root: Path, owner: str) -> dict[str, JsonV
             steps=spec.plan.step_count,
             configuration_id=identity,
             run_id=external_id,
+            generator_version=version,
         )
         binding = CatalogBinding(
             snapshot_id=snapshot_id,
@@ -200,8 +207,7 @@ def _generation(spec: GenerationSpec, root: Path, owner: str) -> dict[str, JsonV
     (root / "output/generation-provenance.json").write_bytes(
         json_bytes(
             {
-                "version": "service-exchange/2.0",
-                "plan": spec.plan.model_dump(mode="json"),
+                **recipe,
                 "splits": spec.splits.model_dump(mode="json"),
                 "numpy_version": np.__version__,
                 "python_version": platform.python_version(),
@@ -275,7 +281,7 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
             source = sources[(member.source_namespace, member.snapshot_id)]
             # annotate's required view is observations and grid only. It does not
             # receive or reconstruct an experiment seed or generator state.
-            annotations = annotate(_Grid(source.export), spec.analysis)
+            annotations = annotate(_Grid(source.export), spec.analysis, policy=spec.saved_policy)
             members.append(create_reference_member(member, annotations))
             name = f"output/annotation-{len(documents)}.json"
             (root / name).write_bytes(json_bytes(annotations.model_dump(mode="json")))
@@ -292,7 +298,7 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
                 dataset_sha256=dataset.manifest.content_sha256,
                 partition=spec.partition,
                 kind="automatic",
-                policy=DIRECTION_POLICY,
+                policy=spec.saved_policy,
                 semantics=DirectionSemantics(
                     profile_sha256=analysis_profile_hash(spec.analysis),
                     decoder_version=DECODER_VERSION,

@@ -11,6 +11,8 @@ from regimex.exports import MAX_DECIMAL_PLACES, decimal_places
 
 Probability = Annotated[float, Field(ge=0, le=1)]
 Lots = Annotated[int, Field(ge=0, le=10**12)]
+type GeneratorVersion = Literal["4.0", "4.1"]
+GENERATOR_VERSION: GeneratorVersion = "4.1"
 
 
 class ParticipantProfile(StrictModel):

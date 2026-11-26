@@ -75,6 +75,7 @@ from regimex.deletion_contracts import DeletionPreview
 from regimex.directions import (
     DECODER_VERSION,
     DEFAULT_ANALYSIS_PROFILE,
+    DIRECTION_POLICY,
     AnalysisConfig,
     DirectionAnnotations,
 )
@@ -87,6 +88,7 @@ from regimex.infrastructure.object_store import (
     ObjectInfo,
     ObjectIntegrityError,
 )
+from regimex.market_config import GENERATOR_VERSION
 from regimex.market_identity import imported_seed_group
 from regimex.model_bundles import BundleMember, ModelBundle
 from regimex.model_registry import FixedUpdatePolicy, RegistryError, TrainingPolicy
@@ -184,7 +186,11 @@ class AdminService:
             if isinstance(spec, GenerationSpec):
                 if spec.plan.experiment_count > self.settings.max_generation_experiments:
                     raise CapacityExceeded("Generation exceeds the server experiment limit.")
+                if spec.generator_version is None:
+                    spec = spec.model_copy(update={"generator_version": GENERATOR_VERSION})
             elif isinstance(spec, ReferenceGenerationSpec):
+                if spec.policy is None:
+                    spec = spec.model_copy(update={"policy": DIRECTION_POLICY})
                 self._profile(spec.analysis, spec.analysis_profile_id)
                 self.repository.get_dataset(principal, spec.dataset_id)
             elif isinstance(spec, TrainingSpec):

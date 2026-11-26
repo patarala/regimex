@@ -2,6 +2,7 @@
 
 import hashlib
 import heapq
+import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Literal
@@ -10,7 +11,12 @@ import numpy as np
 from pydantic import Field
 
 from regimex.contracts import Count, Instrument, Observation, StrictModel
-from regimex.market_config import MarketConfig, ParticipantProfile
+from regimex.market_config import (
+    GENERATOR_VERSION,
+    GeneratorVersion,
+    MarketConfig,
+    ParticipantProfile,
+)
 
 Side = Literal["buy", "sell"]
 
@@ -337,9 +343,33 @@ def _record_event(
     )
 
 
+def _order_price(last_ticks: int, offset_bps: float) -> int:
+    approximate = last_ticks * (1 + offset_bps / 10_000)
+    nearest = round(approximate)
+    # Offsets are bounded to [-9500, 10000] bps. Allow one ULP of last_ticks
+    # for each rounded conversion, division, addition and multiplication.
+    if abs(approximate - nearest) < 0.5 - 4 * math.ulp(last_ticks):
+        return max(1, nearest)
+    # Resolve the side of the midpoint and exact ties from the decimal offset.
+    offset = Fraction(str(offset_bps))
+    basis = 10_000 * offset.denominator
+    price = Fraction(last_ticks * (basis + offset.numerator), basis)
+    return max(1, round(price))
+
+
+def _order_price_v4_0(last_ticks: int, offset_bps: float) -> int:
+    return max(1, round(last_ticks * (1 + offset_bps / 10_000)))
+
+
 def simulate(
-    config: MarketConfig, seed: int, steps: int, *, record_events: bool = False
+    config: MarketConfig,
+    seed: int,
+    steps: int,
+    *,
+    record_events: bool = False,
+    generator_version: GeneratorVersion = GENERATOR_VERSION,
 ) -> MarketRun:
+    order_price = _order_price_v4_0 if generator_version == "4.0" else _order_price
     profiles = [profile for profile in config.profiles for _ in range(profile.count)]
     profiles.append(config.test_participant)
     if steps < 1:
@@ -378,12 +408,7 @@ def simulate(
                 if journal is not None:
                     journal.append(_record_event(exchange, step, owner, instrument, side))
                 continue
-            price = max(
-                1,
-                round(
-                    exchange.last[instrument] * (1 + rng.uniform(*profile.price_offset_bps) / 10000)
-                ),
-            )
+            price = order_price(exchange.last[instrument], rng.uniform(*profile.price_offset_bps))
             if price > 10**12:
                 raise ValueError("simulated price exceeds supported tick range")
             lots = int(rng.integers(profile.volume_lots[0], profile.volume_lots[1] + 1))

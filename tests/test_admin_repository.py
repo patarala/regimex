@@ -258,7 +258,7 @@ def reference_record(
             dataset_sha256=dataset.manifest.content_sha256,
             partition=partition,
             kind="automatic",
-            policy="retrospective-directions/3.0",
+            policy=document.policy,
             semantics=DirectionSemantics(
                 profile_sha256=analysis_profile_hash(PROFILE),
                 decoder_version="duration-viterbi/1.0",

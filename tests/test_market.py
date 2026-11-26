@@ -134,6 +134,28 @@ def test_initial_price_rejects_fractional_ticks_even_when_close_to_a_tick() -> N
         MarketConfig(initial_prices=(0.010000001,), tick_size=0.01)
 
 
+@pytest.mark.parametrize(
+    ("offset", "ticks"),
+    [(149.9999999999999, 101), (150.0, 102), (150.0000000000001, 102), (-150.0, 98)],
+)
+def test_decimal_order_offsets_round_once_to_the_nearest_even_tick(
+    offset: float, ticks: int
+) -> None:
+    buyer = ParticipantProfile(
+        count=1,
+        buy_probability=1.0,
+        sell_probability=0.0,
+        hold_probability=0.0,
+        volume_lots=(1, 1),
+        price_offset_bps=(offset, offset),
+    )
+    seller = buyer.model_copy(update={"buy_probability": 0.0, "sell_probability": 1.0})
+    market = MarketConfig(initial_prices=(1.0,), profiles=(seller,), test_participant=buyer)
+    run = simulate(market, 123, 1, record_events=True)
+    assert run.journal and [event.price_ticks for event in run.journal] == [ticks, ticks]
+    assert run.audit.trades == 1 and run.observations[0].last_price == ticks / 100
+
+
 @pytest.mark.parametrize("price,tick", [(0.3, 0.1), (1234567890.12, 0.01)])
 def test_exact_decimal_initial_price_is_preserved_without_trades(price: float, tick: float) -> None:
     hold = ParticipantProfile(

@@ -464,7 +464,7 @@ def test_generation_has_separate_references_and_complete_immutable_dataset(
     assert all(member.split_group.seed is not None for member in dataset.manifest.members)
     for snapshot_id in dataset.snapshot_ids:
         export = service.analysis_service.read_snapshot(principal, snapshot_id)
-        assert export.producer.version == export.source.source_version == "4.0"
+        assert export.producer.version == export.source.source_version == "4.1"
         identities = {instrument.instrument_id for instrument in export.instruments}
         assert len(identities) == len(export.instruments)
         assert {row.instrument_id for row in export.observations} == identities
@@ -510,6 +510,45 @@ def test_retry_and_repeated_generation_fit_one_dataset_quota(
         == service.get_dataset(principal, second_spec.dataset_id).snapshot_ids
     )
     assert base.storage_usage(principal) == after_retry
+
+
+def test_unversioned_jobs_replay_with_their_original_generator_and_reference_policy(
+    admin: tuple[AdminService, Principal],
+) -> None:
+    service, principal = admin
+    plan = RawGenerationPlan(seed=47, experiment_count=3, step_count=64)
+    original = GenerationSpec(dataset_id="old-run", plan=plan)
+    queued = service.repository.submit(principal, original, idempotency_key="old-generation")
+    assert (
+        service.submit_generation(principal, original, idempotency_key="old-generation") == queued
+    )
+    completed(service, queued.run_id)
+    old = service.get_dataset(principal, original.dataset_id)
+    new_spec = GenerationSpec(dataset_id="new-run", plan=plan)
+    new_run = service.submit_generation(principal, new_spec, idempotency_key="new-generation")
+    completed(service, new_run.run_id)
+    new = service.get_dataset(principal, new_spec.dataset_id)
+    assert set(old.snapshot_ids).isdisjoint(new.snapshot_ids)
+    for dataset, version in ((old, "4.0"), (new, "4.1")):
+        export = service.analysis_service.read_snapshot(principal, dataset.snapshot_ids[0])
+        assert export.source.source_version == export.producer.version == version
+    refs = ReferenceGenerationSpec(
+        dataset_id=old.dataset_id, reference_set_id="old-labels", partition="train"
+    )
+    queued = service.repository.submit(principal, refs, idempotency_key="old-labels")
+    assert service.generate_references(principal, refs, idempotency_key="old-labels") == queued
+    completed(service, queued.run_id)
+    replacement = refs.model_copy(update={"reference_set_id": "new-labels"})
+    submitted = service.generate_references(principal, replacement, idempotency_key="new-labels")
+    completed(service, submitted.run_id)
+    assert (
+        service.get_reference_set(principal, "old-labels").references.policy
+        == "retrospective-directions/3.0"
+    )
+    assert (
+        service.get_reference_set(principal, "new-labels").references.policy
+        == "retrospective-directions/3.1"
+    )
 
 
 def test_sealed_test_references_are_not_available_to_training_or_downloads(

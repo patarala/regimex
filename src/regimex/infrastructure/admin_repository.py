@@ -40,7 +40,7 @@ from regimex.admin_contracts import (
 )
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.data_catalog import validate_reference_membership
-from regimex.directions import DIRECTION_POLICY
+from regimex.directions import SAVED_DIRECTION_POLICIES
 from regimex.external_evaluations import ExternalEvaluation
 from regimex.external_latency import ExternalLatencyEvidence
 from regimex.history_contracts import DisplayNameUpdate, validate_display_name
@@ -139,7 +139,7 @@ def _read_reference(document: object) -> ReferenceSetRecord:
         if (
             isinstance(references, dict)
             and references.get("kind") == "automatic"
-            and references.get("policy") != DIRECTION_POLICY
+            and references.get("policy") not in SAVED_DIRECTION_POLICIES
         ):
             raise UnsupportedContract()
     return ReferenceSetRecord.model_validate_json(json_bytes(document))

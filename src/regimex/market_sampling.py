@@ -4,9 +4,9 @@ from typing import Literal
 
 import numpy as np
 
+from regimex.market_config import GENERATOR_VERSION as GENERATOR_VERSION
 from regimex.market_config import MarketConfig, ParticipantProfile
 
-GENERATOR_VERSION = "4.0"
 SamplingFamily = Literal["inactive", "one_sided", "fixed_price", "heterogeneous"]
 
 

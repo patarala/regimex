@@ -15,21 +15,27 @@ from regimex.exports import (
     seal_export,
 )
 from regimex.market import MarketAudit, simulate
-from regimex.market_config import MarketConfig
+from regimex.market_config import GENERATOR_VERSION, GeneratorVersion, MarketConfig
 from regimex.market_identity import sampled_configuration, sampled_run_id
-from regimex.market_sampling import GENERATOR_VERSION, sample_market
+from regimex.market_sampling import sample_market
 
 
 def simulate_export(
-    market: MarketConfig, *, seed: int, steps: int, configuration_id: str, run_id: str
+    market: MarketConfig,
+    *,
+    seed: int,
+    steps: int,
+    configuration_id: str,
+    run_id: str,
+    generator_version: GeneratorVersion = GENERATOR_VERSION,
 ) -> tuple[ExportV2, MarketAudit]:
-    run = simulate(market, seed, steps)
+    run = simulate(market, seed, steps, generator_version=generator_version)
     export = seal_export(
         ExportPayloadV2(
             schema_version="2.1",
             source=SourceIdentity(
                 source_id="regimex-exchange",
-                source_version=GENERATOR_VERSION,
+                source_version=generator_version,
                 configuration_id=configuration_id,
                 run_id=run_id,
                 snapshot_id=run_id,
@@ -37,7 +43,7 @@ def simulate_export(
                 run_status="completed",
                 consistency="atomic_completed_snapshot",
             ),
-            producer=Producer(name="regimex-exchange", version=GENERATOR_VERSION),
+            producer=Producer(name="regimex-exchange", version=generator_version),
             time_grid=ModelTimeGrid(
                 origin=0.0,
                 unit="simulation_step",

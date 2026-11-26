@@ -135,6 +135,11 @@ class AdminResultCommitter:
             binding = _model(item["binding"], CatalogBinding)
             path = _result_path(self.root, item["path"])
             export = ExportV2.model_validate_json(path.read_bytes())
+            if (
+                export.source.source_version != spec.saved_generator_version
+                or export.producer.version != spec.saved_generator_version
+            ):
+                raise ValueError("generated snapshot differs from its pinned generator version")
             member = manifest.members[index]
             if (
                 create_snapshot_member(
@@ -206,6 +211,7 @@ class AdminResultCommitter:
             or references.partition != spec.partition
             or references.analysis_profile != spec.analysis
             or references.kind != "automatic"
+            or references.policy != spec.saved_policy
         ):
             raise ValueError("generated references differ from the immutable request")
         documents = _list(result["annotations"])
@@ -220,7 +226,8 @@ class AdminResultCommitter:
                 _result_path(self.root, item["path"]).read_bytes()
             )
             if (
-                content_hash(annotations.model_dump(mode="json"))
+                annotations.policy != references.policy
+                or content_hash(annotations.model_dump(mode="json"))
                 != reference_member.annotations_sha256
             ):
                 raise ValueError("generated annotation differs from its sealed reference identity")

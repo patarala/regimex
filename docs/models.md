@@ -74,7 +74,9 @@ is too short or the change falls below its threshold.
 Orders match at the resting price, best price first and oldest order first at
 a given price. An order can fill partially. If it reaches the participant's own
 resting order, the exchange cancels the incoming remainder. Prices and quantities
-use integer ticks and lots. The default tick and lot sizes are both 0.01.
+use integer ticks and lots. Generator 4.1 rounds each sampled order price to
+the nearest tick, choosing the even tick at an exact midpoint. The default
+tick and lot sizes are both 0.01.
 
 After each step the generator records executed trades, accepted orders and the
 best bid and ask. An empty book side has a null quote. A step without trades has
@@ -84,7 +86,7 @@ mixed participant configurations (80%). Price directions emerge from the trades.
 
 ## Automatic reference labels
 
-The policy `retrospective-directions/3.0` supplies reproducible labels for
+The policy `retrospective-directions/3.1` supplies reproducible labels for
 training and evaluating models. It uses the same availability rules as the
 decoder. On each available block it divides log prices into pieces by fitting
 straight lines. Adding a piece incurs a penalty based on the local noise level.
@@ -103,11 +105,11 @@ available price in the block. It accepts movements within floating-point
 roundoff of the threshold so that changing quote units preserves a borderline
 label. Other runs receive sideways.
 
-When using a custom movement threshold, profiles 2.0–2.2 assign R² = 0 if
-the sum of squared deviations of log price within the fitted piece (after
-adjusting for a level change, if selected) is at most `1e-18`. For example,
-a steady rise of `1e-10` across 16 steps can still receive a sideways label
-with a movement threshold of `1e-11` and the default fit requirement.
+The fit tolerance scales with the price variation in each piece. A steady
+rise of `1e-10` can therefore receive a growth label when the movement
+threshold is `1e-11`. Saved references from policy 3.0 retain their original
+labels. That version assigned R² = 0 for within-piece variance sums of at
+most `1e-18`, regardless of the movement threshold.
 
 To prepare an independent review with predictions hidden, run the following
 from the checkout with a new output directory.
@@ -273,6 +275,10 @@ group without a seed it hashes `["group", namespace, group_id]`. Use the same
 identity across lengths, instruments and views of the same group. The service
 rejects group overlap between reported splits. The evaluator must also check
 exposure against datasets outside the report before calling a cohort independent.
+For an ensemble, this check includes every parent's training and validation
+labels. Older ensemble manifests that name additional datasets without their
+label hashes can still run inference. To record an independent score, repack
+the ensemble from its original parent bundles so those hashes can be verified.
 
 The row for the model's original validation reference set must reproduce the
 selection score recorded in the bundle. The service sums each class's counts

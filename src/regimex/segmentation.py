@@ -14,8 +14,11 @@ from regimex.directions import (
 )
 from regimex.directions import (
     DIRECTION_NAMES,
+    DIRECTION_POLICY,
+    PREVIOUS_DIRECTION_POLICY,
     AnalysisConfig,
     AnnotationGrid,
+    AutomaticPolicy,
     Direction,
     DirectionAnnotations,
     DirectionInterval,
@@ -38,7 +41,9 @@ def eligible_mask(
     return mask
 
 
-def _fit(values: NDArray[np.float64]) -> tuple[float, float]:
+def _fit(
+    values: NDArray[np.float64], policy: AutomaticPolicy = DIRECTION_POLICY
+) -> tuple[float, float]:
     """Return the slope and R² of the best fit within a piece.
 
     Allowing a separate intercept on each side of a level change keeps that
@@ -73,11 +78,16 @@ def _fit(values: NDArray[np.float64]) -> tuple[float, float]:
     yy = np.maximum(moments[:, 1], 0.0)
     xy = moments[:, 2]
     errors = np.maximum(0.0, yy - xy * xy / xx)
-    tolerance = 64 * np.finfo(np.float64).eps * max(float(yy[0]), 1e-18)
+    legacy = policy == PREVIOUS_DIRECTION_POLICY
+    variance_scale = max(yy[0], 1e-18) if legacy else yy[0]
+    tolerance = 64 * np.finfo(np.float64).eps * variance_scale
     # Prefer the simpler line when improvement is only numerical roundoff.
     best = int(np.flatnonzero(errors <= errors.min() + tolerance)[0])
     slope = float(xy[best] / xx[best])
-    r_squared = min(1.0, max(0.0, slope**2 * xx[best] / yy[best])) if yy[best] > 1e-18 else 0.0
+    variance_floor = 1e-18 if legacy else tolerance
+    r_squared = (
+        min(1.0, max(0.0, slope**2 * xx[best] / yy[best])) if yy[best] > variance_floor else 0.0
+    )
     return slope, r_squared
 
 
@@ -166,11 +176,11 @@ class _FittedRun:
 
 
 def _directions(
-    values: NDArray[np.float64], config: AnalysisConfig
+    values: NDArray[np.float64], config: AnalysisConfig, policy: AutomaticPolicy = DIRECTION_POLICY
 ) -> list[tuple[int, int, Direction]]:
     groups: list[_FittedRun] = []
     for start, stop in _pieces(values, config):
-        slope, fit = _fit(values[start:stop])
+        slope, fit = _fit(values[start:stop], policy)
         sign = int(np.sign(slope)) if fit >= config.minimum_directional_fit else 0
         movement = slope * (stop - start - 1) if sign else 0.0
         if groups and groups[-1].sign == sign:
@@ -216,7 +226,13 @@ def _log_prices(rows: tuple[Observation, ...], config: AnalysisConfig) -> NDArra
 
 
 def _interval(
-    rows: tuple[Observation, ...], start: int, stop: int, direction: Direction | None, status: str
+    rows: tuple[Observation, ...],
+    start: int,
+    stop: int,
+    direction: Direction | None,
+    status: str,
+    *,
+    policy: AutomaticPolicy = DIRECTION_POLICY,
 ) -> DirectionInterval:
     if status not in {"observed", "no_trades", "insufficient_data"}:
         raise ValueError("unknown availability status")
@@ -228,12 +244,15 @@ def _interval(
         status="observed"
         if status == "observed"
         else ("no_trades" if status == "no_trades" else "insufficient_data"),
-        statistics=summarize_interval(rows, start, stop),
+        statistics=summarize_interval(rows, start, stop, policy=policy),
     )
 
 
 def annotate(
-    experiment: AnnotationGrid, config: AnalysisConfig | None = None
+    experiment: AnnotationGrid,
+    config: AnalysisConfig | None = None,
+    *,
+    policy: AutomaticPolicy = DIRECTION_POLICY,
 ) -> DirectionAnnotations:
     """Label sustained price movements in each instrument's available blocks."""
     config = config or AnalysisConfig()
@@ -244,13 +263,16 @@ def annotate(
         )
         for start, stop, status in observation_blocks(rows, config):
             if status != "observed":
-                intervals.append(_interval(rows, start, stop, None, status))
+                intervals.append(_interval(rows, start, stop, None, status, policy=policy))
                 continue
             values = _log_prices(rows[start:stop], config)
-            for left, right, direction in _directions(values, config):
-                intervals.append(_interval(rows, start + left, start + right, direction, status))
+            for left, right, direction in _directions(values, config, policy):
+                intervals.append(
+                    _interval(rows, start + left, start + right, direction, status, policy=policy)
+                )
     result = DirectionAnnotations(
         experiment_id=experiment.experiment_id,
+        policy=policy,
         policy_config=config.model_dump(mode="json"),
         intervals=tuple(intervals),
     )

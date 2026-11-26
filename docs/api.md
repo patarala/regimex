@@ -242,7 +242,7 @@ Create separate training and validation references with `POST /reference-sets`:
 ```
 
 Repeat with `partition: "validation"`. New reference sets use the current
-`direction-32/2.2` profile. Automatic labels use `retrospective-directions/3.0`.
+`direction-32/2.2` profile. New automatic labels use `retrospective-directions/3.1`.
 To import human references, provide complete annotations and identify the
 reviewer. The reviewer attests to independence. The ordinary annotation
 download covers the training and validation partitions.
