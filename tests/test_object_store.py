@@ -564,6 +564,28 @@ def test_commits_sync_payload_and_containing_directory(
     assert any(stat.S_ISDIR(mode) for mode, _ in synced)
 
 
+@pytest.mark.parametrize("key", ["saved", "new-directory/saved"])
+def test_retry_waits_for_durable_directory_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    objects = store(tmp_path / "objects")
+    payload = source(tmp_path)
+    sync = os.fsync
+
+    def fail_root_sync(descriptor: int) -> None:
+        if os.path.samestat(os.fstat(descriptor), objects.root.stat()):
+            raise OSError("directory sync failed")
+        sync(descriptor)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_root_sync)
+        for _ in range(2):
+            with pytest.raises(OSError, match="directory sync failed"):
+                objects.put(key, payload, expected_sha256=checksum(b"payload"))
+    saved = objects.put(key, payload, expected_sha256=checksum(b"payload"))
+    assert objects.stat(key) == saved
+
+
 @pytest.mark.parametrize("object_limit,total_limit", [(-1, 4), (1, -1), (True, 4), (5, 4)])
 def test_invalid_capacity_configuration_fails(
     tmp_path: Path, object_limit: int, total_limit: int

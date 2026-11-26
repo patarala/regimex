@@ -307,7 +307,10 @@ uv run --locked --all-extras regimex service storage-gc-receipt \
 Inspect the plan before applying its recorded digest. Plans bind installation,
 namespace, cutoff and exact generations; durable deletion fences prevent a stale
 uploader from later registering a removed generation. Changed/young files and
-registered hard-link aliases are preserved. Unknown private entries fail planning.
+registered hard-link aliases are preserved. A staging name left by an older writer
+after publication shares the public file's generation. It can be cleaned up after
+the public object is deleted and does not hold up quota reconciliation for other
+keys. Unknown private entries fail planning.
 Each plan includes up to 1,000 candidates. Create another plan after applying a
 full batch. A pending resource deletion keeps its objects until its own retry.
 Receipts report completion for the entire plan and return up to 1,000 audit

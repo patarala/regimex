@@ -15,7 +15,7 @@ import stat
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Protocol, Self
@@ -134,16 +134,20 @@ def _absolute_parts(path: Path) -> tuple[str, ...]:
 
 
 @contextmanager
-def _child_directory(parent: int, parts: tuple[str, ...], *, create: bool) -> Iterator[int]:
+def _child_directory(
+    parent: int, parts: tuple[str, ...], *, create: bool, sync_existing: bool = False
+) -> Iterator[int]:
     descriptor = os.dup(parent)
     try:
         for part in parts:
             if create:
                 try:
                     os.mkdir(part, mode=0o700, dir_fd=descriptor)
-                    os.fsync(descriptor)
                 except FileExistsError:
-                    pass
+                    if sync_existing:
+                        os.fsync(descriptor)
+                else:
+                    os.fsync(descriptor)
             child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = child
@@ -189,7 +193,9 @@ def _temporary_file(parent: int) -> Iterator[tuple[int, str]]:
         yield descriptor, name
     finally:
         os.close(descriptor)
-        os.unlink(name, dir_fd=parent)
+        # A successful put renamed this file to its immutable key.
+        with suppress(FileNotFoundError):
+            os.unlink(name, dir_fd=parent)
 
 
 @contextmanager
@@ -287,11 +293,30 @@ def _upload_parts(key: str) -> tuple[str, ...]:
     return parts
 
 
+def _linked_payloads(directory: int) -> set[tuple[int, int]]:
+    """Find public sibling files that can account for the other link to a staging inode."""
+    result = set()
+    # The caller is still iterating the directory, so open a separate directory stream.
+    with (
+        _child_directory(directory, (".",), create=False) as sibling_dir,
+        os.scandir(sibling_dir) as entries,
+    ):
+        for entry in entries:
+            if entry.name.startswith(_INTERNAL_PREFIX) or not entry.is_file(follow_symlinks=False):
+                continue
+            metadata = entry.stat(follow_symlinks=False)
+            if metadata.st_nlink == 2:
+                _key_parts(entry.name)
+                result.add((metadata.st_dev, metadata.st_ino))
+    return result
+
+
 def _incomplete_uploads(root: int) -> tuple[IncompleteUpload, ...]:
     """List abandoned local staging files through the incomplete-upload DTO."""
     results: list[IncompleteUpload] = []
 
     def visit(directory: int, parents: tuple[str, ...]) -> None:
+        linked_payloads: set[tuple[int, int]] | None = None
         with os.scandir(directory) as entries:
             for entry in entries:
                 if not parents and entry.name in {_LOCK_NAME, _BINDING_NAME}:
@@ -305,6 +330,14 @@ def _incomplete_uploads(root: int) -> tuple[IncompleteUpload, ...]:
                     _upload_parts(key)
                     with _regular_file(directory, entry.name) as descriptor:
                         metadata = os.fstat(descriptor)
+                        if metadata.st_nlink == 2:
+                            if linked_payloads is None:
+                                linked_payloads = _linked_payloads(directory)
+                            if (metadata.st_dev, metadata.st_ino) in linked_payloads:
+                                # An older writer already published this inode. Removing the
+                                # private link would invalidate the recorded public generation.
+                                _stored_version(descriptor)
+                                continue
                         if len(results) >= 100_000:
                             raise ObjectCapacityError(
                                 "local upload inventory exceeds its entry limit"
@@ -479,7 +512,8 @@ class LocalObjectStore:
         _check_digest(expected_sha256)
         with (
             self._locked_root(checkpoint=checkpoint) as root,
-            _child_directory(root, parts[:-1], create=True) as parent,
+            # An earlier writer may have stopped before syncing a new directory entry.
+            _child_directory(root, parts[:-1], create=True, sync_existing=True) as parent,
         ):
             with _temporary_file(parent) as (temporary, temporary_name):
                 with (
@@ -501,6 +535,7 @@ class LocalObjectStore:
                 if info is not None:
                     if (info.sha256, info.size_bytes) != (checksum, size):
                         raise ObjectConflictError("immutable object key already has other content")
+                    os.fsync(parent)
                     return info
                 count, committed_bytes = _committed_usage(root)
                 if count >= _MAX_COMMITTED_ENTRIES:
@@ -512,14 +547,14 @@ class LocalObjectStore:
                 os.fsync(temporary)
                 if checkpoint is not None:
                     checkpoint()
-                os.link(
+                # Every store writer holds the root lock, including the check for
+                # an existing key above. Rename publishes a single directory entry.
+                os.rename(
                     temporary_name,
                     parts[-1],
                     src_dir_fd=parent,
                     dst_dir_fd=parent,
-                    follow_symlinks=False,
                 )
-            # Unlinking the temporary hard link changes ctime; record the final revision.
             os.fsync(parent)
             with _regular_file(parent, parts[-1]) as committed:
                 return _info(key, committed, limit=self.max_object_bytes, checkpoint=checkpoint)

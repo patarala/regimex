@@ -2,6 +2,8 @@
 
 import hashlib
 import os
+import subprocess
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10,6 +12,32 @@ from uuid import uuid4
 import pytest
 
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectConflictError
+
+
+def test_interruption_after_publication_leaves_only_the_committed_object(tmp_path: Path) -> None:
+    root = tmp_path / "objects"
+    source = tmp_path / "input"
+    source.write_bytes(b"data")
+    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
+    script = """
+import os, sys
+from pathlib import Path
+from regimex.infrastructure.object_store import LocalObjectStore
+store = LocalObjectStore(Path(sys.argv[1]), max_object_bytes=100, max_total_bytes=100)
+rename = os.rename
+def publish(*args, **kwargs):
+    rename(*args, **kwargs)
+    os._exit(73)
+os.rename = publish
+store.put('saved', Path(sys.argv[2]), expected_sha256=sys.argv[3])
+"""
+    child = subprocess.run([sys.executable, "-c", script, str(root), str(source), checksum])
+    assert child.returncode == 73
+    store = LocalObjectStore(root, max_object_bytes=100, max_total_bytes=100)
+    committed = store.stat("saved")
+    assert store.put("saved", source, expected_sha256=checksum) == committed
+    assert (root / "saved").stat().st_nlink == 1
+    assert store.list_multipart_uploads() == ()
 
 
 def test_local_inventory_tracks_exact_generations_and_has_stable_location_scope(
@@ -92,11 +120,23 @@ def test_local_incomplete_cleanup_rejects_changed_identity_and_authoritative_ali
     linked = store.root / (".regimex-temporary-" + uuid4().hex)
     os.link(store.root / info.key, linked)
     current = store.stat(info.key)
-    linked_upload = next(item for item in store.list_multipart_uploads() if item.key == linked.name)
-    with pytest.raises(ObjectConflictError, match="stale or linked"):
-        store.abort_multipart(linked_upload, initiated_before=datetime.now(UTC))
+    assert [item.key for item in store.list_multipart_uploads()] == [temporary.name]
     assert store.stat(info.key) == current
     assert linked.read_bytes() == source.read_bytes()
+    store.delete(current)
+    linked_upload = next(item for item in store.list_multipart_uploads() if item.key == linked.name)
+    store.abort_multipart(linked_upload, initiated_before=datetime.now(UTC))
+    assert not linked.exists()
+
+
+def test_link_to_an_unrelated_private_inode_remains_an_unresolved_upload(tmp_path: Path) -> None:
+    store = LocalObjectStore(tmp_path / "objects", max_object_bytes=1024, max_total_bytes=4096)
+    temporary = store.root / (".regimex-temporary-" + uuid4().hex)
+    temporary.write_bytes(b"partial")
+    os.link(temporary, tmp_path / "other")
+    (upload,) = store.list_multipart_uploads()
+    with pytest.raises(ObjectConflictError, match="stale or linked"):
+        store.abort_multipart(upload, initiated_before=datetime.now(UTC))
 
 
 def test_local_coordination_has_a_bounded_wait_for_another_writer(tmp_path: Path) -> None:

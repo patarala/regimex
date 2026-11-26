@@ -392,6 +392,16 @@ def test_offline_cleanup_releases_only_absent_old_unregistered_reservations(
         path,
         expected_sha256=hashlib.sha256(b"orphan").hexdigest(),
     )
+    # A public object left with a staging alias by an interrupted older writer belongs
+    # to its own reservation. Unrelated owners' absent reservations can still expire.
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    linked = application.store.put("other-owner", path, expected_sha256=digest)
+    os.link(
+        tmp_path / "objects" / linked.key,
+        tmp_path / "objects" / (".regimex-temporary-" + uuid4().hex),
+    )
+    linked = application.store.stat(linked.key)
+    register(database, "bob", linked)
     if incomplete_upload:
         # Local staging names deliberately cannot reveal their destination key.
         (tmp_path / "objects" / (".regimex-temporary-" + uuid4().hex)).write_bytes(b"partial")
@@ -426,6 +436,7 @@ def test_offline_cleanup_releases_only_absent_old_unregistered_reservations(
     later.apply(admin, plan.plan_id, expected_sha256=plan.sha256, attestation=attestation)
     usage = repository.owner_usage(principal())
     assert (usage.used_bytes, usage.reserved_bytes) == (17, 0)
+    assert application.store.stat(linked.key) == linked
 
 
 def test_previous_schema_upgrade_backfills_existing_payloads(
