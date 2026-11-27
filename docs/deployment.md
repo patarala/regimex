@@ -346,8 +346,9 @@ installed schema, queue schema and restore state from the new image before
 replacing a container. It preserves the current replica count of each selected
 role, including workers scaled with `--scale`. PostgreSQL keeps serving traffic.
 Compose recreates roles whose image or configuration changed, and waits up to
-three minutes for health. Before each replacement the helper checks the replica
-counts again and verifies that roles updated earlier are still healthy. Repeating
+three minutes for health. The helper checks replica counts before starting the
+rollout and after each replacement. It also verifies that every role updated
+so far is still healthy, including at the end of the rollout. Repeating
 the command with the same image and configuration keeps healthy containers
 running. The singleton API can briefly drop requests, and queued work can wait
 while its workers restart.

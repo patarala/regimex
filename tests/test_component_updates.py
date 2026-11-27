@@ -149,7 +149,12 @@ def test_scale_change_while_waiting_for_api_health_keeps_new_worker_count(tmp_pa
 
 
 def test_repaired_image_can_replace_a_restart_looping_worker(tmp_path: Path) -> None:
-    result, calls = rollout(tmp_path, ["admin-worker"], states="admin-worker False restarting")
+    result, calls = rollout(
+        tmp_path,
+        ["admin-worker"],
+        states="admin-worker False restarting",
+        states_after_up="admin-worker False running healthy",
+    )
     assert result.returncode == 0, result.stderr
     assert [args[-3:] for args in calls if args[0] == "up"] == [
         ["--scale", "admin-worker=1", "admin-worker"]
@@ -165,6 +170,23 @@ def test_api_losing_readiness_stops_the_report_writer_update(tmp_path: Path) -> 
         states_after_up=f"api False running unhealthy\n{worker}",
     )
     assert result.returncode and "api is no longer healthy" in result.stderr
+    assert [args[-1] for args in calls if args[0] == "up"] == ["api"]
+
+
+@pytest.mark.parametrize(
+    ("final_state", "message"),
+    [
+        ("api False running unhealthy", "no longer healthy"),
+        ("api False running healthy\napi False running healthy", "Replica counts changed"),
+    ],
+)
+def test_update_rechecks_health_and_scale_after_the_last_replacement(
+    tmp_path: Path, final_state: str, message: str
+) -> None:
+    result, calls = rollout(
+        tmp_path, ["api"], states="api False running", states_after_up=final_state
+    )
+    assert result.returncode and message in result.stderr
     assert [args[-1] for args in calls if args[0] == "up"] == ["api"]
 
 

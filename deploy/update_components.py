@@ -54,15 +54,19 @@ def replicas(roles: list[str], *, updated: Sequence[str] = ()) -> Counter[str]:
 def update(roles: list[str]) -> None:
     selected = [role for role in BUILDERS if role in roles]
     counts = replicas(selected)
+
+    def check_deployment(updated: Sequence[str]) -> None:
+        if replicas(selected, updated=updated) != counts:
+            raise ValueError(
+                "Replica counts changed during the update. Repeat with the current scale."
+            )
+
     builders = dict.fromkeys(BUILDERS[role] for role in selected)
     run("build", *builders)
     for role in selected:
         run("run", "--rm", "--no-deps", "-T", role, "service", "health", "--component", "database")
+    check_deployment(())
     for index, role in enumerate(selected):
-        if replicas(selected, updated=selected[:index]) != counts:
-            raise ValueError(
-                "Replica counts changed during the update. Repeat with the current scale."
-            )
         run(
             "up",
             "--no-deps",
@@ -76,6 +80,7 @@ def update(roles: list[str]) -> None:
             f"{role}={counts[role]}",
             role,
         )
+        check_deployment(selected[: index + 1])
 
 
 if __name__ == "__main__":
