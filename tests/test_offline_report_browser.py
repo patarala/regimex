@@ -681,6 +681,10 @@ def test_difference_zoom_and_partial_terminal_bin(browser: Any, tmp_path: Path, 
         assert page.locator("#chart-container").evaluate(
             "(node) => node === document.activeElement"
         )
+        page.get_by_label("Start step").fill("")
+        page.get_by_role("button", name="Apply range").click()
+        assert page.get_by_role("alert").is_visible()
+        assert tick_offsets() == [40, 48.25, 56.5, 64.75, 73]
         # Inspect a point 31 time units into the zoomed 33-unit range.
         position = page.locator("#chart").evaluate("""(svg) => {
           const position = new DOMPoint(82 + (976 - 82) * 31 / 33, 135);
@@ -690,9 +694,39 @@ def test_difference_zoom_and_partial_terminal_bin(browser: Any, tmp_path: Path, 
         }""")
         assert position == "7"
         page.get_by_label("Start step").fill("7")
-        page.get_by_role("button", name="Apply range").click()
+        page.get_by_label("Start step").press("Enter")
         assert tick_offsets() == [70, 70.75, 71.5, 72.25, 73]
         page.get_by_role("button", name="Reset zoom").click()
         assert page.locator("#range-start").input_value() == "0"
+    finally:
+        page.close()
+
+
+def test_comparison_drag_ignores_other_pointers(browser: Any, tmp_path: Path) -> None:
+    export = _export(steps=8)
+    report = tmp_path / "comparison.html"
+    report.write_bytes(
+        _render(export, prediction_for(export), prediction_for(export, direction=Direction.DECLINE))
+    )
+    page = browser.new_page(offline=True)
+    try:
+        page.goto(report.as_uri())
+        chart = page.locator("#chart")
+        chart.scroll_into_view_if_needed()
+        box = chart.bounding_box()
+        y = box["y"] + box["height"] / 2
+        page.mouse.move(box["x"] + box["width"] / 4, y)
+        page.mouse.down()
+        page.mouse.move(box["x"] + box["width"] / 2, y)
+        brush = chart.locator(".brush")
+        width = brush.get_attribute("width")
+        chart.dispatch_event("pointermove", {"pointerId": 99, "pointerType": "touch"})
+        assert brush.get_attribute("width") == width
+        chart.dispatch_event("pointercancel", {"pointerId": 99, "pointerType": "touch"})
+        assert brush.is_visible()
+        page.mouse.up()
+        assert brush.count() == 0
+        assert int(page.get_by_label("Start step").input_value()) > 0
+        assert int(page.get_by_label("Stop step").input_value()) < 8
     finally:
         page.close()

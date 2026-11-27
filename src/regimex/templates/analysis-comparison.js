@@ -260,13 +260,14 @@
     return start + offset;
   }
   svg.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) return;
+    if (drag || event.button !== 0) return;
     drag = {x: pointerX(event), pointer: event.pointerId};
     svg.setPointerCapture(event.pointerId);
     brush = element("rect", {x: drag.x, y: top, width: 0, height: 323, class: "brush"});
     svg.append(brush);
   });
   svg.addEventListener("pointermove", (event) => {
+    if (drag && event.pointerId !== drag.pointer) return;
     const position = pointerX(event);
     if (drag) {
       brush.setAttribute("x", Math.min(position, drag.x));
@@ -285,17 +286,22 @@
       setRange(Math.floor(stepAt(Math.min(first, last))), Math.ceil(stepAt(Math.max(first, last))));
     else inspect(Math.floor(stepAt(last)));
   });
-  svg.addEventListener("pointercancel", () => {
+  function cancelDrag(event) {
+    if (event.pointerId !== drag?.pointer) return;
     drag = null;
-    if (brush) brush.remove();
+    brush.remove();
     brush = null;
-  });
+  }
+  svg.addEventListener("pointercancel", cancelDrag);
+  svg.addEventListener("lostpointercapture", cancelDrag);
   $("instrument").addEventListener("change", () => {
     selected = Number($("instrument").value);
     render();
   });
-  $("apply-range").addEventListener("click", () =>
-    setRange(Number($("range-start").value), Number($("range-stop").value)));
+  $("range-form").addEventListener("submit", (event) => {
+    event.preventDefault();
+    setRange($("range-start").valueAsNumber, $("range-stop").valueAsNumber);
+  });
   $("reset-range").addEventListener("click", () => setRange(0, count));
   $("inspect-step").addEventListener("input", () => inspect(Number($("inspect-step").value)));
   data.series.forEach((series, index) => {

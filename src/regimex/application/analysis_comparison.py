@@ -17,7 +17,7 @@ from regimex.storage import json_bytes
 if TYPE_CHECKING:
     from regimex.analysis_result import AnalysisResult
 
-COMPARISON_RENDERER_VERSION = "analysis-comparison/1.4"
+COMPARISON_RENDERER_VERSION = "analysis-comparison/1.5"
 
 
 @dataclass(frozen=True, slots=True)

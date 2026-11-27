@@ -21,13 +21,13 @@
   </header>
   <section aria-labelledby="chart-title">
     <h2 id="chart-title">Prices and direction intervals</h2>
-    <div class="controls">
+    <form id="range-form" class="controls" novalidate>
       <label>Instrument <select id="instrument"></select></label>
-      <label>Start step <input id="range-start" type="number" min="0" step="1" value="0"></label>
-      <label>Stop step <input id="range-stop" type="number" min="1" step="1"></label>
-      <button id="apply-range" type="button">Apply range</button>
+      <label>Start step <input id="range-start" type="number" min="0" step="1" value="0" required></label>
+      <label>Stop step <input id="range-stop" type="number" min="1" step="1" required></label>
+      <button id="apply-range" type="submit">Apply range</button>
       <button id="reset-range" type="button">Reset zoom</button>
-    </div>
+    </form>
     <p id="range-error" class="error" role="alert" hidden></p>
     <p id="units" class="muted"></p>
     <p class="legend">↑ Growth · ↓ Decline · → Sideways · Ø No trades · ? Insufficient data</p>
