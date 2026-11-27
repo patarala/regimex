@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import stat
 from pathlib import Path
 from uuid import UUID
 
@@ -138,7 +139,7 @@ def test_rate_limit_has_retry_after_and_server_generated_diagnostic_id(
 
 
 def test_cli_manages_keys_without_printing_or_overwriting_secrets(
-    context: IntegrationContext, tmp_path: Path
+    context: IntegrationContext, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     admin = context.database.create_token("cli-operator", "admin")
     credential = tmp_path / "admin.token"
@@ -150,7 +151,7 @@ def test_cli_manages_keys_without_printing_or_overwriting_secrets(
     }
     prefix = ["service", "connections", "--token-file", str(credential)]
 
-    def invoke(arguments: list[str]) -> str:
+    def invoke(arguments: list[str], *, exit_code: int = 0) -> str:
         root = logging.getLogger()
         handlers, level = root.handlers[:], root.level
         try:
@@ -158,32 +159,45 @@ def test_cli_manages_keys_without_printing_or_overwriting_secrets(
         finally:
             root.handlers[:] = handlers
             root.setLevel(level)
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == exit_code, result.output
         assert admin not in result.output
-        return result.stdout
+        return result.stderr if exit_code else result.stdout
 
     connection = json.loads(
         invoke(["create", "--owner", "cli-platform", "--source", "fixture", "--name", "Platform"])
     )
     integration_id = connection["integration_id"]
     output = tmp_path / "gateway.token"
-    issued = json.loads(
-        invoke(
-            [
-                "key-create",
-                integration_id,
-                "--name",
-                "Reader",
-                "--scope",
-                "read",
-                "--days",
-                "2",
-                "--output",
-                str(output),
-            ]
-        )
-    )
+    create = [
+        "key-create",
+        integration_id,
+        "--name",
+        "Reader",
+        "--scope",
+        "read",
+        "--days",
+        "2",
+        "--output",
+        str(output),
+    ]
+    fsync = os.fsync
+
+    def fail_directory_sync(fd: int) -> None:
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError("Directory sync failed")
+        fsync(fd)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "fsync", fail_directory_sync)
+        assert "Directory sync failed" in invoke(create, exit_code=1)
+    assert not output.exists()
+    assert not invoke(["keys", integration_id]).strip()
+    assert "key.created" not in invoke(["events", integration_id])
+
+    issued = json.loads(invoke(create))
     secret = output.read_text().strip()
+    assert secret not in invoke(create, exit_code=1)
+    assert output.read_text().strip() == secret
     assert output.stat().st_mode & 0o777 == 0o600
     assert issued["scopes"] == ["read"] and secret not in json.dumps(issued)
     assert secret not in invoke(["keys", integration_id])

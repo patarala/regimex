@@ -3,6 +3,7 @@
 import hashlib
 import re
 import secrets
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
@@ -371,12 +372,20 @@ class IntegrationRepository:
             return _integration(row)
 
     def issue_key(
-        self, actor: Principal, integration_id: UUID, request: IntegrationKeyCreate
+        self,
+        actor: Principal,
+        integration_id: UUID,
+        request: IntegrationKeyCreate,
+        *,
+        save: Callable[[str], None] | None = None,
     ) -> IssuedIntegrationKey:
         with self.database.connection() as connection:
             _admin(connection, actor, lock=True)
             integration = _get(connection, integration_id, lock=True)
-            return _issue_key(connection, integration, request, actor)
+            issued = _issue_key(connection, integration, request, actor)
+            if save is not None:
+                save(issued.token.get_secret_value())
+            return issued
 
     def list_keys(
         self, actor: Principal, integration_id: UUID, *, limit: int = 50, offset: int = 0

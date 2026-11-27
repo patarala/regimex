@@ -2,7 +2,8 @@
 
 import os
 import stat
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
@@ -14,6 +15,38 @@ from regimex.service_settings import ServiceSettings
 if TYPE_CHECKING:
     from regimex.infrastructure.integration_repository import IntegrationRepository
     from regimex.service_contracts import Principal
+
+
+@contextmanager
+def new_token_file(output: Path) -> Iterator[Callable[[str], None]]:
+    """Reserve a private output and let the issuing transaction persist its secret."""
+    created = saved = False
+    try:
+        with open(
+            output, "x", encoding="ascii", opener=lambda path, flags: os.open(path, flags, 0o600)
+        ) as stream:
+            created = True
+
+            def save(token: str) -> None:
+                nonlocal saved
+                stream.write(token + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+                directory = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+                saved = True
+
+            yield save
+    except BaseException:
+        if saved:
+            # A lost commit acknowledgement can leave the saved token active.
+            typer.echo(f"Token file saved to {output}. Check its status before retrying.", err=True)
+        elif created:
+            output.unlink(missing_ok=True)
+        raise
 
 
 def _administrator(context: typer.Context) -> tuple[IntegrationRepository, Principal]:
@@ -155,22 +188,8 @@ def install_integration_commands(
                     "scopes": tuple(scope) if scope is not None else ("read", "upload", "analyze"),
                 }
             )
-            descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            issued = None
-            try:
-                issued = repository.issue_key(actor, integration_id, request)
-                with os.fdopen(descriptor, "w", encoding="ascii") as stream:
-                    descriptor = -1
-                    stream.write(issued.token.get_secret_value() + "\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-            except BaseException:
-                if descriptor >= 0:
-                    os.close(descriptor)
-                output.unlink(missing_ok=True)
-                if issued is not None:
-                    repository.revoke_key(actor, integration_id, issued.key.token_id)
-                raise
+            with new_token_file(output) as save:
+                issued = repository.issue_key(actor, integration_id, request, save=save)
             typer.echo(issued.key.model_dump_json())
 
         execute(action)

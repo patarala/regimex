@@ -12,7 +12,7 @@ from uuid import UUID
 
 import typer
 
-from regimex.integration_cli import install_integration_commands
+from regimex.integration_cli import install_integration_commands, new_token_file
 from regimex.service_settings import ServiceSettings
 from regimex.storage_cli import install_storage_commands
 
@@ -163,40 +163,8 @@ def token_create(
         repository = DatabaseRepository(
             settings.database_dsn.get_secret_value(), schema=settings.database_schema
         )
-        # Reserve the output before creating credentials: never overwrite an
-        # existing token or print a raw token into ordinary process logs.
-        descriptor = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        saved = False
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                descriptor = -1
-
-                def save(token: str) -> None:
-                    nonlocal saved
-                    stream.write(token + "\n")
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                    directory = os.open(output.parent, os.O_RDONLY | os.O_DIRECTORY)
-                    try:
-                        os.fsync(directory)
-                    finally:
-                        os.close(directory)
-                    saved = True
-
-                principal, _ = repository.issue_token(
-                    owner, role, source_namespace=source, save=save
-                )
-        except BaseException:
-            if descriptor >= 0:
-                os.close(descriptor)
-            if not saved:
-                output.unlink(missing_ok=True)
-            else:
-                # A lost commit acknowledgement can leave the saved token active.
-                typer.echo(
-                    f"Token file saved to {output}. Check its status before retrying.", err=True
-                )
-            raise
+        with new_token_file(output) as save:
+            principal, _ = repository.issue_token(owner, role, source_namespace=source, save=save)
         typer.echo(f"Created {principal.role} token {principal.token_id}; saved to {output}.")
 
     _execute(action)

@@ -84,8 +84,10 @@ uv run --locked --extra service regimex service connections \
   --token-file var/credentials/admin.token events CONNECTION_ID
 ```
 
-The output file must not exist. It is created with mode `0600`; the secret is never
-printed. Use `key-revoke CONNECTION_ID TOKEN_ID` to revoke a key. Use
+Use a new output path. The CLI saves the secret with mode `0600` before the
+database commits. If the CLI reports that it saved the file but could not confirm
+issuance, keep the file and check `keys CONNECTION_ID` before retrying.
+Use `key-revoke CONNECTION_ID TOKEN_ID` to revoke a key. Use
 `update CONNECTION_ID --revision REVISION --disable` to pause a connection, or
 `--enable` to resume it. Read its current revision from `list` before updating.
 A stale revision returns a conflict instead of overwriting another operator's change.

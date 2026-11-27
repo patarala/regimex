@@ -4,8 +4,10 @@ import hashlib
 import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -29,6 +31,7 @@ from regimex.infrastructure.integration_limits import (
     IntegrationRateLimited,
 )
 from regimex.infrastructure.integration_repository import IntegrationRepository, require_integration
+from regimex.integration_cli import new_token_file
 from regimex.service_contracts import (
     CapacityExceeded,
     Conflict,
@@ -104,6 +107,33 @@ def test_managed_keys_are_bounded_hashed_and_explicitly_scoped(access: AccessCon
     assert [event.action for event in events] == ["key.created", "integration.created"]
     assert all(raw not in event.model_dump_json() for event in events)
     assert events[0].actor_token_id == access.admin.token_id
+
+
+def test_saved_key_survives_a_lost_commit_acknowledgement(
+    access: AccessContext,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    connect = access.database.connection
+
+    @contextmanager
+    def lose_acknowledgement() -> Iterator[psycopg.Connection[tuple[object, ...]]]:
+        with connect() as connection:
+            yield connection
+        raise psycopg.OperationalError("Commit acknowledgement lost")
+
+    output = tmp_path / "integration.token"
+    with monkeypatch.context() as patch:
+        patch.setattr(access.database, "connection", lose_acknowledgement)
+        with pytest.raises(psycopg.OperationalError), new_token_file(output) as save:
+            access.repository.issue_key(
+                access.admin, access.integration_id, IntegrationKeyCreate(name="Reader"), save=save
+            )
+    token = output.read_text().strip()
+    assert access.database.authenticate(token).integration_id == access.integration_id
+    warning = capsys.readouterr().err
+    assert "Check its status before retrying" in warning and token not in warning
 
 
 def test_rotation_pause_and_resume_preserve_delegated_owners(access: AccessContext) -> None:
