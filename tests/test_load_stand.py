@@ -135,6 +135,47 @@ def test_load_summary_uses_arrival_window_and_drain(
     assert summary["cgroup_peak_bytes"] == 123456
 
 
+@pytest.mark.parametrize(
+    ("started_count", "finish_second", "error"),
+    [(2, 8, "start samples"), (1, 5, "observation window"), (1, 4, "precedes")],
+)
+def test_load_summary_rejects_incomplete_or_unordered_measurements(
+    tmp_path: Path, started_count: int, finish_second: int, error: str
+) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    metrics = {"analyses_started": {"count": started_count}, "analyses_verified": {"count": 1}}
+    (tmp_path / "parallel.json").write_text(json.dumps({"metrics": metrics}))
+    with (tmp_path / "parallel-points.jsonl").open("w") as points:
+        for metric, second in (("analyses_started", 5), ("analyses_verified", finish_second)):
+            data = {"value": 1, "time": f"2026-01-01T00:00:{second:02}Z"}
+            points.write(json.dumps({"type": "Point", "metric": metric, "data": data}) + "\n")
+    with pytest.raises(ValueError, match=error):
+        stand["summarize"](tmp_path, "parallel", 123_456, 0)
+
+
+@pytest.mark.parametrize("outcome", ["analyses_verified", "analyses_accounted"])
+def test_two_outcomes_cannot_follow_only_one_start(tmp_path: Path, outcome: str) -> None:
+    pytest.importorskip("psycopg")
+    stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))
+    metrics = {
+        metric: {"count": 2}
+        for metric in ("analyses_started", "analyses_verified", "analyses_scheduled")
+    }
+    (tmp_path / "sustained.json").write_text(json.dumps({"metrics": metrics}))
+    with (tmp_path / "sustained-points.jsonl").open("w") as points:
+        for metric, times in [
+            ("analyses_started", [15, 5]),
+            ("analyses_verified", [9, 10] if outcome == "analyses_verified" else [20, 10]),
+            ("analyses_accounted", [9, 10] if outcome == "analyses_accounted" else [20, 10]),
+        ]:
+            for second in times:
+                data = {"value": 1, "time": f"2026-01-01T00:00:{second:02}Z"}
+                points.write(json.dumps({"type": "Point", "metric": metric, "data": data}) + "\n")
+    with pytest.raises(ValueError, match="precedes"):
+        stand["summarize"](tmp_path, "sustained", 0, 20)
+
+
 def test_secondary_evidence_failure_preserves_the_load_error() -> None:
     pytest.importorskip("psycopg")
     stand = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/load_stand.py"))

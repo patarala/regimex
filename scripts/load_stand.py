@@ -293,15 +293,30 @@ def summarize(cell, name, peak_bytes, arrival_seconds):
             elif point["metric"] == "analyses_accounted":
                 accounted.append(datetime.fromisoformat(point["data"]["time"]))
     completed = metrics["analyses_verified"]["count"]
-    if not starts or not finishes or len(finishes) != completed:
+    if not starts or len(starts) != metrics["analyses_started"]["count"]:
+        raise ValueError("k6 start samples do not match the summary")
+    if not finishes or len(finishes) != completed:
         raise ValueError("k6 completion samples do not match the summary")
-    seconds = (max(finishes) - min(starts)).total_seconds()
+    starts.sort()
+
+    def check_completions(events):
+        # Concurrent workers can emit points out of order, but each outcome needs a prior start.
+        if len(events) > len(starts) or any(
+            end < start for start, end in zip(starts, sorted(events), strict=False)
+        ):
+            raise ValueError("A k6 outcome precedes its possible start")
+
+    check_completions(finishes)
+    seconds = (max(finishes) - starts[0]).total_seconds()
+    if seconds <= 0:
+        raise ValueError("k6 observation window must have a positive duration")
     throughput_window = seconds
     if name == "sustained":
         if len(accounted) != metrics["analyses_scheduled"]["count"]:
             raise ValueError("Missing sustained completion or quota-refusal samples")
+        check_completions(accounted)
         throughput_window = max(
-            arrival_seconds, (max(accounted) - min(starts)).total_seconds(), seconds
+            arrival_seconds, (max(accounted) - starts[0]).total_seconds(), seconds
         )
     return {
         **outcomes(metrics, name),
