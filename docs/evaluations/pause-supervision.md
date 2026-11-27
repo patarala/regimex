@@ -72,7 +72,10 @@ observation process than the exchange generator.
 
 ## Reproduce
 
-Use revision `f65e4ce` for the refined-target comparison. Use the frozen
+Run the refined-target comparison in its original checkout, which includes
+the per-step diagnostic used below. [Source at f65e4ce](https://github.com/patarala/regimex/tree/f65e4ce4c0a18d8e9306aee44551d38106c48c8b/scripts)
+
+Use the frozen
 training bundles and panel data from the [training
 comparison](training-populations.md#choosing-a-model-on-different-experiment-lengths)
 and fresh output directories. The first two commands register the exchange
@@ -179,8 +182,9 @@ uv run --locked --extra ml python scripts/confirm_local_pause_features.py score 
 uv run --locked --extra ml python scripts/check_local_pause_transfer.py score var/local-transfer --training var/local-pauses --previous var/pause-targets --populations var/populations
 ```
 
-Use revision `1b9d7c3` for timing and for the interactive preview below,
-keeping the output directories from the comparison.
+Run the timing and preview commands from the checkout that produced the
+figures, keeping the output directories from the comparison.
+[Timing and preview scripts at 1b9d7c3](https://github.com/patarala/regimex/tree/1b9d7c3291bd643ce20f57e97ee03b0e3e7d6405/scripts)
 
 ```sh
 uv run --locked --extra ml python scripts/time_local_pause_features.py var/local-pauses --panels var/selection --previous var/pause-targets --populations var/populations

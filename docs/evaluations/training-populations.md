@@ -174,8 +174,9 @@ runs in alternating order. The timer covers prediction from in-memory
 observations through decoded intervals. Bundle loading, export I/O and
 HTTP handling add separate costs.
 
-Use revision `5957fe3` and the same exposure-index file as in the source training
-comparison.
+Run the following commands in the original checkout with the exposure index
+used for the training comparison.
+[Selection and timing scripts at 5957fe3](https://github.com/patarala/regimex/tree/5957fe349a3b9e8b1cf2cdb53c27ec773db08976/scripts)
 
 ```sh
 uv run --locked --extra ml python scripts/compare_selection_panels.py reserve var/selection --source var/populations --exposure-index var/prior.json
