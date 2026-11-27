@@ -152,13 +152,7 @@ def test_cli_manages_keys_without_printing_or_overwriting_secrets(
     prefix = ["service", "connections", "--token-file", str(credential)]
 
     def invoke(arguments: list[str], *, exit_code: int = 0) -> str:
-        root = logging.getLogger()
-        handlers, level = root.handlers[:], root.level
-        try:
-            result = CliRunner().invoke(app, prefix + arguments, env=environment)
-        finally:
-            root.handlers[:] = handlers
-            root.setLevel(level)
+        result = CliRunner().invoke(app, prefix + arguments, env=environment)
         assert result.exit_code == exit_code, result.output
         assert admin not in result.output
         return result.stderr if exit_code else result.stdout

@@ -48,7 +48,7 @@ def read_file(path: Path, limit: int) -> bytes:
     return data
 
 
-def _read_token(path: Path) -> str:
+def read_token(path: Path) -> str:
     token = read_file(path, 4096).strip()
     if not token or not all(33 <= byte <= 126 for byte in token):
         raise ValueError("The token file must contain a single ASCII bearer token.")
@@ -152,7 +152,7 @@ async def connect(
     origin: str, token_file: Path, *, timeout: int
 ) -> AsyncIterator[httpx2.AsyncClient]:
     base = service_origin(origin)
-    token = _read_token(token_file)
+    token = read_token(token_file)
     try:
         async with (
             asyncio.timeout(timeout),

@@ -2,7 +2,6 @@
 
 import ipaddress
 import json
-import logging
 import os
 import stat
 from collections.abc import Callable
@@ -22,16 +21,15 @@ app = typer.Typer(
 
 
 def _execute(action: Callable[[], None]) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         settings = ServiceSettings.from_env()
-        from regimex.service_logging import configure_service_logging
-
-        configure_service_logging(settings)
         from psycopg import Error as DatabaseError
         from sqlalchemy.exc import SQLAlchemyError
 
-        action()
+        from regimex.service_logging import service_logging
+
+        with service_logging(settings):
+            action()
     except typer.Exit:
         raise
     except ModuleNotFoundError as exc:
@@ -251,7 +249,7 @@ def register_model(
         from regimex.model_registry import InferenceRuntime, read_inference_runtime
         from regimex.operations import LaunchSource
         from regimex.service_bootstrap import create_service
-        from regimex.service_client import read_file
+        from regimex.service_client import read_file, read_token
 
         if runtime_file is None:
             runtime = InferenceRuntime() if threads is None else InferenceRuntime(threads=threads)
@@ -261,7 +259,7 @@ def register_model(
             runtime = read_inference_runtime(runtime_file)
         settings = ServiceSettings.from_env()
         service = create_service(settings)
-        principal = service.authenticate(token_file.read_text(encoding="utf-8").strip())
+        principal = service.authenticate(read_token(token_file))
         evaluations = read_external_evaluations(
             manifest_sha256,
             selection_file=selection_file,
@@ -388,9 +386,10 @@ def activate_model(
 
     def action() -> None:
         from regimex.service_bootstrap import create_service
+        from regimex.service_client import read_token
 
         service = create_service(ServiceSettings.from_env())
-        principal = service.authenticate(token_file.read_text(encoding="utf-8").strip())
+        principal = service.authenticate(read_token(token_file))
         model = service.activate_model(
             principal, model_version_id, expected_previous=expected_previous
         )

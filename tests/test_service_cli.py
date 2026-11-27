@@ -2,9 +2,11 @@
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -36,6 +38,50 @@ def test_service_needs_explicit_database_configuration() -> None:
     result = CliRunner().invoke(app, ["service", "migrate"], env={"REGIMEX_DATABASE_DSN": ""})
     assert result.exit_code == 1
     assert "REGIMEX_DATABASE_DSN" in result.output
+
+
+def test_service_command_restores_the_callers_logging_configuration(tmp_path: Path) -> None:
+    pytest.importorskip("psycopg")
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    access = logging.getLogger("uvicorn.access")
+    access_disabled, showwarning = access.disabled, warnings.showwarning
+    result = CliRunner().invoke(
+        app,
+        ["service", "storage-check"],
+        env={
+            "REGIMEX_DATABASE_DSN": "dbname=not_connected",
+            "REGIMEX_OBJECT_ROOT": str(tmp_path / "objects"),
+        },
+    )
+    assert result.exit_code == 0, result.output
+    assert root.handlers == handlers and root.level == level
+    assert access.disabled == access_disabled and warnings.showwarning is showwarning
+
+
+@pytest.mark.parametrize("command", ["register-model", "activate-model"])
+def test_model_commands_require_a_bounded_token_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    pytest.importorskip("psycopg")
+    from regimex import service_bootstrap
+
+    token = tmp_path / "operator.token"
+    token.write_bytes(b"x" * 4097)
+    service = Mock()
+    monkeypatch.setattr(service_bootstrap, "create_service", lambda settings: service)
+    options = (
+        ["--bundle", str(tmp_path), "--manifest-sha256", "1" * 64]
+        if command == "register-model"
+        else ["--model-version-id", "candidate"]
+    )
+    result = CliRunner().invoke(
+        app,
+        ["service", command, "--token-file", str(token), *options],
+        env={"REGIMEX_DATABASE_DSN": "dbname=not_connected"},
+    )
+    assert result.exit_code == 1 and "4096-byte limit" in result.output
+    service.authenticate.assert_not_called()
 
 
 @pytest.mark.parametrize("mode", ["defaults", "threads", "file", "conflict", "device"])

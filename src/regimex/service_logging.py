@@ -5,8 +5,9 @@ import logging
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable
-from contextlib import suppress
+import warnings
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlsplit
@@ -97,7 +98,9 @@ class RedactingJSONFormatter(logging.Formatter):
         return json.dumps(item, ensure_ascii=True, allow_nan=False, separators=(",", ":"))
 
 
-def configure_service_logging(settings: ServiceSettings) -> None:
+@contextmanager
+def service_logging(settings: ServiceSettings) -> Iterator[None]:
+    """Use redacted service logs for the lifetime of an operator command."""
     secrets = [settings.database_dsn.get_secret_value()]
     for name in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
         value = os.environ.get(name)
@@ -106,12 +109,26 @@ def configure_service_logging(settings: ServiceSettings) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(RedactingJSONFormatter(tuple(secrets)))
     root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    access = logging.getLogger("uvicorn.access")
+    access_disabled = access.disabled
+    showwarning = warnings.showwarning
     root.handlers[:] = [handler]
     root.setLevel(logging.INFO)
     logging.captureWarnings(True)
+    captured_here = warnings.showwarning is not showwarning
     # Raw Uvicorn access logs include arbitrary URL queries. Request metadata is
     # recorded by our application middleware using the matched route template.
-    logging.getLogger("uvicorn.access").disabled = True
+    access.disabled = True
+    try:
+        yield
+    finally:
+        if captured_here:
+            logging.captureWarnings(False)
+        access.disabled = access_disabled
+        root.handlers[:] = handlers
+        root.setLevel(level)
+        handler.close()
 
 
 def install_http_logging(app: FastAPI) -> None:
