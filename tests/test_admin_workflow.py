@@ -627,6 +627,37 @@ def test_wall_budget_kills_generation_before_any_dataset_is_committed(
         service.get_dataset(principal, "timed-generation")
 
 
+def test_reference_generation_reports_corruption_of_a_registered_snapshot(
+    admin: tuple[AdminService, Principal],
+) -> None:
+    service, principal = admin
+    dataset = imported_dataset(service, principal)
+    run = service.generate_references(
+        principal,
+        ReferenceGenerationSpec(
+            dataset_id=dataset.dataset_id, reference_set_id="fixture-labels", partition="train"
+        ),
+        idempotency_key="labels",
+    )
+    snapshot_id = next(
+        identity
+        for identity, member in zip(dataset.snapshot_ids, dataset.manifest.members, strict=True)
+        if member.partition == "train"
+    )
+    snapshot = service.analysis_service.get_snapshot(principal, snapshot_id)
+    stored = service.settings.object_root / snapshot.object.key
+    stored.chmod(0o600)
+    stored.write_bytes(b"corrupted fixture")
+
+    service.run_admin(run.run_id)
+    failed = service.get_run(principal, run.run_id)
+    assert failed.operation.state == "failed" and failed.operation.failure is not None
+    assert failed.operation.failure.code == "incompatible_artifact"
+    assert not failed.operation.failure.retryable
+    with pytest.raises(NotFound):
+        service.get_reference_set(principal, "fixture-labels")
+
+
 @pytest.mark.parametrize(
     ("error", "expected_message"),
     [

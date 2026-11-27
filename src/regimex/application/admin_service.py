@@ -1098,6 +1098,11 @@ class AdminService:
                 failure = OperationFailure(code="capacity_limit", message=exc.message[:1024])
             elif (resource_error := resource_failure(exc)) is not None:
                 failure = resource_error
+            elif isinstance(exc, ObjectIntegrityError):
+                failure = OperationFailure(
+                    code="incompatible_artifact",
+                    message="A stored object failed integrity verification.",
+                )
             elif isinstance(exc, ServiceError):
                 failure = OperationFailure(
                     code="unsupported_configuration"
