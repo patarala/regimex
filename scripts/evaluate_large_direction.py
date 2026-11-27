@@ -36,7 +36,6 @@ from regimex.data_catalog import (
     analysis_profile_hash,
     content_hash,
     create_reference_member,
-    create_snapshot_member,
     validate_reference_membership,
 )
 from regimex.directions import DirectionAnnotations
@@ -89,7 +88,7 @@ def evidence_files(data):
 
 
 def development(data):
-    dataset = DatasetManifest.model_validate_json((data / "dataset.json").read_bytes())
+    dataset = DatasetManifest.for_modeling((data / "dataset.json").read_bytes())
     receipt = read(data / "reservation.json")
     if (
         receipt["dataset_sha256"] != dataset.content_sha256
@@ -130,8 +129,6 @@ def samples(corpus, references):
     by_key = {r.source_namespace: r for r in references.members} if references else {}
     for member in corpus.members:
         snapshot = corpus.snapshot(member)
-        if create_snapshot_member(snapshot, member.partition) != member:
-            raise ValueError("Snapshot content differs from registered input")
         grid = SnapshotGrid.from_export(snapshot.export)
         if references is None:
             labels = annotate(grid, PROFILE)

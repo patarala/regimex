@@ -38,7 +38,7 @@ def score(output, comparison, data, control):
     plan = output / "plan.json"
     if plan.read_bytes() != json_bytes(design()):
         raise ValueError("Transfer generator or scoring rules differ from the reservation")
-    dataset = DatasetManifest.model_validate_json((data / "dataset.json").read_bytes())
+    dataset = DatasetManifest.for_modeling((data / "dataset.json").read_bytes())
     if set(GROUPS).intersection(member.split_group.seed for member in dataset.members):
         raise ValueError("Transfer groups overlap the native population")
     prior = data / "prior.json"

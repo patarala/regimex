@@ -1,7 +1,6 @@
 """Protect the selection and qualification rules of the adaptive interval comparison."""
 
 import importlib
-import json
 from pathlib import Path
 from types import ModuleType
 
@@ -95,21 +94,42 @@ def test_new_pools_are_balanced_and_use_distinct_generator_seeds(trial: ModuleTy
 
 
 def test_exposure_inventory_includes_both_native_pools_and_known_truth_groups(
-    trial: ModuleType, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    trial: ModuleType, tmp_path: Path
 ) -> None:
-    from types import SimpleNamespace
-
-    from regimex.storage import digest
+    from regimex.benchmark_contracts import dataset_identity_keys
+    from regimex.data_catalog import Partition, SourceSnapshot, create_snapshot_member, seal_dataset
+    from regimex.market_export import sample_snapshot
+    from regimex.market_identity import market_seed_group
+    from regimex.storage import content_hash, digest
 
     previous, transfer = tmp_path / "old", tmp_path / "transfer"
     transfer.mkdir()
     prior = tmp_path / "known.json"
-    write_json(prior, {"excluded_seeds": [13], "identity_keys_sha256": []})
+    prior_key = "a" * 64
+    write_json(prior, {"excluded_seeds": [13], "identity_keys_sha256": [prior_key]})
     records = {}
-    for pool in ("validation", "holdout"):
+    keys = {prior_key}
+    partitions: tuple[Partition, ...] = ("train", "validation", "test")
+    for pool, start in (("validation", 23), ("holdout", 53)):
         (previous / pool).mkdir(parents=True)
-        write_json(previous / pool / "dataset.json", {"digest": pool})
-        records[pool] = {"dataset_sha256": pool, "external_inventory_sha256": digest(prior)}
+        members = tuple(
+            create_snapshot_member(
+                SourceSnapshot(
+                    source_namespace=pool,
+                    split_group=market_seed_group(seed),
+                    export=sample_snapshot(seed=seed, steps=32, instruments=1),
+                ),
+                partition,
+            )
+            for seed, partition in enumerate(partitions, start)
+        )
+        dataset = seal_dataset(pool, members)
+        write_json(previous / pool / "dataset.json", dataset.model_dump(mode="json"))
+        keys.update(content_hash(key) for key in dataset_identity_keys(members))
+        records[pool] = {
+            "dataset_sha256": dataset.content_sha256,
+            "external_inventory_sha256": digest(prior),
+        }
     write_json(previous / "reservation.json", {"pools": records})
     path = transfer / "plan.json"
     write_json(
@@ -120,21 +140,9 @@ def test_exposure_inventory_includes_both_native_pools_and_known_truth_groups(
             "protocol": {"groups": [73, 83]},
         },
     )
-    monkeypatch.setattr(
-        trial.DatasetManifest,
-        "model_validate_json",
-        lambda value: SimpleNamespace(content_sha256=json.loads(value)["digest"]),
-    )
-
-    def build(datasets: list[Path], indexes: list[Path]) -> dict[str, object]:
-        assert [p.parent.name for p in datasets] == ["validation", "holdout"]
-        assert indexes == [prior]
-        return {"excluded_seeds": [13, 23, 53], "identity_keys_sha256": ["prior-key"]}
-
-    monkeypatch.setattr(trial, "build", build)
     assert trial.prior_exposure(previous, transfer, prior, ()) == {
-        "excluded_seeds": [13, 23, 53, 73, 83],
-        "identity_keys_sha256": ["prior-key"],
+        "excluded_seeds": [13, 23, 24, 25, 53, 54, 55, 73, 83],
+        "identity_keys_sha256": sorted(keys),
     }
     prior.write_bytes(b"{}")
     with pytest.raises(ValueError, match="different histories"):

@@ -50,6 +50,12 @@ and aggregation. Exchange benchmarks use automatic direction labels. Controlled
 price paths can use their independently specified drift. Neither reference measures
 agreement with human annotators. [Observations and labels](models.md#observations-and-intervals)
 
+Keep all native exchange runs that share a generator seed in one partition,
+including runs with different lengths. Both local fits and service training
+check the registered groups before using the data. For older exports with
+UUID-only run IDs, keep the original seed with the export.
+[Native seed groups and dataset import](api.md#1-create-observations-and-references)
+
 Validation scores guide checkpoint and settings selection. Re-evaluating the saved
 weights on those observations checks the selected fit on the same data. A held-out
 score measures performance on a separately reserved population after selection

@@ -13,7 +13,7 @@ import numpy as np
 from compare_profile_21 import Corpus
 from compare_tcn_widths import DATASET_SHA256, POPULATIONS, PROFILE, generate
 
-from regimex.data_catalog import SnapshotGrid, create_snapshot_member
+from regimex.data_catalog import SnapshotGrid
 from regimex.directions import DIRECTION_NAMES, DirectionAnnotations
 from regimex.evaluation import IOU_THRESHOLD, dense_labels, matched_interval_indices
 from regimex.segmentation import annotate
@@ -123,8 +123,6 @@ def audit(corpus: Corpus) -> dict:
         if member.partition not in {"train", "validation"}:
             continue
         snapshot = corpus.snapshot(member)
-        if create_snapshot_member(snapshot, member.partition) != member:
-            raise ValueError("Snapshot differs from its reserved identity")
         grid = SnapshotGrid.from_export(snapshot.export)
         original = annotate(grid, PROFILE)
         experiments[member.partition] += 1

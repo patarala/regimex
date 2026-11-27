@@ -5,6 +5,7 @@ import hashlib
 import json
 import platform
 from importlib.metadata import version
+from itertools import batched
 from pathlib import Path
 
 import numpy as np
@@ -49,9 +50,7 @@ RUNTIME = InferenceRuntime(threads=2, max_batch_size=8)
 def prepare_masked_members(paths, members, *, scenarios=SCENARIOS):
     variants = []
     for path, member in zip(paths, members, strict=True):
-        pristine = load_export_v2(path)
-        if pristine.content_sha256 != member.export_sha256:
-            raise ValueError("Pristine snapshot differs from the reserved dataset")
+        pristine = member.bind_export(load_export_v2(path)).export
         for scenario in scenarios:
             export = masked_export(pristine, scenario)
             source = SourceSnapshot(
@@ -64,6 +63,18 @@ def prepare_masked_members(paths, members, *, scenarios=SCENARIOS):
             directory.mkdir(exist_ok=True)
             (directory / path.name).write_bytes(json_bytes(export.model_dump(mode="json")))
     return tuple(variants)
+
+
+def registered_views(paths, members, variants, *, scenarios=SCENARIOS):
+    """Load the reserved pristine export and its masked counterparts for scoring."""
+    batches = batched(variants, len(scenarios), strict=True)
+    for path, member, group in zip(paths, members, batches, strict=True):
+        pristine = member.bind_export(load_export_v2(path)).export
+        masked = {
+            scenario: variant.bind_export(load_export_v2(path.parent / scenario / path.name)).export
+            for scenario, variant in zip(scenarios, group, strict=True)
+        }
+        yield pristine, masked
 
 
 def prepare(output, bundles, history):
@@ -91,7 +102,7 @@ def prepare(output, bundles, history):
     output.mkdir(parents=True)
     (output / "protocol.json").write_bytes(json_bytes(protocol))
     generated = _generation(GENERATION, output, "incomplete-exports")
-    dataset = DatasetManifest.model_validate_json(json_bytes(generated["manifest"]))
+    dataset = DatasetManifest.for_modeling(json_bytes(generated["manifest"]))
     if dataset.content_sha256 != DATASET_SHA256:
         raise ValueError("Generated data differ from the recorded population")
     paths = [output / item["path"] for item in generated["snapshots"]]
@@ -132,7 +143,7 @@ def prepare(output, bundles, history):
         )
     (output / "dataset.json").write_bytes(json_bytes(generated["manifest"]))
     (output / "reservation.json").write_bytes(json_bytes(receipt))
-    return freeze["bundles"], paths
+    return freeze["bundles"], registered_views(paths, dataset.members, variants)
 
 
 def dense_states(intervals, steps):
@@ -160,12 +171,13 @@ def predictions(model, inputs):
     return np.concatenate(states)
 
 
-def evaluate(paths, models):
+def evaluate(views, models):
     series = {name: {key: [] for key in ("pristine", *SCENARIOS)} for name in models}
     reference, windows, zeros = [], [], []
     instruments = 0
-    for path in paths:
-        export = load_export_v2(path)
+    experiments = 0
+    for export, masked in views:
+        experiments += 1
         inputs = snapshot_inputs(export)
         annotations = annotate(SnapshotGrid.from_export(export), PROFILE)
         for info, rows in zip(inputs.info, inputs.observations, strict=True):
@@ -176,8 +188,8 @@ def evaluate(paths, models):
             instruments += 1
         for name, model in models.items():
             series[name]["pristine"].append(predictions(model, inputs))
-        for scenario in SCENARIOS:
-            masked_inputs = snapshot_inputs(load_export_v2(path.parent / scenario / path.name))
+        for scenario, variant in masked.items():
+            masked_inputs = snapshot_inputs(variant)
             for name, model in models.items():
                 series[name][scenario].append(predictions(model, masked_inputs))
     target = np.concatenate(reference)
@@ -193,7 +205,7 @@ def evaluate(paths, models):
             for scenario in SCENARIOS
         }
     return {
-        "experiments": len(paths),
+        "experiments": experiments,
         "instrument_series": instruments,
         "models": result,
         "reference_status": statuses(target),
@@ -212,8 +224,7 @@ def main():
     )
     parser.add_argument("--output", type=Path, required=True, help="New directory for run evidence")
     args = parser.parse_args()
-    digests, paths = prepare(args.output, args.bundles, args.exposure_index)
-    print(f"Verified the recorded {len(paths)}-experiment population.", flush=True)
+    digests, views = prepare(args.output, args.bundles, args.exposure_index)
     models = {
         name: backend.load_bundle(
             args.bundles / name, manifest_sha256=digests[name], runtime=RUNTIME
@@ -222,7 +233,7 @@ def main():
     }
     if any(model.analysis != PROFILE for model in models.values()):
         raise ValueError("The bundles must use direction-32/2.1 with the frozen configuration")
-    result = evaluate(paths, models)
+    result = evaluate(views, models)
     (args.output / "results.json").write_bytes(json_bytes(result))
     print(args.output / "results.json")
 

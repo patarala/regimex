@@ -59,9 +59,7 @@ def seed_audit(comparison, reservation):
     inventory = read(prior)
     native = set()
     for pool, receipt in reservation["pools"].items():
-        manifest = DatasetManifest.model_validate_json(
-            (comparison / pool / "dataset.json").read_bytes()
-        )
+        manifest = DatasetManifest.for_modeling((comparison / pool / "dataset.json").read_bytes())
         if (
             manifest.content_sha256 != receipt["dataset_sha256"]
             or digest(prior) != receipt["external_inventory_sha256"]

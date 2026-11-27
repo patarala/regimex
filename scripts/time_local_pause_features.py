@@ -14,7 +14,6 @@ from fit_local_pause_features import load_predictors
 from refine_model_intervals import refine_decoded
 
 from regimex.application.analysis_computation import snapshot_inputs
-from regimex.data_catalog import create_snapshot_member
 from regimex.model_contracts import ObservationInputs
 from regimex.segmentation import decode
 from regimex.storage import json_bytes, write_new_file
@@ -32,8 +31,6 @@ def validation_inputs(panels, populations):
     partitions = ("train", "validation", "test")
     for member in sorted(members, key=lambda m: partitions.index(m.partition)):
         snapshot = corpus.snapshot(member)
-        if create_snapshot_member(snapshot, member.partition) != member:
-            raise ValueError("Opened snapshot differs from its reserved identity")
         snapshots.append(snapshot_inputs(snapshot.export))
     inputs = ObservationInputs(
         tuple(item for s in snapshots for item in s.info),

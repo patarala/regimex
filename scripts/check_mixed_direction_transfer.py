@@ -51,7 +51,7 @@ def score(phase, output, data, comparison, control, native_bundle):
     selection = comparison / "selection"
     if plan.read_bytes() != json_bytes(protocol()):
         raise ValueError("Drift benchmark differs from its registered design")
-    dataset = DatasetManifest.model_validate_json((data / "dataset.json").read_bytes())
+    dataset = DatasetManifest.for_modeling((data / "dataset.json").read_bytes())
     seeds = set(GROUPS["validation"]) | set(GROUPS["test"])
     if seeds.intersection(m.split_group.seed for m in dataset.members):
         raise ValueError("Controlled and native evaluation populations overlap")

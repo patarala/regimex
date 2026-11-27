@@ -19,7 +19,7 @@ def build(datasets: list[Path], indexes: list[Path]) -> ExposureIndex:
     seeds: set[int] = set()
     keys: set[str] = set()
     for path in datasets:
-        manifest = DatasetManifest.model_validate_json(path.read_bytes())
+        manifest = DatasetManifest.for_modeling(path.read_bytes())
         keys.update(content_hash(key) for key in dataset_identity_keys(manifest.members))
         seeds.update(m.split_group.seed for m in manifest.members if m.split_group.seed is not None)
     index_type = TypeAdapter(ExposureIndex)

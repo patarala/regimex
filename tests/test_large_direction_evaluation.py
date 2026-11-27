@@ -167,3 +167,28 @@ def test_ensemble_requires_strict_native_gain_and_controlled_gates(
         native[name]["interval_macro_f1"] = 0.84
     winner, _ = ensemble.select(native, transfer)
     assert winner == "blend-250"
+
+
+def test_scored_masks_must_match_their_original_reservation(
+    trial: ModuleType, tmp_path: Path
+) -> None:
+    from regimex.data_catalog import SourceSnapshot, create_snapshot_member
+    from regimex.market_export import sample_snapshot
+    from regimex.market_identity import market_seed_group
+
+    missing = import_module("evaluate_missing_data")
+    pristine = sample_snapshot(seed=7, steps=256, instruments=1)
+    path = tmp_path / "market.json"
+    write_json(path, pristine.model_dump(mode="json"))
+    member = create_snapshot_member(
+        SourceSnapshot(source_namespace="local", split_group=market_seed_group(7), export=pristine),
+        "validation",
+    )
+    variants = missing.prepare_masked_members([path], [member])
+    result, masked = next(missing.registered_views([path], [member], variants))
+    assert result == pristine
+    assert [raw.content_sha256 for raw in masked.values()] == [v.export_sha256 for v in variants]
+
+    (tmp_path / "price_gap" / path.name).write_bytes(path.read_bytes())
+    with pytest.raises(ValueError, match="differs from its registered dataset member"):
+        list(missing.registered_views([path], [member], variants))

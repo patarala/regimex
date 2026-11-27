@@ -135,7 +135,7 @@ def mixture(native, latent, fraction):
 
 def fit(data, workers):
     folder = data / "train"
-    dataset = DatasetManifest.model_validate_json((folder / "dataset.json").read_bytes())
+    dataset = DatasetManifest.for_modeling((folder / "dataset.json").read_bytes())
     labels = ReferenceSet.model_validate_json((folder / "references.json").read_bytes())
     reserve = json.loads((data / "reservation.json").read_bytes())
     if (

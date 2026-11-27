@@ -84,7 +84,7 @@ def prior_exposure(previous, transfer, prior, additional):
     datasets = []
     for pool in POOLS:
         path = previous / pool / "dataset.json"
-        manifest = DatasetManifest.model_validate_json(path.read_bytes())
+        manifest = DatasetManifest.for_modeling(path.read_bytes())
         record = receipt["pools"][pool]
         if (
             record["dataset_sha256"] != manifest.content_sha256

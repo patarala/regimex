@@ -1,6 +1,6 @@
 """Identify related native simulations when their exports enter a dataset."""
 
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from pydantic import ConfigDict
 
@@ -42,10 +42,14 @@ def sampled_run_id(seed: int, configuration_id: str) -> str:
 def native_seed_group(run_id: str, declared: SplitGroup | None) -> SplitGroup:
     seed = declared.seed if declared is not None else None
     if run_id.startswith("sample:"):
-        parts = run_id.split(":")
-        if len(parts) != 3 or not parts[1].isascii() or not parts[1].isdecimal():
+        try:
+            _, seed_text, suffix = run_id.split(":")
+            seed = int(seed_text)
+            identifier = UUID(suffix)
+        except ValueError as exc:
+            raise ValueError("Invalid native sampled run identity.") from exc
+        if identifier.version != 5 or run_id != f"sample:{seed}:{identifier}":
             raise ValueError("Invalid native sampled run identity.")
-        seed = int(parts[1])
     if seed is None:
         raise ValueError("This native export requires its original seed group for dataset import.")
     group = market_seed_group(seed)

@@ -87,7 +87,7 @@ def environment():
 
 
 def manifest(path: Path):
-    return DatasetManifest.model_validate_json(path.read_bytes())
+    return DatasetManifest.for_modeling(path.read_bytes())
 
 
 def holdout_folder(output: Path) -> Path:

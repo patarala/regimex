@@ -28,7 +28,6 @@ from regimex.data_catalog import (
     SnapshotGrid,
     ValidatedAnnotations,
     content_hash,
-    create_snapshot_member,
     seal_dataset,
 )
 from regimex.directions import DIRECTION_NAMES
@@ -84,10 +83,7 @@ def register_history(previous, transfer):
     catalogs = []
     for pool, info in receipt["pools"].items():
         path = previous / pool / "dataset.json"
-        if (
-            DatasetManifest.model_validate_json(path.read_bytes()).content_sha256
-            != info["dataset_sha256"]
-        ):
+        if DatasetManifest.for_modeling(path.read_bytes()).content_sha256 != info["dataset_sha256"]:
             raise ValueError("Earlier evaluation population changed")
         catalogs.append(path)
     inventory = build(catalogs, [previous / "prior.json"])
@@ -140,7 +136,7 @@ def reserve(output, training, previous, transfer):
 
 def checked_reservation(output):
     receipt = read(output / "reservation.json")
-    dataset = DatasetManifest.model_validate_json((output / "dataset.json").read_bytes())
+    dataset = DatasetManifest.for_modeling((output / "dataset.json").read_bytes())
     if (
         receipt["plan_sha256"] != content_hash(protocol())
         or sha256(output / "plan.json") != receipt["plan_sha256"]
@@ -171,8 +167,6 @@ def batches(corpus, members):
         samples = []
         for member in chunk:
             snapshot = corpus.snapshot(member)
-            if create_snapshot_member(snapshot, member.partition) != member:
-                raise ValueError("Loaded export differs from the registered original grid")
             export = snapshot.export
             grid = SnapshotGrid.from_export(export)
             labels = annotate(grid, PROFILE)

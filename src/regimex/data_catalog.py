@@ -89,6 +89,17 @@ class SnapshotMember(CatalogRecord):
     split_group: SplitGroup
     partition: Partition
 
+    def bind_export(self, export: ExportV2) -> SourceSnapshot:
+        """Recover a local snapshot only if its export reproduces the reserved membership."""
+        snapshot = SourceSnapshot(
+            source_namespace=self.source_namespace, split_group=self.split_group, export=export
+        )
+        if _member_from_validated_snapshot(snapshot, self.partition, require_seed=True) != self:
+            raise ValueError(
+                f"Export for {self.snapshot_id} differs from its registered dataset member."
+            )
+        return snapshot
+
     def run_and_group_keys(self) -> set[tuple[str, ...]]:
         group = self.split_group
         keys: set[tuple[str, ...]] = {
@@ -115,12 +126,16 @@ def create_snapshot_member(snapshot: SourceSnapshot, partition: Partition) -> Sn
 
 
 def _member_from_validated_snapshot(
-    snapshot: SourceSnapshot, partition: Partition
+    snapshot: SourceSnapshot, partition: Partition, *, require_seed: bool = False
 ) -> SnapshotMember:
     export = snapshot.export
     # Historical catalogs can lack a seed. They remain readable for inspection,
     # but require_native_seed_groups excludes them from model selection.
-    if snapshot.split_group.seed is not None or export.source.run_id.startswith("sample:"):
+    if (
+        require_seed
+        or snapshot.split_group.seed is not None
+        or export.source.run_id.startswith("sample:")
+    ):
         imported_seed_group(export, snapshot.split_group)
     return SnapshotMember(
         source_namespace=snapshot.source_namespace,
@@ -177,6 +192,13 @@ class DatasetPayload(CatalogRecord):
 class DatasetManifest(DatasetPayload):
     content_sha256: SHA256
 
+    @classmethod
+    def for_modeling(cls, data: bytes | str) -> Self:
+        """Open a saved training or scoring manifest, including checks on unopened partitions."""
+        manifest = cls.model_validate_json(data)
+        manifest.require_native_seed_groups()
+        return manifest
+
     @property
     def has_native_seed_groups(self) -> bool:
         try:
@@ -217,11 +239,7 @@ class DatasetManifest(DatasetPayload):
 def seal_dataset(dataset_id: str, members: tuple[SnapshotMember, ...]) -> DatasetManifest:
     payload = DatasetPayload(dataset_id=dataset_id, members=members)
     data = payload.model_dump(mode="json")
-    manifest = DatasetManifest.model_validate_json(
-        json_bytes({**data, "content_sha256": content_hash(data)})
-    )
-    manifest.require_native_seed_groups()
-    return manifest
+    return DatasetManifest.for_modeling(json_bytes({**data, "content_sha256": content_hash(data)}))
 
 
 class ReferenceMember(CatalogRecord):
@@ -545,8 +563,7 @@ def load_training_data(
     application dependencies; this function does not grant final-reference access
     or claim to sandbox a callback with broader external permissions.
     """
-    dataset = DatasetManifest.model_validate_json(dataset.model_dump_json())
-    dataset.require_native_seed_groups()
+    dataset = DatasetManifest.for_modeling(dataset.model_dump_json())
     labels = ReferenceSet.model_validate_json(labels.model_dump_json())
     validation_references = ReferenceSet.model_validate_json(
         validation_references.model_dump_json()

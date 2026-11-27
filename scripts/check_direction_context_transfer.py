@@ -236,9 +236,7 @@ def gate(control, candidate):
 def seed_audit(comparison, reservation, prior_digest):
     seen = set()
     for pool, record in reservation["pools"].items():
-        manifest = DatasetManifest.model_validate_json(
-            (comparison / pool / "dataset.json").read_bytes()
-        )
+        manifest = DatasetManifest.for_modeling((comparison / pool / "dataset.json").read_bytes())
         if (
             manifest.content_sha256 != record["dataset_sha256"]
             or record["external_inventory_sha256"] != prior_digest

@@ -21,9 +21,7 @@ from regimex.data_catalog import (
     DatasetManifest,
     SnapshotGrid,
     SnapshotMember,
-    SourceSnapshot,
     content_hash,
-    create_snapshot_member,
     load_training_data,
     seal_dataset,
 )
@@ -143,7 +141,7 @@ def reserve(output: Path, history_path: Path | None, corpus: Corpus) -> None:
             dest,
             "tcn-slopes",
         )
-        manifest = DatasetManifest.model_validate_json(json_bytes(generated["manifest"]))
+        manifest = DatasetManifest.for_modeling(json_bytes(generated["manifest"]))
         snapshots = TypeAdapter(list[SnapshotLocation]).validate_python(
             generated["snapshots"], strict=True
         )
@@ -387,7 +385,7 @@ def score(output: Path, corpus: Corpus) -> None:
     freeze = read(output / "freeze.json", TypeAdapter(Freeze))
     folder = output / "holdout"
     reservation = read(folder / "reservation.json", TypeAdapter(Reservation))
-    holdout = DatasetManifest.model_validate_json((folder / "dataset.json").read_bytes())
+    holdout = DatasetManifest.for_modeling((folder / "dataset.json").read_bytes())
     locations = read(folder / "locations.json", TypeAdapter(dict[str, str]))
     if (
         json_bytes(plan) != (output / "plan.json").read_bytes()
@@ -414,14 +412,7 @@ def score(output: Path, corpus: Corpus) -> None:
         # internal catalog partition names are unused by the evaluation.
         for member in holdout.members:
             export = load_export_v2(folder / locations[member.source_namespace])
-            source = SourceSnapshot(
-                source_namespace=member.source_namespace,
-                split_group=member.split_group,
-                export=export,
-            )
-            if create_snapshot_member(source, member.partition) != member:
-                raise ValueError("An evaluation export differs from the reservation")
-            yield export
+            yield member.bind_export(export).export
 
     result = compare(exports(), models)
     record(folder / "results.json", result)

@@ -32,7 +32,7 @@ def design():
 
 
 def checked_population(data):
-    dataset = DatasetManifest.model_validate_json((data / "dataset.json").read_bytes())
+    dataset = DatasetManifest.for_modeling((data / "dataset.json").read_bytes())
     receipt = data / "reservation.json"
     registration = replay.read(receipt)
     prior = data / "prior.json"

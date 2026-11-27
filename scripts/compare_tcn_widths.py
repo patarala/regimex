@@ -47,7 +47,7 @@ def generate(
         directory = output / spec.dataset_id
         directory.mkdir()
         result = _generation(spec, directory, name)
-        manifest = DatasetManifest.model_validate_json(json_bytes(result["manifest"]))
+        manifest = DatasetManifest.for_modeling(json_bytes(result["manifest"]))
         members.extend(manifest.members)
         for member, snapshot in zip(manifest.members, result["snapshots"], strict=True):
             locations[member.source_namespace] = f"{spec.dataset_id}/{snapshot['path']}"

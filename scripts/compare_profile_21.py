@@ -87,7 +87,7 @@ def prepare(output, history):
             ),
         )
         result = _generation(spec, folder, "profile21-comparison")
-        dataset = DatasetManifest.model_validate_json(json_bytes(result["manifest"]))
+        dataset = DatasetManifest.for_modeling(json_bytes(result["manifest"]))
         datasets.extend(dataset.members)
         for member, snapshot in zip(dataset.members, result["snapshots"], strict=True):
             locations[member.source_namespace] = str(Path(str(length)) / snapshot["path"])
@@ -158,7 +158,7 @@ def software():
 class Corpus:
     def __init__(self, output: Path, *, expected_digest: str = DATASET_SHA256) -> None:
         self.output = output
-        self.dataset = DatasetManifest.model_validate_json((output / "dataset.json").read_bytes())
+        self.dataset = DatasetManifest.for_modeling((output / "dataset.json").read_bytes())
         self.locations = json.loads((output / "locations.json").read_bytes())
         reservation = json.loads((output / "reservation.json").read_bytes())
         if (
@@ -168,10 +168,8 @@ class Corpus:
             raise ValueError("Dataset differs from the reservation")
 
     def snapshot(self, member: SnapshotMember) -> SourceSnapshot:
-        return SourceSnapshot(
-            source_namespace=member.source_namespace,
-            split_group=member.split_group,
-            export=load_export_v2(self.output / self.locations[member.source_namespace]),
+        return member.bind_export(
+            load_export_v2(self.output / self.locations[member.source_namespace])
         )
 
     def references(

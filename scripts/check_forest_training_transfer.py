@@ -32,13 +32,11 @@ def design(comparison, previous):
     if replay.read(previous / "results.json")["plan_sha256"] != original_plan_sha:
         raise ValueError("Earlier transfer benchmark must have a result bound to its plan")
     prior = set(replay.read(comparison / "prior.json")["excluded_seeds"])
-    combined = DatasetManifest.model_validate_json((comparison / "dataset.json").read_bytes())
+    combined = DatasetManifest.for_modeling((comparison / "dataset.json").read_bytes())
     training = {m.split_group.seed for m in combined.members if m.partition == "train"}
     native = set()
     for name, pool in receipt["pools"].items():
-        dataset = DatasetManifest.model_validate_json(
-            (comparison / name / "dataset.json").read_bytes()
-        )
+        dataset = DatasetManifest.for_modeling((comparison / name / "dataset.json").read_bytes())
         if dataset.content_sha256 != pool["dataset_sha256"]:
             raise ValueError("Native population differs from the reservation")
         native.update(member.split_group.seed for member in dataset.members)

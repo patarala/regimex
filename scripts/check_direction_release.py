@@ -37,16 +37,12 @@ def protocol(comparison, publication):
     if digest(model_file) != MANIFEST or digest(exposure) != EXPOSURE:
         raise ValueError("Published model or its recorded exposure inventory changed")
     manifest = read(model_file)
-    training = DatasetManifest.model_validate_json(
-        (data / "training-512/dataset.json").read_bytes()
-    )
+    training = DatasetManifest.for_modeling((data / "training-512/dataset.json").read_bytes())
     if training.content_sha256 != manifest["training"]["dataset_sha256"]:
         raise ValueError("Training membership differs from the published bundle")
     disjoint = {}
     for pool in ("validation", "holdout"):
-        cohort = DatasetManifest.model_validate_json(
-            (comparison / pool / "dataset.json").read_bytes()
-        )
+        cohort = DatasetManifest.for_modeling((comparison / pool / "dataset.json").read_bytes())
         if cohort.content_sha256 != receipt["pools"][pool]["dataset_sha256"]:
             raise ValueError("Direction cohort differs from the native reservation")
         disjoint[pool] = audit_population(training, cohort, exposure)

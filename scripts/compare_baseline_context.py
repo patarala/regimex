@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 from compare_profile_21 import PROFILE, RUNTIME, Corpus, record, request, sha256
-from evaluate_missing_data import dense_states, prepare_masked_members
+from evaluate_missing_data import dense_states, prepare_masked_members, registered_views
 
 from regimex.admin_contracts import GenerationSpec, RawGenerationPlan
 from regimex.application.admin_computation import _generation
@@ -26,7 +26,6 @@ from regimex.data_catalog import (
 )
 from regimex.evaluation import _metrics, _segment_counts, scores
 from regimex.export_robustness import NO_TRADES, WINDOW, masked_export
-from regimex.exports import load_export_v2
 from regimex.model_registry import ArchitectureRegistry, SummaryMode
 from regimex.segmentation import annotate, decode
 from regimex.storage import json_bytes
@@ -291,7 +290,7 @@ def score(corpus, output, history):
     folder = output / "final"
     folder.mkdir()
     generated = _generation(GENERATION, folder, "baseline-context")
-    dataset = DatasetManifest.model_validate_json(json_bytes(generated["manifest"]))
+    dataset = DatasetManifest.for_modeling(json_bytes(generated["manifest"]))
     paths = [folder / item["path"] for item in generated["snapshots"]]
     variants = prepare_masked_members(paths, dataset.members, scenarios=(GAP,))
     keys = identity_keys((*dataset.members, *variants))
@@ -336,7 +335,10 @@ def score(corpus, output, history):
             "reservation_sha256": sha256(folder / "reservation.json"),
         },
     )
-    pairs = [(load_export_v2(p), load_export_v2(p.parent / GAP / p.name)) for p in paths]
+    pairs = [
+        (pristine, masked[GAP])
+        for pristine, masked in registered_views(paths, dataset.members, variants, scenarios=(GAP,))
+    ]
     counts = {mode: [] for mode in models}
     result = {
         mode: compare(pairs, model, interval_counts=counts[mode]) for mode, model in models.items()

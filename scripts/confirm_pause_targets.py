@@ -15,7 +15,7 @@ from confirm_training_populations import manifest
 
 from regimex.admin_contracts import GenerationSpec, RawGenerationPlan
 from regimex.application.analysis_computation import snapshot_inputs
-from regimex.data_catalog import SnapshotGrid, content_hash, create_snapshot_member
+from regimex.data_catalog import SnapshotGrid, content_hash
 from regimex.evaluation import _segment_counts, matched_interval_indices
 from regimex.segmentation import annotate, decode
 from regimex.storage import output_directory
@@ -153,8 +153,6 @@ def evaluate(corpus, models):
     records = []
     for member in corpus.dataset.members:
         source = corpus.snapshot(member)
-        if create_snapshot_member(source, member.partition) != member:
-            raise ValueError("Opened snapshot differs from its reserved identity")
         grid = SnapshotGrid.from_export(source.export)
         original, refined = annotate(grid, PROFILE), annotate_pauses(grid, PROFILE)
         inputs = snapshot_inputs(source.export)

@@ -75,7 +75,7 @@ def audit_population(
 
 
 def confirm(fitted: Path, exposure: Path | None) -> None:
-    development = DatasetManifest.model_validate_json((fitted / "dataset.json").read_bytes())
+    development = DatasetManifest.for_modeling((fitted / "dataset.json").read_bytes())
     if development.content_sha256 != DATASET_SHA256:
         raise ValueError("The models must come from the original width comparison")
     models, manifests = load_models(fitted, development)

@@ -40,13 +40,12 @@ CANDIDATES = {
 
 def extract(item, *, folder, feature_sets=("greedy", "multiscale")):
     member, reference, location = item
-    export = load_export_v2(folder / location)
+    export = member.bind_export(load_export_v2(folder / location)).export
     labels = DirectionAnnotations.model_validate_json(
         (folder / "annotations" / f"{member.split_group.seed}.json").read_bytes()
     )
     if (
-        export.content_sha256 != member.export_sha256
-        or create_reference_member(member, labels) != reference
+        create_reference_member(member, labels) != reference
         or AnalysisConfig.model_validate(labels.policy_config) != PROFILE
         or labels.reference_kind != "automatic"
     ):
@@ -65,7 +64,7 @@ def extract(item, *, folder, feature_sets=("greedy", "multiscale")):
 
 def train(data: Path, workers: int) -> None:
     folder = data / "train"
-    dataset = DatasetManifest.model_validate_json((folder / "dataset.json").read_bytes())
+    dataset = DatasetManifest.for_modeling((folder / "dataset.json").read_bytes())
     references = ReferenceSet.model_validate_json((folder / "references.json").read_bytes())
     receipt = json.loads((folder / "reservation.json").read_bytes())
     reservation = json.loads((data / "reservation.json").read_bytes())

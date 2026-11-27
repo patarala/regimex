@@ -70,7 +70,7 @@ MIXED = NativeRound(
 
 
 def source_manifest(source: Path, design: NativeRound = MIXED) -> DatasetManifest:
-    manifest = DatasetManifest.model_validate_json((source / "dataset.json").read_bytes())
+    manifest = DatasetManifest.for_modeling((source / "dataset.json").read_bytes())
     receipt = json.loads((source / "reservation.json").read_bytes())
     if (
         manifest.content_sha256 != design.source_dataset
@@ -155,10 +155,8 @@ def copy_training(source: Path, output: Path, dataset: DatasetManifest) -> None:
             name = Path("train", folder, filename)
             raw = (source / name).read_bytes()
             if folder == "exports":
-                valid = ExportV2.model_validate_json(raw).content_sha256 == member.export_sha256
-            else:
-                valid = hashlib.sha256(raw).hexdigest() == reference.annotations_sha256
-            if not valid:
+                member.bind_export(ExportV2.model_validate_json(raw))
+            elif hashlib.sha256(raw).hexdigest() != reference.annotations_sha256:
                 raise ValueError(f"Retained training input differs from its manifest: {name}")
             path = output / name
             if path.exists():

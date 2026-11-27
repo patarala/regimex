@@ -207,7 +207,7 @@ def test_offline_scorer_verifies_native_inputs_before_reporting(
         len(doc.intervals) for doc in labels
     )
     export_path.write_text(sources[0].export.model_dump_json())
-    with pytest.raises(ValueError, match="differ from the registered member"):
+    with pytest.raises(ValueError, match="differs from its registered dataset member"):
         measure(*paths, predictor, bundle, None, {})
     refs_path.write_text(reference_set(manifest, sources, "test").model_dump_json())
     with pytest.raises(ValueError, match="training or validation"):

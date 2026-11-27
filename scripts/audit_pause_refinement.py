@@ -13,7 +13,7 @@ from compare_profile_21 import Corpus
 from compare_tcn_widths import PROFILE
 from refine_trend_pauses import annotate_pauses
 
-from regimex.data_catalog import SnapshotGrid, create_snapshot_member
+from regimex.data_catalog import SnapshotGrid
 from regimex.directions import DIRECTION_NAMES, DirectionInterval
 from regimex.evaluation import IOU_THRESHOLD, dense_labels, matched_interval_indices
 from regimex.segmentation import annotate
@@ -64,8 +64,6 @@ def audit(corpus: Corpus):
         if member.partition != "train":
             continue
         snapshot = corpus.snapshot(member)
-        if create_snapshot_member(snapshot, "train") != member:
-            raise ValueError("Training snapshot differs from its reserved identity")
         grid = SnapshotGrid.from_export(snapshot.export)
         coarser, changed, known = quantize(grid)
         counts.rounded_known_closes += changed

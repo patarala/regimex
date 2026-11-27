@@ -13,10 +13,8 @@ from regimex.data_catalog import (
     ReferenceSet,
     SnapshotGrid,
     SnapshotMember,
-    SourceSnapshot,
     content_hash,
     create_reference_member,
-    create_snapshot_member,
     validate_reference_membership,
 )
 from regimex.direction_quality import DirectionQualityReport, GroupCounts, MeasuredCohort
@@ -68,7 +66,7 @@ def record_group(member, exposures):
 
 
 def measure(dataset_path, references_path, locations_path, predictor, bundle, runtime, exposures):
-    dataset = DatasetManifest.model_validate_json(dataset_path.read_bytes())
+    dataset = DatasetManifest.for_modeling(dataset_path.read_bytes())
     references = ReferenceSet.model_validate_json(references_path.read_bytes())
     split = references.partition
     if split not in {"train", "validation"} or references.kind != "automatic":
@@ -82,19 +80,13 @@ def measure(dataset_path, references_path, locations_path, predictor, bundle, ru
     if dataset.content_sha256 != expected_dataset or references.identity() != expected_reference:
         raise ValueError("Dataset or references differ from the original fit.")
     validate_reference_membership(dataset, references)
-    dataset.require_native_seed_groups()
     descriptor = ArchitectureRegistry.discover().get(bundle.architecture_id)
     counts = defaultdict(lambda: np.zeros((3, 3), dtype=np.int64))
     members = tuple(member for member in dataset.members if member.partition == split)
     paths = export_paths(locations_path, members)
     for member, reference, path in zip(members, references.members, paths, strict=True):
         identity = record_group(member, exposures)
-        export = load_export_v2(path)
-        source = SourceSnapshot(
-            source_namespace=member.source_namespace, split_group=member.split_group, export=export
-        )
-        if create_snapshot_member(source, split) != member:
-            raise ValueError("Export or observations differ from the registered member.")
+        export = member.bind_export(load_export_v2(path)).export
         descriptor.validate_observation_fields(export.capabilities.observation_fields())
         labels = annotate(SnapshotGrid.from_export(export), references.analysis_profile)
         if create_reference_member(member, labels) != reference:
