@@ -12,7 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.exports import parse_export_v2
-from regimex.operations import OperationFailure, OperationState
+from regimex.operations import OperationFailure, OperationState, ResolvedModel, Sha256
 from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.service_client import connect, display_text, read_file, request
 from regimex.storage import write_new_file
@@ -20,17 +20,19 @@ from regimex.storage import write_new_file
 
 class _Snapshot(BaseModel):
     snapshot_id: UUID
-    content_sha256: str
+    content_sha256: Sha256
 
 
 class _Job(BaseModel):
     state: OperationState
     failure: OperationFailure | None
+    model: ResolvedModel
 
 
 class _Analysis(BaseModel):
     analysis_id: UUID
     snapshot_id: UUID
+    snapshot_sha256: Sha256
     job: _Job
     result_available: bool
     report_available: bool
@@ -61,8 +63,13 @@ async def _submit(
             command="analyze",
         )
     )
-    if analysis.snapshot_id != saved.snapshot_id:
+    if (
+        analysis.snapshot_id != saved.snapshot_id
+        or analysis.snapshot_sha256 != saved.content_sha256
+    ):
         raise ValueError("The service returned an analysis for a different snapshot.")
+    if model_version != "active" and analysis.job.model.model_version_id != model_version:
+        raise ValueError("The service accepted a different model version.")
     return analysis
 
 
@@ -70,11 +77,20 @@ async def _wait_for_success(
     client: httpx2.AsyncClient, analysis_id: UUID, status: _Analysis | None
 ) -> _Analysis:
     path = f"analyses/{analysis_id}"
+    receipt = status
     while True:
         if status is None:
             status = _Analysis.model_validate_json(await request(client, path))
         if status.analysis_id != analysis_id:
             raise ValueError("The service returned a different analysis ID.")
+        if receipt is None:
+            receipt = status
+        elif (
+            status.snapshot_id != receipt.snapshot_id
+            or status.snapshot_sha256 != receipt.snapshot_sha256
+            or status.job.model != receipt.job.model
+        ):
+            raise ValueError("The analysis snapshot or model changed while waiting.")
         if status.job.state == "succeeded":
             return status
         if status.job.state == "failed":
@@ -109,6 +125,8 @@ async def _download(
     result = AnalysisResult.model_validate_json(data)
     if (result.analysis_id, result.snapshot_id) != (analysis.analysis_id, analysis.snapshot_id):
         raise ValueError("The saved result belongs to a different analysis or snapshot.")
+    if result.snapshot_sha256 != analysis.snapshot_sha256 or result.model != analysis.job.model:
+        raise ValueError("The saved result differs from the snapshot or model pinned at intake.")
     return data
 
 

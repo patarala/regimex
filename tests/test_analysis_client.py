@@ -18,6 +18,8 @@ from regimex.cli import app
 from regimex.exports import load_export_v2
 
 EXPORT = Path(__file__).parent / "fixtures" / "experiment-v2.json"
+PREDICTION = prediction_for(load_export_v2(EXPORT))
+PINNED_MODEL = PREDICTION.model.model_dump(mode="json")
 ANALYSIS_ID = str(uuid4())
 SNAPSHOT_ID = str(uuid4())
 HTML = b"<!doctype html><title>Analysis</title>"
@@ -37,7 +39,8 @@ def status_for(state: str, **changes: object) -> dict[str, object]:
     return {
         "analysis_id": ANALYSIS_ID,
         "snapshot_id": SNAPSHOT_ID,
-        "job": {"state": state, "failure": None},
+        "snapshot_sha256": PREDICTION.snapshot_sha256,
+        "job": {"state": state, "failure": None, "model": PINNED_MODEL},
         "result_available": state == "succeeded",
         "report_available": state == "succeeded",
         **changes,
@@ -84,7 +87,7 @@ def test_submit_wait_and_save(
             assert request.headers["X-Regimex-Command"] == "analyze"
             assert json.loads(request.content) == {
                 "snapshot_id": SNAPSHOT_ID,
-                "model_version_id": "chosen",
+                "model_version_id": PREDICTION.model.model_version_id,
             }
             return reply(202, status_for("queued", polling_url="https://invalid.example/"))
         assert request.method == "GET"
@@ -95,7 +98,16 @@ def test_submit_wait_and_save(
 
     mock_http(monkeypatch, service)
     result = CliRunner().invoke(
-        app, [*command, "--input", str(EXPORT), "--model", "chosen", "--idempotency-key", key]
+        app,
+        [
+            *command,
+            "--input",
+            str(EXPORT),
+            "--model",
+            PREDICTION.model.model_version_id,
+            "--idempotency-key",
+            key,
+        ],
     )
     assert result.exit_code == 0, result.output
     assert key in result.output and ANALYSIS_ID in result.output
@@ -107,6 +119,60 @@ def test_submit_wait_and_save(
         f"/api/v1/analyses/{ANALYSIS_ID}/report",
     ]
     assert (tmp_path / "report.html").read_bytes() == HTML
+
+
+@pytest.mark.parametrize(
+    ("accepted", "message"),
+    [
+        (status_for("queued", snapshot_sha256="0" * 64), "different snapshot"),
+        (status_for("queued"), "different model version"),
+    ],
+)
+def test_rejects_receipt_for_a_different_input(
+    command: list[str], monkeypatch: pytest.MonkeyPatch, accepted: dict[str, object], message: str
+) -> None:
+    def service(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path.endswith("/snapshots"):
+            return reply(
+                201, {"snapshot_id": SNAPSHOT_ID, "content_sha256": PREDICTION.snapshot_sha256}
+            )
+        assert request.url.path == "/api/v1/analyses"
+        return reply(202, accepted)
+
+    mock_http(monkeypatch, service)
+    result = CliRunner().invoke(app, [*command, "--input", str(EXPORT), "--model", "other-model"])
+    assert result.exit_code == 1 and message in result.output
+
+
+def test_polling_preserves_the_first_observed_model(
+    command: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    responses = iter(
+        [
+            status_for("running"),
+            status_for(
+                "succeeded",
+                job={
+                    "state": "succeeded",
+                    "failure": None,
+                    "model": {**PINNED_MODEL, "bundle_sha256": "0" * 64},
+                },
+            ),
+        ]
+    )
+
+    async def skip_delay(_seconds: float) -> None:
+        pass
+
+    def service(request: httpx2.Request) -> httpx2.Response:
+        assert request.url.path == f"/api/v1/analyses/{ANALYSIS_ID}"
+        return reply(200, next(responses))
+
+    mock_http(monkeypatch, service)
+    monkeypatch.setattr(asyncio, "sleep", skip_delay)
+    result = CliRunner().invoke(app, [*command, "--analysis-id", ANALYSIS_ID])
+    assert result.exit_code == 1 and "model changed while waiting" in result.output
+    assert not (tmp_path / "report.html").exists()
 
 
 def test_submit_training_links_the_accepted_run_and_preserves_request_bytes(
@@ -203,6 +269,9 @@ def test_save_json_predictions(
         ("missing", "without a saved JSON result"),
         ("invalid", "schema"),
         ("wrong_id", "different analysis"),
+        ("wrong_snapshot_hash", "pinned at intake"),
+        ("wrong_weights", "pinned at intake"),
+        ("wrong_inference_policy", "pinned at intake"),
     ],
 )
 def test_rejects_unusable_json_result(
@@ -213,7 +282,16 @@ def test_rejects_unusable_json_result(
             assert issue != "missing"
             if issue == "invalid":
                 return reply(200, {"invalid": True})
-            return reply(200, prediction_for(load_export_v2(EXPORT)).model_dump(mode="json"))
+            data = PREDICTION.model_dump(mode="json")
+            if issue != "wrong_id":
+                data.update(analysis_id=ANALYSIS_ID, snapshot_id=SNAPSHOT_ID)
+            if issue == "wrong_snapshot_hash":
+                data["snapshot_sha256"] = "0" * 64
+            if issue == "wrong_weights":
+                data["model"]["bundle_sha256"] = "0" * 64
+            if issue == "wrong_inference_policy":
+                data["model"]["inference_policy_sha256"] = "0" * 64
+            return reply(200, data)
         return reply(200, status_for("succeeded", result_available=issue != "missing"))
 
     mock_http(monkeypatch, service)
@@ -233,6 +311,7 @@ def test_rejects_unusable_json_result(
                 "failed",
                 job={
                     "state": "failed",
+                    "model": PINNED_MODEL,
                     "failure": {
                         "code": "capacity_limit",
                         "message": "The model exceeds its memory budget.",
