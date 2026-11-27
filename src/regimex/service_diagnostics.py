@@ -36,7 +36,7 @@ def _model_probe(settings: ServiceSettings, store: ObjectStore, model: ModelReco
 
     with tempfile.TemporaryDirectory(prefix="doctor-", dir=settings.work_root) as temporary:
         root = Path(temporary)
-        materialize_bundle(store, model, root / "model", before_copy=lambda _: check_deadline())
+        materialize_bundle(store, model, root / "model", checkpoint=check_deadline)
         actual = supervise_child(
             {"model": model.model_dump(mode="json")},
             root,
@@ -165,6 +165,8 @@ def diagnose(settings: ServiceSettings) -> DiagnosticReport:
             )
         except ComputationFailure as error:
             record("model_load", "failed", error.failure.message)
+        except TimeBudgetExceeded as error:
+            record("model_load", "failed", str(error))
         except OSError, ValueError, RuntimeError, RegistryError:
             record(
                 "model_load",

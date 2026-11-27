@@ -29,7 +29,7 @@ from regimex.computation_worker import (
 )
 from regimex.contracts import MAX_INPUT_BYTES, StrictModel
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectIntegrityError
-from regimex.model_bundles import ModelBundle, verify_model_bundle
+from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle, verify_model_bundle
 from regimex.model_registry import RegistryError
 from regimex.operations import Operation, OperationFailure, Sha256
 from regimex.report_contracts import MAX_REPORT_BYTES, AnalysisReportRecord
@@ -166,7 +166,7 @@ def load_registered_predictor(
 def _validate_registered_model(model: ModelRecord) -> None:
     if (
         model.manifest.sha256 != model.bundle_sha256
-        or model.manifest.size_bytes > 256 * 1024
+        or model.manifest.size_bytes > MAX_BUNDLE_MANIFEST_BYTES
         or sum(info.size_bytes for info in model.members.values()) + model.manifest.size_bytes
         > model.inference_runtime.model_cache_budget_bytes
         or hashlib.sha256(json_bytes(model.inference_runtime.model_dump(mode="json"))).hexdigest()

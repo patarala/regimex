@@ -186,6 +186,39 @@ def test_doctor_restores_saved_model_in_a_child_and_detects_corrupted_storage(
     assert service.repository.get_active_model() == model
 
 
+def test_doctor_model_probe_honors_its_deadline_while_waiting_for_storage(
+    service: AnalysisService, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex import service_diagnostics
+    from regimex.infrastructure import object_store
+    from regimex.infrastructure.object_store import ObjectStore
+    from regimex.service_contracts import ModelRecord
+
+    published_model(service, tmp_path)
+    settings = ServiceSettings(
+        database_dsn=SecretStr(service.repository._dsn),
+        database_schema=service.repository.schema,
+        object_root=tmp_path / "objects",
+        work_root=tmp_path / "doctor-work",
+        analysis_time_budget_seconds=1,
+    )
+    probe = service_diagnostics._model_probe
+
+    def probe_during_write(
+        settings: ServiceSettings, store: ObjectStore, model: ModelRecord
+    ) -> None:
+        assert isinstance(store, LocalObjectStore)
+        with store._locked_root():
+            probe(settings, store, model)
+
+    monkeypatch.setattr(object_store, "_LOCK_TIMEOUT_SECONDS", 3)
+    monkeypatch.setattr(service_diagnostics, "_model_probe", probe_during_write)
+    checks = {check.name: check for check in service_diagnostics.diagnose(settings).checks}
+    assert checks["model_load"].status == "failed"
+    assert checks["model_load"].message == "The model probe exceeded its time limit."
+    assert not tuple(settings.work_root.glob("doctor-*"))
+
+
 def test_report_quota_fails_explicitly_before_upload_and_success_charges_exact_bytes(
     service: AnalysisService, tmp_path: Path
 ) -> None:
