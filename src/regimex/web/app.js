@@ -155,8 +155,8 @@ async function restoreLocation() {
   }
   screen = section;
   const resumed = analysis.setVisible(section === "analyses" && !document.hidden, url.searchParams.get("analysis"));
-  document.title = {analyses: "Regimex — Market analysis", training: "Model training · Regimex",
-    connections: "Connections · Regimex"}[section];
+  const heading = $(section + "-title");
+  document.title = heading.textContent + " · Regimex";
   $("workspace").hidden = section !== "analyses";
   for (const name of ["analyses", "training", "connections"]) {
     const link = $("open-" + name);
@@ -182,7 +182,7 @@ async function restoreLocation() {
     initialHistory = history.refresh();
   }
   $("open-analyses").href = url.href;
-  if (previous && previous !== section) $("open-analyses").focus();
+  if (previous && previous !== section) heading.focus();
   await Promise.all([initialHistory, restoreAnalysis(url, resumed)]);
 }
 

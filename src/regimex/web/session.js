@@ -25,15 +25,19 @@ export function createSession({onActivate, onReset}) {
   let restoreTimer;
   function reset() {
     clearTimeout(restoreTimer);
+    const wasSignedIn = Boolean(value);
     epoch++;
     value = null;
     $("token").value = "";
-    $("owner").textContent = "";
+    $("owner").textContent = $("owner").title = "";
     $("workspace").hidden = true;
     $("account").hidden = true;
     $("logout").hidden = true;
     $("login-panel").hidden = false;
     onReset();
+    const heading = $("login-title");
+    document.title = heading.textContent + " · Regimex";
+    if (wasSignedIn) heading.focus();
   }
 
   async function request(path, { method = "GET", body = undefined, headers = {}, signal } = {}) {
@@ -64,12 +68,13 @@ export function createSession({onActivate, onReset}) {
       const data = await response.json().catch(() => ({}));
       if (requestEpoch !== epoch)
         throw new Error("The workspace changed. Refresh the page to continue.");
-      if (response.status === 401 && path !== "/api/v1/session") {
-        reset();
-        throw new Error("Your session has expired. Sign in to reopen your saved analyses.");
-      }
-      const error = new Error(requestError(data));
+      const expired = response.status === 401 && path !== "/api/v1/session";
+      const error = new Error(expired ? "Your session has expired. Sign in to continue." : requestError(data));
       error.status = response.status;
+      if (expired) {
+        reset();
+        notice(error.message, true);
+      }
       throw error;
     }
     return response;
@@ -88,7 +93,7 @@ export function createSession({onActivate, onReset}) {
     epoch++;
     value = next;
     $("token").value = "";
-    $("owner").textContent = next.principal.owner_id;
+    $("owner").textContent = $("owner").title = next.principal.owner_id;
     $("login-panel").hidden = true;
     $("workspace").hidden = false;
     $("account").hidden = false;

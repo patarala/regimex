@@ -145,7 +145,7 @@ def test_status_resumes_after_leaving_analyses_during_a_temporary_error(browser:
         page.goto(f"{ORIGIN}/?analysis={analysis_id}")
         expect(page.locator("#job-guidance")).to_contain_text("Retrying automatically")
         page.get_by_role("link", name="Training", exact=True).click()
-        expect(page.get_by_role("heading", name="Model training")).to_be_visible()
+        expect(page.get_by_role("heading", name="Training", exact=True)).to_be_visible()
         reads = len(attempts)
         page.clock.fast_forward(60_000)
         assert len(attempts) == reads
@@ -215,7 +215,7 @@ def test_bookmarked_comparison_retries_only_an_active_interrupted_read(
             expect(page.locator("#notice")).to_have_text("Reconnecting to the comparison…")
         if view == "training":
             page.get_by_role("link", name="Training", exact=True).click()
-            expect(page.get_by_role("heading", name="Model training")).to_be_visible()
+            expect(page.get_by_role("heading", name="Training", exact=True)).to_be_visible()
         elif view == "report":
             page.evaluate(
                 """url => {

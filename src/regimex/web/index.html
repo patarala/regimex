@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light dark" />
-    <title>Regimex — Market analysis</title>
+    <title>Regimex</title>
     <script src="/assets/theme.js"></script>
     <link rel="stylesheet" href="/assets/app.css" />
     <script type="module" src="/assets/app.js"></script>
@@ -18,7 +18,7 @@
           <a id="open-training" href="/training" data-workspace-link hidden>Training</a>
           <a id="open-connections" href="/connections" data-workspace-link hidden>Connections</a>
         </nav>
-        <span id="owner"></span>
+        <span id="owner" dir="auto"></span>
       </div>
       <button id="theme" type="button" class="quiet" aria-label="Dark theme" aria-pressed="false" hidden>
         <svg class="theme-icon" viewBox="0 0 24 24" width="18" height="18" fill="none"
@@ -39,7 +39,7 @@
       <p id="workspace-startup" role="status">Still opening the workspace. <a href="">Reload page</a></p>
       <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
       <section id="login-panel" class="panel login" aria-labelledby="login-title" hidden>
-        <h1 id="login-title">Sign in</h1>
+        <h1 id="login-title" tabindex="-1">Sign in</h1>
         <form id="login-form">
           <label for="token">Access token</label>
           <input
@@ -57,7 +57,7 @@
         </form>
       </section>
       <div id="workspace" hidden>
-        <h1 class="page-title">Market analysis</h1>
+        <h1 id="analyses-title" tabindex="-1">Analyses</h1>
         <div class="workspace-layout">
           <section class="panel upload-panel" aria-labelledby="upload-title">
             <h2 id="upload-title">New analysis</h2>
@@ -213,7 +213,7 @@
               </div>
             </form>
             <p id="history-loading" class="hint" role="status" hidden>Loading history…</p>
-            <p id="history-error" class="hint" role="status" hidden></p>
+            <p id="history-error" class="hint error" role="status" hidden></p>
             <p id="history-empty" hidden>No experiments yet.</p>
             <ul id="history-list"></ul>
             <nav
@@ -230,9 +230,7 @@
         </div>
       </div>
       <section id="training" aria-labelledby="training-title" hidden>
-        <div class="section-heading training-page-heading">
-          <h1 id="training-title" tabindex="-1">Model training</h1>
-        </div>
+        <h1 id="training-title" tabindex="-1">Training</h1>
         <p id="training-notice" class="notice" role="status" hidden></p>
         <p id="training-sync" class="notice" role="status" hidden></p>
         <div class="training-layout">
@@ -261,7 +259,7 @@
                   <button id="training-restore-selected" type="button" class="quiet">Restore selected</button>
                 </div>
               </div>
-              <p id="training-empty" class="hint" hidden>No training runs yet.</p>
+              <p id="training-empty" class="hint" role="status" hidden>No training runs yet.</p>
               <template id="training-archive-icon">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                      stroke-width="1.7" stroke-linejoin="round" role="img" aria-label="Archived">
@@ -397,7 +395,7 @@
               <div><dt>With worker</dt><dd id="training-running"></dd></div>
             </dl>
             <p id="training-progress-notice" class="hint" role="status" hidden>Could not update the charts. Retrying…</p>
-            <p id="training-metric-error" class="notice" role="status" hidden></p>
+            <p id="training-metric-error" class="notice error" role="status" hidden></p>
             <button id="training-cancel" type="button" class="quiet" hidden>Cancel training</button>
             <section id="training-metrics" class="training-section" aria-labelledby="training-metrics-title" hidden>
               <h3 id="training-metrics-title">Training metrics</h3>
@@ -441,14 +439,12 @@
         </div>
       </section>
       <section id="connections" aria-labelledby="connections-title" hidden>
-        <div class="section-heading">
-          <h1 id="connections-title" tabindex="-1">Connections</h1>
-        </div>
+        <h1 id="connections-title" tabindex="-1">Connections</h1>
         <p id="connection-notice" class="notice" role="status" aria-live="polite" hidden></p>
         <div class="connections-layout">
           <section class="panel" aria-labelledby="connection-list-title">
             <div class="section-heading">
-              <h2 id="connection-list-title">Platforms</h2>
+              <h2 id="connection-list-title">Saved connections</h2>
               <button id="connections-refresh" type="button" class="quiet">Refresh</button>
             </div>
             <p id="connections-status" class="hint" role="status" hidden></p>

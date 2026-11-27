@@ -24,7 +24,7 @@ ORIGIN = "https://regimex.test"
 RUN_ID = str(UUID(int=1))
 EVALUATION_ID = str(UUID(int=2))
 PUBLICATION_ID = str(UUID(int=3))
-CANDIDATE = "model-browser-candidate"
+CANDIDATE = "desk/../tcn+v1"
 PREVIOUS = "model-already-active"
 TCN = tcn_descriptor().describe().model_dump(mode="json")
 BASELINE = baseline_descriptor().describe().model_dump(mode="json")
@@ -266,7 +266,8 @@ class TrainingAPI:
             result = completed_run(EVALUATION_ID, "evaluation")
             self.actions.append(result)
         else:
-            assert path == f"models/{CANDIDATE}/publish"
+            assert path == "models/publish"
+            assert parse_qs(urlsplit(request.url).query) == {"model_version_id": [CANDIDATE]}
             result = completed_run(PUBLICATION_ID, "publication")
             self.actions.append(result)
             self.active_model = CANDIDATE
@@ -407,7 +408,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
         expect(intervals).to_be_visible()
         assert api.pages.count(path) == 1
         assert api.posts[3][:2] == (
-            f"models/{CANDIDATE}/publish",
+            "models/publish",
             {
                 "evaluation_run_id": EVALUATION_ID,
                 "expected_previous": PREVIOUS,
@@ -1251,6 +1252,33 @@ def test_phone_run_history_collapses_on_selection_and_preserves_keyboard_access(
         page.close()
 
 
+@pytest.mark.parametrize("open_list", [True, False], ids=["run-list", "run-detail"])
+def test_delayed_run_load_preserves_the_keyboard_position(browser: Any, open_list: bool) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    pending: list[Any] = []
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    path = "/training" if open_list else f"/training/{RUN_ID}"
+    request_url = f"{ORIGIN}/api/v1/training-runs" + ("?*" if open_list else f"/{RUN_ID}")
+    page.route(request_url, lambda route: pending.append(route))
+    try:
+        with page.expect_request(request_url):
+            page.goto(ORIGIN + path)
+        new = page.get_by_role("button", name="New run", exact=True)
+        new.focus()
+        if open_list:
+            pending[0].fulfill(json={"items": [api.run]})
+            expect(page.locator("#training-runs [data-run-id]")).to_have_count(1)
+        else:
+            pending[0].fulfill(json=api.run)
+            expect(page.locator("#training-detail-title")).to_be_visible()
+        expect(new).to_be_focused()
+        expect(page).to_have_url(ORIGIN + path)
+    finally:
+        page.close()
+
+
 @pytest.mark.parametrize("path", ["/", f"/training/{RUN_ID}?view=all", f"/connections/{RUN_ID}"])
 def test_analysis_user_has_no_administrative_controls(browser: Any, path: str) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
@@ -1707,7 +1735,7 @@ def test_validation_and_publication_stay_locked_until_their_status_arrives(brows
                 expect(publish).to_be_enabled()
             else:
                 expect(page.get_by_text("New analyses use this model by default.")).to_be_visible()
-        assert [path for path, _, _ in api.posts] == ["evaluations", f"models/{CANDIDATE}/publish"]
+        assert [path for path, _, _ in api.posts] == ["evaluations", "models/publish"]
     finally:
         page.close()
 
@@ -2413,10 +2441,10 @@ def test_opening_training_preserves_report_and_comparison_history(browser: Any) 
         expect(comparison).to_be_visible()
         expect(page).to_have_url(comparison_url)
         page.get_by_role("link", name="Training", exact=True).click()
-        expect(page.get_by_role("heading", name="Model training")).to_be_visible()
+        expect(page.get_by_role("heading", name="Training", exact=True)).to_be_visible()
         expect(page).to_have_url(ORIGIN + "/training")
         page.reload()
-        expect(page.get_by_role("heading", name="Model training")).to_be_visible()
+        expect(page.get_by_role("heading", name="Training", exact=True)).to_be_visible()
         expect(page.get_by_role("link", name="Analyses")).to_have_js_property(
             "href", comparison_url
         )

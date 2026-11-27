@@ -301,9 +301,6 @@ p {
 .connections-layout:has(#connection-detail[hidden]) {
   grid-template-columns: minmax(0, 38rem);
 }
-#connections .section-heading h1 {
-  margin: 0;
-}
 .connection-list,
 .connection-records {
   list-style: none;
@@ -340,7 +337,7 @@ p {
   overflow-wrap: anywhere;
   user-select: all;
 }
-.connections-layout .hint.error {
+.hint.error {
   color: var(--danger);
 }
 .connection-create,
@@ -426,10 +423,6 @@ p {
 @media (max-width: 860px) {
   .connections-layout {
     grid-template-columns: minmax(0, 1fr);
-  }
-  #connections > .section-heading {
-    align-items: flex-start;
-    flex-wrap: wrap;
   }
   .connection-name-form {
     grid-template-columns: minmax(0, 1fr);
@@ -916,6 +909,8 @@ iframe {
   #account {
     grid-column: 1 / -1;
     grid-row: 2;
+    flex-wrap: wrap;
+    row-gap: 0;
   }
   .workspace-nav {
     max-width: 100%;
@@ -931,8 +926,10 @@ iframe {
     padding-inline: 8px;
   }
   #owner {
-    min-width: 0;
+    max-width: 100%;
     margin-inline: auto 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
   #logout {
     grid-column: 3;
@@ -1057,13 +1054,8 @@ iframe {
   padding-inline-end: clamp(16px, 2vw, 28px);
   border-inline-end: 1px solid var(--border);
 }
-.training-page-heading h1,
 .training-run-heading h2 {
   margin: 0;
-}
-.training-page-heading,
-#connections > .section-heading {
-  margin-bottom: 32px;
 }
 .training-runs-heading {
   margin-bottom: 12px;
@@ -1793,9 +1785,7 @@ iframe {
   .training-form-grid {
     grid-template-columns: minmax(0, 1fr);
   }
-  .training-page-heading,
-  #connections > .section-heading {
-    flex-wrap: wrap;
+  h1 {
     margin-bottom: 18px;
   }
 }

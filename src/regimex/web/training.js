@@ -317,6 +317,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
         prev.disabled = next.disabled = history.inert;
         if (!history.inert) offset = listedOffset;
         empty.textContent = (history.inert && listed.size ? "Showing previous results. " : "") + error.message;
+        empty.classList.add("error");
         empty.hidden = false;
       }
       return;
@@ -345,11 +346,13 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       if ((item.archived_at ?? null) !== (run.archived_at ?? null)) void refreshDetail();
     }
     empty.hidden = page.items.length !== 0;
+    empty.classList.remove("error");
     empty.textContent = {active: "No current runs.", archived: "No archived runs.", all: "No training runs yet."}[view];
     prev.disabled = next.disabled = false;
     prev.hidden = offset === 0;
     next.hidden = page.items.length <= pageSize;
-    if (preselect && target === null && rows.length) navigate(runPath(rows[0].run_id), true);
+    if (preselect && target === null && rows.length && document.activeElement === $("training-title"))
+      navigate(runPath(rows[0].run_id), true);
   }
 
   // A network error can arrive after the server committed. Reuse that exact request's key.
@@ -684,6 +687,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   async function loadRun(id, stamp, cached, focus = false) {
     if (document.hidden || !selected(stamp)) return;
     clearTimeout(timer);
+    const previousFocus = document.activeElement;
     try {
       const row = cached || await readRun(id);
       if (!selected(stamp)) return;
@@ -693,7 +697,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       const recheckRun = Boolean(cached && finished(row.job));
       if (recheckRun) facts();
       void refresh(stamp, recheckRun);
-      if (focus && document.activeElement !== $("training-history-view")) $("training-detail-title").focus();
+      if (focus && document.activeElement === previousFocus) $("training-detail-title").focus();
     } catch (error) {
       if (selected(stamp)) handleRunReadError(error, () => loadRun(id, stamp));
     }
@@ -812,7 +816,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     const confirmation = "Use " + id + " as the default for new analyses?" +
       (activeModel ? "\nThis replaces " + activeModel + "." : "");
     if (!window.confirm(confirmation)) return;
-    await post(api + "models/" + encodeURIComponent(id) + "/publish",
+    await post(api + "models/publish?" + new URLSearchParams({model_version_id: id}),
       {evaluation_run_id: evaluation.run_id, expected_previous: activeModel});
     if (selected(stamp)) {
       pendingDownstream = true;
