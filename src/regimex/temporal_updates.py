@@ -55,6 +55,7 @@ def fit_tcn_updates(
     )
 
 
+@torch.random.fork_rng(devices=[])
 def fit_temporal_updates[Network: nn.Module](
     training: PreparedPredictionInputs,
     targets: IntArray,
@@ -95,7 +96,7 @@ def fit_temporal_updates[Network: nn.Module](
     for seed in policy.seeds:
         if check_budget is not None:
             check_budget()
-        torch.manual_seed(seed)
+        torch.default_generator.manual_seed(seed)
         rng = np.random.Generator(np.random.PCG64(seed))
         model = build(training.values.shape[1])
         optimizer = torch.optim.AdamW(

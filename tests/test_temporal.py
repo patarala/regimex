@@ -308,6 +308,7 @@ def test_tcn_reproduces_selected_validation_checkpoint() -> None:
         # The first seed plateaus. The second improves, then exhausts patience on its final epoch.
         return [1.0, 1.0, 0.7, 0.2, 0.4, 0.4, 0.3][len(observed) - 1]
 
+    prior_rng = torch.random.get_rng_state().clone()
     first, history, seed = fit_tcn(
         data,
         targets,
@@ -318,6 +319,7 @@ def test_tcn_reproduces_selected_validation_checkpoint() -> None:
         scorer=scorer,
         on_history=progress.append,
     )
+    assert torch.equal(torch.random.get_rng_state(), prior_rng)
     assert [
         (row["seed"], row["epoch"], row["stop_reason"]) for row in progress if "stop_reason" in row
     ] == [(11, 4, "early_stopping"), (23, 5, "epoch_limit")]

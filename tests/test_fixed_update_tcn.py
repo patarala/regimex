@@ -132,7 +132,9 @@ def test_fixed_policy_candidate_uses_shared_training_and_exact_bundle_restore(
 
 
 def test_update_artifact_roundtrip_retains_exact_numeric_state(tmp_path: Path) -> None:
+    prior_rng = torch.random.get_rng_state().clone()
     backend, result, validation = fitted_updates()
+    assert torch.equal(torch.random.get_rng_state(), prior_rng)
     sha = backend.write_bundle(
         result,
         tmp_path / "bundle",

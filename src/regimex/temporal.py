@@ -435,6 +435,7 @@ def train_batch(
     return float(loss.detach())
 
 
+@torch.random.fork_rng(devices=[])
 def fit_tcn(
     training: PreparedPredictionInputs,
     targets: IntArray,
@@ -476,7 +477,7 @@ def fit_tcn(
     for seed in policy.seeds:
         if check_budget is not None:
             check_budget()
-        torch.manual_seed(seed)
+        torch.default_generator.manual_seed(seed)
         rng = np.random.Generator(np.random.PCG64(seed))
         model = TCNClassifier(
             training.values.shape[1], parameters.channels, parameters.dropout, parameters.dilations
