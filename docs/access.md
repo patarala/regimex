@@ -1,11 +1,21 @@
 # Platform access
 
-A connection identifies a simulator backend by its Regimex account and source
-namespace. Its key stays on the backend. The simulator signs users in and
-checks their access to the run before each Regimex request. Regimex uses the
-connection and verified subject to identify the owner. Replacing a key on the
-same connection preserves access to that owner's saved analyses. See the
-[delegation contract](integration.md) for request headers.
+| Role | Access |
+| --- | --- |
+| `user` | Upload experiments, analyze them with published models and manage the owner's analyses. |
+| `admin` | Use the analysis workspace, train and publish models, and manage simulator connections. The analysis history is still scoped to the owner. |
+| `integration` | Call the API from a simulator backend within the key's permissions and source namespace. |
+
+For direct access, ask the installation operator for a personal token and enter
+it under **Sign in**. The operator chooses the owner and role with
+[`service token-create`](deployment.md#start-the-service). Give each person a
+distinct owner ID so their experiments and analysis histories stay separate.
+
+When using Regimex from a simulator, sign in to the simulator. Its backend
+checks access to the run before each request and keeps the connection key.
+Regimex associates the simulator user with an internal owner on first use.
+Rotating the key on the same connection preserves that user's results.
+[Delegated access](integration.md#delegated-access)
 
 ## Manage connections in the browser
 

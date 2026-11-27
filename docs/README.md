@@ -2,6 +2,7 @@
 
 | I want to… | Start here |
 | --- | --- |
+| Get access or understand what my role can do | [Sign-in and roles](access.md) |
 | Analyze an export, compare two results or understand the chart | [Analysis workspace](usage.md) |
 | Train a model, watch its progress or publish it | [Training workspace](training.md) |
 | Generate an experiment or submit a job from a shell | [Command-line workflows](cli.md) |
