@@ -1,6 +1,7 @@
 """Current immutable snapshots, complete diagnostics, and blind offline review."""
 
 import json
+import math
 from importlib.metadata import distribution
 from pathlib import Path
 
@@ -193,6 +194,8 @@ def test_extreme_finite_observations_preserve_intervals_and_serializable_statist
     payload = item.export.model_dump(mode="json", exclude={"content_sha256"})
     for row in payload["observations"]:
         row.update(last_price=1.0 if row["step"] == 0 else 1e308, trade_volume=1e308)
+    next_price = math.nextafter(1e308, math.inf)
+    payload["observations"][2]["last_price"] = next_price
     export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(payload)))
     result = prediction_for(export)
     stats = result.sequences[0].intervals[0].statistics
@@ -203,6 +206,10 @@ def test_extreme_finite_observations_preserve_intervals_and_serializable_statist
     updated = item.model_copy(update={"export": export})
     report = inspect_snapshots((updated,), results=(result,))
     assert report.samples[0].direction_intervals[0].statistics == stats
+    assert report.samples[0].returns[2:4] == (
+        math.log1p((next_price - 1e308) / 1e308),
+        math.log1p((1e308 - next_price) / next_price),
+    )
     from regimex.application.report import _interval_table
 
     assert _interval_table(result).count("out of range") == 2
@@ -384,7 +391,7 @@ def test_offline_report_preserves_source_identity_and_canonical_symbols(tmp_path
     )
     data = report_data(output)
     assert data["kind"] == "prediction"
-    assert inspection.summary["report_version"] == "6.4"
+    assert inspection.summary["report_version"] == "6.5"
     assert all("events" not in sample.payload() for sample in inspection.samples)
     assert data["samples"] == json.loads(
         json.dumps([{**sample.payload(), "trend_pauses": []} for sample in inspection.samples])

@@ -322,11 +322,16 @@
       line: { color: colors.decline, dash: "dash", width: 0.8 },
       visible: $("quotes").checked,
     });
-    const returns = observations.last_price.map((price, index, prices) =>
-      index === 0 || price == null || prices[index - 1] == null
-        ? null
-        : 100 * (Math.log(price) - Math.log(prices[index - 1])),
-    );
+    const returns = observations.last_price.map((price, index, prices) => {
+      const previous = prices[index - 1];
+      if (price == null || previous == null) return null;
+      const change = (price - previous) / previous;
+      // Separate logs keep extreme ratios finite, while log1p preserves small ticks.
+      const logReturn = Math.abs(change) <= 0.5
+        ? Math.log1p(change)
+        : Math.log(price) - Math.log(previous);
+      return 100 * logReturn;
+    });
     line("Adjacent log return (%)", returns, 1, colors.ink);
     ["trade", "buy_order", "sell_order"].forEach((field, index) => {
       const style = {

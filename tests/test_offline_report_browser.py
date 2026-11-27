@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import math
 import os
 import shutil
 from collections.abc import Awaitable, Callable, Iterator
@@ -501,7 +502,7 @@ def test_cli_report_draws_isolated_observations_without_connecting_gaps(
     )
     for row in payload["observations"]:
         if row["step"] in (0, 2, 3, 5, 7):
-            row.update(last_price=102.0 + row["step"])
+            row.update(last_price=1e15 + row["step"] / 8)
         else:
             row.update(last_price=None, price_state="no_execution", trade_count=0, trade_volume=0.0)
         if row["step"] == 3:
@@ -531,6 +532,11 @@ def test_cli_report_draws_isolated_observations_without_connecting_gaps(
             "(nodes) => nodes.filter(node => node.getBBox().width > 0).map(node => node.__data__.x)"
         )
         assert markers == [0, 5, 7]
+        returns = page.locator("#explorer").evaluate(
+            "plot => plot.data.find(trace => trace.name === 'Adjacent log return (%)').y"
+        )
+        expected = 100 * math.log1p(0.125 / (1e15 + 0.25))
+        assert returns == [None] * 3 + [pytest.approx(expected, abs=0)] + [None] * 4
         assert (
             price.locator(".js-line").evaluate_all(
                 "(paths) => paths.filter(path => path.getTotalLength() > 0).length"

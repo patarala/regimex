@@ -116,7 +116,8 @@ class DirectionInterval(DirectionSpan):
     statistics: IntervalStatistics
 
 
-def _log_return(first: float, last: float) -> float:
+def log_price_return(first: float, last: float) -> float:
+    """Log return between positive finite prices, including changes of a single tick."""
     change = (last - first) / first
     if abs(change) <= 0.5:
         return math.log1p(change)
@@ -142,7 +143,7 @@ def summarize_interval(
     prices = [(row.step, row.last_price) for row in rows if row.last_price is not None]
     counts = [row.trade_count for row in rows if row.trade_count is not None]
     volumes = [row.trade_volume for row in rows if row.trade_volume is not None]
-    log_return = _log_return_v3_0 if policy == PREVIOUS_DIRECTION_POLICY else _log_return
+    log_return = _log_return_v3_0 if policy == PREVIOUS_DIRECTION_POLICY else log_price_return
     returns = [
         log_return(left.last_price, right.last_price)
         for left, right in pairwise(rows)

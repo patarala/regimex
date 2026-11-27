@@ -18,12 +18,12 @@ from regimex.data_catalog import (
     content_hash,
     create_snapshot_member,
 )
-from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval
+from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval, log_price_return
 from regimex.exports import ExportObservation, ExportV2
 from regimex.observation_availability import known_no_executions
 from regimex.storage import json_bytes
 
-REPORT_VERSION = "6.4"
+REPORT_VERSION = "6.5"
 OBSERVABLE_FIELDS = tuple(
     name for name in Observation.model_fields if name not in {"step", "instrument_id"}
 )
@@ -83,7 +83,7 @@ def _observed_values(
     for row in rows:
         change = None
         if previous is not None and row.last_price is not None:
-            change = math.log(row.last_price) - math.log(previous)
+            change = log_price_return(previous, row.last_price)
         returns.append(change)
         previous = row.last_price
         buy, sell = row.buy_order_count, row.sell_order_count
@@ -96,7 +96,7 @@ def _observed_values(
 def validate_series(series: Series) -> None:
     for row, change in zip(series.rows, series.returns, strict=True):
         if row.step == 0 and row.last_price is not None:
-            change = math.log(row.last_price) - math.log(series.initial_price)
+            change = log_price_return(series.initial_price, row.last_price)
         if row.trade_count == 0 and change is not None and abs(change) > 1e-12:
             raise ValueError(
                 f"{series.experiment_id}/{series.instrument_id}: observed price changed "
