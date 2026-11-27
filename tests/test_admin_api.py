@@ -18,6 +18,7 @@ psycopg = pytest.importorskip("psycopg")
 pytest.importorskip("alembic")
 pytest.importorskip("procrastinate")
 
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from pydantic import SecretStr
@@ -28,7 +29,12 @@ from regimex.admin_api import (
     AutomaticReferenceRequest,
     TrainingRunRequest,
 )
-from regimex.admin_contracts import ReferenceGenerationSpec, RequestFingerprint, TrainingSpec
+from regimex.admin_contracts import (
+    PublicationSpec,
+    ReferenceGenerationSpec,
+    RequestFingerprint,
+    TrainingSpec,
+)
 from regimex.api import AnalysisAPIService, create_app
 from regimex.application.admin_service import AdminService
 from regimex.application.benchmark_service import BenchmarkService
@@ -126,6 +132,22 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
     assert not set(previous).intersection((fingerprint.sha256, *fingerprint.previous_hashes))
 
 
+@pytest.fixture
+def admin_boundary() -> Iterator[TestClient]:
+    class AuthenticationOnly:
+        def authenticate(self, _raw_token: str) -> Principal:
+            return Principal(owner_id="admin", role="admin", token_id=uuid4())
+
+    # Invalid HTTP input must be rejected before application or persistence calls.
+    application = create_app(
+        cast(AnalysisAPIService, AuthenticationOnly()),
+        admin_service=cast(AdminAPIService, object()),
+        benchmark_service=cast(BenchmarkAPIService, object()),
+    )
+    with TestClient(application) as client:
+        yield client
+
+
 @pytest.mark.parametrize(
     ("method", "path", "body"),
     [
@@ -142,32 +164,131 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
             {"benchmark_id": "desk\x00north", "dataset_id": "dataset", "reference_set_id": "set"},
         ),
         ("GET", "/api/v1/metrics?model_version_id={identifier}", None),
+        ("GET", "/api/v1/model-versions/resolve?model_version_id=desk%00north", None),
+        ("GET", "/api/v1/reference-sets?dataset_id=desk%00north", None),
     ],
 )
 def test_invalid_resource_identifiers_fail_at_http_boundary_before_application_calls(
-    method: str, path: str, body: dict[str, str] | None
+    admin_boundary: TestClient, method: str, path: str, body: dict[str, str] | None
 ) -> None:
-    class AuthenticationOnly:
-        def authenticate(self, _raw_token: str) -> Principal:
-            return Principal(owner_id="admin", role="admin", token_id=uuid4())
-
-    # Application methods are deliberately absent: malformed identifiers must
-    # never reach persistence or raise an internal DTO validation exception.
-    application = create_app(
-        cast(AnalysisAPIService, AuthenticationOnly()),
-        admin_service=cast(AdminAPIService, object()),
-        benchmark_service=cast(BenchmarkAPIService, object()),
+    response = admin_boundary.request(
+        method,
+        path.format(identifier="x" * 129),
+        json=body,
+        headers={"Authorization": "Bearer fixture", "Idempotency-Key": "invalid-identifier"},
     )
-    with TestClient(application) as client:
-        response = client.request(
-            method,
-            path.format(identifier="x" * 129),
-            json=body,
-            headers={"Authorization": "Bearer fixture", "Idempotency-Key": "invalid-identifier"},
-        )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_data"
     assert "x" * 129 not in response.text
+
+
+def test_scientific_intake_rejects_duplicate_snapshots_and_active_model_alias(
+    admin_boundary: TestClient,
+) -> None:
+    from test_data_catalog import annotations, snapshot
+
+    snapshot_id = str(uuid4())
+    document = annotations(snapshot(1), human=True)
+    entry = {"snapshot_id": snapshot_id, "annotation": document.model_dump(mode="json")}
+    review = {
+        "dataset_id": "dataset",
+        "reviewer": document.reviewer,
+        "blind_review": True,
+        "independent": True,
+        "annotations": [entry, entry],
+    }
+    requests = (
+        (
+            "datasets",
+            {
+                "mode": "snapshots",
+                "members": [
+                    {"snapshot_id": snapshot_id, "partition": partition}
+                    for partition in ("train", "validation", "test")
+                ],
+            },
+            "members",
+        ),
+        ("reference-sets", {**review, "mode": "human_import", "partition": "train"}, "annotations"),
+        ("benchmarks/reference-sets", review, "annotations"),
+        (
+            "evaluations",
+            {"model_version_id": "active", "dataset_id": "dataset", "reference_set_id": "set"},
+            "model_version_id",
+        ),
+        ("models/active/publish", {"evaluation_run_id": str(uuid4())}, "model_version_id"),
+    )
+    for route, body, field in requests:
+        response = admin_boundary.post(
+            f"/api/v1/{route}",
+            json=body,
+            headers={"Authorization": "Bearer fixture", "Idempotency-Key": "invalid-request"},
+        )
+        assert response.status_code == 422, route
+        error = response.json()["error"]
+        assert error["code"] == "invalid_data"
+        assert any(item["location"][-1] == field for item in error["details"]), route
+
+
+def test_a_new_method_on_an_existing_path_is_not_delegated_automatically() -> None:
+    from regimex.integration_api import install_delegated_routes
+
+    app = FastAPI()
+
+    def normal_view() -> str:
+        return "resource"
+
+    app.add_api_route("/api/v1/analyses", normal_view, methods=["GET"])
+    app.add_api_route("/api/v1/analyses", normal_view, methods=["DELETE"])
+    install_delegated_routes(app)
+    paths = app.openapi()["paths"]
+    assert set(paths["/api/v1/analyses"]) == {"get", "delete"}
+    assert set(paths["/api/v1/integration/analyses"]) == {"get"}
+
+
+def test_openapi_matches_intake_modes_and_delegated_operations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex.application.integration_access import DELEGATED_OPERATIONS
+    from regimex.service_bootstrap import create_app as configured_app
+
+    monkeypatch.setenv("REGIMEX_DATABASE_DSN", "dbname=not_connected")
+    monkeypatch.setenv("REGIMEX_OBJECT_ROOT", str(tmp_path / "objects"))
+    monkeypatch.setenv("REGIMEX_WORK_ROOT", str(tmp_path / "work"))
+    paths = configured_app().openapi()["paths"]
+    for resource, imported in (("datasets", "DatasetView"), ("reference-sets", "ReferenceView")):
+        responses = paths[f"/api/v1/{resource}"]["post"]["responses"]
+        assert "200" not in responses
+        for status, model in (("201", imported), ("202", "AdminRunView")):
+            assert responses[status]["content"]["application/json"]["schema"] == {
+                "$ref": f"#/components/schemas/{model}"
+            }
+
+    prefix = "/api/v1/integration/"
+    advertised = {
+        (verb.upper(), path.removeprefix(prefix))
+        for path, verbs in paths.items()
+        if path.startswith(prefix)
+        for verb in verbs
+    }
+    shared = {
+        (verb, path.removeprefix("/api/v1/"))
+        for verb, path in DELEGATED_OPERATIONS
+        if not path.endswith("/preview")
+    }
+    assert advertised == shared | {
+        ("POST", "analysis-intake"),
+        ("GET", "analyses/{analysis_id}/delivery"),
+    }
+    for base in ("/api/v1", "/api/v1/integration"):
+        receipts = paths[base + "/deletions/{plan_id}"]["post"]["responses"]
+        for status in ("200", "202"):
+            assert receipts[status]["content"]["application/json"]["schema"] == {
+                "$ref": "#/components/schemas/DeletionReceipt"
+            }
+        for resource in ("report", "comparison"):
+            download = paths[base + "/analyses/{analysis_id}/" + resource]["get"]
+            assert set(download["responses"]["200"]["content"]) == {"text/html"}
 
 
 def test_complete_api_factory_and_schemas_do_not_import_scientific_libraries(
@@ -425,6 +546,37 @@ def test_administrative_intake_is_strict_authenticated_and_bounded(
         context.client.post("/api/v1/datasets", json=oversized, headers=context.headers).status_code
         == 429
     )
+
+
+def test_publish_an_evaluated_model_with_a_path_like_version(
+    administrative_api: AdministrativeAPI,
+) -> None:
+    from test_admin_repository import candidate, evaluated, principal, ready_training
+
+    repository = administrative_api.service.repository
+    dataset, spec = ready_training(repository)
+    owner = principal()
+    token = repository.database.create_token(owner.owner_id, "admin")
+    version = "../desk/東京 + 1"
+    model = candidate(spec).model_copy(update={"model_version_id": version})
+    repository.database.register_model(owner, model)
+    evaluation = evaluated(repository, dataset, model)
+    body = {"evaluation_run_id": str(evaluation.run_id)}
+    query = {"model_version_id": version}
+    path = "/api/v1/models/publish"
+    headers = {"Authorization": f"Bearer {token}", "Idempotency-Key": "publish-by-query"}
+    denied = administrative_api.client.post(
+        path,
+        params=query,
+        json=body,
+        headers={**headers, "Authorization": f"Bearer {administrative_api.user_token}"},
+    )
+    assert denied.status_code == 403
+    response = administrative_api.client.post(path, params=query, json=body, headers=headers)
+    assert response.status_code == 202, response.text
+    run = repository.get_run(owner, UUID(response.json()["run_id"]))
+    assert isinstance(run.spec, PublicationSpec)
+    assert (run.spec.model_version_id, run.spec.evaluation_run_id) == (version, evaluation.run_id)
 
 
 def test_generation_queues_once_and_uses_server_identity(
@@ -998,12 +1150,19 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
         headers=again_headers,
     )
     assert conflicting.status_code == 409
+    publication_headers = context.headers
+    publish_body = {"evaluation_run_id": str(evaluation.run_id)}
     response = context.client.post(
-        f"/api/v1/models/{model_id}/publish",
-        json={"evaluation_run_id": str(evaluation.run_id)},
-        headers=context.headers,
+        "/api/v1/models/publish",
+        params={"model_version_id": model_id},
+        json=publish_body,
+        headers=publication_headers,
     )
     assert response.status_code == 202, response.text
+    retried = context.client.post(
+        f"/api/v1/models/{model_id}/publish", json=publish_body, headers=publication_headers
+    )
+    assert retried.status_code == 202 and retried.json() == response.json()
     publication = AdminRunView.model_validate_json(response.content)
     published = context.service.run_admin(publication.run_id)
     assert published is not None and published.operation.state == "succeeded", published

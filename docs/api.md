@@ -128,8 +128,10 @@ and attempt counts. Once it reaches `failed`, automatic retries have ended.
 
 `GET /models?published_only=true` lists published versions and the active
 model ID. Administrators can omit the filter to see unpublished candidates.
-`GET /models/{id}` returns model metadata. `GET /metrics` defaults to the
-active version. Pass `?model_version_id=ID` to see the quality status and
+`GET /model-versions/resolve?model_version_id=ID` returns one version's metadata.
+URL-encode the ID as a query value to preserve slashes and other path characters.
+`GET /models/{id}` also accepts single-segment version names. `GET /metrics`
+defaults to the active version. Pass `?model_version_id=ID` to see the quality status and
 publication evaluation for another accessible version. An administrator can
 download a specific evaluation from `GET /evaluations/{id}/result`. Use
 `GET /architectures` as an administrator to inspect installed backend schemas.
@@ -205,8 +207,9 @@ Use the resource IDs from the completed runs in the following requests.
 ### 1. Create observations and references
 
 `POST /datasets` either generates observations or combines owned snapshots with
-explicit partitions. Generation returns `202`; importing membership returns `201`.
-For example:
+explicit partitions. Each snapshot ID may appear once in a request. Generation
+returns `202` with the queued run. Importing snapshot membership returns `201`
+with the new dataset.
 
 ```json
 {
@@ -243,9 +246,11 @@ Create separate training and validation references with `POST /reference-sets`:
 
 Repeat with `partition: "validation"`. New reference sets use the current
 `direction-32/2.2` profile. New automatic labels use `retrospective-directions/3.1`.
-To import human references, provide complete annotations and identify the
-reviewer. The reviewer attests to independence. The ordinary annotation
-download covers the training and validation partitions.
+Automatic generation returns `202` with the queued run. To import human
+references, provide one annotation document per snapshot and identify the
+reviewer who attests to independence. A successful import returns `201` with
+the reference set. The ordinary annotation download covers the training and
+validation partitions.
 
 ### 2. Reserve final data before selection
 
@@ -437,10 +442,11 @@ After the worker saves the candidate, reloads it and verifies its predictions:
    cancelled, submit a new idempotency key to retry. Replaying a previously
    accepted key always returns its original run.
    Download the completed metrics from `GET /evaluations/{id}/result`.
-2. To activate the candidate, submit `POST /models/{model_version_id}/publish`
-   with `evaluation_run_id` and `expected_previous`. Read the current
-   `active_model_version_id` from `GET /models`; use `null` for the first
-   publication. The worker verifies the package and changes the active model
+2. To activate the candidate, submit `POST /models/publish?model_version_id=ID`
+   with `evaluation_run_id` and `expected_previous`. The single-segment form
+   `POST /models/{model_version_id}/publish` shares the same idempotency key.
+   Read the current `active_model_version_id` from `GET /models`. Use `null`
+   for the first publication. The worker verifies the package and changes the active model
    atomically. If another publication changed it first, review the current
    version before resubmitting.
 

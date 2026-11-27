@@ -13,7 +13,7 @@ from regimex.benchmarks import (
 from regimex.contracts import Identifier, StrictModel
 from regimex.data_catalog import DatasetManifest, SnapshotMember, content_hash
 from regimex.operations import Sha256
-from regimex.service_contracts import Conflict
+from regimex.service_contracts import Conflict, RegistryIdentifier
 
 
 def require_selection_dataset(manifest: DatasetManifest) -> None:
@@ -57,9 +57,9 @@ class RegistryState(StrictModel):
 
 
 class TrainingPreparation(StrictModel):
-    dataset_id: Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
-    final_dataset_id: Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
-    final_reference_set_id: Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
+    dataset_id: RegistryIdentifier
+    final_dataset_id: RegistryIdentifier
+    final_reference_set_id: RegistryIdentifier
     expected_registry_revision: Annotated[int, Field(ge=-1)]
     inventory_statement: Annotated[
         str,

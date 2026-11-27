@@ -2,17 +2,18 @@
 
 import hashlib
 from collections.abc import Callable
-from typing import Annotated, Literal, Protocol, Self
+from typing import Annotated, Literal, Protocol
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, Header, Request, Response
-from pydantic import Field, model_validator
+from pydantic import Field
 
 from regimex.admin_api import AdminRunView, ReferenceView, _reference, _run
 from regimex.admin_contracts import (
     AdminRunRecord,
     FinalReferenceImportSpec,
-    HumanAnnotation,
+    HumanAnnotations,
+    ImmutableModelVersion,
     ReferenceSetRecord,
     RequestDigest,
     RequestFingerprint,
@@ -28,7 +29,7 @@ from regimex.benchmarks import DatasetHistory
 from regimex.contracts import Identifier, StrictModel
 from regimex.directions import DEFAULT_ANALYSIS_PROFILE, AnalysisConfig
 from regimex.operations import LaunchSource
-from regimex.service_contracts import Principal
+from regimex.service_contracts import Principal, RegistryIdentifier
 from regimex.storage import json_bytes
 
 
@@ -90,7 +91,7 @@ class FinalEvaluationService(Protocol):
 
 
 class DatasetHistoryRequest(StrictModel):
-    dataset_id: Identifier
+    dataset_id: RegistryIdentifier
 
 
 class SelectionBenchmarks(StrictModel):
@@ -105,14 +106,14 @@ class PreparedSelection(StrictModel):
 class FinalReferenceRequest(StrictModel):
     """Human final annotations enter through a separate sealed access boundary."""
 
-    dataset_id: Identifier
+    dataset_id: RegistryIdentifier
     partition: Literal["test"] = "test"
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
     reviewer: Identifier
     blind_review: bool
     independent: bool
-    annotations: Annotated[tuple[HumanAnnotation, ...], Field(min_length=1, max_length=1000)]
+    annotations: HumanAnnotations
 
 
 class InventoryRequest(StrictModel):
@@ -120,23 +121,14 @@ class InventoryRequest(StrictModel):
     statement: Annotated[str, Field(min_length=1, max_length=4096)]
 
 
-RegistryIdentifier = Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
-
-
 class BenchmarkRequest(StrictModel):
     benchmark_id: RegistryIdentifier
-    dataset_id: Identifier
-    reference_set_id: Identifier
+    dataset_id: RegistryIdentifier
+    reference_set_id: RegistryIdentifier
 
 
 class FrozenModelRequest(StrictModel):
-    model_version_id: Identifier
-
-    @model_validator(mode="after")
-    def immutable_model(self) -> Self:
-        if self.model_version_id == "active":
-            raise ValueError("frozen choices require a concrete model version")
-        return self
+    model_version_id: ImmutableModelVersion
 
 
 def install_benchmark_routes(

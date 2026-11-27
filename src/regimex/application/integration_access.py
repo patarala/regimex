@@ -3,7 +3,22 @@
 from regimex.access_contracts import IntegrationScope
 from regimex.service_contracts import Forbidden, Principal
 
-_MUTATIONS: dict[tuple[str, str], IntegrationScope] = {
+# Each shared route is installed under /integration with exactly the listed method and scope.
+DELEGATED_OPERATIONS: dict[tuple[str, str], IntegrationScope] = {
+    ("GET", "/api/v1/storage"): "read",
+    ("GET", "/api/v1/snapshots/{snapshot_id}"): "read",
+    ("GET", "/api/v1/snapshots/{snapshot_id}/export"): "read",
+    ("GET", "/api/v1/analyses"): "read",
+    ("GET", "/api/v1/experiments"): "read",
+    ("GET", "/api/v1/analyses/{analysis_id}"): "read",
+    ("GET", "/api/v1/analyses/{analysis_id}/result"): "read",
+    ("GET", "/api/v1/analyses/{analysis_id}/report"): "read",
+    ("GET", "/api/v1/analyses/{analysis_id}/report/preview"): "read",
+    ("GET", "/api/v1/analyses/{analysis_id}/comparison"): "read",
+    ("GET", "/api/v1/analyses/{analysis_id}/comparison/preview"): "read",
+    ("GET", "/api/v1/jobs/{operation_id}"): "read",
+    ("GET", "/api/v1/deletions"): "delete",
+    ("GET", "/api/v1/deletions/{plan_id}"): "delete",
     ("POST", "/api/v1/validate"): "upload",
     ("POST", "/api/v1/snapshots"): "upload",
     ("POST", "/api/v1/analyses"): "analyze",
@@ -16,18 +31,20 @@ _MUTATIONS: dict[tuple[str, str], IntegrationScope] = {
 
 
 def required_scopes(method: str, route: str) -> tuple[IntegrationScope, ...]:
-    """Reject integration mutations without an explicitly assigned capability."""
-    ordinary_route = route.replace("/api/v1/integration/", "/api/v1/", 1)
+    """Resolve capabilities for a matched public or delegated route."""
     if method == "POST" and route == "/api/v1/integration/analysis-intake":
         return ("upload", "analyze")
-    if method in {"GET", "HEAD"}:
-        if ordinary_route in {"/api/v1/deletions", "/api/v1/deletions/{plan_id}"}:
-            return ("delete",)
+    if method == "HEAD":
+        method = "GET"
+    if method == "GET" and route == "/api/v1/integration/analyses/{analysis_id}/delivery":
         return ("read",)
-    permission = _MUTATIONS.get((method, ordinary_route))
-    if permission is None:
-        raise Forbidden("This operation is unavailable to integration credentials.")
-    return (permission,)
+    ordinary_route = route.replace("/api/v1/integration/", "/api/v1/", 1)
+    permission = DELEGATED_OPERATIONS.get((method, ordinary_route))
+    if permission is not None:
+        return (permission,)
+    if method == "GET" and route == ordinary_route:
+        return ("read",)
+    raise Forbidden("This operation is unavailable to integration credentials.")
 
 
 def authorize_request(principal: Principal, method: str, route: str) -> None:

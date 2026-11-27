@@ -13,6 +13,8 @@ from regimex.operations import Operation, OperationState, Sha256
 
 Role = Literal["user", "admin", "integration"]
 HistoryState = OperationState | Literal["active"]
+# PostgreSQL text keys accept Unicode but cannot store a NUL code point.
+RegistryIdentifier = Annotated[Identifier, Field(pattern=r"^[^\x00]+$")]
 
 
 class AnalysisHistoryFilter(StrictModel):

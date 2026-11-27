@@ -117,6 +117,17 @@ def test_architecture_catalog_reports_applicable_training_limits(
     assert limits["baseline"]["max_training_updates"] is None
 
 
+def test_routing_errors_share_the_api_error_envelope(boundary_client: TestClient) -> None:
+    missing = boundary_client.get("/api/v1/no-such-endpoint")
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "not_found"
+    method = boundary_client.delete("/api/v1/validate")
+    assert method.status_code == 405
+    assert method.json()["error"]["code"] == "method_not_allowed"
+    assert method.headers["Allow"] == "POST"
+    assert all("no-store" in response.headers["Cache-Control"] for response in (missing, method))
+
+
 def test_validation_uses_strict_json_contract_without_model_or_storage(
     boundary_client: TestClient,
 ) -> None:
@@ -302,7 +313,13 @@ def test_openapi_describes_real_json_requests_and_resolves_component_references(
     schema = boundary_client.get("/openapi.json").json()
     assert schema["paths"]["/api/v1/snapshots"]["post"]["requestBody"]["required"] is True
     assert schema["paths"]["/api/v1/analyses"]["post"]["security"] == [{"HTTPBearer": []}]
+    for resource, method in (("snapshots", "post"), ("validate", "post"), ("models", "get")):
+        validation = schema["paths"][f"/api/v1/{resource}"][method]["responses"]["422"]
+        assert validation["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/APIErrorResponse"
+        }
     components = schema["components"]["schemas"]
+    assert components["APIErrorResponse"]["required"] == ["error"]
 
     def check(value: object) -> None:
         if isinstance(value, dict):
@@ -386,12 +403,13 @@ def persistent_api(tmp_path: Path) -> Iterator[PersistentAPI]:
 def register_metadata(api: PersistentAPI, version: str = "http-fixture") -> ModelRecord:
     # These deliberately non-executable records exercise HTTP persistence only.
     # Actual baseline restoration/computation is tested by the service workflow.
+    digest = hashlib.sha256(version.encode()).hexdigest()
     record = ModelRecord(
         model_version_id=version,
         architecture_id="baseline",
-        bundle_sha256=hashlib.sha256(version.encode()).hexdigest(),
+        bundle_sha256=digest,
         manifest=ObjectInfo(
-            key=f"metadata-fixtures/{version}/manifest.json",
+            key=f"metadata-fixtures/{digest}/manifest.json",
             size_bytes=2,
             sha256=hashlib.sha256(b"{}").hexdigest(),
             version_id=version,
@@ -601,6 +619,30 @@ def test_models_and_architectures_enforce_role_and_publication_visibility(
     assert "members" not in response.text
     assert api.client.get("/api/v1/models?limit=0", headers=api.headers()).status_code == 422
     assert api.client.get("/api/v1/models?offset=1", headers=api.headers()).json()["items"] == []
+
+
+def test_model_lookup_preserves_opaque_versions_and_publication_visibility(
+    persistent_api: PersistentAPI,
+) -> None:
+    api = persistent_api
+    admin = api.repository.authenticate(api.tokens["admin"])
+    path = "/api/v1/model-versions/resolve"
+    previous = None
+    for version in ("/", "..", "desk/東京 + 1", "publish"):
+        register_metadata(api, version)
+        query = {"model_version_id": version}
+        assert api.client.get(path, params=query, headers=api.headers()).status_code == 404
+        candidate = api.client.get(path, params=query, headers=api.headers("admin"))
+        assert candidate.status_code == 200 and candidate.json()["model_version_id"] == version
+        api.repository.activate_model(admin, version, expected_previous=previous)
+        assert api.client.get(path, params=query, headers=api.headers()).json() == candidate.json()
+        previous = version
+    for legacy_path in ("/api/v1/models/active", "/api/v1/models/publish"):
+        assert api.client.get(legacy_path, headers=api.headers()).json() == candidate.json()
+    missing = api.client.get(
+        path, params={"model_version_id": "missing/model"}, headers=api.headers()
+    )
+    assert missing.status_code == 404 and missing.json()["error"]["code"] == "not_found"
 
 
 def test_analysis_model_choices_exclude_unpublished_candidates_even_for_admin(

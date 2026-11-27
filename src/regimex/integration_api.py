@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Query, Response
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import Field
 
 from regimex.access_contracts import (
@@ -18,6 +19,7 @@ from regimex.access_contracts import (
     IntegrationView,
 )
 from regimex.api import _json_dependency, _request_body
+from regimex.application.integration_access import DELEGATED_OPERATIONS
 from regimex.contracts import StrictModel
 from regimex.infrastructure.integration_repository import IntegrationRepository
 from regimex.service_contracts import Principal
@@ -44,6 +46,30 @@ class AccessEventPage(StrictModel):
 class IntegrationKeyIssued(StrictModel):
     key: IntegrationKeyView
     token: Annotated[str, Field(min_length=47, max_length=47, repr=False)]
+
+
+def install_delegated_routes(app: FastAPI) -> None:
+    """Expose the method and response contract shared with simulator backends."""
+    for route in tuple(app.routes):
+        if not isinstance(route, APIRoute) or not route.methods:
+            continue
+        methods = sorted(
+            method for method in route.methods if (method, route.path) in DELEGATED_OPERATIONS
+        )
+        if methods:
+            app.add_api_route(
+                "/api/v1/integration" + route.path.removeprefix("/api/v1"),
+                route.endpoint,
+                methods=methods,
+                response_model=route.response_model,
+                response_class=route.response_class,
+                responses=route.responses,
+                status_code=route.status_code,
+                openapi_extra=route.openapi_extra,
+                include_in_schema=route.include_in_schema,
+                tags=["Integration backend"],
+                name="integration_" + route.name,
+            )
 
 
 def install_integration_routes(

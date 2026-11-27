@@ -7,7 +7,15 @@ from typing import Annotated, Literal, Protocol, Self
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
-from pydantic import AwareDatetime, ConfigDict, Field, JsonValue, RootModel, field_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    ConfigDict,
+    Field,
+    JsonValue,
+    RootModel,
+    field_validator,
+)
 
 from regimex import __version__
 from regimex.admin_contracts import (
@@ -22,7 +30,8 @@ from regimex.admin_contracts import (
     EvaluationSpec,
     FinalReferenceImportSpec,
     GenerationSpec,
-    HumanAnnotation,
+    HumanAnnotations,
+    ImmutableModelVersion,
     ImportedTrainingSpec,
     PublicationSpec,
     RawGenerationPlan,
@@ -37,6 +46,7 @@ from regimex.admin_contracts import (
     TrainingProgress,
     TrainingRunName,
     TrainingSpec,
+    distinct_snapshot_selections,
 )
 from regimex.api import OperationView, _json_dependency, _launch_source, _operation, _request_body
 from regimex.contracts import Identifier, StrictModel
@@ -64,7 +74,7 @@ from regimex.model_registry import (
     resolve_training_policy,
 )
 from regimex.operations import LaunchSource
-from regimex.service_contracts import NotFound, Principal
+from regimex.service_contracts import NotFound, Principal, RegistryIdentifier
 from regimex.storage import json_bytes
 from regimex.training_statistics import TrainingRunStatistics
 
@@ -243,7 +253,11 @@ class GeneratedDatasetRequest(StrictModel):
 
 class SnapshotDatasetRequest(StrictModel):
     mode: Literal["snapshots"]
-    members: Annotated[tuple[DatasetSelection, ...], Field(min_length=3, max_length=1000)]
+    members: Annotated[
+        tuple[DatasetSelection, ...],
+        Field(min_length=3, max_length=1000),
+        AfterValidator(distinct_snapshot_selections),
+    ]
 
 
 class DatasetRequest(
@@ -256,7 +270,7 @@ class DatasetRequest(
 
 class AutomaticReferenceRequest(StrictModel):
     mode: Literal["automatic"]
-    dataset_id: Identifier
+    dataset_id: RegistryIdentifier
     partition: Literal["train", "validation", "test"]
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
@@ -264,14 +278,14 @@ class AutomaticReferenceRequest(StrictModel):
 
 class HumanReferenceRequest(StrictModel):
     mode: Literal["human_import"]
-    dataset_id: Identifier
+    dataset_id: RegistryIdentifier
     partition: Literal["train", "validation"]
     analysis: AnalysisConfig = Field(default_factory=AnalysisConfig)
     analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
     reviewer: Identifier
     blind_review: bool
     independent: bool
-    annotations: Annotated[tuple[HumanAnnotation, ...], Field(min_length=1, max_length=1000)]
+    annotations: HumanAnnotations
 
 
 class ReferenceRequest(
@@ -285,16 +299,16 @@ class ReferenceRequest(
 class TrainingRunRequest(StrictModel):
     # Omitted and null names retain the request digest used by existing receipts.
     display_name: DisplayName | None = Field(default=None, exclude_if=lambda value: value is None)
-    dataset_id: Identifier
-    labels_reference_set_id: Identifier
-    validation_reference_set_id: Identifier
+    dataset_id: RegistryIdentifier
+    labels_reference_set_id: RegistryIdentifier
+    validation_reference_set_id: RegistryIdentifier
     architecture_id: ArchitectureId
     parameters: dict[str, JsonValue]
     policy: TrainingPolicySpec
     training_runtime: TrainingRuntime = Field(default_factory=TrainingRuntime)
     inference_runtime: InferenceRuntime = Field(default_factory=InferenceRuntime)
     analysis_profile_id: Identifier = DEFAULT_ANALYSIS_PROFILE
-    benchmark_selection_id: Identifier
+    benchmark_selection_id: RegistryIdentifier
 
     def resolve(self) -> tuple[Self, RequestFingerprint]:
         original = RequestFingerprint.for_profile_request(self)
@@ -316,13 +330,13 @@ class TrainingRunRequest(StrictModel):
 
 class PublicationRequest(StrictModel):
     evaluation_run_id: UUID
-    expected_previous: Identifier | None = None
+    expected_previous: RegistryIdentifier | None = None
 
 
 class EvaluationRequest(StrictModel):
-    model_version_id: Identifier
-    dataset_id: Identifier
-    reference_set_id: Identifier
+    model_version_id: ImmutableModelVersion
+    dataset_id: RegistryIdentifier
+    reference_set_id: RegistryIdentifier
     partition: Literal["validation"] = "validation"
 
 
@@ -537,7 +551,16 @@ def install_admin_routes(
         PublicationRequest,
     )
 
-    @app.post("/api/v1/datasets", openapi_extra=_request_body(DatasetRequest))
+    @app.post(
+        "/api/v1/datasets",
+        status_code=201,
+        response_model=None,
+        responses={
+            201: {"model": DatasetView, "description": "Dataset created from snapshots"},
+            202: {"model": AdminRunView, "description": "Dataset generation queued"},
+        },
+        openapi_extra=_request_body(DatasetRequest),
+    )
     def create_dataset(
         identity: Identity,
         intake: DatasetBody,
@@ -572,7 +595,6 @@ def install_admin_routes(
             idempotency_key=idempotency_key,
             request_sha256=digest,
         )
-        response.status_code = 201
         response.headers["Location"] = f"/api/v1/datasets/{dataset.dataset_id}"
         return _dataset(dataset)
 
@@ -592,14 +614,23 @@ def install_admin_routes(
         )
 
     @app.get("/api/v1/datasets/{dataset_id}")
-    def get_dataset(dataset_id: Identifier, identity: Identity) -> DatasetView:
+    def get_dataset(dataset_id: RegistryIdentifier, identity: Identity) -> DatasetView:
         return _dataset(service.get_dataset(identity, dataset_id))
 
     @app.get("/api/v1/datasets/{dataset_id}/manifest")
-    def dataset_manifest(dataset_id: Identifier, identity: Identity) -> DatasetManifest:
+    def dataset_manifest(dataset_id: RegistryIdentifier, identity: Identity) -> DatasetManifest:
         return service.get_dataset(identity, dataset_id).manifest
 
-    @app.post("/api/v1/reference-sets", openapi_extra=_request_body(ReferenceRequest))
+    @app.post(
+        "/api/v1/reference-sets",
+        status_code=201,
+        response_model=None,
+        responses={
+            201: {"model": ReferenceView, "description": "Human references imported"},
+            202: {"model": AdminRunView, "description": "Automatic reference generation queued"},
+        },
+        openapi_extra=_request_body(ReferenceRequest),
+    )
     def create_references(
         identity: Identity,
         intake: ReferenceBody,
@@ -640,7 +671,6 @@ def install_admin_routes(
             idempotency_key=idempotency_key,
             request_sha256=fingerprint,
         )
-        response.status_code = 201
         response.headers["Location"] = (
             f"/api/v1/reference-sets/{references.references.reference_set_id}"
         )
@@ -651,7 +681,7 @@ def install_admin_routes(
         identity: Identity,
         limit: Limit = 100,
         offset: Offset = 0,
-        dataset_id: Identifier | None = None,
+        dataset_id: RegistryIdentifier | None = None,
     ) -> ReferencePage:
         return ReferencePage(
             items=tuple(
@@ -665,16 +695,18 @@ def install_admin_routes(
         )
 
     @app.get("/api/v1/reference-sets/{reference_set_id}")
-    def get_references(reference_set_id: Identifier, identity: Identity) -> ReferenceView:
+    def get_references(reference_set_id: RegistryIdentifier, identity: Identity) -> ReferenceView:
         return _reference(service.get_reference_set(identity, reference_set_id))
 
     @app.get("/api/v1/reference-sets/{reference_set_id}/manifest")
-    def reference_manifest(reference_set_id: Identifier, identity: Identity) -> ReferenceSet:
+    def reference_manifest(
+        reference_set_id: RegistryIdentifier, identity: Identity
+    ) -> ReferenceSet:
         return service.get_reference_set(identity, reference_set_id).references
 
     @app.get("/api/v1/reference-sets/{reference_set_id}/annotations")
     def reference_annotations(
-        reference_set_id: Identifier, identity: Identity
+        reference_set_id: RegistryIdentifier, identity: Identity
     ) -> tuple[DirectionAnnotations, ...]:
         return service.get_reference_annotations(identity, reference_set_id)
 
@@ -724,12 +756,15 @@ def install_admin_routes(
         return _run(record)
 
     @app.post(
+        "/api/v1/models/publish", status_code=202, openapi_extra=_request_body(PublicationRequest)
+    )
+    @app.post(
         "/api/v1/models/{model_version_id}/publish",
         status_code=202,
         openapi_extra=_request_body(PublicationRequest),
     )
     def publish(
-        model_version_id: Identifier,
+        model_version_id: ImmutableModelVersion,
         identity: Identity,
         intake: PublicationBody,
         http_request: Request,
@@ -858,6 +893,6 @@ def install_admin_routes(
 
     @app.get("/api/v1/metrics")
     def metrics(
-        identity: Identity, model_version_id: Identifier = "active"
+        identity: Identity, model_version_id: RegistryIdentifier = "active"
     ) -> dict[str, JsonValue]:
         return service.get_metrics(identity, model_version_id)

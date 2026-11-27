@@ -67,6 +67,7 @@ def install_deletion_routes(
     @app.post(
         "/api/v1/deletions/{plan_id}",
         tags=tags,
+        responses={202: {"model": DeletionReceipt, "description": "Cleanup pending"}},
         openapi_extra=_request_body(DeletionConfirmation),
     )
     def confirm_deletion(

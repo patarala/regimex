@@ -7,22 +7,23 @@ backend, probe computation dependencies, fit a model, or accept local file paths
 import asyncio
 from collections.abc import Awaitable, Callable, Iterator
 from io import BytesIO
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, Protocol, TypedDict
 from uuid import UUID
 from zipfile import ZIP_STORED, ZipFile
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, Security
+from fastapi import Depends, FastAPI, Header, Query, Request, Response, Security
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
-from fastapi.routing import APIRoute
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg import Error as DatabaseError
 from pydantic import AwareDatetime, BaseModel, JsonValue, ValidationError
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from regimex.access_contracts import IntegrationConnectionView
+from regimex.application.integration_access import authorize_request, required_scopes
 from regimex.contracts import MAX_INPUT_BYTES, Identifier, StrictModel
 from regimex.diagnostic_contracts import QueueStatus
 from regimex.exports import ExportV2
@@ -51,6 +52,7 @@ from regimex.service_contracts import (
     ModelRecord,
     NotFound,
     Principal,
+    RegistryIdentifier,
     ServiceError,
     SnapshotRecord,
     Unauthorized,
@@ -155,7 +157,7 @@ class AnalysisAPIService(Protocol):
 
 class AnalysisRequest(StrictModel):
     snapshot_id: UUID
-    model_version_id: Identifier = "active"
+    model_version_id: RegistryIdentifier = "active"
 
 
 class ValidationResult(StrictModel):
@@ -255,8 +257,29 @@ class ArchitecturePage(StrictModel):
     offset: int
 
 
-def _error(code: str, message: str) -> dict[str, JsonValue]:
-    return {"error": {"code": code, "message": message}}
+class ValidationDetail(TypedDict):
+    location: list[str]
+    type: str
+    message: str
+
+
+class ErrorDescription(TypedDict):
+    code: str
+    message: str
+    details: NotRequired[list[ValidationDetail]]
+
+
+class APIErrorResponse(StrictModel):
+    error: ErrorDescription
+
+
+def _error(
+    code: str, message: str, *, details: list[ValidationDetail] | None = None
+) -> dict[str, ErrorDescription]:
+    error: ErrorDescription = {"code": code, "message": message}
+    if details is not None:
+        error["details"] = details
+    return {"error": error}
 
 
 def _html_report(payload: bytes, *, filename: str | None = None) -> Response:
@@ -516,11 +539,26 @@ class _API(FastAPI):
                 routes=self.routes,
             )
             components = schema.setdefault("components", {}).setdefault("schemas", {})
-            request_models: tuple[type[BaseModel], ...] = self.state.request_models
-            for model in request_models:
+            schema_models: tuple[type[BaseModel], ...] = (
+                *self.state.request_models,
+                APIErrorResponse,
+            )
+            for model in schema_models:
                 body_schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
                 components.update(body_schema.pop("$defs", {}))
                 components[model.__name__] = body_schema
+            for path in schema["paths"].values():
+                for operation in path.values():
+                    responses = operation["responses"]
+                    if "requestBody" in operation or "422" in responses:
+                        responses["422"] = {
+                            "description": "Invalid request data",
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/APIErrorResponse"}
+                                }
+                            },
+                        }
             self.openapi_schema = schema
         return self.openapi_schema
 
@@ -595,8 +633,11 @@ def create_app(
 
     @app.exception_handler(HTTPException)
     async def http_error(_request: Request, error: HTTPException) -> JSONResponse:
+        code = {404: "not_found", 405: "method_not_allowed"}.get(
+            error.status_code, "invalid_request"
+        )
         return JSONResponse(
-            _error("invalid_request", str(error.detail)),
+            _error(code, str(error.detail)),
             error.status_code,
             headers={"Cache-Control": "private, no-store", **(error.headers or {})},
         )
@@ -605,7 +646,7 @@ def create_app(
     async def invalid_request(_request: Request, error: RequestValidationError) -> JSONResponse:
         # Pydantic's default errors include submitted values. Never echo tokens,
         # complete exports, or unexpected credential fields into a response.
-        details: list[JsonValue] = [
+        details: list[ValidationDetail] = [
             {
                 "location": [str(part) for part in item["loc"]],
                 "type": item["type"],
@@ -614,13 +655,7 @@ def create_app(
             for item in error.errors()
         ]
         return JSONResponse(
-            {
-                "error": {
-                    "code": "invalid_data",
-                    "message": "Request validation failed.",
-                    "details": details,
-                }
-            },
+            _error("invalid_data", "Request validation failed.", details=details),
             422,
             headers={"Cache-Control": "private, no-store"},
         )
@@ -632,7 +667,6 @@ def create_app(
     ) -> Principal:
         response.headers["Cache-Control"] = "private, no-store"
         if auth_service is not None:
-            from regimex.application.integration_access import required_scopes
             from regimex.auth_api import request_auth
 
             delegated = request.url.path.startswith("/api/v1/integration/")
@@ -665,8 +699,6 @@ def create_app(
                 )
         request.state.principal = identity
         if identity.role == "integration":
-            from regimex.application.integration_access import authorize_request
-
             route = request.scope.get("route")
             authorize_request(identity, request.method, getattr(route, "path", ""))
             if integration_limits is not None and identity.run_scope is None:
@@ -834,7 +866,7 @@ def create_app(
             },
         )
 
-    @app.get("/api/v1/analyses/{analysis_id}/report")
+    @app.get("/api/v1/analyses/{analysis_id}/report", response_class=HTMLResponse)
     def get_report(analysis_id: UUID, identity: Identity) -> Response:
         return _html_report(
             service.read_report(identity, analysis_id),
@@ -845,7 +877,7 @@ def create_app(
     def preview_report(analysis_id: UUID, identity: Identity) -> Response:
         return _html_report(preview_html(service.read_report(identity, analysis_id)))
 
-    @app.get("/api/v1/analyses/{analysis_id}/comparison")
+    @app.get("/api/v1/analyses/{analysis_id}/comparison", response_class=HTMLResponse)
     def compare_analyses(analysis_id: UUID, other: UUID, identity: Identity) -> Response:
         return _html_report(
             service.compare_analyses(identity, analysis_id, other),
@@ -901,8 +933,9 @@ def create_app(
             active_model_version_id=active,
         )
 
+    @app.get("/api/v1/model-versions/resolve")
     @app.get("/api/v1/models/{model_version_id}")
-    def get_model(model_version_id: Identifier, identity: Identity) -> ModelView:
+    def get_model(model_version_id: RegistryIdentifier, identity: Identity) -> ModelView:
         return _model(service.get_model(identity, model_version_id))
 
     @app.get("/api/v1/architectures")
@@ -936,7 +969,7 @@ def create_app(
     if auth_service is not None:
         from regimex.auth_api import install_session_routes
         from regimex.infrastructure.integration_repository import IntegrationRepository
-        from regimex.integration_api import install_integration_routes
+        from regimex.integration_api import install_delegated_routes, install_integration_routes
 
         install_session_routes(app, auth_service)
 
@@ -1025,45 +1058,7 @@ def create_app(
         install_integration_routes(
             app, IntegrationRepository(auth_service.repository.database), authenticate=principal
         )
-        delegated_paths = {
-            "/api/v1/storage",
-            "/api/v1/validate",
-            "/api/v1/snapshots",
-            "/api/v1/snapshots/{snapshot_id}",
-            "/api/v1/snapshots/{snapshot_id}/export",
-            "/api/v1/analyses",
-            "/api/v1/experiments",
-            "/api/v1/experiments/{snapshot_id}/name",
-            "/api/v1/experiments/{snapshot_id}/deletion-preview",
-            "/api/v1/analyses/{analysis_id}/deletion-preview",
-            "/api/v1/deletions",
-            "/api/v1/deletions/{plan_id}",
-            "/api/v1/analyses/{analysis_id}",
-            "/api/v1/analyses/{analysis_id}/result",
-            "/api/v1/analyses/{analysis_id}/report",
-            "/api/v1/analyses/{analysis_id}/report/preview",
-            "/api/v1/analyses/{analysis_id}/comparison",
-            "/api/v1/analyses/{analysis_id}/comparison/preview",
-            "/api/v1/jobs/{operation_id}",
-            "/api/v1/jobs/{operation_id}/cancel",
-        }
-        for route in tuple(app.routes):
-            if (
-                isinstance(route, APIRoute)
-                and route.path in delegated_paths
-                and route.methods is not None
-            ):
-                app.add_api_route(
-                    "/api/v1/integration" + route.path.removeprefix("/api/v1"),
-                    route.endpoint,
-                    methods=sorted(route.methods),
-                    response_model=route.response_model,
-                    status_code=route.status_code,
-                    openapi_extra=route.openapi_extra,
-                    include_in_schema=route.include_in_schema,
-                    tags=["Integration backend"],
-                    name="integration_" + route.name,
-                )
+        install_delegated_routes(app)
     from regimex.web import install_web_routes
 
     install_web_routes(app)

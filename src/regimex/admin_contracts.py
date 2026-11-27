@@ -3,7 +3,15 @@
 from typing import Annotated, ClassVar, Literal, Self
 from uuid import UUID
 
-from pydantic import AwareDatetime, Field, JsonValue, RootModel, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    AwareDatetime,
+    Field,
+    JsonValue,
+    RootModel,
+    ValidationError,
+    model_validator,
+)
 
 from regimex.contracts import MAX_STEPS, Identifier, Seed, StrictModel
 from regimex.data_catalog import DatasetManifest, Partition, ReferenceSet, SplitGroup, content_hash
@@ -32,6 +40,7 @@ from regimex.model_registry import (
     TreeDepth,
 )
 from regimex.operations import Operation, Sha256
+from regimex.service_contracts import RegistryIdentifier
 from regimex.storage import json_bytes
 
 
@@ -112,15 +121,21 @@ class DatasetSelection(StrictModel):
     split_group: SplitGroup | None = Field(default=None, exclude_if=lambda group: group is None)
 
 
+def distinct_snapshot_selections(
+    members: tuple[DatasetSelection, ...],
+) -> tuple[DatasetSelection, ...]:
+    if len({member.snapshot_id for member in members}) != len(members):
+        raise ValueError("dataset snapshot selections must be unique")
+    return members
+
+
 class DatasetSpec(StrictModel):
     dataset_id: Identifier
-    members: Annotated[tuple[DatasetSelection, ...], Field(min_length=3, max_length=10000)]
-
-    @model_validator(mode="after")
-    def unique_snapshots(self) -> Self:
-        if len({member.snapshot_id for member in self.members}) != len(self.members):
-            raise ValueError("dataset snapshot selections must be unique")
-        return self
+    members: Annotated[
+        tuple[DatasetSelection, ...],
+        Field(min_length=3, max_length=10000),
+        AfterValidator(distinct_snapshot_selections),
+    ]
 
 
 class DatasetRecord(StrictModel):
@@ -198,6 +213,19 @@ class HumanAnnotation(StrictModel):
     annotation: DirectionAnnotations
 
 
+def _unique_annotations(items: tuple[HumanAnnotation, ...]) -> tuple[HumanAnnotation, ...]:
+    if len({item.snapshot_id for item in items}) != len(items):
+        raise ValueError("human annotation snapshots must be unique")
+    return items
+
+
+HumanAnnotations = Annotated[
+    tuple[HumanAnnotation, ...],
+    Field(min_length=1, max_length=1000),
+    AfterValidator(_unique_annotations),
+]
+
+
 class HumanReferenceImportBase(StrictModel):
     dataset_id: Identifier
     reference_set_id: Identifier
@@ -206,13 +234,7 @@ class HumanReferenceImportBase(StrictModel):
     reviewer: Identifier
     blind_review: bool
     independent: bool
-    annotations: Annotated[tuple[HumanAnnotation, ...], Field(min_length=1, max_length=1000)]
-
-    @model_validator(mode="after")
-    def unique_annotations(self) -> Self:
-        if len({item.snapshot_id for item in self.annotations}) != len(self.annotations):
-            raise ValueError("human annotation snapshots must be unique")
-        return self
+    annotations: HumanAnnotations
 
 
 class ReferenceImportSpec(HumanReferenceImportBase):
@@ -223,12 +245,25 @@ class FinalReferenceImportSpec(HumanReferenceImportBase):
     partition: Literal["test"] = "test"
 
 
+def _immutable_model_version(value: str) -> str:
+    if value == "active":
+        raise ValueError("Use an immutable model version ID.")
+    return value
+
+
+ImmutableModelVersion = Annotated[
+    RegistryIdentifier,
+    AfterValidator(_immutable_model_version),
+    Field(json_schema_extra={"not": {"const": "active"}}),
+]
+
+
 class TrainingSpec(StrictModel):
     kind: Literal["training"] = "training"
     dataset_id: Identifier
     labels_reference_set_id: Identifier
     validation_reference_set_id: Identifier
-    model_version_id: Identifier
+    model_version_id: ImmutableModelVersion
     architecture_id: ArchitectureId
     parameters: dict[str, JsonValue]
     policy: TrainingPolicySpec
@@ -238,25 +273,17 @@ class TrainingSpec(StrictModel):
     build_id: Identifier
     benchmark_selection_id: Identifier | None = None
 
-    @model_validator(mode="after")
-    def immutable_model_version(self) -> Self:
-        if self.model_version_id == "active":
-            raise ValueError("the active alias cannot identify a new immutable model")
-        return self
-
 
 class EvaluationSpec(StrictModel):
     kind: Literal["evaluation"] = "evaluation"
-    model_version_id: Identifier
+    model_version_id: ImmutableModelVersion
     dataset_id: Identifier
     reference_set_id: Identifier
     partition: Literal["validation", "test"] = "validation"
     benchmark_id: Identifier | None = None
 
     @model_validator(mode="after")
-    def fixed_model(self) -> Self:
-        if self.model_version_id == "active":
-            raise ValueError("evaluation requires a resolved immutable model version")
+    def benchmark_matches_partition(self) -> Self:
         if (self.partition == "test") != (self.benchmark_id is not None):
             raise ValueError("test evaluation requires an explicit benchmark; validation has none")
         return self
@@ -291,15 +318,9 @@ class ImportedTrainingSpec(StrictModel):
 
 class PublicationSpec(StrictModel):
     kind: Literal["publication"] = "publication"
-    model_version_id: Identifier
+    model_version_id: ImmutableModelVersion
     evaluation_run_id: UUID
     expected_previous: Identifier | None = None
-
-    @model_validator(mode="after")
-    def immutable_model_version(self) -> Self:
-        if self.model_version_id == "active":
-            raise ValueError("publication requires a resolved immutable model version")
-        return self
 
 
 AdminSpec = Annotated[
