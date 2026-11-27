@@ -124,11 +124,13 @@ function jobFrom(response, snapshot, start) {
   return { id: view.analysis_id, operation: view.job.operation_id, snapshot, pinned, start };
 }
 
-function submit(snapshot, key = crypto.randomUUID()) {
+function submit(jobs, snapshot, key = crypto.randomUUID()) {
   const start = Date.now();
   requested.add(1, { owner: snapshot.owner, kind: snapshot.kind });
-  const job = jobFrom(send(submission(snapshot, key)), snapshot, start);
-  accepted.add(1, { owner: snapshot.owner, kind: snapshot.kind });
+  const response = send(submission(snapshot, key));
+  if (response.status === 202) accepted.add(1, { owner: snapshot.owner, kind: snapshot.kind });
+  const job = jobFrom(response, snapshot, start);
+  jobs.push(job);
   return job;
 }
 
@@ -185,6 +187,19 @@ function finish(jobs, errors = []) {
   if (errors.length) fail(errors.join("\n"));
 }
 
+// A later upload or submission can fail after earlier jobs were admitted.
+function runAndDrain(start) {
+  const jobs = [];
+  const errors = [];
+  try {
+    start(jobs);
+  } catch (error) {
+    errors.push(error.message);
+  }
+  finish(jobs, errors);
+  return jobs;
+}
+
 function active(owner) {
   return list(owner, "active analyses", "/analyses?state=active&limit=100");
 }
@@ -198,8 +213,9 @@ export function setup() {
   }
   if (state.first.anchor.id === state.second.anchor.id) fail("The tokens resolve to the same owner; use distinct accounts");
   if (scenario === "browse") {
-    const jobs = owners.map(owner => submit(state[owner].anchor));
-    finish(jobs);
+    const jobs = runAndDrain(pending => {
+      for (const owner of owners) submit(pending, state[owner].anchor);
+    });
     for (const job of jobs) state[job.snapshot.owner].job = job;
   }
   return state;
@@ -207,15 +223,14 @@ export function setup() {
 
 function contention() {
   for (const [longOwner, shortOwner] of [["first", "second"], ["second", "first"]]) {
-    const long = upload(longOwner, "long");
-    const jobs = Array.from({ length: 4 }, () => submit(long));
-    const short = upload(shortOwner, "short");
-    const probe = submit(short);
-    probe.includesUpload = true;
-    const activeIds = new Set(active(longOwner).map(item => item.analysis_id));
-    outstanding.add(jobs.filter(j => activeIds.has(j.id)).length, { owner: shortOwner });
-    jobs[0].includesUpload = true;
-    finish([probe, ...jobs]);
+    runAndDrain(jobs => {
+      const long = upload(longOwner, "long");
+      for (let index = 0; index < 4; index++) submit(jobs, long).includesUpload = index === 0;
+      const short = upload(shortOwner, "short");
+      submit(jobs, short).includesUpload = true;
+      const activeIds = new Set(active(longOwner).map(item => item.analysis_id));
+      outstanding.add(jobs.filter(j => j.snapshot === long && activeIds.has(j.id)).length, { owner: shortOwner });
+    });
   }
 }
 
@@ -248,7 +263,9 @@ function burst(state) {
   if (!jobs.length && !errors.length) fail("The entire burst was refused");
   finish(jobs, errors);
   // Fresh keys after the drain measure recovery for both accounts.
-  finish(owners.map(owner => submit(state[owner].anchor)));
+  runAndDrain(pending => {
+    for (const owner of owners) submit(pending, state[owner].anchor);
+  });
 }
 
 function replay(state) {
@@ -258,17 +275,35 @@ function replay(state) {
   const start = Date.now();
   requested.add(1, { owner: anchor.owner, kind: anchor.kind });
   const duplicate = http.batch([submission(anchor, key), submission(anchor, key)]);
-  const [first, again] = duplicate.map(response => jobFrom(response, anchor, start));
-  if (first.id !== again.id || first.operation !== again.operation) fail("Concurrent retries created distinct operations");
-  accepted.add(1, { owner: "first", kind: anchor.kind });
-  const alternate = upload("first", "short");
-  const conflict = request("first", "changed request replay", "/analyses",
-    JSON.stringify({ snapshot_id: alternate.id, model_version_id: model }), 409, key);
-  if (rejectionCode(conflict) !== "conflict") fail("Changed request did not report an idempotency conflict");
-  const other = submit(state.second.anchor, key);
-  finish([first, other]);
+  const [first] = runAndDrain(jobs => {
+    const errors = [];
+    for (const response of duplicate) {
+      try {
+        const job = jobFrom(response, anchor, start);
+        const original = jobs[0];
+        if (!original || original.id !== job.id) {
+          jobs.push(job);
+          accepted.add(1, { owner: "first", kind: anchor.kind });
+        }
+        if (original && (original.id !== job.id || original.operation !== job.operation)) {
+          errors.push("Concurrent retries created distinct operations");
+        }
+      } catch (error) {
+        errors.push(error.message);
+      }
+    }
+    if (errors.length) fail(errors.join("\n"));
+    const alternate = upload("first", "short");
+    const conflict = request("first", "changed request replay", "/analyses",
+      JSON.stringify({ snapshot_id: alternate.id, model_version_id: model }), 409, key);
+    if (rejectionCode(conflict) !== "conflict") fail("Changed request did not report an idempotency conflict");
+    submit(jobs, state.second.anchor, key);
+  });
   const late = jobFrom(send(submission(anchor, key)), anchor, start);
-  if (late.id !== first.id || late.operation !== first.operation) fail("Completed request replay changed identity");
+  if (late.id !== first.id || late.operation !== first.operation) {
+    if (late.id !== first.id) accepted.add(1, { owner: anchor.owner, kind: anchor.kind });
+    finish(late.id === first.id ? [] : [late], ["Completed request replay changed identity"]);
+  }
   const rows = list("first", "snapshot history", `/analyses?snapshot_id=${anchor.id}&limit=100`);
   if (rows.length !== 1 || rows[0].analysis_id !== first.id) fail("Snapshot history contains an extra submission");
 }
@@ -292,11 +327,13 @@ function browse(state) {
 }
 
 function cancel(state) {
-  const job = submit(upload("first", "long"));
-  const outcome = request("first", "cancel analysis", `/jobs/${job.operation}/cancel`, "{}").json();
-  if (outcome.operation_id !== job.operation) fail("Cancelled a different operation");
-  job.cancelRequested = true;
-  finish([job, submit(state.second.anchor)]);
+  runAndDrain(jobs => {
+    const job = submit(jobs, upload("first", "long"));
+    const outcome = request("first", "cancel analysis", `/jobs/${job.operation}/cancel`, "{}").json();
+    if (outcome.operation_id !== job.operation) fail("Cancelled a different operation");
+    job.cancelRequested = true;
+    submit(jobs, state.second.anchor);
+  });
 }
 
 function uploads() {
@@ -308,8 +345,9 @@ function uploads() {
   for (const [i, response] of http.batch(requests).entries()) {
     if (response.status !== 201 || response.json().snapshot_id !== snapshots[i].id) fail("Repeated upload changed snapshot identity");
   }
-  const jobs = [snapshots[0], snapshots[3]].map(s => submit(s));
-  finish(jobs);
+  runAndDrain(jobs => {
+    for (const snapshot of [snapshots[0], snapshots[3]]) submit(jobs, snapshot);
+  });
 }
 
 export default function (state) {

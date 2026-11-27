@@ -313,6 +313,31 @@ test("journey deadlines include the terminal poll and the result download", asyn
   }
 });
 
+test("browse setup verifies the first owner's job after the second submission fails", async () => {
+  const {client, http, metrics} = await testJourney("browse", {REGIMEX_LOAD_DIR: "inputs"});
+  const digest = "ab".repeat(32);
+  const model = {model_version_id: "fixture-model", bundle_sha256: digest, inference_policy_sha256: digest};
+  const view = {analysis_id: "analysis-1", snapshot_id: "first", snapshot_sha256: digest,
+    job: {operation_id: "op-1", model, state: "queued", launch_source: {channel: "api", command: null}}};
+  http.request = (_method, _url, _body, {tags: {name, owner}}) => {
+    switch (name) {
+      case "active analyses": return {status: 200, json: () => []};
+      case "upload snapshot": return {status: 201, timings: {duration: 1},
+        json: () => ({snapshot_id: owner, content_sha256: digest})};
+      case "submit analysis": return owner === "first" ? {status: 202, json: () => view} : {status: 500};
+      case "poll analysis": return {status: 200, json: () => ({...view, result_available: true,
+        job: {...view.job, state: "succeeded"}})};
+      case "download result": return {status: 200, json: () => ({...view, result_version: "2.0", model,
+        class_names: ["sideways", "growth", "decline"], source: {run_id: "inputs/anchor.json"},
+        time_grid: {step_count: 256}, instruments: [], sequences: []})};
+      default: assert.fail(name);
+    }
+  };
+  assert.throws(() => client.setup(), /second returned HTTP 500/);
+  assert.deepEqual(metrics.get("journey_jobs_accepted"), [0, 1]);
+  assert.deepEqual(metrics.get("journey_results_verified"), [0, 1]);
+});
+
 test("two-owner journeys require distinct owners even when the tokens differ", async () => {
   await assert.rejects(testJourney("contention", {REGIMEX_LOAD_SECOND_TOKEN: "test-first"}), /distinct|different/);
   const { client, http } = await testJourney("contention");
