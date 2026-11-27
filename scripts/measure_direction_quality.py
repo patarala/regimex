@@ -4,6 +4,7 @@ import argparse
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 
@@ -18,7 +19,7 @@ from regimex.data_catalog import (
     validate_reference_membership,
 )
 from regimex.direction_quality import DirectionQualityReport, GroupCounts, MeasuredCohort
-from regimex.directions import DIRECTION_NAMES
+from regimex.directions import DIRECTION_NAMES, AutomaticPolicy
 from regimex.evaluation import _segment_counts, probabilities_valid
 from regimex.exports import load_export_v2
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle
@@ -71,6 +72,8 @@ def measure(dataset_path, references_path, locations_path, predictor, bundle, ru
     split = references.partition
     if split not in {"train", "validation"} or references.kind != "automatic":
         raise ValueError("Choose an automatic training or validation reference set.")
+    # ReferenceSet validates the policy against its declared annotation kind.
+    policy = cast(AutomaticPolicy, references.policy)
     training = bundle.training
     expected_dataset = training.dataset_sha256
     expected_reference = training.labels
@@ -89,7 +92,7 @@ def measure(dataset_path, references_path, locations_path, predictor, bundle, ru
         export = member.bind_export(load_export_v2(path)).export
         descriptor.validate_observation_fields(export.capabilities.observation_fields())
         labels = annotate(
-            SnapshotGrid.from_export(export), references.analysis_profile, policy=references.policy
+            SnapshotGrid.from_export(export), references.analysis_profile, policy=policy
         )
         if create_reference_member(member, labels) != reference:
             raise ValueError("Regenerated annotations differ from the original references.")

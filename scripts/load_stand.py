@@ -299,7 +299,7 @@ def summarize(cell, name, peak_bytes, arrival_seconds):
         raise ValueError("k6 completion samples do not match the summary")
     starts.sort()
 
-    def check_completions(events):
+    def check_completions(events: list[datetime]) -> None:
         # Concurrent workers can emit points out of order, but each outcome needs a prior start.
         if len(events) > len(starts) or any(
             end < start for start, end in zip(starts, sorted(events), strict=False)
