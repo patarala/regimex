@@ -12,7 +12,6 @@ from pydantic import SecretStr, TypeAdapter
 
 from regimex.access_contracts import IntegrationScope
 from regimex.auth_contracts import ExternalIdentifier, IssuedSession, SessionRecord
-from regimex.data_catalog import content_hash
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.identity_namespaces import new_subject_owner
 from regimex.infrastructure.integration_limits import IntegrationLimitsRepository, lock_integration
@@ -24,6 +23,7 @@ from regimex.service_contracts import (
     ServiceError,
     Unauthorized,
 )
+from regimex.storage import content_hash
 
 Connection = psycopg.Connection[tuple[object, ...]]
 SESSION = re.compile(r"rgxs_[A-Za-z0-9_-]{43}\Z")

@@ -8,9 +8,9 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from regimex.contracts import Count, StrictModel
-from regimex.data_catalog import content_hash
 from regimex.model_bundles import TrainingEvidence
 from regimex.operations import Sha256
+from regimex.storage import content_hash
 
 type Reference = Literal["simulator", "known_direction"]
 type Split = Literal["train", "validation", "independent"]

@@ -6,11 +6,11 @@ from uuid import UUID
 from pydantic import AwareDatetime, Field, model_validator
 
 from regimex.contracts import Identifier, StrictModel
-from regimex.data_catalog import content_hash
 from regimex.infrastructure.maintenance import ServicesStoppedAttestation
 from regimex.infrastructure.object_inventory import IncompleteUpload
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.operations import Sha256
+from regimex.storage import content_hash
 
 StoreScope = Annotated[str, Field(pattern=r"^(local|s3):[0-9a-f]{64}$")]
 

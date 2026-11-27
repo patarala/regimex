@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID, uuid4
 
-from regimex.data_catalog import content_hash
 from regimex.infrastructure.maintenance import ServicesStoppedAttestation
 from regimex.infrastructure.object_inventory import IncompleteUpload, StoredVersion
 from regimex.infrastructure.object_store import (
@@ -28,7 +27,7 @@ from regimex.retention_contracts import (
     OrphanPlanPayload,
 )
 from regimex.service_contracts import CapacityExceeded, Conflict, Principal
-from regimex.storage import json_bytes
+from regimex.storage import content_hash, json_bytes
 
 
 class MaintenanceStore(Protocol):

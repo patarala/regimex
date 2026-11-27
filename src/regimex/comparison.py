@@ -8,12 +8,11 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from regimex.contracts import Identifier
-from regimex.data_catalog import content_hash
 from regimex.directions import DIRECTION_NAMES
 from regimex.operations import Sha256
 from regimex.report_assets import report_assets
 from regimex.report_licenses import license_notices
-from regimex.storage import digest, output_directory, write_json
+from regimex.storage import content_hash, digest, output_directory, write_json
 
 COMPARISON_VERSION = "model-comparison/2.2"
 Score = Annotated[float, Field(ge=0, le=1)]

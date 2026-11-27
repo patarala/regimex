@@ -22,7 +22,6 @@ from regimex.backends.adaptive import (
     forest_feature_set,
 )
 from regimex.contracts import StrictModel
-from regimex.data_catalog import content_hash
 from regimex.directions import DECODER_VERSION, DIRECTION_NAMES, AnalysisConfig
 from regimex.evaluation import probabilities_valid
 from regimex.features import DoubleArray
@@ -39,7 +38,7 @@ from regimex.model_contracts import BundleProvenance, ObservationInputs, require
 from regimex.model_registry import InferenceRuntime
 from regimex.operations import Sha256
 from regimex.resource_limits import ResourceBudgetExceeded
-from regimex.storage import digest, json_bytes, output_directory, write_json
+from regimex.storage import content_hash, digest, json_bytes, output_directory, write_json
 
 BLEND_VERSION = "adaptive-probability-blend/1.0"
 FRACTIONS = (0.125, 0.25, 0.375, 0.5)

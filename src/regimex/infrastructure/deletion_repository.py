@@ -10,7 +10,6 @@ from psycopg.types.json import Jsonb
 from pydantic import Field, ValidationError
 
 from regimex.contracts import StrictModel
-from regimex.data_catalog import content_hash
 from regimex.deletion_contracts import (
     DeletionBlocker,
     DeletionKind,
@@ -28,7 +27,7 @@ from regimex.service_contracts import (
     Principal,
     SnapshotRecord,
 )
-from regimex.storage import json_bytes
+from regimex.storage import content_hash, json_bytes
 
 Connection = psycopg.Connection[tuple[object, ...]]
 MAX_DELETION_ITEMS = 1000
