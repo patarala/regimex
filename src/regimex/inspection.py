@@ -20,10 +20,11 @@ from regimex.data_catalog import (
 )
 from regimex.directions import DIRECTION_NAMES, AnalysisConfig, DirectionInterval, log_price_return
 from regimex.exports import ExportObservation, ExportV2
+from regimex.model_registry import canonical_architecture_id
 from regimex.observation_availability import known_no_executions
 from regimex.storage import json_bytes
 
-REPORT_VERSION = "6.5"
+REPORT_VERSION = "6.6"
 OBSERVABLE_FIELDS = tuple(
     name for name in Observation.model_fields if name not in {"step", "instrument_id"}
 )
@@ -155,7 +156,7 @@ def observed_series(
 def _model_identity(result: AnalysisResult) -> dict[str, JsonValue]:
     return {
         **result.model.model_dump(mode="json"),
-        "architecture_id": result.architecture_id,
+        "architecture_id": canonical_architecture_id(result.architecture_id),
         "implementation_version": result.implementation_version,
         "decoder_version": result.decoder_version,
         "analysis_profile_id": result.analysis_profile_id,

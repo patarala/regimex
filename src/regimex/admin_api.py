@@ -66,10 +66,13 @@ from regimex.external_evaluations import ExternalEvaluation
 from regimex.external_latency import ExternalLatencyEvidence
 from regimex.history_contracts import DisplayName, DisplayNameUpdate
 from regimex.model_registry import (
+    LEGACY_SEGMENT_MOE_ID,
+    SEGMENT_MOE_ID,
     ArchitectureId,
     InferenceRuntime,
     TrainingPolicySpec,
     TrainingRuntime,
+    canonical_architecture_id,
     configured_parameter_count,
     resolve_training_policy,
 )
@@ -314,13 +317,18 @@ class TrainingRunRequest(StrictModel):
     benchmark_selection_id: RegistryIdentifier
 
     def resolve(self) -> tuple[Self, RequestFingerprint]:
-        original = RequestFingerprint.for_profile_request(self)
-        policy = resolve_training_policy(self.architecture_id, self.policy)
-        if policy is self.policy:
-            return self, original
-        resolved = self.model_copy(update={"policy": policy})
+        architecture = canonical_architecture_id(self.architecture_id)
+        policy = resolve_training_policy(architecture, self.policy)
+        resolved = self.model_copy(update={"architecture_id": architecture, "policy": policy})
         fingerprint = RequestFingerprint.for_profile_request(resolved)
-        # Earlier receipts expanded an omitted baseline seed list to three seeds.
+        if architecture == SEGMENT_MOE_ID:
+            previous = resolved.model_copy(update={"architecture_id": LEGACY_SEGMENT_MOE_ID})
+        elif policy is not self.policy:
+            # Earlier receipts expanded an omitted baseline seed list to three seeds.
+            previous = self
+        else:
+            return resolved, fingerprint
+        original = RequestFingerprint.for_profile_request(previous)
         return resolved, RequestFingerprint(
             sha256=fingerprint.sha256,
             previous_hashes=(
@@ -468,6 +476,10 @@ def _run(record: AdminRunRecord, *, include_final: bool = False) -> AdminRunView
             saved_count
             if type(saved_count) is int
             else configured_parameter_count(training.architecture_id, training.parameters)
+        )
+    if training is not None:
+        training = training.model_copy(
+            update={"architecture_id": canonical_architecture_id(training.architecture_id)}
         )
     return AdminRunView(
         run_id=record.run_id,

@@ -1,7 +1,7 @@
 import {$, analysisStateLabel, element, shortDate} from "./ui.js";
 import {finished} from "./training-archive.js";
 import {isTransientRequestError} from "./session.js";
-import {architectureName} from "./training-form.js";
+import {architectureName} from "./training-architectures.js";
 import {differentSettings} from "./training-json.js";
 import {isImported} from "./training-import.js";
 

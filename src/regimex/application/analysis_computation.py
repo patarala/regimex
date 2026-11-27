@@ -24,7 +24,7 @@ from regimex.storage import json_bytes
 def restore_predictor(
     root: Path, model: ModelRecord, registry: ArchitectureRegistry, *, worker_id: str
 ) -> tuple[LoadedPredictor, ModelBundle]:
-    return restore_bundle(
+    predictor, manifest = restore_bundle(
         root,
         model.bundle_sha256,
         model.model_version_id,
@@ -33,6 +33,9 @@ def restore_predictor(
         registry,
         worker_id=worker_id,
     )
+    if manifest.architecture_id != model.architecture_id:
+        raise ValueError("bundle architecture differs from its registered identity")
+    return predictor, manifest
 
 
 def restore_bundle(
@@ -68,7 +71,7 @@ def restore_bundle(
         raise RegistryError("installed factory does not implement its declared backend")
     predictor = backend.load_bundle(root, manifest_sha256=manifest_sha256, runtime=runtime)
     if (
-        predictor.architecture_id != architecture_id
+        predictor.architecture_id != descriptor.architecture_id
         or predictor.implementation_version != descriptor.implementation_version
         or predictor.class_names != DIRECTION_NAMES
         or hashlib.sha256(json_bytes(predictor.analysis.model_dump(mode="json"))).hexdigest()
@@ -146,7 +149,7 @@ def _predict_analysis(
         snapshot_sha256=export.content_sha256,
         source=export.source,
         model=analysis.operation.model,
-        architecture_id=manifest.architecture_id,
+        architecture_id=predictor.architecture_id,
         implementation_version=manifest.implementation_version,
         decoder_version=manifest.decoder_version,
         analysis_profile_id=manifest.analysis_profile,

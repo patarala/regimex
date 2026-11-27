@@ -47,6 +47,7 @@ from regimex.history_contracts import DisplayNameUpdate, validate_display_name
 from regimex.infrastructure.database import DatabaseRepository, _read_operation
 from regimex.infrastructure.intake_repository import IntakeReceipts, IntakeRequest
 from regimex.infrastructure.training_metrics import read_training_metrics, store_training_metrics
+from regimex.model_registry import canonical_architecture_id
 from regimex.operations import TERMINAL_STATES, LaunchSource, Operation, ResolvedModel, succeed
 from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.service_contracts import (
@@ -1210,9 +1211,13 @@ class AdminRepository:
             assert isinstance(run.spec, TrainingSpec)
             if metrics.model_version_id != run.spec.model_version_id:
                 raise Conflict("Metrics refer to a different model version.")
-            if (model.model_version_id, model.architecture_id, model.inference_runtime) != (
+            if (
+                model.model_version_id,
+                canonical_architecture_id(model.architecture_id),
+                model.inference_runtime,
+            ) != (
                 run.spec.model_version_id,
-                run.spec.architecture_id,
+                canonical_architecture_id(run.spec.architecture_id),
                 run.spec.inference_runtime,
             ) or model.inference_policy_sha256 != hashlib.sha256(
                 json_bytes(model.inference_runtime.model_dump(mode="json"))

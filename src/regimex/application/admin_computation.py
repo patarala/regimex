@@ -19,6 +19,7 @@ from regimex.admin_contracts import (
     ReferenceSetRecord,
     TrainingSpec,
 )
+from regimex.application.analysis_computation import restore_predictor
 from regimex.application.training import (
     SharedSelectionEvaluator,
     TrainingRequest,
@@ -51,9 +52,9 @@ from regimex.exports import ExportInstrument, ExportObservation, ExportV2
 from regimex.market_export import simulate_export
 from regimex.market_identity import market_seed_group
 from regimex.market_sampling import sample_market
-from regimex.model_bundles import ModelBundle, verify_model_bundle
-from regimex.model_contracts import LoadedPredictor, ModelBackend
-from regimex.model_registry import ArchitectureRegistry, RegistryError
+from regimex.model_bundles import ModelBundle
+from regimex.model_contracts import LoadedPredictor
+from regimex.model_registry import ArchitectureRegistry
 from regimex.segmentation import DECODER_VERSION, annotate
 from regimex.service_contracts import ModelRecord
 from regimex.storage import json_bytes
@@ -227,37 +228,12 @@ def _predictor(
     context: dict[str, JsonValue], root: Path
 ) -> tuple[LoadedPredictor, ModelBundle, ModelRecord]:
     model = _parse(context["model"], ModelRecord)
-    path = root / "input/model"
-    registry = ArchitectureRegistry.discover()
-    descriptor = registry.get(model.architecture_id)
-    manifest = verify_model_bundle(
-        path,
-        manifest_sha256=model.bundle_sha256,
-        architecture_id=descriptor.architecture_id,
-        implementation_version=descriptor.implementation_version,
+    predictor, manifest = restore_predictor(
+        root / "input/model",
+        model,
+        ArchitectureRegistry.discover(),
+        worker_id="administrative-child",
     )
-    factory = registry.load_backend_factory_on_worker(
-        model.architecture_id, model.inference_runtime, worker_id="administrative-child"
-    )
-    backend = factory()
-    if not isinstance(backend, ModelBackend) or (
-        backend.architecture_id,
-        backend.implementation_version,
-    ) != (descriptor.architecture_id, descriptor.implementation_version):
-        raise RegistryError("installed backend identity differs from its descriptor")
-    predictor = backend.load_bundle(
-        path, manifest_sha256=model.bundle_sha256, runtime=model.inference_runtime
-    )
-    if (
-        manifest.model_version_id != model.model_version_id
-        or predictor.architecture_id != model.architecture_id
-        or predictor.implementation_version != manifest.implementation_version
-        or predictor.class_names != manifest.class_names
-        or content_hash(predictor.analysis.model_dump(mode="json"))
-        != manifest.analysis_profile_sha256
-        or manifest.decoder_version != DECODER_VERSION
-    ):
-        raise ValueError("model identity, decoder or restored analysis profile is incompatible")
     return predictor, manifest, model
 
 

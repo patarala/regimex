@@ -323,9 +323,10 @@
   }
   data.analyses.forEach((analysis, index) => {
     const label = index === 0 ? "A" : "B";
+    const architecture = analysis.architecture_id === "segment-moe" ? "Segment MoE" : analysis.architecture_id;
     provenance.push(
       [`${label} analysis`, analysis.analysis_id],
-      [`${label} model`, `${analysis.model.model_version_id} · ${analysis.architecture_id}`],
+      [`${label} model`, `${analysis.model.model_version_id} · ${architecture}`],
       [`${label} model SHA-256`, analysis.model.bundle_sha256],
       [`${label} result SHA-256`, analysis.result_sha256],
       [`${label} decoder / profile`, `${analysis.decoder_version} · ${analysis.analysis_profile_id}`],

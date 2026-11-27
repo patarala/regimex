@@ -653,7 +653,7 @@ def test_difference_zoom_and_partial_terminal_bin(browser: Any, tmp_path: Path, 
         terminal_bin="include_partial_bin",
     )
     export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(raw)))
-    first = prediction_for(export)
+    first = prediction_for(export).model_copy(update={"architecture_id": "persistence"})
     second = _with_intervals(
         prediction_for(export, direction=Direction.DECLINE),
         export,
@@ -664,6 +664,8 @@ def test_difference_zoom_and_partial_terminal_bin(browser: Any, tmp_path: Path, 
     page = browser.new_page(viewport={"width": width, "height": 860}, offline=True)
     try:
         page.goto(report.as_uri())
+        model_label = first.model.model_version_id + " · Segment MoE"
+        assert page.locator("#provenance").get_by_text(model_label, exact=True).count() == 1
 
         def tick_offsets() -> list[float]:
             ticks = page.locator('#chart text[y="377"]').all_text_contents()

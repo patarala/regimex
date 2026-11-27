@@ -1309,6 +1309,31 @@ def test_internal_training_without_benchmark_is_denied_by_transaction_guard(
     assert repository.list_runs(principal()) == ()
 
 
+def test_queued_segment_moe_run_keeps_its_original_request_after_training(
+    repository: AdminRepository,
+) -> None:
+    from regimex.admin_api import _run
+
+    _, template = ready_training(repository)
+    original = template.model_copy(
+        update={
+            "architecture_id": "persistence",
+            "parameters": {"hidden_width": 32},
+            "policy": TrainingPolicy(optimizer="adamw", seeds=(11,)),
+        }
+    )
+    queued = repository.submit(principal(), original, idempotency_key="train")
+    model = candidate(original).model_copy(update={"architecture_id": "segment-moe"})
+    completed = repository.complete_training(
+        queued.run_id, claim(repository, queued.run_id), model, metrics=training_metrics(original)
+    )
+    assert completed.spec == original
+    assert completed.operation.request_sha256 == queued.operation.request_sha256
+    assert repository.database.get_model(original.model_version_id) == model
+    public = _run(completed).training
+    assert public is not None and public.architecture_id == "segment-moe"
+
+
 def test_candidate_and_success_rollback_together_and_require_publication(
     repository: AdminRepository,
     monkeypatch: pytest.MonkeyPatch,

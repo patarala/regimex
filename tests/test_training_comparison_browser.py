@@ -92,10 +92,13 @@ def test_compare_two_finished_runs_from_history_and_bookmark(browser: Any, match
     api.run["trainable_parameters"] = 35011
     api.run["statistics"] = {"elapsed_seconds": 90, "fit_seconds": 80}
     api.run["training"].update(
-        analysis_profile_id=DEFAULT_ANALYSIS_PROFILE, parameters={"hash": 9007199254740992}
+        architecture_id="persistence",
+        analysis_profile_id=DEFAULT_ANALYSIS_PROFILE,
+        parameters={"hash": 9007199254740992},
     )
     challenger = deepcopy(api.run)
     challenger.update(run_id=OTHER_ID, display_name="Candidate", trainable_parameters=77091)
+    challenger["training"]["architecture_id"] = "segment-moe"
     challenger["training"]["parameters"]["hash"] = 9007199254740993
     challenger["output"] = {"validation_segment_macro_f1": 0.745}
     if not matched:
@@ -123,8 +126,12 @@ def test_compare_two_finished_runs_from_history_and_bookmark(browser: Any, match
         expect(page).to_have_url(url)
         expect(page.get_by_role("heading", name="Compare runs")).to_be_focused()
         results = page.get_by_role("table", name="Run results")
+        expect(results.get_by_role("row", name="Architecture").get_by_role("cell")).to_have_text(
+            ["Segment MoE", "Segment MoE"]
+        )
         expect(results.get_by_role("row", name="Model fit time")).to_contain_text("1 min 20 s")
         diff = page.get_by_role("table", name="Settings that differ")
+        expect(diff.get_by_role("row", name="architecture_id")).to_have_count(0)
         expect(diff.get_by_role("row", name="parameters.hash").get_by_role("cell")).to_have_text(
             ["9007199254740992", "9007199254740993"]
         )

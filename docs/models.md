@@ -155,23 +155,22 @@ macro-F1 and breaks ties with the first result. The administrative workflow
 covers benchmark reservation, freezing the model and final evaluation.
 [API guide](api.md#administration)
 
-<a name="direction-persistence"></a>
-
 ### Segment MoE
 
-**Segment MoE** is a segment-based mixture of experts. Each expert sees the
-current price segment and up to four neighboring segments on each side. The
-first accumulates movement across consecutive slopes that point in the same
-direction. The second learns patterns in the slopes and their goodness of fit,
+**Segment MoE** (`segment-moe` in the API) is a segment-based mixture of
+experts. Each expert sees the current price segment and up to four neighboring
+segments on each side. The first accumulates movement across consecutive
+slopes that point in the same direction. The second learns patterns in the
+slopes and their goodness of fit,
 evaluating both the original and sign-reversed movements. A third network,
 the gate, reads price-change statistics for the whole observed block and sets
 the relative weights of the two predictions. Both experts run on every
 available segment. Availability gaps reset the context. For new fits, the gate
 compares prices 1, 4, 16 and 32 steps apart on the original time grid.
 A pair contributes when both endpoints have a price. With fewer than two
-pairs at a given lag, its statistics are zero. Bundles whose manifest records
-`feature_version` as `direction-persistence/1.0` measure those lags in observed
-prices, skipping missing steps. The gate follows the
+pairs at a given lag, its statistics are zero. Segment MoE bundles with
+feature layout version 1.0 measure those lags in observed prices, skipping
+missing steps. The gate follows the
 mixture-of-experts principle described by [Jacobs et al. (1991)](https://www.cs.toronto.edu/~hinton/absps/jjnh91.html).
 The segment features and the two expert designs are specific to Regimex.
 
@@ -220,10 +219,10 @@ an adjustment for a shift in the price level.
 
 Both the multiscale forest and Segment MoE accept a candidate segment when
 its observed price fraction meets the profile's minimum coverage. For example,
-55 observed prices across 100 steps qualify at a threshold of 0.55. Older
-bundles (`adaptive-multiscale/1.0`, `direction-persistence/1.0` and
-`direction-persistence/1.1`) retain a rounding rule that can exclude a segment
-exactly at the threshold. A blended forest uses the version of each parent.
+55 observed prices across 100 steps qualify at a threshold of 0.55. Multiscale
+forest feature layout 1.0 and Segment MoE layouts 1.0 and 1.1 retain a rounding
+rule that can exclude a segment exactly at the threshold. A blended forest
+uses the version of each parent.
 
 **Training weights** controls how much each labeled step contributes to the
 fit. **Per step** weights all steps equally. **Interval** gives more weight

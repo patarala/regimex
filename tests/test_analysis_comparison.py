@@ -115,18 +115,21 @@ def test_comparison_is_offline_and_preserves_missing_carried_prices_and_safe_lab
     second = prediction_for(export, direction=Direction.DECLINE)
     first = first.model_copy(
         update={
-            "model": first.model.model_copy(update={"model_version_id": "@@SCRIPT@@ </script>"})
+            "model": first.model.model_copy(update={"model_version_id": "@@SCRIPT@@ </script>"}),
+            "architecture_id": "persistence",
         }
     )
     report = _render(export, first, second)
     document = report.decode()
     payload = _payload(report)
-    assert payload["renderer_version"] == "analysis-comparison/1.5"
+    assert payload["renderer_version"] == "analysis-comparison/1.6"
     assert payload["snapshot_id"] == str(first.snapshot_id)
     assert payload["series"][0]["prices"][8:10] == [None, None]
     assert payload["series"][0]["prices"][14:16] == [101.3, 101.3]
     assert payload["series"][0]["price_states"][14:16] == ["carried", "carried"]
     assert payload["analyses"][0]["model"]["model_version_id"] == "@@SCRIPT@@ </script>"
+    assert payload["analyses"][0]["architecture_id"] == "segment-moe"
+    assert payload["analyses"][0]["result_sha256"] == _digest(first)
     assert "window.untrusted=true</script>" not in document
     assert "connect-src &#x27;none&#x27;" in document
     assert not re.search(r'<(?:script|link)[^>]+(?:src|href)=["\']https?://', document)
@@ -305,6 +308,6 @@ rendered = render_analysis_comparison(
     AnalysisResult.model_validate_json(json.dumps(data['second'])),
     first_sha256=data['first_sha256'], second_sha256=data['second_sha256'],
 )
-assert b'analysis-comparison/1.5' in rendered.html
+assert b'analysis-comparison/1.6' in rendered.html
 """
     subprocess.run([sys.executable, "-c", script, str(source)], check=True, timeout=15)

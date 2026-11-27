@@ -20,7 +20,7 @@ from regimex.data_catalog import (
 from regimex.directions import AnalysisConfig, Direction, DirectionAnnotations
 from regimex.exports import ExportPayloadV2, seal_export
 from regimex.inspection import inspect_snapshots
-from regimex.storage import digest
+from regimex.storage import content_hash, digest
 
 
 def source(
@@ -253,6 +253,23 @@ def test_report_preserves_saved_directions_instead_of_annotating_prices() -> Non
     assert model["bundle_sha256"] == result.model.bundle_sha256
 
 
+def test_report_accepts_the_same_model_under_original_and_current_architecture_ids() -> None:
+    sources = (source(0), source(1))
+    results = tuple(
+        result.model_copy(update={"architecture_id": architecture})
+        for result, architecture in zip(
+            predictions(sources), ("persistence", "segment-moe"), strict=True
+        )
+    )
+    inspection = inspect_snapshots(sources, results=results)
+    model = inspection.summary["model"]
+    assert isinstance(model, dict) and model["architecture_id"] == "segment-moe"
+    assert model["bundle_sha256"] == results[0].model.bundle_sha256
+    assert [sample.prediction["result_sha256"] for sample in inspection.samples] == [
+        content_hash(result.model_dump(mode="json")) for result in results
+    ]
+
+
 @pytest.mark.parametrize("shape", ["absent", "missing", "duplicate", "extra"])
 def test_report_requires_exact_result_membership(shape: str) -> None:
     _, sources = dataset()
@@ -391,7 +408,7 @@ def test_offline_report_preserves_source_identity_and_canonical_symbols(tmp_path
     )
     data = report_data(output)
     assert data["kind"] == "prediction"
-    assert inspection.summary["report_version"] == "6.5"
+    assert inspection.summary["report_version"] == "6.6"
     assert all("events" not in sample.payload() for sample in inspection.samples)
     assert data["samples"] == json.loads(
         json.dumps([{**sample.payload(), "trend_pauses": []} for sample in inspection.samples])

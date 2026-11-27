@@ -9,6 +9,7 @@ from regimex.application.report import _hash_source, _script_json, validate_anal
 from regimex.directions import DirectionInterval
 from regimex.exports import ExportV2
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectIntegrityError
+from regimex.model_registry import canonical_architecture_id
 from regimex.report_assets import report_assets
 from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.report_licenses import license_notices
@@ -17,7 +18,7 @@ from regimex.storage import json_bytes
 if TYPE_CHECKING:
     from regimex.analysis_result import AnalysisResult
 
-COMPARISON_RENDERER_VERSION = "analysis-comparison/1.5"
+COMPARISON_RENDERER_VERSION = "analysis-comparison/1.6"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +75,7 @@ def _metadata(result: AnalysisResult, result_sha256: str) -> dict[str, object]:
     return {
         "analysis_id": str(result.analysis_id),
         "model": result.model.model_dump(mode="json"),
-        "architecture_id": result.architecture_id,
+        "architecture_id": canonical_architecture_id(result.architecture_id),
         "implementation_version": result.implementation_version,
         "decoder_version": result.decoder_version,
         "analysis_profile_id": result.analysis_profile_id,

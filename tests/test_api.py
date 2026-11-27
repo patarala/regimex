@@ -100,6 +100,7 @@ def test_architecture_catalog_reports_applicable_training_limits(
     with TestClient(create_app(service)) as client:
         catalog = client.get("/api/v1/architectures", headers=authorization())
         detail = client.get("/api/v1/architectures/tcn", headers=authorization())
+        old_name = client.get("/api/v1/architectures/persistence", headers=authorization())
     assert catalog.status_code == detail.status_code == 200
     limits = {item["architecture_id"]: item for item in catalog.json()["items"]}
     assert limits["adaptive"]["max_training_seeds"] == 1
@@ -110,9 +111,12 @@ def test_architecture_catalog_reports_applicable_training_limits(
     assert limits["tcn"] == detail.json()
     assert limits["tcn"]["max_training_epochs"] == 2
     assert limits["tcn"]["max_training_updates"] == 24
-    assert limits["persistence"]["max_training_seeds"] == expected_neural_seeds
-    assert limits["persistence"]["max_training_epochs"] == 2
-    assert limits["persistence"]["max_training_updates"] is None
+    assert "persistence" not in limits
+    assert old_name.status_code == 200
+    assert old_name.json() == limits["segment-moe"]
+    assert limits["segment-moe"]["max_training_seeds"] == expected_neural_seeds
+    assert limits["segment-moe"]["max_training_epochs"] == 2
+    assert limits["segment-moe"]["max_training_updates"] is None
     assert limits["baseline"]["max_training_epochs"] is None
     assert limits["baseline"]["max_training_updates"] is None
 

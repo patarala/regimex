@@ -34,7 +34,7 @@ from regimex.history_contracts import (
     ExperimentSummary,
 )
 from regimex.infrastructure.object_store import ObjectIntegrityError
-from regimex.model_registry import ArchitectureInfo
+from regimex.model_registry import ArchitectureInfo, canonical_architecture_id
 from regimex.operations import (
     LaunchSource,
     Operation,
@@ -490,7 +490,7 @@ def _analysis(record: AnalysisSummary, *, prefix: str = "/api/v1") -> AnalysisVi
 def _model(record: ModelRecord) -> ModelView:
     return ModelView(
         model_version_id=record.model_version_id,
-        architecture_id=record.architecture_id,
+        architecture_id=canonical_architecture_id(record.architecture_id),
         bundle_sha256=record.bundle_sha256,
         inference_policy_sha256=record.inference_policy_sha256,
         quality_status=record.quality_status,
@@ -947,6 +947,7 @@ def create_app(
 
     @app.get("/api/v1/architectures/{architecture_id}")
     def get_architecture(architecture_id: str, identity: Identity) -> ArchitectureInfo:
+        architecture_id = canonical_architecture_id(architecture_id)
         for item in service.list_architectures(identity):
             if item.architecture_id == architecture_id:
                 return item

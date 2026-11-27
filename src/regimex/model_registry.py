@@ -23,6 +23,8 @@ from regimex.backends import baseline_layout, segment_moe_layout, tcn_layout
 from regimex.contracts import MAX_STEPS, Seed, StrictModel
 
 ENTRY_POINT_GROUP = "regimex.models"
+SEGMENT_MOE_ID = "segment-moe"
+LEGACY_SEGMENT_MOE_ID = "persistence"
 INTERFACE_VERSION: Literal["1.0"] = "1.0"
 Device = Literal["cpu"]
 Optimizer = Literal["lbfgs", "adamw", "extra_trees"]
@@ -47,6 +49,11 @@ FactoryReference = Annotated[
 
 class RegistryError(ValueError):
     """An installed architecture has an invalid or incompatible contract."""
+
+
+def canonical_architecture_id(architecture_id: str) -> str:
+    """Resolve the architecture name recorded in older Segment MoE runs and bundles."""
+    return SEGMENT_MOE_ID if architecture_id == LEGACY_SEGMENT_MOE_ID else architecture_id
 
 
 class SummaryMode(StrEnum):
@@ -123,7 +130,7 @@ class AdaptiveParameters(StrictModel):
     )
 
 
-class PersistenceParameters(StrictModel):
+class SegmentMoEParameters(StrictModel):
     hidden_width: Annotated[int, Field(ge=4, le=128)] = Field(
         default=32,
         title="Context network width",
@@ -157,8 +164,8 @@ def configured_parameter_count(
             return tcn_layout.trainable_parameter_count(
                 TCNParameters.model_validate_json(json.dumps(parameters))
             )
-        if architecture_id == "persistence":
-            width = PersistenceParameters.model_validate_json(json.dumps(parameters)).hidden_width
+        if canonical_architecture_id(architecture_id) == SEGMENT_MOE_ID:
+            width = SegmentMoEParameters.model_validate_json(json.dumps(parameters)).hidden_width
             return segment_moe_layout.trainable_parameter_count(width)
         if architecture_id == "baseline":
             return baseline_layout.trainable_parameter_count(
@@ -529,6 +536,10 @@ class ArchitectureRegistry:
                 descriptor = ArchitectureDescriptor.model_validate(descriptor)
             except ValueError as exc:
                 raise RegistryError(f"invalid architecture descriptor: {exc}") from exc
+            if canonical_architecture_id(descriptor.architecture_id) != descriptor.architecture_id:
+                raise RegistryError(
+                    f"reserved historical architecture ID {descriptor.architecture_id!r}"
+                )
             if descriptor.architecture_id in entries:
                 raise RegistryError(f"duplicate architecture ID {descriptor.architecture_id!r}")
             entries[descriptor.architecture_id] = descriptor
@@ -560,7 +571,7 @@ class ArchitectureRegistry:
 
     def get(self, architecture_id: str) -> ArchitectureDescriptor:
         try:
-            return self._entries[architecture_id]
+            return self._entries[canonical_architecture_id(architecture_id)]
         except KeyError as exc:
             raise RegistryError(f"unknown installed architecture {architecture_id!r}") from exc
 
@@ -700,7 +711,7 @@ def tcn_descriptor() -> ArchitectureDescriptor:
     )
 
 
-def validate_persistence_policy(policy: TrainingPolicySpec) -> None:
+def validate_segment_moe_policy(policy: TrainingPolicySpec) -> None:
     if not isinstance(policy, TrainingPolicy) or policy.optimizer != "adamw":
         raise RegistryError("Segment MoE requires epoch training with AdamW")
     if len(policy.seeds) > MAX_NEURAL_TRAINING_SEEDS:
@@ -709,11 +720,11 @@ def validate_persistence_policy(policy: TrainingPolicySpec) -> None:
         )
 
 
-def persistence_descriptor() -> ArchitectureDescriptor:
+def segment_moe_descriptor() -> ArchitectureDescriptor:
     return ArchitectureDescriptor(
-        architecture_id="persistence",
+        architecture_id=SEGMENT_MOE_ID,
         implementation_version="0.1.0",
-        parameters_model=PersistenceParameters,
+        parameters_model=SegmentMoEParameters,
         default_training_policy=TrainingPolicy(
             optimizer="adamw",
             seeds=(11,),
@@ -723,7 +734,7 @@ def persistence_descriptor() -> ArchitectureDescriptor:
             validation_interval=1,
             patience=6,
         ),
-        policy_validator=validate_persistence_policy,
+        policy_validator=validate_segment_moe_policy,
         max_training_seeds=MAX_NEURAL_TRAINING_SEEDS,
         supported_optimizers=("adamw",),
         required_observation_fields=("last_price",),

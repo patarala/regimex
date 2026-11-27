@@ -132,6 +132,30 @@ def test_training_replay_fills_only_an_omitted_profile() -> None:
     assert not set(previous).intersection((fingerprint.sha256, *fingerprint.previous_hashes))
 
 
+def test_segment_moe_retries_recognize_original_architecture_and_profile() -> None:
+    legacy = TrainingRunRequest.model_validate_json(
+        json_bytes(
+            {
+                "dataset_id": "dataset",
+                "labels_reference_set_id": "train",
+                "validation_reference_set_id": "valid",
+                "architecture_id": "persistence",
+                "parameters": {"hidden_width": 32},
+                "policy": {"optimizer": "adamw", "seeds": [11]},
+                "benchmark_selection_id": "bench",
+            }
+        )
+    )
+    resolved, fingerprint = legacy.resolve()
+    assert resolved.architecture_id == "segment-moe"
+    assert resolved.resolve() == (resolved, fingerprint)
+    assert fingerprint.sha256 == content_hash(resolved.model_dump(mode="json"))
+    previous = RequestFingerprint.for_profile_request(legacy)
+    assert {previous.sha256, *previous.previous_hashes} <= set(fingerprint.previous_hashes)
+    changed = legacy.model_copy(update={"parameters": {"hidden_width": 64}}).resolve()[1]
+    assert previous.sha256 not in (changed.sha256, *changed.previous_hashes)
+
+
 @pytest.fixture
 def admin_boundary() -> Iterator[TestClient]:
     class AuthenticationOnly:

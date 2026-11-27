@@ -12,7 +12,7 @@ from typing import Annotated, Literal, cast
 
 import numpy as np
 import torch
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, field_validator
 from torch import Tensor, nn
 
 from regimex.backends.epoch_history import HistoryRecord, ValidationRecord, validate_epoch_selection
@@ -44,20 +44,20 @@ from regimex.model_contracts import (
     require_observation_inputs,
 )
 from regimex.model_registry import (
+    SEGMENT_MOE_ID,
     InferenceRuntime,
-    PersistenceParameters,
+    SegmentMoEParameters,
     TrainingPolicy,
     TrainingPolicySpec,
     TrainingRuntime,
-    validate_persistence_policy,
+    validate_segment_moe_policy,
 )
 from regimex.resource_limits import ResourceBudgetExceeded
 from regimex.segmentation import DECODER_VERSION
 from regimex.storage import digest, json_bytes, output_directory, write_json
 
-ARCHITECTURE = "persistence"
 VERSION = "0.1.0"
-PREPROCESSING = "persistence-block-standardization/1.0"
+PREPROCESSING = "segment-moe-block-standardization/1.0"
 _ROLES: dict[BundleRole, str] = {
     "configuration": "configuration.json",
     "history": "history.json",
@@ -92,12 +92,17 @@ class BlockScale(StrictModel):
 
 
 class Configuration(StrictModel):
-    codec_version: Literal["direction-persistence/1.0"] = "direction-persistence/1.0"
-    parameters: PersistenceParameters
+    codec_version: Literal["segment-moe/1.0"] = "segment-moe/1.0"
+    parameters: SegmentMoEParameters
     training_policy: TrainingPolicy
     training_runtime: TrainingRuntime
     analysis: AnalysisConfig
     environment: dict[str, JsonValue]
+
+    @field_validator("codec_version", mode="before")
+    @classmethod
+    def read_previous_codec_name(cls, value: object) -> object:
+        return "segment-moe/1.0" if value == "direction-persistence/1.0" else value
 
 
 @dataclass(frozen=True)
@@ -161,7 +166,7 @@ class SegmentMoEPredictor:
     scale: BlockScale
     configuration: Configuration
     feature_version: SegmentFeatureVersion = SegmentFeatureVersion.STABLE_LOG_RATIOS
-    architecture_id = ARCHITECTURE
+    architecture_id = SEGMENT_MOE_ID
     implementation_version = VERSION
     class_names = DIRECTION_NAMES
 
@@ -335,7 +340,7 @@ def _select_checkpoint(
 
 
 class SegmentMoEBackend:
-    architecture_id = ARCHITECTURE
+    architecture_id = SEGMENT_MOE_ID
     implementation_version = VERSION
 
     def fit(
@@ -349,11 +354,11 @@ class SegmentMoEBackend:
         runtime: TrainingRuntime,
         evaluator: SelectionEvaluator,
     ) -> FitResult:
-        if type(training) is not TrainingInputs or type(parameters) is not PersistenceParameters:
-            raise TypeError("Segment MoE requires TrainingInputs and PersistenceParameters")
+        if type(training) is not TrainingInputs or type(parameters) is not SegmentMoEParameters:
+            raise TypeError("Segment MoE requires TrainingInputs and SegmentMoEParameters")
         require_observation_inputs(validation)
-        parameters = PersistenceParameters.model_validate(parameters.model_dump())
-        validate_persistence_policy(policy)
+        parameters = SegmentMoEParameters.model_validate(parameters.model_dump())
+        validate_segment_moe_policy(policy)
         assert isinstance(policy, TrainingPolicy)
         TrainingPolicy.model_validate(policy.model_dump())
         TrainingRuntime.model_validate(runtime.model_dump())
@@ -466,7 +471,7 @@ class SegmentMoEBackend:
             )
             bundle = ModelBundle(
                 bundle_version="1.0",
-                architecture_id=ARCHITECTURE,
+                architecture_id=SEGMENT_MOE_ID,
                 implementation_version=VERSION,
                 interface_version="1.0",
                 observation_version="2.1",
@@ -488,23 +493,24 @@ class SegmentMoEBackend:
         bundle = verify_model_bundle(
             root,
             manifest_sha256=manifest_sha256,
-            architecture_id=ARCHITECTURE,
+            architecture_id=SEGMENT_MOE_ID,
             implementation_version=VERSION,
         )
         if (
             {m.role: m.path for m in bundle.members} != _ROLES
-            or bundle.feature_version not in SegmentFeatureVersion
-            or bundle.preprocessing_version != PREPROCESSING
+            or bundle.preprocessing_version
+            not in (PREPROCESSING, "persistence-block-standardization/1.0")
             or bundle.decoder_version != DECODER_VERSION
         ):
             raise ValueError("incompatible Segment MoE bundle codec or feature layout")
+        feature_version = SegmentFeatureVersion.from_bundle(bundle.feature_version)
         config = read_bundle_json(root / _ROLES["configuration"], Configuration, limit=128 << 10)
         scale = read_bundle_json(root / _ROLES["preprocessing"], BlockScale, limit=128 << 10)
         validation = read_bundle_json(
             root / _ROLES["validation"], ValidationRecord, limit=128 << 10
         )
         history = read_bundle_json(root / _ROLES["history"], HistoryRecord, limit=16 << 20)
-        validate_persistence_policy(config.training_policy)
+        validate_segment_moe_policy(config.training_policy)
         validate_epoch_selection("Segment MoE", config.training_policy, validation, history)
         if (
             _hash(config.analysis.model_dump(mode="json")) != bundle.analysis_profile_sha256
@@ -523,7 +529,7 @@ class SegmentMoEBackend:
             model.eval().requires_grad_(False),
             scale,
             config,
-            SegmentFeatureVersion(bundle.feature_version),
+            feature_version,
         )
 
 

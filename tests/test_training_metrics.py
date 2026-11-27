@@ -92,7 +92,7 @@ def imported_spec(
     )
 
 
-@pytest.mark.parametrize("architecture", ("tcn", "persistence"))
+@pytest.mark.parametrize("architecture", ("tcn", "segment-moe", "persistence"))
 def test_imported_epoch_history_records_each_repeats_stopping_reason(
     tmp_path: Path, architecture: str
 ) -> None:

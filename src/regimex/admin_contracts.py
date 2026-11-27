@@ -30,6 +30,7 @@ from regimex.infrastructure.object_store import ObjectInfo
 from regimex.market_config import GeneratorVersion, MarketConfig
 from regimex.model_bundles import BundleMember, TrainingEvidence
 from regimex.model_registry import (
+    SEGMENT_MOE_ID,
     ArchitectureId,
     FixedUpdatePolicy,
     InferenceRuntime,
@@ -38,6 +39,7 @@ from regimex.model_registry import (
     TrainingRuntime,
     TreeCount,
     TreeDepth,
+    canonical_architecture_id,
 )
 from regimex.operations import Operation, Sha256
 from regimex.service_contracts import RegistryIdentifier
@@ -377,7 +379,9 @@ class RepeatOutcome(StrictModel):
     def from_history(
         cls, spec: TrainingSpec | ImportedTrainingSpec, history: JsonValue
     ) -> tuple[Self, ...]:
-        if spec.architecture_id not in ("tcn", "persistence") or not isinstance(history, dict):
+        if canonical_architecture_id(spec.architecture_id) not in ("tcn", SEGMENT_MOE_ID):
+            return ()
+        if not isinstance(history, dict):
             return ()
         policy = spec.recorded_policy if isinstance(spec, ImportedTrainingSpec) else spec.policy
         if policy is None or isinstance(policy, SingleFitPolicy):

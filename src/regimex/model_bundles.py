@@ -16,6 +16,7 @@ from typing import Annotated, Literal, Self
 from pydantic import BaseModel, Field, model_validator
 
 from regimex.contracts import Identifier, Seed, StrictModel
+from regimex.model_registry import canonical_architecture_id
 from regimex.operations import Sha256
 
 BundleRole = Literal["configuration", "preprocessing", "weights", "validation", "history"]
@@ -236,9 +237,10 @@ def verify_model_bundle(
             if hashlib.sha256(manifest_bytes).hexdigest() != manifest_sha256:
                 raise ValueError("bundle manifest differs from its committed digest")
             bundle = ModelBundle.model_validate_json(manifest_bytes)
-            if (bundle.architecture_id, bundle.implementation_version) != (
-                architecture_id,
-                implementation_version,
+            if (
+                canonical_architecture_id(bundle.architecture_id)
+                != canonical_architecture_id(architecture_id)
+                or bundle.implementation_version != implementation_version
             ):
                 raise ValueError("bundle architecture implementation is incompatible")
             expected = {member.path for member in bundle.members} | {"manifest.json"}

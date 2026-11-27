@@ -29,7 +29,9 @@ from regimex.model_registry import (
     WorkerCapability,
     adaptive_descriptor,
     baseline_descriptor,
+    configured_parameter_count,
     read_inference_runtime,
+    segment_moe_descriptor,
     tcn_descriptor,
 )
 
@@ -138,6 +140,17 @@ def test_real_entry_point_discovery_is_lazy(installed_plugin: Path) -> None:
         descriptor.validate_parameters({"dropout": 0.3})
 
 
+def test_segment_moe_lists_one_descriptor_and_resolves_archived_runs() -> None:
+    registry = ArchitectureRegistry((segment_moe_descriptor(),))
+    assert [item.architecture_id for item in registry.descriptors] == ["segment-moe"]
+    assert registry.get("persistence") is registry.get("segment-moe")
+    parameters: dict[str, JsonValue] = {"hidden_width": 4}
+    assert configured_parameter_count("persistence", parameters) == 1017
+    assert configured_parameter_count("segment-moe", parameters) == 1017
+    with pytest.raises(RegistryError, match="reserved historical architecture ID"):
+        ArchitectureRegistry((changed_descriptor(architecture_id="persistence"),))
+
+
 def test_worker_probe_and_lazy_factory(installed_plugin: Path) -> None:
     registry = ArchitectureRegistry.discover()
     runtime = InferenceRuntime(threads=1)
@@ -177,11 +190,11 @@ class RejectScientificImports(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0, RejectScientificImports())
 from regimex.model_registry import (
     ArchitectureRegistry, adaptive_descriptor, baseline_descriptor,
-    persistence_descriptor, tcn_descriptor,
+    segment_moe_descriptor, tcn_descriptor,
 )
 assert adaptive_descriptor().describe().executable is None
 assert baseline_descriptor().describe().executable is None
-assert persistence_descriptor().describe().executable is None
+assert segment_moe_descriptor().describe().executable is None
 assert tcn_descriptor().describe().executable is None
 registry = ArchitectureRegistry.discover()
 assert registry.get("test-json").describe().executable is None

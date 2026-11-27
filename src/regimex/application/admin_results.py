@@ -265,6 +265,8 @@ class AdminResultCommitter:
         dataset = self.repository.get_dataset(self.principal, spec.dataset_id)
         if (
             bundle_manifest.model_version_id != spec.model_version_id
+            or candidate.model_version_id != bundle_manifest.model_version_id
+            or candidate.architecture_id != bundle_manifest.architecture_id
             or bundle_manifest.training.dataset_sha256 != dataset.manifest.content_sha256
             or bundle_manifest.training.run_id != str(self.run.run_id)
         ):
@@ -291,7 +293,7 @@ class AdminResultCommitter:
             self.heartbeat()
         model = ModelRecord(
             model_version_id=spec.model_version_id,
-            architecture_id=spec.architecture_id,
+            architecture_id=bundle_manifest.architecture_id,
             bundle_sha256=candidate.manifest_sha256,
             manifest=manifest_object,
             members=members,

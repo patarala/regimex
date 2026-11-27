@@ -15,7 +15,7 @@ from regimex.model_registry import (
     FixedUpdatePolicy,
     adaptive_descriptor,
     baseline_descriptor,
-    persistence_descriptor,
+    segment_moe_descriptor,
     tcn_descriptor,
 )
 
@@ -213,7 +213,7 @@ class TrainingAPI:
                     {**TCN, "architecture_id": "metadata-only", "executable": False},
                     {**TCN, "default_training_policy": POLICY},
                     BASELINE,
-                    persistence_descriptor().describe().model_dump(mode="json"),
+                    segment_moe_descriptor().describe().model_dump(mode="json"),
                     {**TCN, "architecture_id": "worker-verified", "executable": True},
                 ]
             },
@@ -302,7 +302,7 @@ def test_admin_trains_evaluates_and_publishes_with_keyboard(browser: Any, width:
             ]
         )
         expect(page.get_by_role("option", name="Segment MoE")).to_have_attribute(
-            "value", "persistence"
+            "value", "segment-moe"
         )
         start = page.get_by_role("button", name="Start training")
         expect(page.get_by_label("Reserved benchmark")).to_have_value("selection-v1")
@@ -1017,6 +1017,45 @@ def test_discard_after_invalid_json_import_restores_original_draft(
         page.get_by_role("button", name="Start training").click()
         expect(page.locator("#training-detail")).to_be_visible()
         assert api.posts[0][1] == original
+    finally:
+        page.close()
+
+
+@pytest.mark.parametrize("show_legacy_descriptor", [False, True], ids=["current", "mixed"])
+def test_old_segment_moe_run_opens_and_copies_under_its_current_architecture(
+    browser: Any, show_legacy_descriptor: bool
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    descriptor = segment_moe_descriptor().describe().model_dump(mode="json")
+    available = [descriptor]
+    if show_legacy_descriptor:
+        available.insert(0, {**descriptor, "architecture_id": "persistence"})
+    api.run["training"].update(
+        architecture_id="persistence",
+        policy=descriptor["default_training_policy"],
+        training_runtime={"memory_budget_bytes": 9007199254740993},
+    )
+    api.runs.append(api.run)
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(ORIGIN + "/api/v1/architectures*", lambda r: r.fulfill(json={"items": available}))
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        expect(page.get_by_role("heading", name="Segment MoE · development")).to_be_visible()
+        saved = json.loads(page.locator("#training-settings").text_content())
+        assert saved["architecture_id"] == "persistence"
+        page.get_by_role("button", name="New run from this run").click()
+        picker = page.get_by_label("Architecture")
+        expect(picker).to_have_value("segment-moe")
+        expect(picker.locator("option")).to_have_text(["Segment MoE"])
+        page.get_by_role("button", name="Edit JSON").click()
+        editor = page.get_by_label("Run configuration (JSON)")
+        assert json.loads(editor.input_value()) == {**saved, "architecture_id": "segment-moe"}
+        editor.fill(json.dumps(saved))
+        page.get_by_role("button", name="Start training").click()
+        expect(page.locator("#training-detail")).to_be_visible()
+        assert api.posts[0][1] == {**saved, "architecture_id": "segment-moe"}
     finally:
         page.close()
 

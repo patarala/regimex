@@ -12,7 +12,7 @@ from regimex.computation_worker import ChildLimits, ComputationFailure, supervis
 from regimex.diagnostic_contracts import DiagnosticCheck, DiagnosticReport, QueueName
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectStore
-from regimex.model_registry import RegistryError
+from regimex.model_registry import RegistryError, canonical_architecture_id
 from regimex.resource_limits import TimeBudgetExceeded
 from regimex.service_contracts import ModelRecord
 from regimex.service_health import queue_status
@@ -53,7 +53,7 @@ def _model_probe(settings: ServiceSettings, store: ObjectStore, model: ModelReco
         "model_version_id": model.model_version_id,
         "bundle_sha256": model.bundle_sha256,
         "inference_policy_sha256": model.inference_policy_sha256,
-        "architecture_id": model.architecture_id,
+        "architecture_id": canonical_architecture_id(model.architecture_id),
     }
     if actual != expected:
         raise ValueError("The model probe returned inconsistent identity.")

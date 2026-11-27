@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import numpy as np
-from pydantic import Field, JsonValue
+from pydantic import AfterValidator, Field, JsonValue
 
 from regimex.contracts import Identifier, StrictModel
 from regimex.data_catalog import (
@@ -49,6 +49,7 @@ from regimex.model_registry import (
     RegistryError,
     TrainingPolicySpec,
     TrainingRuntime,
+    canonical_architecture_id,
 )
 from regimex.operations import Sha256
 from regimex.prediction_inputs import PredictionSequenceInfo
@@ -60,7 +61,7 @@ from regimex.training_statistics import TrainingFitStatistics
 class TrainingRequest(StrictModel):
     run_id: Identifier
     model_version_id: Identifier
-    architecture_id: ArchitectureId
+    architecture_id: Annotated[ArchitectureId, AfterValidator(canonical_architecture_id)]
     parameters: dict[str, JsonValue]
     policy: TrainingPolicySpec
     training_runtime: TrainingRuntime
@@ -311,6 +312,7 @@ def train_candidate(
         )
         if (
             bundle.training != evidence
+            or bundle.architecture_id != descriptor.architecture_id
             or bundle.model_version_id != request.model_version_id
             or bundle.analysis_profile != provenance.analysis_profile
             or bundle.analysis_profile_sha256 != provenance.analysis_profile_sha256

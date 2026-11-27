@@ -3,6 +3,7 @@ import {parseTrainingJSON, readTrainingRequest, trainingFieldsBody, trainingRequ
 import {createTrainingPolicy, policyDraft, validateTrainingLimits} from "./training-policy.js";
 import {createSizePicker, validateModelFields} from "./training-size.js";
 import {createDataPreparation} from "./training-preparation.js";
+import {architectureName, availableArchitectures, canonicalArchitectureId} from "./training-architectures.js";
 
 const selectionFields = {
   "training-dataset": "dataset_id", "training-architecture": "architecture_id",
@@ -12,14 +13,6 @@ const selectionFields = {
 const selectors = Object.keys(selectionFields);
 const runtimes = ["training-runtime", "training-inference"];
 const api = "/api/v1/";
-
-export function architectureName(id, compact = false) {
-  if (id === "tcn") return compact ? "TCN" : "Temporal convolutional network (TCN)";
-  if (id === "persistence") return "Segment MoE";
-  if (id === "adaptive") return compact ? "Adaptive forest" : "Adaptive direction forest";
-  if (id === "baseline") return compact ? "Baseline" : "Logistic baseline";
-  return id;
-}
 
 export function shortId(id) {
   return id.replace(/^(?:dataset|reference)-([0-9a-f]{8})[0-9a-f]{24}$/, "$1");
@@ -61,7 +54,7 @@ function formBody(name, selections, profile, {policy, parameters, training_runti
 }
 
 export function createTrainingForm({session, eachPage}) {
-  let generation = 0, busy = false, architectures = [], draft = null;
+  let generation = 0, busy = false, architectures = new Map(), draft = null;
   let currentArchitecture = null;
   let sourceConfiguration = null;
   let jsonBase = null, importedBody = null;
@@ -72,6 +65,12 @@ export function createTrainingForm({session, eachPage}) {
   const sizePicker = createSizePicker();
   const preparation = createDataPreparation({session, onUse: usePreparedData});
   const hint = $("training-prerequisite");
+  function architectureFor(id) {
+    return architectures.get(canonicalArchitectureId(id));
+  }
+  function resolveArchitectureId(id) {
+    return architectureFor(id)?.architecture_id ?? id;
+  }
   function feedback(message = "", ...actions) {
     hint.replaceChildren();
     hint.hidden = !message;
@@ -105,7 +104,7 @@ export function createTrainingForm({session, eachPage}) {
   }
   function selectArchitecture() {
     saveArchitecture();
-    const architecture = architectures.find(row => row.architecture_id === $("training-architecture").value);
+    const architecture = architectureFor($("training-architecture").value);
     currentArchitecture = architecture?.architecture_id;
     const saved = architectureDrafts.get(currentArchitecture);
     policy.select(architecture, saved?.policy);
@@ -161,7 +160,7 @@ export function createTrainingForm({session, eachPage}) {
         feedback("This dataset has no benchmark open for model selection.",
           ["Reserve a benchmark", "reserve_api_v1_benchmarks_post"],
           ["Start benchmark selection", "selection_start_api_v1_benchmarks_selection_start_post"]);
-      else if (!architectures.length) feedback("Install a training backend to start a run.");
+      else if (!architectures.size) feedback("Install a training backend to start a run.");
     } catch (error) {
       if (valid()) feedback(error.message, ["Retry", loadDataset]);
     }
@@ -223,11 +222,11 @@ export function createTrainingForm({session, eachPage}) {
       choices("training-dataset", datasets.filter(row => row.partitions.train && row.partitions.validation)
         .map(row => [row.dataset_id, datasetName(row.dataset_id) + " · " + row.partitions.train +
           " training · " + row.partitions.validation + " validation"]), "No development datasets");
-      architectures = backends.filter(row => row.executable !== false);
-      choices("training-architecture", architectures.map(row => [row.architecture_id, architectureName(row.architecture_id)]),
-        "No training backends");
+      architectures = availableArchitectures(backends);
+      choices("training-architecture", Array.from(architectures.values(),
+        row => [row.architecture_id, architectureName(row.architecture_id)]), "No training backends");
       restoreChoice("training-dataset", draft?.["training-dataset"]);
-      restoreChoice("training-architecture", draft?.["training-architecture"]);
+      restoreChoice("training-architecture", resolveArchitectureId(draft?.["training-architecture"]));
       selectArchitecture();
       if (sourceConfiguration) {
         const source = sourceConfiguration;
@@ -279,7 +278,7 @@ export function createTrainingForm({session, eachPage}) {
         importedBody, jsonBase, jsonText: jsonField.value};
     }
     generation++;
-    architectures = [];
+    architectures.clear();
     loading = false;
     converting = false;
     analysisProfile = undefined;
@@ -309,7 +308,7 @@ export function createTrainingForm({session, eachPage}) {
     sizePicker.validate();
     const parameters = readSettings("training-parameters") ?? "{}";
     try {
-      validateModelFields(architectures.find(item => item.architecture_id === currentArchitecture), parameters);
+      validateModelFields(architectureFor(currentArchitecture), parameters);
     } catch (error) {
       $("training-advanced-settings").open = true;
       $("training-parameters").setAttribute("aria-invalid", "true");
@@ -353,9 +352,9 @@ export function createTrainingForm({session, eachPage}) {
     await applyRequest(jsonField.value, jsonBase);
   }
   async function applyRequest(text, base, fromRun = false) {
-    const {request, settings, body} = parseTrainingJSON(text, base, {fromRun});
+    const {request, settings, body} = parseTrainingJSON(text, base, {fromRun, resolveArchitectureId});
     if (/[\r\n]/.test(request.display_name ?? "")) throw new Error("Run name must be on one line.");
-    const architecture = architectures.find(row => row.architecture_id === request.architecture_id);
+    const architecture = architectureFor(request.architecture_id);
     if (!architecture) throw new Error("The selected architecture is unavailable in this workspace.");
     const datasetReady = Array.from($("training-dataset").options).some(item => item.value === request.dataset_id);
     if (!datasetReady && !fromRun)
@@ -443,8 +442,8 @@ export function createTrainingForm({session, eachPage}) {
   function payload() {
     if (!jsonBase) return fieldsBody();
     try {
-      const {request, body} = readTrainingRequest(jsonField.value, jsonBase);
-      const architecture = architectures.find(row => row.architecture_id === request.architecture_id);
+      const {request, body} = readTrainingRequest(jsonField.value, jsonBase, {resolveArchitectureId});
+      const architecture = architectureFor(request.architecture_id);
       if (architecture) validateTrainingLimits(architecture, request.policy);
       return body;
     } catch (error) {

@@ -1,4 +1,5 @@
 import {requiresPolicyInteger} from "./training-policy.js";
+import {canonicalArchitectureId} from "./training-architectures.js";
 
 const identifiers = [
   "dataset_id", "architecture_id", "labels_reference_set_id",
@@ -14,7 +15,7 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-export function readTrainingRequest(text, base, {fromRun = false, forForm = false} = {}) {
+export function readTrainingRequest(text, base, {fromRun = false, forForm = false, resolveArchitectureId} = {}) {
   let input;
   try { input = JSON.parse(text); }
   catch { throw new Error("Enter valid JSON for the run configuration or training policy."); }
@@ -41,9 +42,12 @@ export function readTrainingRequest(text, base, {fromRun = false, forForm = fals
     throw new Error("Provide a string or null for display_name.");
   const inputTokens = JSON.parse(taggedTokens(text));
   checkPolicyNumbers(standalone ? inputTokens : inputTokens.spolicy, forForm);
-  if (!standalone) return {request, body: text};
-  const tagged = JSON.parse(taggedTokens(base));
-  tagged.spolicy = inputTokens;
+  const id = resolveArchitectureId?.(request.architecture_id) ?? request.architecture_id;
+  if (!standalone && id === request.architecture_id) return {request, body: text};
+  const tagged = standalone ? JSON.parse(taggedTokens(base)) : inputTokens;
+  if (standalone) tagged.spolicy = inputTokens;
+  request.architecture_id = id;
+  tagged.sarchitecture_id = "s" + id;
   return {request, body: formatTagged(tagged)};
 }
 
@@ -106,6 +110,12 @@ export function renamedConfiguration(text, name) {
 
 export function differentSettings(left, right) {
   const differences = [];
+  function settings(text) {
+    const record = JSON.parse(taggedTokens(text));
+    if (typeof record.sarchitecture_id === "string" && record.sarchitecture_id.startsWith("s"))
+      record.sarchitecture_id = "s" + canonicalArchitectureId(record.sarchitecture_id.slice(1));
+    return record;
+  }
   function compare(a, b, path) {
     if (isObject(a) && isObject(b)) {
       const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
@@ -119,7 +129,7 @@ export function differentSettings(left, right) {
     const second = b === undefined ? "—" : formatTagged(b);
     if (first !== second) differences.push([path.join("."), first, second]);
   }
-  compare(JSON.parse(taggedTokens(left)), JSON.parse(taggedTokens(right)), []);
+  compare(settings(left), settings(right), []);
   return differences;
 }
 

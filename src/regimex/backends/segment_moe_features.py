@@ -2,6 +2,7 @@
 
 from enum import StrEnum
 from itertools import pairwise
+from typing import Self
 
 import numpy as np
 from numpy.typing import NDArray
@@ -22,10 +23,20 @@ type Float32Array = NDArray[np.float32]
 
 
 class SegmentFeatureVersion(StrEnum):
-    OBSERVED_PRICES = "direction-persistence/1.0"
-    ORIGINAL_STEPS = "direction-persistence/1.1"
-    INCLUSIVE_COVERAGE = "direction-persistence/1.2"
-    STABLE_LOG_RATIOS = "direction-persistence/1.3"
+    OBSERVED_PRICES = "segment-moe/1.0"
+    ORIGINAL_STEPS = "segment-moe/1.1"
+    INCLUSIVE_COVERAGE = "segment-moe/1.2"
+    STABLE_LOG_RATIOS = "segment-moe/1.3"
+
+    @classmethod
+    def from_bundle(cls, value: str) -> Self:
+        family, separator, version = value.partition("/")
+        if family == "direction-persistence" and separator:
+            value = f"segment-moe/{version}"
+        try:
+            return cls(value)
+        except ValueError as exc:
+            raise ValueError(f"unsupported Segment MoE feature layout {value!r}") from exc
 
 
 def _piece_evidence(values: Floats) -> tuple[float, float, float, float]:

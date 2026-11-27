@@ -33,6 +33,7 @@ from regimex.admin_contracts import (
     ReferenceImportSpec,
     ReferenceSetRecord,
     RequestDigest,
+    RequestFingerprint,
     TrainingArchiveFilter,
     TrainingMetrics,
     TrainingProgress,
@@ -91,7 +92,14 @@ from regimex.infrastructure.object_store import (
 from regimex.market_config import GENERATOR_VERSION
 from regimex.market_identity import imported_seed_group
 from regimex.model_bundles import BundleMember, ModelBundle
-from regimex.model_registry import FixedUpdatePolicy, RegistryError, TrainingPolicy
+from regimex.model_registry import (
+    LEGACY_SEGMENT_MOE_ID,
+    SEGMENT_MOE_ID,
+    FixedUpdatePolicy,
+    RegistryError,
+    TrainingPolicy,
+    canonical_architecture_id,
+)
 from regimex.operations import LaunchSource, OperationFailure
 from regimex.service_contracts import (
     CapacityExceeded,
@@ -355,13 +363,22 @@ class AdminService:
         request_sha256: RequestDigest | None = None,
         display_name: str | None = None,
     ) -> AdminRunRecord:
+        display_name = validate_display_name(display_name)
+        if canonical_architecture_id(spec.architecture_id) == SEGMENT_MOE_ID:
+            spec = spec.model_copy(update={"architecture_id": SEGMENT_MOE_ID})
+            if request_sha256 is None:
+                previous = spec.model_copy(update={"architecture_id": LEGACY_SEGMENT_MOE_ID})
+                request_sha256 = RequestFingerprint(
+                    sha256=admin_request_hash(spec, display_name),
+                    previous_hashes=(admin_request_hash(previous, display_name),),
+                )
         return self._submit(
             principal,
             spec,
             idempotency_key=idempotency_key,
             launch_source=launch_source,
             request_sha256=request_sha256,
-            display_name=validate_display_name(display_name),
+            display_name=display_name,
         )
 
     def submit_evaluation(

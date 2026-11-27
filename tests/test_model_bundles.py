@@ -120,6 +120,26 @@ def test_integrity_checks_allow_independent_human_validation_provenance(tmp_path
     assert expected.training.validation_references.kind == "human"
 
 
+def test_segment_moe_alias_verifies_the_original_manifest_bytes(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    legacy = bundle(root).model_copy(update={"architecture_id": "persistence"})
+    path = root / "manifest.json"
+    write_json(path, legacy.model_dump(mode="json"))
+    original = digest(path)
+    verified = verify_model_bundle(
+        root, manifest_sha256=original, architecture_id="segment-moe", implementation_version="1.0"
+    )
+    assert verified == legacy
+    write_json(path, legacy.model_copy(update={"architecture_id": "segment-moe"}).model_dump())
+    with pytest.raises(ValueError, match="committed digest"):
+        verify_model_bundle(
+            root,
+            manifest_sha256=original,
+            architecture_id="segment-moe",
+            implementation_version="1.0",
+        )
+
+
 @pytest.mark.parametrize("change", ["size", "checksum", "missing", "extra", "symlink"])
 def test_corrupt_members_are_rejected(tmp_path: Path, change: str) -> None:
     root = tmp_path / "bundle"

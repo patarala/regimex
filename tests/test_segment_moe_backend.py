@@ -18,10 +18,10 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
     from regimex.model_contracts import TrainingInputs
     from regimex.model_registry import (
         InferenceRuntime,
-        PersistenceParameters,
+        SegmentMoEParameters,
         TrainingRuntime,
         configured_parameter_count,
-        persistence_descriptor,
+        segment_moe_descriptor,
     )
     from regimex.resource_limits import ResourceBudgetExceeded
     from regimex.storage import digest, write_json
@@ -29,11 +29,11 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
     train, validation = inputs("train", (64, 64, 64)), inputs("validation", (90, 80, 64))
     targets = np.repeat(np.arange(3), 64).astype(np.int64)
     targets[::13] = -1
-    params = PersistenceParameters(hidden_width=12)
-    assert configured_parameter_count("persistence", params.model_dump(mode="json")) == sum(
+    params = SegmentMoEParameters(hidden_width=12)
+    assert configured_parameter_count("segment-moe", params.model_dump(mode="json")) == sum(
         p.numel() for p in SegmentMoE(12).parameters()
     )
-    descriptor = persistence_descriptor()
+    descriptor = segment_moe_descriptor()
     descriptor.validate_training_policy(policy())
     backend = SegmentMoEBackend()
     progress: list[dict[str, JsonValue]] = []
@@ -83,16 +83,36 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
             evaluator=lambda _: 0.1,
         )
 
-    # All feature versions use the same flat weights. The manifest selects the extractor.
     manifest_path = tmp_path / "bundle" / "manifest.json"
     manifest = json.loads(manifest_path.read_bytes())
-    assert manifest["feature_version"] == SegmentFeatureVersion.STABLE_LOG_RATIOS.value
+    config_path = manifest_path.parent / "configuration.json"
+    config = json.loads(config_path.read_bytes())
+    assert manifest["architecture_id"] == "segment-moe"
+    assert manifest["feature_version"] == "segment-moe/1.3"
+    assert manifest["preprocessing_version"] == "segment-moe-block-standardization/1.0"
+    assert config["codec_version"] == "segment-moe/1.0"
+
+    # Historical bundles use the same flat weights but select their own feature extractor.
+    manifest["architecture_id"] = "persistence"
+    manifest["preprocessing_version"] = "persistence-block-standardization/1.0"
+    config["codec_version"] = "direction-persistence/1.0"
+    write_json(config_path, config)
+    config_member = next(
+        member for member in manifest["members"] if member["role"] == "configuration"
+    )
+    config_member.update(size_bytes=config_path.stat().st_size, sha256=digest(config_path))
     for version in SegmentFeatureVersion:
-        manifest["feature_version"] = version.value
-        write_json(manifest_path, manifest)
-        restored_legacy = backend.load_bundle(
-            manifest_path.parent, manifest_sha256=digest(manifest_path), runtime=runtime
+        manifest["feature_version"] = version.value.replace(
+            "segment-moe/", "direction-persistence/"
         )
+        write_json(manifest_path, manifest)
+        historical_checksum = digest(manifest_path)
+        restored_legacy = backend.load_bundle(
+            manifest_path.parent, manifest_sha256=historical_checksum, runtime=runtime
+        )
+        assert digest(manifest_path) == historical_checksum
+        assert digest(config_path) == config_member["sha256"]
+        assert restored_legacy.architecture_id == "segment-moe"
         assert restored_legacy.feature_version == version
         legacy_input = SegmentTable.prepare(validation, reloaded.analysis, feature_version=version)
         expected = legacy_input.standardized(reloaded.scale).predict(
@@ -148,12 +168,12 @@ def test_segment_weight_affects_updates_even_in_a_singleton_batch(batch_size: in
 
 def test_context_network_reflects_direction_and_reports_bounded_state() -> None:
     from regimex.backends.segment_moe_network import SegmentMoE
-    from regimex.model_registry import PersistenceParameters, persistence_descriptor
+    from regimex.model_registry import SegmentMoEParameters, segment_moe_descriptor
 
-    descriptor = persistence_descriptor()
+    descriptor = segment_moe_descriptor()
     assert descriptor.required_observation_fields == ("last_price",)
     with pytest.raises(ValueError):
-        PersistenceParameters(hidden_width=129)
+        SegmentMoEParameters(hidden_width=129)
     rng = np.random.default_rng(13)
     x = torch.tensor(rng.normal(size=(12, 9, 4)), dtype=torch.float32)
     x[:, :, 1::2] = x[:, :, 1::2].sigmoid()

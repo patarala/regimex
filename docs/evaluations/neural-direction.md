@@ -77,8 +77,6 @@ sha256sum direction-quality-mixture-v2/manifest.json
 python direction-quality-mixture-v2/predict.py market-export.json --output directions.json
 ```
 
-<a name="direction-persistence-across-adjacent-price-segments"></a>
-
 ## Segment MoE on exchange prices and known drift
 
 Three neural candidates used the same decoder and complete, ordered observations
@@ -104,7 +102,7 @@ two margins over the best of three forests in each population.
 | Learned choice based on local windows | 0.9296 | 0.9743 |
 | Best forest on each population | 0.9411 | 0.9577 |
 
-The selected offline model (`direction-persistence`) and the comparison models
+The selected offline Segment MoE and the comparison models
 were then scored on 288 new exchange experiments and 144 new drift seeds
 (four schedules per seed, with complete and masked views). The table shows
 decoded interval macro-F1 at
@@ -135,13 +133,20 @@ advantage was +0.0238 (independent group bootstrap 95% interval −0.0225 to
 +0.0674). The known-drift training generator uses different schedules and noise
 from the independent panel. These measurements only cover simulated prices.
 
-The model remains available for offline use. Its CPU inference bundle has
-manifest SHA-256 `f427e2b3c638facf901c5a55ffcaec02395b9a5dfac914661b01fecd4aa937d3`.
-To classify an export, unpack the bundle in `var/release/direction-persistence`
-and run the following command.
+The frozen CPU bundle has manifest SHA-256
+`f427e2b3c638facf901c5a55ffcaec02395b9a5dfac914661b01fecd4aa937d3`.
+Its predictor uses the segment feature code from the evaluated revision.
+Place the unpacked bundle in `var/release/segment-moe` with `predict.py` at the
+top level. From the repository root, create the matching checkout once.
 
 ```sh
-uv run --locked --extra ml python var/release/direction-persistence/predict.py \
+git worktree add --detach var/segment-moe-source e50e3df88862e010468d2dad8e93446246387619
+```
+
+Run the predictor on an experiment export from the repository root.
+
+```sh
+uv run --project var/segment-moe-source --locked --extra ml python var/release/segment-moe/predict.py \
   market-export.json --output intervals.json
 ```
 
