@@ -46,14 +46,6 @@ function table(caption, headings) {
   return result;
 }
 
-function updateHeadings(result, headings) {
-  const links = result.tHead.querySelectorAll("a");
-  headings.forEach(({name, href}, index) => {
-    setText(links[index], name);
-    if (links[index].getAttribute("href") !== href) links[index].setAttribute("href", href);
-  });
-}
-
 function updateRows(result, rows) {
   const body = result.tBodies[0];
   rows.forEach(([label, left, right], index) => {
@@ -86,13 +78,29 @@ export function createTrainingComparison({readRun, session, runPath, duration, o
     retry.hidden = true;
   }
 
-  function render(view, runs) {
+  function runHeadings(runs) {
     const names = runs.map(run => run.display_name || (isImported(run) ? run.training.model_version_id
       : architectureName(run.training.architecture_id, true)));
-    const headings = runs.map((run, index) => ({
+    return runs.map((run, index) => ({
       name: (index === 0 ? "A · " : "B · ") + names[index] + (names[0] === names[1] ? " #" + run.run_id.slice(-8) : ""),
       href: runPath(run.run_id),
     }));
+  }
+
+  function updateHeadings() {
+    if (!current?.overview) return;
+    const headings = runHeadings(current.runs);
+    for (const result of [current.overview, current.settings]) {
+      if (!result) continue;
+      result.tHead.querySelectorAll("a").forEach((link, index) => {
+        const {name, href} = headings[index];
+        setText(link, name);
+        if (link.getAttribute("href") !== href) link.setAttribute("href", href);
+      });
+    }
+  }
+
+  function render(view, runs) {
     const row = (name, select) => [name, ...runs.map(run => select(run) ?? "—")];
     const rows = [
       row("Status", r => isImported(r) ? "Imported" : analysisStateLabel(r.job.state)),
@@ -107,6 +115,7 @@ export function createTrainingComparison({readRun, session, runPath, duration, o
     ];
     if (view.scores) rows.push(["Validation interval macro-F1", ...view.scores.map(value => value.toFixed(4))]);
     if (!view.overview) {
+      const headings = runHeadings(runs);
       view.overview = table("Run results", headings);
       content.append(view.overview);
       if (isImported(runs[0]) === isImported(runs[1]) && runs.every(run => run.configuration)) {
@@ -118,10 +127,7 @@ export function createTrainingComparison({readRun, session, runPath, duration, o
           updateRows(view.settings, differences);
         } else content.append(element("p", "Both runs used the same settings.", "hint"));
       }
-    } else {
-      updateHeadings(view.overview, headings);
-      if (view.settings) updateHeadings(view.settings, headings);
-    }
+    } else updateHeadings();
     updateRows(view.overview, rows);
   }
 
@@ -191,5 +197,5 @@ export function createTrainingComparison({readRun, session, runPath, duration, o
     return refresh();
   }
   retry.addEventListener("click", () => refresh());
-  return {close, show, refresh};
+  return {close, show, refresh, updateHeadings};
 }

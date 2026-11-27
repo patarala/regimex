@@ -153,6 +153,44 @@ def test_compare_two_finished_runs_from_history_and_bookmark(browser: Any, match
         page.close()
 
 
+def test_comparison_links_follow_the_history_filter(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.run.update(display_name="Control", output={"validation_segment_macro_f1": 0.7})
+    second = deepcopy(api.run)
+    second.update(run_id=OTHER_ID, display_name="Candidate")
+    second["training"]["parameters"] = {"channels": 32}
+    api.runs = [api.run, second]
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    try:
+        pair = f"left={RUN_ID}&right={OTHER_ID}"
+        page.goto(f"{ORIGIN}/training/compare?{pair}")
+        results = page.get_by_role("table", name="Run results")
+        settings = page.get_by_role("table", name="Settings that differ")
+        expect(settings).to_be_visible()
+        history = page.get_by_role("combobox", name="Run history view")
+        history.select_option("archived")
+        for table in (results, settings):
+            for label, run_id in (("A · Control", RUN_ID), ("B · Candidate", OTHER_ID)):
+                expect(table.get_by_role("link", name=label)).to_have_attribute(
+                    "href", f"/training/{run_id}?view=archived"
+                )
+        assert api.pages.count(f"training-runs/{RUN_ID}") == 1
+        assert api.pages.count(f"training-runs/{OTHER_ID}") == 1
+        settings.get_by_role("link", name="A · Control").click()
+        expect(page).to_have_url(f"{ORIGIN}/training/{RUN_ID}?view=archived")
+        expect(history).to_have_value("archived")
+        page.go_back()
+        expect(page).to_have_url(f"{ORIGIN}/training/compare?view=archived&{pair}")
+        page.go_back()
+        expect(results.get_by_role("link", name="B · Candidate")).to_have_attribute(
+            "href", f"/training/{OTHER_ID}"
+        )
+    finally:
+        page.close()
+
+
 def test_pending_runs_can_be_compared_without_archiving_or_reading_scores(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()

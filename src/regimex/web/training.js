@@ -660,6 +660,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       if (entering) $("training-empty").hidden = $("training-prev").hidden = $("training-next").hidden = true;
     }
     if (!entering && id === target && !pairChanged) {
+      if (id === "compare") comparison.updateHeadings();
       void list();
       return;
     }
