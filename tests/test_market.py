@@ -134,6 +134,16 @@ def test_initial_price_rejects_fractional_ticks_even_when_close_to_a_tick() -> N
         MarketConfig(initial_prices=(0.010000001,), tick_size=0.01)
 
 
+def test_cash_limit_uses_the_settlement_units_booked_to_the_wallet() -> None:
+    at_limit = ParticipantProfile(count=1, cash=300_000_000_000_000.0)
+    market = MarketConfig(tick_size=0.01, lot_size=0.03, profiles=(at_limit,))
+    assert market.cash_units(at_limit.cash) == 10**18
+
+    over_limit = ParticipantProfile(count=1, cash=700_000_000_000_000.1)
+    with pytest.raises(ValidationError, match="cash exceeds"):
+        MarketConfig(tick_size=0.01, lot_size=0.07, test_participant=over_limit)
+
+
 @pytest.mark.parametrize(
     ("offset", "ticks"),
     [(149.9999999999999, 101), (150.0, 102), (150.0000000000001, 102), (-150.0, 98)],

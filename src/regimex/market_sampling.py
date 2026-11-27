@@ -9,6 +9,10 @@ from regimex.market_config import MarketConfig, ParticipantProfile
 
 SamplingFamily = Literal["inactive", "one_sided", "fixed_price", "heterogeneous"]
 
+# Participant streams use indices 0 through 256. This fixed index keeps the
+# sampled configuration independent of their events and reproducible across runs.
+_CONFIGURATION_STREAM = 0xC0FFEE
+
 
 def _sample_profile(
     rng: np.random.Generator, count: int, strategy: Literal["random", "trend"]
@@ -37,7 +41,8 @@ def sample_market(seed: int, instrument_count: int) -> MarketConfig:
     """Draw participant profiles and initial prices from a seed."""
     if instrument_count not in (1, 2):
         raise ValueError("one or two instruments are required")
-    rng = np.random.Generator(np.random.PCG64(np.random.SeedSequence([seed, 0xC0FFEE])))
+    seed_sequence = np.random.SeedSequence([seed, _CONFIGURATION_STREAM])
+    rng = np.random.Generator(np.random.PCG64(seed_sequence))
     prices = tuple(float(rng.integers(2000, 20001)) / 100 for _ in range(instrument_count))
     choice = rng.random()
     family: SamplingFamily

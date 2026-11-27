@@ -5,6 +5,7 @@ import heapq
 import math
 from dataclasses import dataclass, field
 from fractions import Fraction
+from functools import lru_cache
 from typing import Literal
 
 import numpy as np
@@ -215,11 +216,17 @@ class Exchange:
                 raise ValueError("exchange did not conserve base assets")
 
 
+@lru_cache
+def _trend_threshold(threshold: float) -> Fraction:
+    # All participants in a profile reuse its exact decimal threshold for every order.
+    return Fraction(str(threshold))
+
+
 def trend_action(history: list[int], window: int, threshold: float) -> Side | None:
     if len(history) <= window:
         return None
     reference = history[-1 - window]
-    threshold_ratio = Fraction(str(threshold))
+    threshold_ratio = _trend_threshold(threshold)
     change = (history[-1] - reference) * threshold_ratio.denominator
     boundary = threshold_ratio.numerator * reference
     if change >= boundary:

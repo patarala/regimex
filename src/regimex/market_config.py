@@ -80,9 +80,6 @@ class MarketConfig(StrictModel):
         unit = self.tick_size * self.lot_size
         if not math.isfinite(unit) or unit <= 0:
             raise ValueError("tick and lot sizes must have a finite positive product")
-        if any(
-            not math.isfinite(p.cash / unit) or p.cash / unit > 10**18
-            for p in (*self.profiles, self.test_participant)
-        ):
+        if any(self.cash_units(p.cash) > 10**18 for p in (*self.profiles, self.test_participant)):
             raise ValueError("cash exceeds the supported integer settlement range")
         return self
