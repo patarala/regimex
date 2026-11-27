@@ -272,6 +272,7 @@ def test_save_json_predictions(
         ("wrong_snapshot_hash", "pinned at intake"),
         ("wrong_weights", "pinned at intake"),
         ("wrong_inference_policy", "pinned at intake"),
+        ("duplicate_instrument", "schema"),
     ],
 )
 def test_rejects_unusable_json_result(
@@ -291,6 +292,9 @@ def test_rejects_unusable_json_result(
                 data["model"]["bundle_sha256"] = "0" * 64
             if issue == "wrong_inference_policy":
                 data["model"]["inference_policy_sha256"] = "0" * 64
+            if issue == "duplicate_instrument":
+                data["instruments"] = [data["instruments"][0]] * 2
+                data["sequences"] = [data["sequences"][0]] * 2
             return reply(200, data)
         return reply(200, status_for("succeeded", result_available=issue != "missing"))
 

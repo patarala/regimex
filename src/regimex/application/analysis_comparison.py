@@ -15,7 +15,7 @@ from regimex.report_licenses import license_notices
 from regimex.storage import json_bytes
 
 if TYPE_CHECKING:
-    from regimex.application.service import AnalysisResult
+    from regimex.analysis_result import AnalysisResult
 
 COMPARISON_RENDERER_VERSION = "analysis-comparison/1.4"
 

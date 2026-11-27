@@ -9,8 +9,8 @@ from statistics import fmean, pstdev
 
 from pydantic import JsonValue
 
+from regimex.analysis_result import AnalysisResult
 from regimex.application.report import validate_analysis_result
-from regimex.application.service import AnalysisResult
 from regimex.contracts import Observation
 from regimex.data_catalog import (
     DatasetManifest,

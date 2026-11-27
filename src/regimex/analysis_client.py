@@ -117,7 +117,7 @@ async def _download(
             raise ValueError("The service returned an empty report.")
         return html
 
-    from regimex.application.service import AnalysisResult
+    from regimex.analysis_result import AnalysisResult
 
     if not analysis.result_available:
         raise ValueError("The analysis succeeded without a saved JSON result.")

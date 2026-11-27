@@ -24,7 +24,7 @@ from regimex.report_licenses import license_notices
 from regimex.storage import digest, output_directory, write_json
 
 if TYPE_CHECKING:
-    from regimex.application.service import AnalysisResult
+    from regimex.analysis_result import AnalysisResult
 
 REGIME_COLORS = {
     "growth": "#059669",

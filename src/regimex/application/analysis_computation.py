@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 from pydantic import JsonValue
 
-from regimex.application.service import AnalysisResult, PredictionSequence
+from regimex.analysis_result import AnalysisResult, PredictionSequence
 from regimex.contracts import Observation
 from regimex.directions import DIRECTION_NAMES, DirectionAnnotations
 from regimex.evaluation import probabilities_valid

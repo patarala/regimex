@@ -18,8 +18,9 @@ from uuid import UUID
 import psycopg
 from pydantic import Field, JsonValue
 
+from regimex.analysis_result import AnalysisResult
 from regimex.application.attempt_supervision import AttemptSupervisor
-from regimex.application.service import AnalysisResult, AnalysisService, materialize_bundle
+from regimex.application.service import AnalysisService, materialize_bundle
 from regimex.computation_worker import (
     ChildLimits,
     ComputationFailure,

@@ -7,21 +7,17 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from importlib.metadata import version
-from typing import TYPE_CHECKING
 
+from regimex.analysis_result import AnalysisResult
 from regimex.contracts import MAX_INPUT_BYTES, Observation
 from regimex.directions import AnalysisConfig, DirectionAnnotations, DirectionInterval
 from regimex.exports import ExportInstrument, ExportObservation, ExportV2, parse_export_v2
 from regimex.infrastructure.object_store import ObjectCapacityError, ObjectIntegrityError
 from regimex.model_registry import RegistryError
-from regimex.storage import json_bytes
-
-if TYPE_CHECKING:
-    from regimex.application.service import AnalysisResult
-
 from regimex.report_assets import report_assets
 from regimex.report_contracts import MAX_REPORT_BYTES, REPORT_RENDERER_VERSION
 from regimex.report_licenses import license_notices
+from regimex.storage import json_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,8 +139,6 @@ def validate_analysis_result(
     """
     # Revalidation prevents a mutated nested dict or model_copy bypass from
     # converting an invalid provenance object into a trusted report.
-    from regimex.application.service import AnalysisResult
-
     export_bytes = json_bytes(export.model_dump(mode="json"))
     # A committed digest covers the stored numeric spelling, including integer probabilities.
     result_bytes = (

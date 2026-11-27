@@ -56,7 +56,7 @@ Paths below are relative to `src/regimex/`.
 | Persistence | `infrastructure/` | Database transactions, migrations, queue and object storage |
 | Workers | `service_worker.py`, `computation_worker.py` | Claim tasks, supervise child processes and recover unfinished work |
 | Scientific code | `model_registry.py`, `backends/`, `directions.py`, `segmentation.py`, `evaluation.py` | Restore models, prepare features, decode predictions and measure quality |
-| Inputs and artifacts | `exports.py`, `data_catalog.py`, `model_bundles.py` | Validate exports, dataset membership and saved model bundles |
+| Inputs and artifacts | `exports.py`, `data_catalog.py`, `model_bundles.py`, `analysis_result.py` | Validate exports, dataset membership, model bundles and saved predictions |
 | Generator | `market.py`, `market_sampling.py`, `market_export.py` | Simulate a sampled market and build the same export format for the CLI and generated datasets |
 | Service reports | `application/report.py`, `application/analysis_comparison.py`, `templates/` | Render a single analysis or compare two completed analyses of the same saved snapshot |
 | Report directories | `visualization.py`, `comparison.py` | Render saved predictions across experiments or compare model evaluations |

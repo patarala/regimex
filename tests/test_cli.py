@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from textwrap import dedent
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
@@ -64,10 +65,20 @@ def test_offline_cli_and_saved_results_do_not_import_optional_dependencies() -> 
         [
             sys.executable,
             "-c",
-            "import sys; import regimex.cli; "
-            "from regimex.application.service import AnalysisResult; "
-            "assert not {'numpy', 'sklearn', 'torch', 'matplotlib', 'plotly', 'psycopg', "
-            "'fastapi'} & sys.modules.keys()",
+            dedent("""
+                import sys
+                from regimex.analysis_result import AnalysisResult, PredictionSequence
+
+                layers = {'regimex.application', 'regimex.infrastructure', 'regimex.storage'}
+                assert layers.isdisjoint(sys.modules)
+                import regimex.cli
+                import regimex.application.service as service
+
+                assert service.AnalysisResult is AnalysisResult
+                assert service.PredictionSequence is PredictionSequence
+                extras = {'numpy', 'sklearn', 'torch', 'matplotlib', 'plotly', 'psycopg', 'fastapi'}
+                assert extras.isdisjoint(sys.modules)
+            """),
         ],
         check=True,
     )

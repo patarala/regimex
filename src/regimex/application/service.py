@@ -9,18 +9,17 @@ import tempfile
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
-from pydantic import Field, JsonValue, ValidationError, model_validator
+from pydantic import JsonValue, ValidationError
 
-from regimex.contracts import MAX_INPUT_BYTES, MAX_STEPS, Identifier, StrictModel
+from regimex.analysis_result import AnalysisResult as AnalysisResult
+from regimex.analysis_result import PredictionSequence as PredictionSequence
+from regimex.contracts import MAX_INPUT_BYTES
 from regimex.diagnostic_contracts import QueueStatus
-from regimex.directions import AnalysisConfig, DirectionInterval
 from regimex.exports import (
-    ExportInstrument,
     ExportV2,
-    ModelTimeGrid,
     SourceIdentity,
     parse_export_v2,
 )
@@ -43,7 +42,7 @@ from regimex.infrastructure.resource_lifecycle import (
 )
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle, verify_model_bundle
 from regimex.model_registry import ArchitectureInfo, ArchitectureRegistry, InferenceRuntime
-from regimex.operations import LaunchSource, Operation, ResolvedModel
+from regimex.operations import LaunchSource, Operation
 from regimex.report_contracts import MAX_REPORT_BYTES, AnalysisReportRecord
 from regimex.service_contracts import (
     AnalysisRecord,
@@ -70,59 +69,6 @@ if TYPE_CHECKING:
     from regimex.external_latency import ExternalLatencyEvidence
     from regimex.infrastructure.database import DatabaseRepository
     from regimex.service_contracts import AnalysisSummary
-
-
-class PredictionSequence(StrictModel):
-    """Predictions preserve every input bin, including unavailable price periods."""
-
-    instrument_id: Identifier
-    probabilities: Annotated[
-        tuple[tuple[float, float, float], ...], Field(min_length=1, max_length=MAX_STEPS)
-    ]
-    intervals: Annotated[tuple[DirectionInterval, ...], Field(min_length=1, max_length=MAX_STEPS)]
-
-    @model_validator(mode="after")
-    def full_grid(self) -> PredictionSequence:
-        if not self.probabilities or not self.intervals:
-            raise ValueError("predictions require the complete nonempty observation grid")
-        for row in self.probabilities:
-            if any(value < 0 or value > 1 for value in row) or abs(sum(row) - 1) > 1e-6:
-                raise ValueError("probability rows must be normalized and bounded")
-        previous = 0
-        for interval in self.intervals:
-            if interval.instrument_id != self.instrument_id or interval.start != previous:
-                raise ValueError("prediction intervals must cover one instrument without gaps")
-            previous = interval.stop
-        if previous != len(self.probabilities):
-            raise ValueError("prediction intervals must cover every probability row")
-        return self
-
-
-class AnalysisResult(StrictModel):
-    result_version: Literal["2.0"] = "2.0"
-    analysis_id: UUID
-    snapshot_id: UUID
-    snapshot_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-    source: SourceIdentity
-    model: ResolvedModel
-    architecture_id: Identifier
-    implementation_version: Identifier
-    decoder_version: Identifier
-    analysis_profile_id: Identifier
-    analysis: AnalysisConfig
-    inference_runtime: InferenceRuntime
-    class_names: tuple[Literal["sideways"], Literal["growth"], Literal["decline"]]
-    time_grid: ModelTimeGrid
-    instruments: Annotated[tuple[ExportInstrument, ...], Field(min_length=1, max_length=2)]
-    sequences: Annotated[tuple[PredictionSequence, ...], Field(min_length=1, max_length=2)]
-
-    @model_validator(mode="after")
-    def original_grid(self) -> AnalysisResult:
-        if tuple(item.instrument_id for item in self.instruments) != tuple(
-            item.instrument_id for item in self.sequences
-        ) or any(len(item.probabilities) != self.time_grid.step_count for item in self.sequences):
-            raise ValueError("results must preserve the complete input instrument/time grid")
-        return self
 
 
 def _snapshot_key(owner_id: str, data_sha256: str) -> str:
