@@ -107,11 +107,17 @@ test("preparation keeps unsaved job progress and dismissal until another tab cha
     if (url.endsWith("/job-1")) return {job: {state: "failed"}};
     throw new Error("Connection lost");
   }};
+  get("preparation-development").valueAsNumber = 9;
+  get("preparation-final").valueAsNumber = 5;
+  get("preparation-steps").valueAsNumber = 128;
   const preparation = createDataPreparation({session});
   const submit = () => get("data-preparation-form").emit("submit", {preventDefault() {}});
   const key = "regimex.training-preparation.v1.alice";
 
   preparation.open();
+  await submit();
+  assert.equal(requests.length, 0);
+  preparation.setExperimentLimit(128);
   await submit();
   const initial = JSON.parse(disk.get(key));
   assert.equal(initial.job, undefined);
