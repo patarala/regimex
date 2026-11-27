@@ -13,6 +13,7 @@ from regimex.direction_quality import (
     MeasuredCohort,
     read_direction_quality,
 )
+from regimex.directions import DIRECTION_POLICY, PREVIOUS_DIRECTION_POLICY, AutomaticPolicy
 from regimex.model_bundles import ReferenceIdentity, TrainingEvidence
 from regimex.storage import json_bytes
 
@@ -131,8 +132,9 @@ def test_evidence_binds_bundle_training_selection_and_reference_origin() -> None
 
 
 @pytest.mark.parametrize("shared_source", [False, True], ids=["single-export", "multiple-exports"])
+@pytest.mark.parametrize("policy", [PREVIOUS_DIRECTION_POLICY, DIRECTION_POLICY])
 def test_offline_scorer_verifies_native_inputs_before_reporting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shared_source: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, shared_source: bool, policy: AutomaticPolicy
 ) -> None:
     import importlib
     from types import SimpleNamespace
@@ -155,7 +157,9 @@ def test_offline_scorer_verifies_native_inputs_before_reporting(
             manifest.dataset_id, (*manifest.members, create_snapshot_member(other, "validation"))
         )
         validation.append(other)
-    labels = tuple(annotate(SnapshotGrid.from_export(s.export), PROFILE) for s in validation)
+    labels = tuple(
+        annotate(SnapshotGrid.from_export(s.export), PROFILE, policy=policy) for s in validation
+    )
     refs = reference_set(manifest, sources, "validation", documents=labels)
     bundle = SimpleNamespace(
         architecture_id="baseline",

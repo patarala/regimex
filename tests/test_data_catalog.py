@@ -150,7 +150,7 @@ def reference_set(
             dataset_sha256=manifest.content_sha256,
             partition=partition,
             kind="human" if human else "automatic",
-            policy="human-directions/1.0" if human else "retrospective-directions/3.0",
+            policy=documents[0].policy,
             semantics=SEMANTICS,
             analysis_profile=PROFILE,
             reviewer="independent-reviewer" if human else None,

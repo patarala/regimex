@@ -88,7 +88,9 @@ def measure(dataset_path, references_path, locations_path, predictor, bundle, ru
         identity = record_group(member, exposures)
         export = member.bind_export(load_export_v2(path)).export
         descriptor.validate_observation_fields(export.capabilities.observation_fields())
-        labels = annotate(SnapshotGrid.from_export(export), references.analysis_profile)
+        labels = annotate(
+            SnapshotGrid.from_export(export), references.analysis_profile, policy=references.policy
+        )
         if create_reference_member(member, labels) != reference:
             raise ValueError("Regenerated annotations differ from the original references.")
         inputs = snapshot_inputs(export)
