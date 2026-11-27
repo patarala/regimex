@@ -80,6 +80,9 @@ from regimex.training_statistics import TrainingRunStatistics
 
 
 class AdminAPIService(Protocol):
+    @property
+    def max_generation_experiments(self) -> int: ...
+
     def set_training_archive(
         self, principal: Principal, run_ids: tuple[UUID, ...], *, archived: bool
     ) -> None: ...
@@ -407,6 +410,7 @@ class DatasetPage(StrictModel):
     items: tuple[DatasetView, ...]
     limit: int
     offset: int
+    max_generation_experiments: int
 
 
 class ReferenceView(StrictModel):
@@ -611,6 +615,7 @@ def install_admin_routes(
             ),
             limit=limit,
             offset=offset,
+            max_generation_experiments=service.max_generation_experiments,
         )
 
     @app.get("/api/v1/datasets/{dataset_id}")

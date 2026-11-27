@@ -26,6 +26,10 @@ export function createDataPreparation({session, onUse}) {
   const action = $("preparation-action");
   const status = $("preparation-status");
   const check = $("preparation-attest");
+  const sizes = [$("preparation-development"), $("preparation-final")];
+  const defaults = sizes.map(input => input.valueAsNumber);
+  const schemaLimit = Number(sizes[0].max);
+  let limitReady = false;
   let plan = null, key = "", revision = 0, timer, busy = false, inventory = null;
   let retryDelay = 1500;
   const drafts = new Map();
@@ -76,7 +80,7 @@ export function createDataPreparation({session, onUse}) {
     $("preparation-datasets").textContent = review ? `Development: ${plan.outputs.development} · Final: ${plan.outputs.final}` : "";
     $("preparation-sources").textContent = review ? inventory.source_namespaces.join("\n") : "";
     check.disabled = busy;
-    action.disabled = busy || (review && !check.checked);
+    action.disabled = busy || (!plan && !limitReady) || (review && !check.checked);
     action.textContent = ready ? "Use prepared data" : review ? "Reserve benchmark" :
       busy ? "Preparing…" : plan ? "Continue preparation" : "Generate datasets";
     const forget = $("preparation-forget");
@@ -90,7 +94,7 @@ export function createDataPreparation({session, onUse}) {
     status.classList.toggle("error", error);
   }
 
-  function open() {
+  function restorePlan() {
     close();
     key = "regimex.training-preparation.v1." + session.value.principal.owner_id;
     plan = read();
@@ -175,14 +179,14 @@ export function createDataPreparation({session, onUse}) {
   }
   async function submit(event) {
     event.preventDefault();
-    if (busy || !key) return;
+    if (busy || !key || (!plan && !limitReady)) return;
     const stamp = ++revision;
     busy = true;
     try {
       if (!plan) {
         const create = () => {
           if (!active(stamp)) return;
-          if (read()) { open(); return; }
+          if (read()) { restorePlan(); return; }
           const [devSeed, other] = crypto.getRandomValues(new Uint32Array(2));
           plan = {...fields(), devSeed, finalSeed: other === devSeed ? (other + 1) >>> 0 : other,
             id: crypto.randomUUID(), outputs: {}, attempt: 0};
@@ -204,7 +208,7 @@ export function createDataPreparation({session, onUse}) {
         }
         plan = inventory = null;
         save();
-        open();
+        restorePlan();
         $("training-dataset").focus();
       } else if (inventory && check.checked) {
         show("Reserving the benchmark…");
@@ -231,7 +235,7 @@ export function createDataPreparation({session, onUse}) {
   }
   form.addEventListener("submit", submit);
   window.addEventListener("storage", event => {
-    if (key && (event.key === key || event.key === null) && read(true) !== plan) open();
+    if (key && (event.key === key || event.key === null) && read(true) !== plan) restorePlan();
   });
   $("preparation-size").addEventListener("input", counts);
   check.addEventListener("change", () => { action.disabled = !check.checked; });
@@ -239,8 +243,22 @@ export function createDataPreparation({session, onUse}) {
     if (busy || !plan || !window.confirm("Dismiss this setup? Any jobs and datasets already created will remain on the service.")) return;
     plan = null;
     save();
-    open();
+    restorePlan();
     panel.open = true;
   });
-  return {open, close};
+  function setExperimentLimit(limit = schemaLimit) {
+    for (const [index, input] of sizes.entries()) {
+      input.max = String(limit);
+      // Changing the default updates an untouched field and preserves an edited value.
+      input.defaultValue = String(Math.min(defaults[index], limit));
+    }
+    limitReady = true;
+    if (!plan) { counts(); show(); }
+  }
+
+  function open() {
+    limitReady = false;
+    restorePlan();
+  }
+  return {open, close, setExperimentLimit};
 }

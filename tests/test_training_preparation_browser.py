@@ -9,11 +9,60 @@ from test_admin_api import AdministrativeAPI
 from test_admin_api import administrative_api as administrative_api
 from test_offline_report_browser import browser as browser
 from test_simulator_gateway_integration import tcp_server
+from test_training_workspace_browser import ORIGIN, TrainingAPI
 
 from regimex.api import create_app
 from regimex.application.auth import AuthService
 from regimex.auth_contracts import AuthPolicy
 from regimex.infrastructure.auth_repository import AuthRepository
+
+
+@pytest.mark.parametrize(
+    ("limit", "draft", "expected"),
+    [
+        pytest.param(None, (None, None), ("48", "24"), id="older-catalog"),
+        pytest.param(12, ("7", "8"), ("7", "8"), id="valid-edits"),
+        pytest.param(12, (None, "13"), ("12", "13"), id="edit-over-limit"),
+    ],
+)
+def test_late_catalog_updates_only_untouched_preparation_sizes(
+    browser: Any,
+    limit: int | None,
+    draft: tuple[str | None, str | None],
+    expected: tuple[str, str],
+) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    page = browser.new_page()
+    catalog: list[Any] = []
+    page.route(ORIGIN + "/**", TrainingAPI().dispatch)
+    page.route("**/api/v1/datasets?*", lambda route: catalog.append(route))
+    try:
+        with page.expect_request("**/api/v1/datasets?*"):
+            page.goto(ORIGIN + "/training/new")
+        page.get_by_text("Prepare training data", exact=True).click()
+        sizes = [
+            page.get_by_label("Development experiments"),
+            page.get_by_label("Final dataset experiments"),
+        ]
+        action = page.get_by_role("button", name="Generate datasets")
+        expect(action).to_be_disabled()
+        for field, value in zip(sizes, draft, strict=True):
+            expect(field).to_be_editable()
+            if value is not None:
+                field.fill(value)
+        response: dict[str, Any] = {"items": [], "limit": 100, "offset": 0}
+        if limit is not None:
+            response["max_generation_experiments"] = limit
+        catalog[0].fulfill(json=response)
+        expect(action).to_be_enabled()
+        for field, value in zip(sizes, expected, strict=True):
+            expect(field).to_have_value(value)
+            expect(field).to_have_attribute("max", str(limit or 1000))
+            assert field.evaluate("input => input.validity.rangeOverflow") == (
+                limit is not None and int(value) > limit
+            )
+    finally:
+        page.close()
 
 
 def test_resumable_preparation_generates_and_reserves_data_without_starting_training(
@@ -22,6 +71,9 @@ def test_resumable_preparation_generates_and_reserves_data_without_starting_trai
     pytest.importorskip("numpy")
     expect = pytest.importorskip("playwright.sync_api").expect
     ctx = administrative_api
+    ctx.service.settings = ctx.service.settings.model_copy(
+        update={"max_generation_experiments": 12}
+    )
 
     def app(origin: str) -> Any:
         return create_app(
@@ -88,6 +140,15 @@ def test_resumable_preparation_generates_and_reserves_data_without_starting_trai
             page.locator("#token").fill(ctx.token)
             page.locator("#login-submit").click()
             page.get_by_text("Prepare training data", exact=True).click()
+            for field in ("Development experiments", "Final dataset experiments"):
+                expect(page.get_by_label(field)).to_have_attribute("max", "12")
+                expect(page.get_by_label(field)).to_have_value("12")
+            page.get_by_label("Development experiments").fill("13")
+            page.get_by_role("button", name="Generate datasets").click()
+            assert page.get_by_label("Development experiments").evaluate(
+                "field => field.validity.rangeOverflow"
+            )
+            assert not jobs
             page.get_by_label("Development experiments").fill("9")
             page.get_by_label("Final dataset experiments").fill("5")
             page.get_by_label("Steps per experiment").fill("128")

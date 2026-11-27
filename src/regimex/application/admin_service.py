@@ -184,8 +184,11 @@ class AdminService:
             return previous
         try:
             if isinstance(spec, GenerationSpec):
-                if spec.plan.experiment_count > self.settings.max_generation_experiments:
-                    raise CapacityExceeded("Generation exceeds the server experiment limit.")
+                if spec.plan.experiment_count > self.max_generation_experiments:
+                    raise CapacityExceeded(
+                        f"A dataset can contain at most {self.max_generation_experiments} "
+                        "generated experiments."
+                    )
                 if spec.generator_version is None:
                     spec = spec.model_copy(update={"generator_version": GENERATOR_VERSION})
             elif isinstance(spec, ReferenceGenerationSpec):
@@ -553,6 +556,10 @@ class AdminService:
 
     def get_dataset(self, principal: Principal, dataset_id: str) -> DatasetRecord:
         return self.repository.get_dataset(principal, dataset_id)
+
+    @property
+    def max_generation_experiments(self) -> int:
+        return self.settings.max_generation_experiments
 
     def list_datasets(
         self,

@@ -354,7 +354,7 @@ run status and the choices available to the signed-in administrator:
 
 | Request | Result |
 | --- | --- |
-| `GET /datasets?development_only=true&limit=100&offset=0` | Registered development datasets owned by this account |
+| `GET /datasets?development_only=true&limit=100&offset=0` | Registered development datasets owned by this account and `max_generation_experiments`, the server limit for each generated dataset |
 | `GET /training-options/benchmarks?dataset_id=ID` | Eligible open reservations in `benchmark_ids` and the `analysis_profile_id` accepted for new training |
 | `GET /training-runs?archive=active&limit=20&offset=0` | Newest training runs first. Choose `active` for unarchived runs, `archived` for the archive, or `all` (the API default). |
 | `PATCH /training-runs/archive` | Archive or restore up to 100 completed runs in one request. |

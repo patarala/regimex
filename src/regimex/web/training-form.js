@@ -215,7 +215,9 @@ export function createTrainingForm({session, eachPage}) {
     updateSubmit();
     try {
       const [datasets, backends] = await Promise.all([
-        eachPage(api + "datasets?development_only=true", valid), eachPage(api + "architectures", valid),
+        eachPage(api + "datasets?development_only=true", valid,
+          page => preparation.setExperimentLimit(page.max_generation_experiments)),
+        eachPage(api + "architectures", valid),
       ]);
       if (!valid()) return;
       choices("training-dataset", datasets.filter(row => row.partitions.train && row.partitions.validation)

@@ -367,12 +367,13 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     return result;
   }
 
-  async function eachPage(path, isCurrent) {
+  async function eachPage(path, isCurrent, onFirstPage) {
     const rows = [];
     const join = path.includes("?") ? "&" : "?";
     while (isCurrent()) {
       const page = await session.json(path + join + "limit=100&offset=" + rows.length);
       if (!isCurrent()) break;
+      if (!rows.length) onFirstPage?.(page);
       rows.push(...page.items);
       if (page.items.length < 100) break;
     }
