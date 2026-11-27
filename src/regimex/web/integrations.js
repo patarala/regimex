@@ -174,13 +174,13 @@ export function createIntegrations({session, navigate}) {
 
   function renderConnection(item) {
     const row = element("li", "");
-    const button = element("button", "", "quiet");
-    button.type = "button";
-    button.setAttribute("aria-current", String(item.integration_id === selectedId));
-    button.append(element("strong", item.display_name), element("span", item.enabled ? "Active" : "Paused", "hint"),
+    const link = element("a", "", "button quiet");
+    link.href = "/connections/" + encodeURIComponent(item.integration_id);
+    link.setAttribute("data-workspace-link", "");
+    if (item.integration_id === selectedId) link.setAttribute("aria-current", "page");
+    link.append(element("strong", item.display_name), element("span", item.enabled ? "Active" : "Paused", "hint"),
       element("small", `${item.owner_id} / ${item.source_namespace}`));
-    button.addEventListener("click", () => navigate("/connections/" + encodeURIComponent(item.integration_id)));
-    row.append(button);
+    row.append(link);
     return row;
   }
 

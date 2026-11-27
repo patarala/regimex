@@ -91,15 +91,20 @@ async function workspace(role = "admin") {
   await entry.link((specifier, parent) => load(path.resolve(path.dirname(parent.identifier), specifier)));
   await entry.evaluate();
   const routes = [];
-  const controller = entry.namespace.createIntegrations({session, navigate(route) {
+  function navigate(route) {
     routes.push(route);
     if (route) return controller.show(route.split("/").at(-1));
     controller.reset();
-  }});
+  }
+  const controller = entry.namespace.createIntegrations({session, navigate});
   controller.reset();
+  function follow(index) {
+    const link = get("connection-list").children[index].children[0];
+    return navigate(link.href);
+  }
   async function open(index = 0) {
     await controller.show();
-    get("connection-list").children[index].children[0].fire("click");
+    await follow(index);
     await flush();
   }
   function issue() {
@@ -107,7 +112,7 @@ async function workspace(role = "admin") {
     get("connection-key-days").value = "30";
     get("connection-key-create").fire("submit");
   }
-  return {get, calls, copied, controller, session, open, issue, state, events, routes};
+  return {get, calls, copied, controller, session, open, follow, issue, state, events, routes};
 }
 
 test("ordinary users cannot open connection administration or send management requests", async () => {
@@ -232,7 +237,7 @@ test("a key response from a previous connection never appears in the current con
   page.issue();
   await flush();
   const issued = page.calls.find((call) => call.options.method === "POST");
-  page.get("connection-list").children[1].children[0].fire("click");
+  page.follow(1);
   await flush();
   issued.resolve({key: {}, token: "rgx_old-connection-secret"});
   await flush();
@@ -295,7 +300,7 @@ test("connection storage follows selection and is cleared when signing out", asy
   page.get("connection-refresh").fire("click");
   await flush();
   const stale = page.calls.filter((call) => call.url.endsWith("/one/storage")).at(-1);
-  page.get("connection-list").children[1].children[0].fire("click");
+  page.follow(1);
   await flush();
   const latest = page.calls.find((call) => call.url.endsWith("/two/storage"));
   latest.resolve({used_bytes: 2048, reserved_bytes: 1024, limit_bytes: 4096, available_bytes: 1024});

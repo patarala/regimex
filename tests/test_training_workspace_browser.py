@@ -1434,7 +1434,7 @@ def test_connection_bookmark_reloads_and_preserves_browser_history(browser: Any)
         expect(page.get_by_role("link", name="Connections")).to_have_attribute(
             "href", "/connections"
         )
-        page.get_by_role("button", name="Market simulator").click()
+        page.get_by_role("link", name="Market simulator").click()
         heading = page.get_by_role("heading", name="Market simulator")
         expect(page).to_have_url(bookmark)
         expect(heading).to_be_visible()

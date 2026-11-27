@@ -86,13 +86,22 @@ def test_keyboard_key_handoff_and_backend_setup(browser: Any, width: int) -> Non
         route.fulfill(json=responses[path])
 
     page = browser.new_page(viewport={"width": width, "height": 720})
-    page.route(ORIGIN + "/**", TrainingAPI().dispatch)
-    page.route(ORIGIN + api + "**", dispatch)
+    page.context.route(ORIGIN + "/**", TrainingAPI().dispatch)
+    page.context.route(ORIGIN + api + "**", dispatch)
     page.add_init_script("Object.defineProperty(navigator, 'clipboard', {value: undefined});")
     try:
         page.goto(ORIGIN + "/connections")
-        page.get_by_role("button", name="Market simulator").press("Enter")
+        link = page.get_by_role("link", name="Market simulator")
+        expect(link).to_have_attribute("href", f"/connections/{connection_id}")
+        with page.context.expect_page() as opened:
+            link.click(modifiers=["ControlOrMeta"])
+        popup = opened.value
+        expect(popup.get_by_role("heading", name="Market simulator")).to_be_visible()
+        popup.close()
+        expect(page).to_have_url(ORIGIN + "/connections")
+        link.press("Enter")
         expect(page).to_have_url(f"{ORIGIN}/connections/{connection_id}")
+        expect(link).to_have_attribute("aria-current", "page")
         page.get_by_text("Backend setup", exact=True).press("Enter")
         expect(page.locator("#connection-verify-url")).to_have_text(ORIGIN + "/api/v1/connection")
         expect(page.locator("#connection-id")).to_have_text(connection_id)

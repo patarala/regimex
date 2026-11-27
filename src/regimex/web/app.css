@@ -310,7 +310,7 @@ p {
 .connection-list li + li {
   margin-top: 2px;
 }
-.connection-list button {
+.connection-list a {
   width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -319,6 +319,9 @@ p {
   border-color: transparent;
   text-align: left;
   overflow-wrap: anywhere;
+}
+.connection-list a:hover {
+  background: var(--hover);
 }
 .connection-list small {
   grid-column: 1 / -1;
@@ -1283,7 +1286,8 @@ iframe {
   color: var(--danger);
 }
 /* Use the same selection treatment as the other resource lists. */
-:is(.training-runs, .connection-list) button[aria-current="true"],
+.training-runs button[aria-current="true"],
+.connection-list a[aria-current="page"],
 .history .history-entry[aria-current="true"] {
   background: var(--selected);
   color: var(--ink);
