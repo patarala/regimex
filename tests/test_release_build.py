@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -122,7 +123,7 @@ def test_release_builds_installable_packages_with_stable_hashes(
     )
     environment = tmp_path / "installed"
     run(sys.executable, "-m", "venv", "--without-pip", str(environment), cwd=tmp_path)
-    python = environment / "bin" / "python"
+    python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     run("uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel), cwd=tmp_path)
     assert run(str(python), "-m", "regimex", cwd=tmp_path).stdout.strip() == "installed-release-ok"
     repeated = build(source, output)
@@ -143,6 +144,124 @@ def test_dirty_source_requires_explicit_preview(source: Path, tmp_path: Path) ->
         manifest = json.loads(archive.read("regimex-1.2.3/BUILD.json"))
         assert manifest["source"]["working_tree_preview"] is True
         assert archive.read("regimex-1.2.3/README.md") == b"# Changed source\n"
+
+
+@pytest.mark.parametrize("collision", ["zip", "sha256"])
+def test_release_rejects_output_directories_before_changing_either_file(
+    source: Path, tmp_path: Path, collision: str
+) -> None:
+    output = tmp_path / "output"
+    output.mkdir()
+    archive = output / "regimex-1.2.3.zip"
+    checksum = output / "regimex-1.2.3.zip.sha256"
+    invalid, previous = (archive, checksum) if collision == "zip" else (checksum, archive)
+    invalid.mkdir()
+    previous.write_bytes(b"previous release")
+    result = build(source, output)
+    assert result.returncode and "Release output must be a regular file" in result.stderr
+    assert invalid.is_dir() and previous.read_bytes() == b"previous release"
+
+
+def test_checksum_staging_failure_preserves_published_pair(tmp_path: Path) -> None:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    archive = stage / "release.zip"
+    archive.write_bytes(b"replacement")
+    (stage / "release.zip.sha256").mkdir()
+    target = tmp_path / "release.zip"
+    target.write_bytes(b"previous")
+    checksum = tmp_path / "release.zip.sha256"
+    expected = f"{hashlib.sha256(b'previous').hexdigest()}  release.zip\n"
+    checksum.write_text(expected)
+
+    publish = runpy.run_path(str(BUILDER))["publish_archive"]
+    with pytest.raises(OSError):
+        publish(archive, target)
+    assert target.read_bytes() == b"previous"
+    assert checksum.read_text() == expected
+
+
+def test_concurrent_publication_recovers_after_an_interrupted_replacement(tmp_path: Path) -> None:
+    target = tmp_path / "release.zip"
+    checksum = tmp_path / "release.zip.sha256"
+    target.write_bytes(b"old")
+    checksum.write_text(hashlib.sha256(b"old").hexdigest() + "  release.zip\n")
+    for name in ("first", "second"):
+        stage = tmp_path / name
+        stage.mkdir()
+        (stage / target.name).write_bytes(name.encode())
+
+    worker = """
+import os, runpy, sys
+from pathlib import Path
+builder, target, name = sys.argv[1:]
+target = Path(target)
+publish = runpy.run_path(builder)["publish_archive"]
+if name == "first":
+    replace = Path.replace
+    def pause_after_zip(path, destination):
+        result = replace(path, destination)
+        if destination == target:
+            print("ZIP replaced", flush=True)
+            sys.stdin.readline()
+            os._exit(23)
+        return result
+    Path.replace = pause_after_zip
+else:
+    print("publishing", flush=True)
+publish(target.parent / name / target.name, target)
+"""
+    command = [sys.executable, "-c", worker, str(BUILDER), str(target)]
+    with subprocess.Popen(
+        [*command, "first"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
+    ) as first:
+        try:
+            assert first.stdout and first.stdout.readline().strip() == "ZIP replaced"
+            assert target.read_bytes() == b"first" and not checksum.exists()
+            with subprocess.Popen(
+                [*command, "second"], stdout=subprocess.PIPE, text=True
+            ) as second:
+                try:
+                    assert second.stdout and second.stdout.readline().strip() == "publishing"
+                    with pytest.raises(subprocess.TimeoutExpired):
+                        second.wait(timeout=0.3)
+                    assert first.stdin
+                    first.stdin.close()
+                    assert first.wait(timeout=10) == 23
+                    assert second.wait(timeout=10) == 0
+                finally:
+                    second.kill()
+        finally:
+            first.kill()
+    assert target.read_bytes() == b"second"
+    assert checksum.read_text() == hashlib.sha256(b"second").hexdigest() + "  release.zip\n"
+
+
+@pytest.mark.parametrize("change", ["remove", "make-executable"])
+def test_release_rejects_checkout_changed_since_commit_capture(source: Path, change: str) -> None:
+    commit = run("git", "rev-parse", "HEAD", cwd=source).stdout.strip()
+    path = "src/regimex/web/index.html"
+    if change == "remove":
+        run("git", "rm", path, cwd=source)
+    else:
+        (source / path).chmod(0o755)
+        run("git", "add", "--chmod=+x", path, cwd=source)
+    run(
+        "git",
+        "-c",
+        "user.name=Release test",
+        "-c",
+        "user.email=release-test@example.invalid",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        change,
+        cwd=source,
+    )
+    snapshot = runpy.run_path(str(BUILDER))["source_snapshot"]
+    with pytest.raises(ValueError, match="Source changed"):
+        snapshot(source, commit, allow_dirty=False)
 
 
 def test_assets_are_verified_and_old_evidence_is_identified(source: Path, tmp_path: Path) -> None:

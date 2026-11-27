@@ -11,6 +11,14 @@ in `release/build/regimex-<version>.zip`, next to a `.zip.sha256` file. Inside
 the archive, `BUILD.json` records the source commit and build checks.
 `SHA256SUMS` lists the payload files and their hashes.
 
+Concurrent builds can share a local output directory. The builder stages both
+files and serializes their publication. If a build stops during replacement,
+the ZIP can be left without a checksum. Rerun the build and verify the pair
+before distributing it. On Unix the builder also syncs the directory between
+replacements. On native Windows it flushes file data and uses a persistent
+`.<archive-name>.lock` file. After a system power loss on Windows, rebuild
+and verify the pair before use.
+
 ## Include saved models, examples and editable documents
 
 Pass `--assets` to include a verified pack in the release ZIP. A pack can

@@ -15,6 +15,8 @@ import sys
 import tarfile
 import tempfile
 import tomllib
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
@@ -87,7 +89,7 @@ def regular_file(root: Path, name: str) -> Path:
 def source_snapshot(
     root: Path, commit: str, *, allow_dirty: bool
 ) -> tuple[dict[str, bytes], dict[str, int]]:
-    if git(root, "rev-parse", "--show-toplevel").strip() != str(root):
+    if Path(git(root, "rev-parse", "--show-toplevel").strip()) != root:
         raise ValueError("The source directory must be the Git repository root.")
     dirty = bool(git(root, "status", "--porcelain", "--untracked-files=no"))
     if dirty and not allow_dirty:
@@ -111,18 +113,21 @@ def source_snapshot(
         files[name] = regular_file(root, name).read_bytes()
         modes[name] = 0o755 if mode == "100755" else 0o644
     if not allow_dirty:
-        archive = subprocess.check_output(["git", "-C", str(root), "archive", commit])
-        committed: dict[str, bytes] = {}
+        archive = subprocess.check_output(
+            ["git", "-C", str(root), "-c", "tar.umask=0000", "archive", commit]
+        )
+        # Bind the file set and executable bits as well as the contents to the captured commit.
+        changed = "Source changed while capturing the release. Retry after committing."
         with tarfile.open(fileobj=io.BytesIO(archive)) as source:
-            for name in files:
-                reader = source.extractfile(name)
-                if reader is None:
-                    raise ValueError(f"Committed source file is missing: {name}")
-                committed[name] = reader.read()
-        # A concurrent edit cannot silently turn a normal release into a preview.
-        if committed != files:
-            raise ValueError("Source changed while capturing the release. Retry after committing.")
-        files = committed
+            members = {member.name: member for member in source if not member.isdir()}
+            if members.keys() != files.keys():
+                raise ValueError(changed)
+            for name, member in members.items():
+                if not member.isfile() or bool(member.mode & 0o111) != bool(modes[name] & 0o111):
+                    raise ValueError(changed)
+                reader = source.extractfile(member)
+                if reader is None or reader.read() != files[name]:
+                    raise ValueError(changed)
     return files, modes
 
 
@@ -207,6 +212,64 @@ def write_archive(
             archive.writestr(info, content, compresslevel=9)
 
 
+def check_output_file(path: Path) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"Release output must be a regular file: {path}")
+
+
+@contextmanager
+def publication_lock(target: Path) -> Iterator[Callable[[], None]]:
+    """Serialize the final renames and provide a directory sync where supported."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        lock_path = target.with_name(f".{target.name}.lock")
+        check_output_file(lock_path)
+        with lock_path.open("a+b") as lock:
+            # Windows permits locking a byte beyond EOF, even when the file is empty.
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield lambda: None
+            finally:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(directory, fcntl.LOCK_EX)
+            yield lambda: os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def publish_archive(archive: Path, target: Path) -> None:
+    checksum_target = target.with_name(target.name + ".sha256")
+    checksum = archive.with_name(checksum_target.name)
+    with archive.open("r+b") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        os.fsync(stream.fileno())
+    with checksum.open("x", encoding="ascii", newline="\n") as sidecar:
+        sidecar.write(f"{digest}  {target.name}\n")
+        sidecar.flush()
+        os.fsync(sidecar.fileno())
+    with publication_lock(target) as sync_directory:
+        check_output_file(target)
+        check_output_file(checksum_target)
+        # Readers use the checksum as the publication marker. Invalidate it before switching ZIPs.
+        checksum_target.unlink(missing_ok=True)
+        sync_directory()
+        archive.replace(target)
+        sync_directory()
+        checksum.replace(checksum_target)
+        sync_directory()
+
+
 def build_release(root: Path, output: Path, assets: Path | None, *, allow_dirty: bool) -> Path:
     commit = git(root, "rev-parse", "HEAD").strip()
     source, modes = source_snapshot(root, commit, allow_dirty=allow_dirty)
@@ -220,9 +283,6 @@ def build_release(root: Path, output: Path, assets: Path | None, *, allow_dirty:
     output.mkdir(parents=True, exist_ok=True)
     prefix = f"regimex-{version}"
     target = output / f"{prefix}.zip"
-    checksum_target = output / f"{prefix}.zip.sha256"
-    if target.is_symlink() or checksum_target.is_symlink():
-        raise ValueError("Release output files must not be symbolic links.")
     # All packages use this immutable snapshot, even if the working tree changes later.
     with tempfile.TemporaryDirectory(prefix="regimex-release-") as temporary:
         staging = Path(temporary) / prefix
@@ -259,16 +319,11 @@ def build_release(root: Path, output: Path, assets: Path | None, *, allow_dirty:
         files["SHA256SUMS"] = "".join(
             f"{sha256(content)}  {name}\n" for name, content in sorted(files.items())
         ).encode()
-        # Publish only a complete archive; an interrupted build leaves the previous output intact.
-        with tempfile.NamedTemporaryFile(dir=output, prefix=f".{prefix}-", delete=False) as handle:
-            pending = Path(handle.name)
-        try:
+        with tempfile.TemporaryDirectory(dir=output, prefix=f".{prefix}-") as directory:
+            pending = Path(directory) / target.name
+            pending.touch(mode=0o600)
             write_archive(pending, prefix, files, modes, timestamp)
-            archive_digest = sha256(pending.read_bytes())
-            pending.replace(target)
-        finally:
-            pending.unlink(missing_ok=True)
-        checksum_target.write_text(f"{archive_digest}  {target.name}\n", encoding="utf-8")
+            publish_archive(pending, target)
     return target
 
 
