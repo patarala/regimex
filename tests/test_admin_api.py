@@ -279,7 +279,8 @@ def test_openapi_matches_intake_modes_and_delegated_operations(
     monkeypatch.setenv("REGIMEX_DATABASE_DSN", "dbname=not_connected")
     monkeypatch.setenv("REGIMEX_OBJECT_ROOT", str(tmp_path / "objects"))
     monkeypatch.setenv("REGIMEX_WORK_ROOT", str(tmp_path / "work"))
-    paths = configured_app().openapi()["paths"]
+    schema = configured_app().openapi()
+    paths = schema["paths"]
     for resource, imported in (("datasets", "DatasetView"), ("reference-sets", "ReferenceView")):
         responses = paths[f"/api/v1/{resource}"]["post"]["responses"]
         assert "200" not in responses
@@ -304,7 +305,23 @@ def test_openapi_matches_intake_modes_and_delegated_operations(
         ("POST", "analysis-intake"),
         ("GET", "analyses/{analysis_id}/delivery"),
     }
+    assertions = {"X-Regimex-Subject", "X-Regimex-Run-ID"}
+    for path, methods in paths.items():
+        for operation in methods.values():
+            headers = {
+                item["name"]: item
+                for item in operation.get("parameters", [])
+                if item["in"] == "header" and item["name"] in assertions
+            }
+            assert headers.keys() == (assertions if path.startswith(prefix) else set())
+            for header in headers.values():
+                assert header["required"] is True
+                assert header["schema"]["pattern"] == r"^[A-Za-z0-9._:@-]{1,128}$"
     for base in ("/api/v1", "/api/v1/integration"):
+        result = paths[base + "/analyses/{analysis_id}/result"]["get"]["responses"]["200"]
+        assert result["content"]["application/json"]["schema"] == {
+            "$ref": "#/components/schemas/AnalysisResult"
+        }
         receipts = paths[base + "/deletions/{plan_id}"]["post"]["responses"]
         for status in ("200", "202"):
             assert receipts[status]["content"]["application/json"]["schema"] == {

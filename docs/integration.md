@@ -103,7 +103,9 @@ selected run before serving the requested content. A pending analysis returns
 `409 result_pending`, and requesting an absent report on a successful analysis
 returns `404 report_unavailable`. An unknown analysis returns `404 not_found`.
 The individual `/result` and `/report` routes are also available. The JSON
-download and the ZIP's `result.json` contain identical bytes. Hash the
+download and the ZIP's `result.json` contain identical bytes. The service's
+`/openapi.json` describes the result fields under `AnalysisResult` and lists
+the required headers for each delegated endpoint. Hash the
 downloaded bytes directly when checking the result digest in an offline report.
 
 Report download returns `409` before success, `404` if no report was committed,

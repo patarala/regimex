@@ -17,13 +17,15 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from psycopg import Error as DatabaseError
-from pydantic import AwareDatetime, BaseModel, JsonValue, ValidationError
+from pydantic import AwareDatetime, BaseModel, JsonValue, TypeAdapter, ValidationError
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from regimex.access_contracts import IntegrationConnectionView
+from regimex.analysis_result import AnalysisResult
 from regimex.application.integration_access import authorize_request, required_scopes
+from regimex.auth_contracts import ExternalIdentifier
 from regimex.contracts import MAX_INPUT_BYTES, Identifier, StrictModel
 from regimex.diagnostic_contracts import QueueStatus
 from regimex.exports import ExportV2
@@ -547,8 +549,24 @@ class _API(FastAPI):
                 body_schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
                 components.update(body_schema.pop("$defs", {}))
                 components[model.__name__] = body_schema
-            for path in schema["paths"].values():
-                for operation in path.values():
+            assertion_schema = TypeAdapter(ExternalIdentifier).json_schema()
+            for path, methods in schema["paths"].items():
+                for operation in methods.values():
+                    if path.startswith("/api/v1/integration/"):
+                        # Auth reads raw headers to detect duplicates. FastAPI cannot infer them.
+                        operation.setdefault("parameters", []).extend(
+                            {
+                                "name": name,
+                                "in": "header",
+                                "required": True,
+                                "description": description,
+                                "schema": assertion_schema,
+                            }
+                            for name, description in (
+                                ("X-Regimex-Subject", "Authenticated simulator user ID."),
+                                ("X-Regimex-Run-ID", "Run ID from the completed export."),
+                            )
+                        )
                     responses = operation["responses"]
                     if "requestBody" in operation or "422" in responses:
                         responses["422"] = {
@@ -855,7 +873,7 @@ def create_app(
             service.get_analysis_summary(identity, analysis_id), prefix=_prefix(identity)
         )
 
-    @app.get("/api/v1/analyses/{analysis_id}/result", response_model=dict[str, JsonValue])
+    @app.get("/api/v1/analyses/{analysis_id}/result", response_model=AnalysisResult)
     def get_result(analysis_id: UUID, identity: Identity) -> Response:
         return Response(
             service.read_result(identity, analysis_id),
