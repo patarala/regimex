@@ -23,6 +23,7 @@ from regimex.backends.tcn import (
     TCNPredictor,
     prepare_observations,
 )
+from regimex.contracts import MAX_STEPS
 from regimex.directions import AnalysisConfig
 from regimex.features import DoubleArray
 from regimex.model_contracts import FitResult, ObservationInputs, TrainingInputs
@@ -156,7 +157,9 @@ def test_update_artifact_roundtrip_retains_exact_numeric_state(tmp_path: Path) -
     assert set(result.selected_settings) == {"update"}
 
 
-@pytest.mark.parametrize("damage", ["omission", "schedule", "batch", "selected_update"])
+@pytest.mark.parametrize(
+    "damage", ["omission", "schedule", "batch", "padding", "overlong", "selected_update"]
+)
 def test_rehashed_inconsistent_update_history_cannot_load(tmp_path: Path, damage: str) -> None:
     backend, result, _ = fitted_updates()
     root = tmp_path / "bundle"
@@ -173,6 +176,12 @@ def test_rehashed_inconsistent_update_history_cannot_load(tmp_path: Path, damage
             value["updates"].pop()
         elif damage == "schedule":
             value["updates"][0]["validation_segment_macro_f1"] = 0.5
+        elif damage == "padding":
+            singleton = next(row for row in value["updates"] if row["trained_sequences"] == 1)
+            singleton["padding_rows"] = 1
+        elif damage == "overlong":
+            row = value["updates"][0]
+            row.update(real_rows=(MAX_STEPS + 1) * row["trained_sequences"], padding_rows=0)
         else:
             value["updates"][0]["batch_in_pass"] = 100
         write_json(root / "history.json", value)

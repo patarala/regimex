@@ -5,6 +5,7 @@ import pickle
 import platform
 import time
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from importlib.metadata import version
 from itertools import batched
@@ -136,18 +137,23 @@ def _feature_inputs(
     selection: slice = slice(None),
     legacy_regression: bool = False,
     legacy_prices: bool = False,
+    check_budget: Callable[[], None] | None = None,
 ) -> tuple[FloatArray, IntArray]:
     require_observation_inputs(observations)
-    sequences = [
-        temporal_price_features(
+    if check_budget is not None:
+        check_budget()
+    sequences = observations.observations[selection]
+    offsets = np.r_[0, np.cumsum([len(rows) for rows in sequences], dtype=np.int64)]
+    values = np.empty((int(offsets[-1]), len(feature_names(side_slopes))), dtype=np.float32)
+    for index, rows in enumerate(sequences):
+        values[offsets[index] : offsets[index + 1]] = temporal_price_features(
             log_price_channels(rows, legacy_prices=legacy_prices),
             side_slopes=side_slopes,
             legacy_regression=legacy_regression,
         )
-        for rows in observations.observations[selection]
-    ]
-    offsets = np.r_[0, np.cumsum([len(sequence) for sequence in sequences], dtype=np.int64)]
-    return np.concatenate(sequences), offsets
+        if check_budget is not None:
+            check_budget()
+    return values, offsets
 
 
 def fit_preprocessing(
@@ -156,6 +162,7 @@ def fit_preprocessing(
     side_slopes: bool = False,
     legacy_regression: bool = False,
     legacy_prices: bool = False,
+    check_budget: Callable[[], None] | None = None,
 ) -> tuple[TemporalPreprocessor, PreparedPredictionInputs]:
     """Fit on training instruments and transform them with the same statistics."""
     legacy_prices = legacy_prices or legacy_regression
@@ -164,8 +171,11 @@ def fit_preprocessing(
         side_slopes=side_slopes,
         legacy_regression=legacy_regression,
         legacy_prices=legacy_prices,
+        check_budget=check_budget,
     )
     preprocessing = TemporalPreprocessor.fit(values, side_slopes=side_slopes)
+    if check_budget is not None:
+        check_budget()
     preprocessing = replace(
         preprocessing, legacy_regression=legacy_regression, legacy_prices=legacy_prices
     )
@@ -179,6 +189,7 @@ def prepare_observations(
     *,
     side_slopes: bool = False,
     selection: slice = slice(None),
+    check_budget: Callable[[], None] | None = None,
 ) -> PreparedPredictionInputs:
     values, offsets = _feature_inputs(
         observations,
@@ -186,6 +197,7 @@ def prepare_observations(
         selection=selection,
         legacy_regression=preprocessing.legacy_regression,
         legacy_prices=preprocessing.legacy_prices,
+        check_budget=check_budget,
     )
     return PreparedPredictionInputs(
         preprocessing.transform(values), offsets, observations.info[selection]
@@ -490,9 +502,10 @@ class TCNBackend:
             side_slopes=parameters.side_slopes,
             legacy_regression=legacy_regression,
             legacy_prices=legacy_prices,
+            check_budget=check_budget,
         )
         prepared_validation = prepare_observations(
-            validation, preprocessing, side_slopes=parameters.side_slopes
+            validation, preprocessing, side_slopes=parameters.side_slopes, check_budget=check_budget
         )
         check_budget()
         if isinstance(policy, FixedUpdatePolicy):

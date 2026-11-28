@@ -38,7 +38,6 @@ from regimex.prediction_inputs import (
 Scorer = Callable[[DoubleArray], float]
 
 logger = logging.getLogger(__name__)
-TEMPORAL_VERSION = "1.0"
 SELECTION_BATCH_SIZE: Literal[16] = 16
 
 
@@ -292,7 +291,7 @@ def _prediction_batch(
     sequences: PreparedPredictionInputs, selected: IntArray
 ) -> tuple[Tensor, Tensor]:
     require_prepared_inputs(sequences)
-    lengths = np.diff(sequences.offsets)[selected]
+    lengths = sequences.offsets[selected + 1] - sequences.offsets[selected]
     values = np.zeros(
         (len(selected), int(lengths.max()), sequences.values.shape[1]), dtype=np.float32
     )

@@ -46,6 +46,7 @@ from regimex.temporal import (
     fit_tcn,
     predict_tcn,
     temporal_features,
+    temporal_price_features,
 )
 
 
@@ -712,6 +713,39 @@ def test_time_budget_and_inference_cache_budget_fail_explicitly(
             runtime=TrainingRuntime(time_budget_seconds=1),
             evaluator=lambda probabilities: 0.5,
         )
+
+
+@pytest.mark.parametrize("completed_series", (1, 4), ids=["training", "validation"])
+def test_feature_preparation_stops_at_the_deadline(
+    completed_series: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import regimex.backends.tcn as tcn
+
+    extracted = 0
+
+    def extract(channels: FloatArray, *, side_slopes: bool, legacy_regression: bool) -> FloatArray:
+        nonlocal extracted
+        extracted += 1
+        return temporal_price_features(
+            channels, side_slopes=side_slopes, legacy_regression=legacy_regression
+        )
+
+    monkeypatch.setattr(tcn, "temporal_price_features", extract)
+    monkeypatch.setattr(time, "monotonic", lambda: 1.0 if extracted >= completed_series else 0.0)
+    training = TrainingInputs(
+        inputs("train"), np.repeat(np.arange(3), (24, 32, 28)).astype(np.int64)
+    )
+    with pytest.raises(ResourceBudgetExceeded, match="time budget"):
+        TCNBackend().fit(
+            training,
+            inputs("validation"),
+            parameters=TCNParameters(channels=4),
+            policy=policy(),
+            analysis=AnalysisConfig(),
+            runtime=TrainingRuntime(time_budget_seconds=1),
+            evaluator=lambda _: pytest.fail("training started after the deadline"),
+        )
+    assert extracted == completed_series
 
 
 def test_rejects_compressed_or_duplicate_weights_before_loading(

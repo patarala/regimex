@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from regimex.contracts import Seed, StrictModel
+from regimex.contracts import MAX_STEPS, Seed, StrictModel
 from regimex.model_registry import FixedUpdatePolicy
 
 
@@ -24,8 +24,12 @@ class UpdateRecord(StrictModel):
     def coherent_rows(self) -> UpdateRecord:
         if self.eligible_rows > self.real_rows or self.real_rows < self.trained_sequences:
             raise ValueError("TCN update rows disagree with complete training sequences")
-        if (self.real_rows + self.padding_rows) % self.trained_sequences:
+        width, remainder = divmod(self.real_rows + self.padding_rows, self.trained_sequences)
+        if remainder:
             raise ValueError("TCN padded rows must form a rectangular sequence batch")
+        # The longest sequence fills one row. Every other sequence has at least one step.
+        if width > MAX_STEPS or width + self.trained_sequences - 1 > self.real_rows:
+            raise ValueError("TCN padding exceeds the longest possible training sequence")
         return self
 
 
