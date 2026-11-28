@@ -77,12 +77,33 @@ from regimex.model_registry import (
     resolve_training_policy,
 )
 from regimex.operations import LaunchSource
+from regimex.preparation import (
+    PreparationPage,
+    PreparationRequest,
+    PreparationRetry,
+    PreparationView,
+)
 from regimex.service_contracts import NotFound, Principal, RegistryIdentifier
 from regimex.storage import json_bytes
 from regimex.training_statistics import TrainingRunStatistics
 
 
 class AdminAPIService(Protocol):
+    def start_preparation(
+        self,
+        principal: Principal,
+        preparation_id: UUID,
+        request: PreparationRequest,
+        launch_source: LaunchSource,
+    ) -> PreparationView: ...
+    def get_preparation(self, principal: Principal, preparation_id: UUID) -> PreparationView: ...
+    def list_preparations(
+        self, principal: Principal, limit: int, offset: int
+    ) -> PreparationPage: ...
+    def retry_preparation(
+        self, principal: Principal, preparation_id: UUID, operation_id: UUID
+    ) -> PreparationView: ...
+
     @property
     def max_generation_experiments(self) -> int: ...
 
@@ -557,7 +578,11 @@ def install_admin_routes(
     ArchiveBody = Annotated[TrainingArchiveUpdate, Depends(_json_dependency(TrainingArchiveUpdate))]
     EvaluationBody = Annotated[EvaluationRequest, Depends(_json_dependency(EvaluationRequest))]
     PublicationBody = Annotated[PublicationRequest, Depends(_json_dependency(PublicationRequest))]
+    PreparationBody = Annotated[PreparationRequest, Depends(_json_dependency(PreparationRequest))]
+    RetryBody = Annotated[PreparationRetry, Depends(_json_dependency(PreparationRetry))]
     app.state.request_models += (
+        PreparationRequest,
+        PreparationRetry,
         DatasetRequest,
         ReferenceRequest,
         TrainingRunRequest,
@@ -566,6 +591,35 @@ def install_admin_routes(
         EvaluationRequest,
         PublicationRequest,
     )
+
+    @app.put(
+        "/api/v1/training-preparations/{preparation_id}",
+        status_code=202,
+        openapi_extra=_request_body(PreparationRequest),
+    )
+    def prepare_data(
+        preparation_id: UUID, identity: Identity, intake: PreparationBody, http_request: Request
+    ) -> PreparationView:
+        return service.start_preparation(
+            identity, preparation_id, intake, _launch_source(http_request, identity)
+        )
+
+    @app.get("/api/v1/training-preparations/{preparation_id}")
+    def preparation(preparation_id: UUID, identity: Identity) -> PreparationView:
+        return service.get_preparation(identity, preparation_id)
+
+    @app.get("/api/v1/training-preparations")
+    def preparations(identity: Identity, limit: Limit = 25, offset: Offset = 0) -> PreparationPage:
+        return service.list_preparations(identity, limit, offset)
+
+    @app.post(
+        "/api/v1/training-preparations/{preparation_id}/retry",
+        openapi_extra=_request_body(PreparationRetry),
+    )
+    def retry_preparation(
+        preparation_id: UUID, identity: Identity, retry: RetryBody
+    ) -> PreparationView:
+        return service.retry_preparation(identity, preparation_id, retry.operation_id)
 
     @app.post(
         "/api/v1/datasets",

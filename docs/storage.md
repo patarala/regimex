@@ -218,7 +218,7 @@ completion cannot be established.
 Use PostgreSQL 16 `pg_dump` and `pg_restore`, or the Compose `ops` image.
 Set `PGDUMP_BIN` and `PGRESTORE_BIN` or pass `--pg-dump` and `--pg-restore`
 to select the binaries. Backups require the schema revision supported by the
-running release (currently `0016_s3_coordination`).
+running release (currently `0017_training_preparations`).
 
 With all writers stopped:
 
@@ -245,7 +245,8 @@ authentication hashes, experiment metadata and all registered files.
 This release restores archives from schemas `0007_resource_deletion`,
 `0008_analysis_metadata`, `0009_training_run_names`, `0010_evaluation_reuse`,
 `0011_training_progress`, `0012_training_metrics`, `0013_training_archive`,
-`0014_external_training`, `0015_terminal_activity` and `0016_s3_coordination`.
+`0014_external_training`, `0015_terminal_activity`, `0016_s3_coordination` and
+`0017_training_preparations`.
 Point its configuration at a **new, empty database** and a **fresh local object
 root or S3 prefix**. Use the original schema name. Restore checks the target's
 schema inventory and large objects before copying files. Database tools use the

@@ -19,8 +19,8 @@ Sessions expire 30 minutes after sign-in by default. Revoking the underlying
 token also ends access on the next request. Simulator backends use a separate
 [integration credential](integration.md).
 
-Send an `Idempotency-Key` for queued submissions and synchronous administrative
-imports. Retry with the same body and key to receive the original resource,
+Send an `Idempotency-Key` for queued job submissions and synchronous administrative
+imports. A training data preparation uses the UUID in its PUT URL as its retry key. Retry with the same body and key to receive the original resource,
 including the profile and model selected when the request was accepted. Reusing
 that key for different content under the same owner and operation returns `409`.
 
@@ -207,6 +207,22 @@ Poll `/admin-runs/{id}` or the returned job link for each queued operation.
 Use the resource IDs from the completed runs in the following requests.
 
 ### 1. Create observations and references
+
+To generate development and final datasets and their automatic labels as one
+background workflow, choose a UUID and send
+`PUT /training-preparations/{uuid}` with, for example,
+`{"development":48,"final":24,"steps":256}`. A successful submission returns
+`202`; replay the same UUID and request if the response is lost. Open the
+returned `workspace_url` in the browser or poll `GET /training-preparations/{uuid}`.
+The admin worker submits each next stage when it commits the previous result.
+`state` describes the current stage. Once `outputs.test` is present, the
+preparation is ready for inventory review. Confirm the reservation separately
+using `/training-options/selection` as described below.
+
+`GET /training-preparations?limit=25&offset=0` lists the administrator's
+preparations, newest first. For a failed or cancelled stage send its
+`operation_id` in the JSON body of `POST /training-preparations/{uuid}/retry`.
+Replaying this request keeps the new attempt and the previously completed data.
 
 `POST /datasets` either generates observations or combines owned snapshots with
 explicit partitions. Each snapshot ID may appear once in a request. Generation

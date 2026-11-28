@@ -47,6 +47,7 @@ from regimex.infrastructure.benchmark_repository import BenchmarkRepository, Con
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.infrastructure.object_store import ObjectIntegrityError, ObjectStore
 from regimex.model_bundles import MAX_BUNDLE_MANIFEST_BYTES, ModelBundle
+from regimex.preparation import selection_id
 from regimex.service_contracts import Conflict, Forbidden, NotFound, Principal, ServiceError
 from regimex.storage import json_bytes
 
@@ -345,16 +346,11 @@ class BenchmarkService:
         with self.database.connection() as connection:
             self.repository.lock(connection)
             state = self.repository.load(connection)
-            benchmark_id = (
-                "selection-"
-                + content_hash(
-                    [
-                        principal.owner_id,
-                        request.dataset_id,
-                        request.final_dataset_id,
-                        request.final_reference_set_id,
-                    ]
-                )[:32]
+            benchmark_id = selection_id(
+                principal.owner_id,
+                request.dataset_id,
+                request.final_dataset_id,
+                request.final_reference_set_id,
             )
             prior = next(
                 (b for b in state.registry.benchmarks if b.benchmark_id == benchmark_id), None

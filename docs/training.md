@@ -8,7 +8,12 @@ link printed by the command. [Terminal workflows](cli.md#find-a-run-started-in-t
 
 1. Choose **Prepare training data**, set the experiment counts and length,
    and select **Generate datasets**. The service creates observations and
-   automatic direction labels. Whole experiments stay together in each split.
+   automatic direction labels in the background. You can close the tab and
+   open its URL on another device, or find it under **Saved preparations**.
+   **Retry stage** resumes a failed or cancelled job using the completed
+   stages. To continue a setup saved by an earlier browser version, select
+   **Resume previous preparation** in the browser where you started it.
+   Whole experiments stay together in each split.
 2. Review the inventory of previously used data. If prior uses are missing,
    [register them through the API](api.md#2-reserve-final-data-before-selection).
    Check the confirmation box, choose **Reserve benchmark**, then **Use

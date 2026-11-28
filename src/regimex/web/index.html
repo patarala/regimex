@@ -307,9 +307,18 @@
                 </div>
                 <div class="actions">
                   <button id="preparation-action" type="submit">Generate datasets</button>
-                  <button id="preparation-forget" type="button" class="quiet" hidden>Dismiss setup</button>
+                  <button type="button" id="preparation-resume" class="quiet" hidden>Resume previous preparation</button>
+                  <a id="preparation-new" href="/training/new" data-workspace-link hidden>New preparation</a>
                 </div>
               </form>
+              <details id="preparation-recent">
+                <summary>Saved preparations</summary>
+                <ul id="preparation-list"></ul>
+                <div class="actions">
+                  <button type="button" id="preparation-previous" class="quiet" hidden>Previous</button>
+                  <button type="button" id="preparation-next" class="quiet" hidden>Next</button>
+                </div>
+              </details>
             </details>
             <form id="training-form" class="training-form">
               <fieldset id="training-fields" aria-label="Training configuration">

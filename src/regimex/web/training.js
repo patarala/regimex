@@ -142,7 +142,8 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   let draftRequests = new Map();
   let view = "active", listedView = null, listedOffset = 0, renderedRows = null;
   let listed = new Map();
-  const form = createTrainingForm({session, eachPage});
+  const form = createTrainingForm({session, eachPage, navigate});
+  let preparationId = null;
   const names = createRunNameEditor({session, getRun: () => run, applyName});
   const metrics = createTrainingMetrics();
   const progress = createTrainingProgress(session, metrics);
@@ -637,7 +638,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     }
   }
 
-  async function show(id = null, filter = "active", ids = []) {
+  async function show(id = null, filter = "active", ids = [], preparation = null) {
     if (!isAdmin()) return;
     if (id === "new" && acceptedDraftRun) {
       const accepted = acceptedDraftRun;
@@ -646,6 +647,9 @@ export function createTraining({session, navigate, deletion, onPublication}) {
     }
     const entering = !opened;
     const viewChanged = filter !== view;
+    const preparationChanged = id === "new" && preparation !== preparationId;
+    preparationId = preparation;
+    if (!entering && id === target && preparationChanged) form.selectPreparation(preparation);
     const pairChanged = id === "compare" && ids.join() !== comparedIds.join();
     comparedIds = id === "compare" ? ids : [];
     const filterFocused = document.activeElement === $("training-history-view");
@@ -678,7 +682,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
       return;
     }
     if (id === "new") {
-      void form.open();
+      void form.open(preparationId);
       $("training-config-title").focus();
       return;
     }

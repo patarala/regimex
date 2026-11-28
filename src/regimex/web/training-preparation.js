@@ -1,41 +1,30 @@
-import {$} from "./ui.js";
+import {$, element} from "./ui.js";
 import {isTransientRequestError} from "./session.js";
 
-const api = "/api/v1/";
+const api = "/api/v1/training-preparations";
+const options = "/api/v1/training-options/";
 const inventoryStatement = "I confirm that all known prior uses of data from these sources are registered.";
-const stages = [
-  ["development", "Generate development experiments", "dataset_id"],
-  ["final", "Generate final experiments", "dataset_id"],
-  ["train", "Label training experiments", "reference_set_id"],
-  ["validation", "Label validation experiments", "reference_set_id"],
-  ["test", "Seal final test labels", "reference_set_id"],
-];
+const labels = {
+  development: "Generate development experiments", final: "Generate final experiments",
+  train: "Label training experiments", validation: "Label validation experiments", test: "Seal final test labels",
+};
+const pageSize = 10;
 
-function generationBody(plan, final) {
-  return {
-    mode: "generate",
-    plan: {seed: final ? plan.finalSeed : plan.devSeed, step_count: plan.steps,
-      experiment_count: final ? plan.final : plan.development},
-    splits: {seed: 1729, train_fraction: final ? 0.001 : 0.7, validation_fraction: final ? 0.001 : 0.25},
-  };
-}
-
-export function createDataPreparation({session, onUse}) {
-  const panel = $("data-preparation");
-  const form = $("data-preparation-form");
-  const action = $("preparation-action");
-  const status = $("preparation-status");
-  const check = $("preparation-attest");
+export function createDataPreparation({session, navigate, onUse}) {
+  const panel = $("data-preparation"), form = $("data-preparation-form");
+  const action = $("preparation-action"), status = $("preparation-status"), check = $("preparation-attest");
+  const recent = $("preparation-recent");
+  const legacy = $("preparation-resume");
   const sizes = [$("preparation-development"), $("preparation-final")];
   const defaults = sizes.map(input => input.valueAsNumber);
   const schemaLimit = Number(sizes[0].max);
-  let limitReady = false;
-  let plan = null, key = "", revision = 0, timer, busy = false, inventory = null;
-  let retryDelay = 1500;
-  const drafts = new Map();
+  let id, record, inventory, pending, olderSetup, timer, busy = false, limitReady = false;
+  let revision = 0, historyRevision = 0, historyOffset = 0, retryDelay = 1500;
+  const active = stamp => stamp === revision && session.value?.principal.role === "admin";
+
   function fields() {
-    return Object.fromEntries(["development", "final", "steps"].map(id =>
-      [id, $("preparation-" + id).valueAsNumber]));
+    return Object.fromEntries(["development", "final", "steps"].map(name =>
+      [name, $("preparation-" + name).valueAsNumber]));
   }
   function counts() {
     const {development, final} = fields();
@@ -45,186 +34,145 @@ export function createDataPreparation({session, onUse}) {
       ? `${train} training and ${validation} validation experiments. ${final - 2} separate experiments are reserved for final testing.`
       : "";
   }
-  function read(storageChanged = false) {
-    const draft = drafts.get(key);
-    try {
-      const stored = localStorage.getItem(key);
-      // After a failed write or removal, the old stored value still belongs to this draft.
-      const neverRead = draft?.pending && draft.stored === undefined;
-      if (draft && (draft.stored === stored || (neverRead && !storageChanged))) return draft.plan;
-      const savedPlan = stored === null ? null : JSON.parse(stored);
-      drafts.set(key, {plan: savedPlan, stored});
-      return savedPlan;
-    } catch {
-      return draft?.plan ?? null;
-    }
-  }
-  function save() {
-    try {
-      const stored = plan ? JSON.stringify(plan) : null;
-      if (plan) localStorage.setItem(key, stored);
-      else localStorage.removeItem(key);
-      drafts.set(key, {plan, stored});
-    } catch {
-      drafts.set(key, {plan, stored: drafts.get(key)?.stored, pending: true});
-    }
+  function stageLabel(row) {
+    if (row.selection_closed) return "Selection closed";
+    if (row.benchmark_id) return "Benchmark reserved";
+    if (row.outputs.test) return "Ready for review";
+    return labels[row.stage] + " · " + row.state.replaceAll("_", " ");
   }
   function show(message = "", error = false) {
-    const ready = Boolean(plan?.benchmark);
+    const ready = Boolean(record?.benchmark_id) && !record.selection_closed;
+    const failed = ["failed", "cancelled"].includes(record?.state);
     const review = Boolean(inventory) && !ready;
-    $("preparation-size").disabled = Boolean(plan) || busy;
+    $("preparation-size").disabled = Boolean(id) || busy;
     $("preparation-review").hidden = !review;
     $("preparation-inventory").textContent = review
       ? `The service-wide inventory has ${inventory.dataset_count} registered datasets. Confirm its full scope to register the development dataset and reserve the final test partition.` : "";
     $("preparation-source-count").textContent = review ? `Review ${inventory.source_namespaces.length} source namespaces` : "";
-    $("preparation-datasets").textContent = review ? `Development: ${plan.outputs.development} · Final: ${plan.outputs.final}` : "";
+    $("preparation-datasets").textContent = review ? `Development: ${record.outputs.development} · Final: ${record.outputs.final}` : "";
     $("preparation-sources").textContent = review ? inventory.source_namespaces.join("\n") : "";
     check.disabled = busy;
-    action.disabled = busy || (!plan && !limitReady) || (review && !check.checked);
-    action.textContent = ready ? "Use prepared data" : review ? "Reserve benchmark" :
-      busy ? "Preparing…" : plan ? "Continue preparation" : "Generate datasets";
-    const forget = $("preparation-forget");
-    forget.hidden = !plan || busy;
-    const messages = [message];
-    if (drafts.get(key)?.pending) messages.push(plan
-      ? "Progress is available only while this page stays open."
-      : "The saved setup could not be removed from this browser. It may return after a reload.");
-    status.textContent = messages.filter(Boolean).join(" ");
+    action.hidden = Boolean(record && !failed && !review && !ready && !error);
+    action.disabled = busy || (!id && !limitReady) || (review && !check.checked);
+    action.textContent = ready ? "Use prepared data" : review ? "Reserve benchmark" : failed ? "Retry stage"
+      : id ? "Refresh preparation" : pending ? "Retry request" : "Generate datasets";
+    $("preparation-new").hidden = !id;
+    legacy.hidden = Boolean(id) || !olderSetup;
+    legacy.disabled = busy;
+    status.textContent = message || (record ? [stageLabel(record), record.failure].filter(Boolean).join(". ") : "");
     status.hidden = !status.textContent;
-    status.classList.toggle("error", error);
+    status.classList.toggle("error", error || failed);
   }
 
-  function restorePlan() {
-    close();
-    key = "regimex.training-preparation.v1." + session.value.principal.owner_id;
-    plan = read();
-    form.reset();
-    if (plan) for (const id of ["development", "final", "steps"]) $("preparation-" + id).value = plan[id];
-    panel.open = Boolean(plan);
-    counts();
-    show(plan?.benchmark ? "Datasets and benchmark ready." : plan ? "You have a saved preparation in this browser." : "");
+  async function refresh(stamp = revision) {
+    clearTimeout(timer);
+    try {
+      const next = await session.json(api + "/" + id);
+      if (!active(stamp)) return;
+      record = next;
+      for (const field of ["development", "final", "steps"]) $("preparation-" + field).value = record.request[field];
+      counts();
+      if (record.outputs.test && !record.benchmark_id) {
+        const query = new URLSearchParams({dataset_id: record.outputs.development, final_dataset_id: record.outputs.final});
+        const reviewed = await session.json(options + "inventory?" + query);
+        if (!active(stamp)) return;
+        if (inventory?.revision !== reviewed.revision) check.checked = false;
+        inventory = reviewed;
+      }
+      busy = false;
+      show();
+      retryDelay = 1500;
+      if (!document.hidden && !record.outputs.test && !["failed", "cancelled"].includes(record.state))
+        timer = setTimeout(() => void refresh(stamp), 1500);
+    } catch (error) {
+      if (!active(stamp)) return;
+      busy = false;
+      if (isTransientRequestError(error)) {
+        show("Could not read preparation progress. Reconnecting…");
+        timer = setTimeout(() => void refresh(stamp), retryDelay);
+        retryDelay = Math.min(30000, retryDelay * 2);
+      } else show(error.message, true);
+    }
   }
   function close() {
     ++revision;
+    ++historyRevision;
     clearTimeout(timer);
-    plan = inventory = null;
-    key = "";
+    record = id = inventory = pending = olderSetup = null;
     busy = false;
-    retryDelay = 1500;
     check.checked = false;
-    panel.open = false;
+    recent.open = panel.open = false;
     form.reset();
     show();
   }
-  function active(stamp) { return revision === stamp && key && session.value?.principal.role === "admin"; }
-  async function advance(stamp) {
-    let reading = false;
-    try {
-      while (active(stamp)) {
-        const index = stages.findIndex(([id]) => !plan.outputs[id]);
-        if (index === -1) {
-          reading = true;
-          const query = new URLSearchParams({dataset_id: plan.outputs.development, final_dataset_id: plan.outputs.final});
-          const reviewed = await session.json(api + "training-options/inventory?" + query);
-          if (!active(stamp)) return;
-          inventory = reviewed;
-          busy = false;
-          check.checked = false;
-          show("Automatic labels are ready. Review the inventory before reserving the benchmark.");
-          return;
-        }
-        const [id, label, output] = stages[index];
-        show(`Step ${index + 1} of ${stages.length}: ${label}.`);
-        let job;
-        reading = Boolean(plan.job);
-        if (plan.job) job = await session.json(api + "admin-runs/" + encodeURIComponent(plan.job));
-        else {
-          const dataset = id === "development" || id === "final";
-          const body = dataset ? generationBody(plan, id === "final") :
-            {mode: "automatic", dataset_id: plan.outputs[id === "test" ? "final" : "development"], partition: id};
-          job = await session.json(api + (dataset ? "datasets" : "reference-sets"), {
-            method: "POST", body, headers: {"Idempotency-Key": `${plan.id}:${id}:${plan.attempt}`},
-          });
-        }
-        if (!active(stamp)) return;
-        reading = false;
-        retryDelay = 1500;
-        if (job.job.state === "failed" || job.job.state === "cancelled") {
-          delete plan.job;
-          plan.attempt++;
-          save();
-          throw new Error(`${label}: ${job.job.failure?.message || "The job was cancelled."}`);
-        }
-        if (job.job.state === "succeeded") {
-          if (!job.output?.[output]) throw new Error("This job completed without a resource ID.");
-          plan.outputs[id] = job.output[output];
-          delete plan.job;
-          plan.attempt = 0;
-          save();
-        } else {
-          plan.job = job.run_id;
-          save();
-          timer = setTimeout(() => void advance(stamp), 1500);
-          return;
-        }
-      }
-    } catch (error) {
-      if (!active(stamp)) return;
-      if (reading && isTransientRequestError(error)) {
-        show("Could not update the preparation. Retrying automatically…");
-        timer = setTimeout(() => void advance(stamp), retryDelay);
-        retryDelay = Math.min(30000, retryDelay * 2);
-      } else { busy = false; show(error.message, true); }
+  function select(idToShow) {
+    close();
+    id = idToShow;
+    if (!id && session.value?.principal.role === "admin") {
+      try {
+        const key = "regimex.training-preparation.v1." + session.value.principal.owner_id;
+        const saved = JSON.parse(localStorage.getItem(key));
+        if (saved?.id) olderSetup = {key, saved};
+      } catch { /* Storage can be unavailable in private sessions. */ }
+    }
+    show();
+    counts();
+    if (id) {
+      busy = true;
+      panel.open = true;
+      show("Loading preparation…");
+      void refresh();
     }
   }
+  legacy.addEventListener("click", async () => {
+    if (!olderSetup || busy) return;
+    const {key, saved} = olderSetup, stamp = ++revision;
+    busy = true;
+    show("Restoring the saved preparation…");
+    try {
+      const accepted = await session.json(api + "/" + encodeURIComponent(saved.id), {
+        method: "PUT", body: {development: saved.development, final: saved.final, steps: saved.steps,
+          browser_seeds: {development: saved.devSeed, final: saved.finalSeed}},
+      });
+      if (!active(stamp)) return;
+      try { localStorage.removeItem(key); } catch { /* Replaying is idempotent. */ }
+      await navigate(accepted.workspace_url);
+    } catch (error) {
+      if (active(stamp)) { busy = false; show(error.message, true); }
+    }
+  });
   async function submit(event) {
     event.preventDefault();
-    if (busy || !key || (!plan && !limitReady)) return;
+    if (busy || (!id && !limitReady) || session.value?.principal.role !== "admin") return;
+    clearTimeout(timer);
     const stamp = ++revision;
     busy = true;
+    show();
     try {
-      if (!plan) {
-        const create = () => {
-          if (!active(stamp)) return;
-          if (read()) { restorePlan(); return; }
-          const [devSeed, other] = crypto.getRandomValues(new Uint32Array(2));
-          plan = {...fields(), devSeed, finalSeed: other === devSeed ? (other + 1) >>> 0 : other,
-            id: crypto.randomUUID(), outputs: {}, attempt: 0};
-          save();
-        };
-        // Two tabs starting together must agree on the idempotency keys before either submits work.
-        if (navigator.locks) await navigator.locks.request(key, create);
-        else create();
+      if (!id) {
+        const request = fields();
+        if (!pending || JSON.stringify(pending.request) !== JSON.stringify(request))
+          pending = {id: crypto.randomUUID(), request};
+        const accepted = await session.json(api + "/" + pending.id, {method: "PUT", body: request});
+        if (active(stamp)) await navigate(accepted.workspace_url);
+      } else if (record?.benchmark_id && !record.selection_closed) {
+        const used = await onUse(record.outputs, record.benchmark_id);
         if (!active(stamp)) return;
-      }
-      if (plan.benchmark) {
-        show("Selecting the prepared dataset…");
-        const used = await onUse(plan.outputs, plan.benchmark);
-        if (!active(stamp)) return;
-        if (!used) {
-          busy = false;
-          show("The form changed. Choose Use prepared data to select the dataset.");
-          return;
-        }
-        plan = inventory = null;
-        save();
-        restorePlan();
-        $("training-dataset").focus();
+        if (used) {
+          await navigate("/training/new");
+          $("training-dataset").focus();
+        } else { busy = false; show("The form changed. Select the prepared data again."); }
       } else if (inventory && check.checked) {
-        show("Reserving the benchmark…");
-        const result = await session.json(api + "training-options/selection", {
-          method: "POST", body: {dataset_id: plan.outputs.development, final_dataset_id: plan.outputs.final,
-            final_reference_set_id: plan.outputs.test, expected_registry_revision: inventory.revision,
-            inventory_statement: inventoryStatement},
-        });
-        if (!active(stamp)) return;
-        plan.benchmark = result.benchmark_id;
-        save();
-        busy = false;
-        show("Datasets and benchmark ready.");
-      } else {
-        await advance(stamp);
-      }
+        await session.json(options + "selection", {method: "POST", body: {
+          dataset_id: record.outputs.development, final_dataset_id: record.outputs.final,
+          final_reference_set_id: record.outputs.test, expected_registry_revision: inventory.revision,
+          inventory_statement: inventoryStatement,
+        }});
+        if (active(stamp)) await refresh(stamp);
+      } else if (["failed", "cancelled"].includes(record?.state)) {
+        await session.json(api + "/" + id + "/retry", {method: "POST", body: {operation_id: record.operation_id}});
+        if (active(stamp)) await refresh(stamp);
+      } else await refresh(stamp);
     } catch (error) {
       if (!active(stamp)) return;
       busy = false;
@@ -233,32 +181,57 @@ export function createDataPreparation({session, onUse}) {
       show(error.message, true);
     }
   }
-  form.addEventListener("submit", submit);
-  window.addEventListener("storage", event => {
-    if (key && (event.key === key || event.key === null) && read(true) !== plan) restorePlan();
+  async function list(offset) {
+    const stamp = ++historyRevision;
+    const rows = $("preparation-list");
+    const previous = $("preparation-previous"), next = $("preparation-next");
+    previous.disabled = next.disabled = true;
+    try {
+      const page = await session.json(api + `?limit=${pageSize + 1}&offset=${offset}`);
+      if (stamp !== historyRevision) return;
+      historyOffset = offset;
+      rows.replaceChildren(...page.items.slice(0, pageSize).map(row => {
+        const item = element("li");
+        const link = element("a", `${new Date(row.created_at).toLocaleString()} · ${stageLabel(row)}`);
+        link.href = row.workspace_url;
+        link.dataset.workspaceLink = "";
+        item.append(link);
+        return item;
+      }));
+      if (!page.items.length) rows.append(element("li", "No saved preparations."));
+      previous.hidden = !offset;
+      next.hidden = page.items.length <= pageSize;
+    } catch (error) {
+      if (stamp === historyRevision) rows.replaceChildren(element("li", error.message));
+    } finally {
+      if (stamp === historyRevision) previous.disabled = next.disabled = false;
+    }
+  }
+  document.addEventListener("visibilitychange", () => {
+    clearTimeout(timer);
+    if (!document.hidden && id && !busy) void refresh(++revision);
   });
+  recent.addEventListener("toggle", () => { if (recent.open) void list(0); });
+  $("preparation-previous").addEventListener("click", () => void list(Math.max(0, historyOffset - pageSize)));
+  $("preparation-next").addEventListener("click", () => void list(historyOffset + pageSize));
+  form.addEventListener("submit", submit);
   $("preparation-size").addEventListener("input", counts);
-  check.addEventListener("change", () => { action.disabled = !check.checked; });
-  $("preparation-forget").addEventListener("click", () => {
-    if (busy || !plan || !window.confirm("Dismiss this setup? Any jobs and datasets already created will remain on the service.")) return;
-    plan = null;
-    save();
-    restorePlan();
+  check.addEventListener("change", () => show());
+  $("preparation-new").addEventListener("click", async event => {
+    if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    event.preventDefault();
+    await navigate("/training/new");
     panel.open = true;
+    sizes[0].focus();
   });
   function setExperimentLimit(limit = schemaLimit) {
-    for (const [index, input] of sizes.entries()) {
+    sizes.forEach((input, index) => {
       input.max = String(limit);
-      // Changing the default updates an untouched field and preserves an edited value.
       input.defaultValue = String(Math.min(defaults[index], limit));
-    }
+    });
     limitReady = true;
-    if (!plan) { counts(); show(); }
+    if (!id) { counts(); show(); }
   }
-
-  function open() {
-    limitReady = false;
-    restorePlan();
-  }
-  return {open, close, setExperimentLimit};
+  function open(idToShow) { limitReady = false; select(idToShow); }
+  return {open, select, close, setExperimentLimit};
 }

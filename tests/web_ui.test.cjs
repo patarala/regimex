@@ -73,85 +73,37 @@ async function loadWorkspace(context, entryFile = "app.js") {
   return entry.namespace;
 }
 
-test("preparation keeps unsaved job progress and dismissal until another tab changes the draft", async () => {
+test("replaying a lost preparation acknowledgement uses the same server resource", async () => {
   const elements = new Map();
-  const get = (id) => {
+  const get = id => {
     if (!elements.has(id)) elements.set(id, new Element());
     return elements.get(id);
   };
-  const disk = new Map();
-  let writable = true;
-  const localStorage = {
-    getItem: (key) => disk.get(key) ?? null,
-    setItem(key, value) {
-      if (!writable) throw new Error("Quota exceeded");
-      disk.set(key, value);
-    },
-    removeItem(key) {
-      if (!writable) throw new Error("Storage unavailable");
-      disk.delete(key);
-    },
-  };
-  const window = Object.assign(new Element(), {confirm: () => true});
   const {createDataPreparation} = await loadWorkspace({
-    document: {getElementById: get}, window, localStorage, navigator: {},
-    crypto: require("node:crypto").webcrypto, setTimeout, clearTimeout,
+    document: Object.assign(new Element(), {getElementById: get}), crypto: require("node:crypto").webcrypto, setTimeout, clearTimeout,
   }, "training-preparation.js");
-  const principal = {owner_id: "alice", role: "admin"};
-  const requests = [];
-  const session = {value: {principal}, async json(url, options) {
-    requests.push([url, options?.headers?.["Idempotency-Key"]]);
-    if (requests.length === 1) {
-      writable = false;
-      return {run_id: "job-1", job: {state: "queued"}};
-    }
-    if (url.endsWith("/job-1")) return {job: {state: "failed"}};
-    throw new Error("Connection lost");
+  const calls = [], visits = [];
+  const session = {value: {principal: {role: "admin"}}, async json(url, options) {
+    calls.push({url, method: options.method, request: JSON.parse(JSON.stringify(options.body))});
+    if (calls.length === 1) throw new Error("Connection lost");
+    return {workspace_url: "/training/new?preparation=" + url.split("/").pop()};
   }};
-  get("preparation-development").valueAsNumber = 9;
-  get("preparation-final").valueAsNumber = 5;
-  get("preparation-steps").valueAsNumber = 128;
-  const preparation = createDataPreparation({session});
+  for (const [name, value] of Object.entries({development: 9, final: 5, steps: 128}))
+    get("preparation-" + name).valueAsNumber = value;
+  const form = createDataPreparation({session, navigate: url => visits.push(url)});
+  form.open();
   const submit = () => get("data-preparation-form").emit("submit", {preventDefault() {}});
-  const key = "regimex.training-preparation.v1.alice";
-
-  preparation.open();
   await submit();
-  assert.equal(requests.length, 0);
-  preparation.setExperimentLimit(128);
+  assert.equal(calls.length, 0);
+  form.setExperimentLimit(128);
   await submit();
-  const initial = JSON.parse(disk.get(key));
-  assert.equal(initial.job, undefined);
-  principal.owner_id = "bob";
-  preparation.open();
-  assert.equal(get("data-preparation").open, false);
-  principal.owner_id = "alice";
-  preparation.open();
-  assert.match(get("preparation-status").textContent, /only while this page stays open/);
+  assert.match(get("preparation-status").textContent, /Connection lost/);
   await submit();
-  preparation.close();
-  preparation.open();
-  await submit();
-  assert.deepEqual(requests, [
-    ["/api/v1/datasets", initial.id + ":development:0"],
-    ["/api/v1/admin-runs/job-1", undefined],
-    ["/api/v1/datasets", initial.id + ":development:1"],
-  ]);
-
-  await get("preparation-forget").click();
-  preparation.close();
-  preparation.open();
-  await window.emit("storage", {key});
-  assert.equal(get("data-preparation").open, false);
-  assert.match(get("preparation-status").textContent, /may return after a reload/);
-  disk.set(key, JSON.stringify({...initial, steps: 512}));
-  await window.emit("storage", {key});
-  assert.equal(get("preparation-steps").value, 512);
-  assert.equal(get("data-preparation").open, true);
-  disk.clear();
-  await window.emit("storage", {key: null});
-  assert.equal(get("data-preparation").open, false);
-  assert.equal(requests.length, 3);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[0], calls[1]);
+  assert.equal(calls[0].method, "PUT");
+  assert.deepEqual(calls[0].request, {development: 9, final: 5, steps: 128});
+  assert.equal(visits[0], "/training/new?preparation=" + calls[0].url.split("/").pop());
 });
 
 async function workspace(count = 45, {href = "http://localhost/", holdHistory = false} = {}) {

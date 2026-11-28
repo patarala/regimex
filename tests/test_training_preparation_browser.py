@@ -1,8 +1,9 @@
 """Prepare the first training dataset through the live browser, API and worker."""
 
+import re
 from typing import Any
-from urllib.parse import urlsplit
-from uuid import UUID
+from urllib.parse import parse_qs, urlsplit
+from uuid import UUID, uuid4
 
 import pytest
 from test_admin_api import AdministrativeAPI
@@ -86,69 +87,18 @@ def test_resumable_preparation_generates_and_reserves_data_without_starting_trai
             ),
         )
 
-    # Lose the first generation and reservation acknowledgements after the API commits.
-    # The worker still runs the actual queue jobs, including sealed reference generation.
-    jobs: dict[str, UUID] = {}
-    tasks: list[dict[str, Any]] = []
-    acknowledged: list[str] = []
-    requested: list[str] = []
-
-    def generate(route: Any) -> None:
-        if route.request.method != "POST":
-            route.continue_()
-            return
-        key = route.request.headers["idempotency-key"]
-        response = route.fetch()
-        assert response.status == 202, response.text()
-        job_id = UUID(response.json()["run_id"])
-        if key in jobs:
-            assert jobs[key] == job_id
-        else:
-            jobs[key] = job_id
-            tasks.append(route.request.post_data_json)
-            run = ctx.service.run_admin(job_id)
-            assert run is not None and run.operation.state == "succeeded", run
-            if len(jobs) == 1:
-                route.abort("connectionreset")
-                return
-        route.fulfill(response=response)
-
-    def reserve(route: Any) -> None:
-        response = route.fetch()
-        assert response.status == 200, response.text()
-        acknowledged.append(response.json()["benchmark_id"])
-        if len(acknowledged) == 1:
-            route.abort("connectionreset")
-        else:
-            route.fulfill(response=response)
+    def login(page: Any, url: str) -> None:
+        page.goto(url)
+        page.locator("#token").fill(ctx.token)
+        page.locator("#login-submit").click()
 
     with tcp_server(app) as server:
-        context = browser.new_context(viewport={"width": 320, "height": 720})
-        page = context.new_page()
-        second_tab = context.new_page()
-        page.on("request", lambda req: requested.append(urlsplit(req.url).path))
-        context.route("**/api/v1/datasets", generate)
-        context.route("**/api/v1/reference-sets", generate)
-        context.route("**/api/v1/training-options/selection", reserve)
-        context.route(
-            "**/api/v1/admin-runs/*",
-            lambda route: route.fulfill(status=503, json={"detail": "Temporary failure"}),
-            times=1,
-        )
+        first = browser.new_context()
         try:
-            page.goto(server.origin + "/training/new")
-            page.locator("#token").fill(ctx.token)
-            page.locator("#login-submit").click()
+            page = first.new_page()
+            login(page, server.origin + "/training/new")
             page.get_by_text("Prepare training data", exact=True).click()
-            for field in ("Development experiments", "Final dataset experiments"):
-                expect(page.get_by_label(field)).to_have_attribute("max", "12")
-                expect(page.get_by_label(field)).to_have_value("12")
-            page.get_by_label("Development experiments").fill("13")
-            page.get_by_role("button", name="Generate datasets").click()
-            assert page.get_by_label("Development experiments").evaluate(
-                "field => field.validity.rangeOverflow"
-            )
-            assert not jobs
+            expect(page.get_by_label("Development experiments")).to_have_attribute("max", "12")
             page.get_by_label("Development experiments").fill("9")
             page.get_by_label("Final dataset experiments").fill("5")
             page.get_by_label("Steps per experiment").fill("128")
@@ -156,53 +106,165 @@ def test_resumable_preparation_generates_and_reserves_data_without_starting_trai
                 "6 training and 2 validation experiments. "
                 "3 separate experiments are reserved for final testing."
             )
-            second_tab.goto(server.origin + "/training/new")
-            second_tab.get_by_text("Prepare training data", exact=True).click()
-            page.evaluate(
-                """() => new Promise(locked => navigator.locks.request(
-                  'regimex.training-preparation.v1.fixture-administrator',
-                  () => new Promise(done => { window.releaseStart = done; locked(); })))"""
-            )
             page.get_by_role("button", name="Generate datasets").click()
-            second_tab.get_by_role("button", name="Generate datasets").click()
-            page.evaluate("window.releaseStart()")
-            expect(page.locator("#preparation-status")).to_contain_text(
-                "Could not connect", timeout=60_000
-            )
-            page.reload()
-            expect(second_tab.get_by_role("button", name="Continue preparation")).to_be_visible()
-            page.get_by_role("button", name="Continue preparation").click()
+            expect(page).to_have_url(re.compile(r"/training/new\?preparation="))
+            permalink = page.url
+        finally:
+            first.close()
+
+        # Advance only through jobs already accepted by the server, without an open browser.
+        (preparation_id,) = parse_qs(urlsplit(permalink).query)["preparation"]
+        url = f"/api/v1/training-preparations/{preparation_id}"
+        for stage in ("development", "final", "train", "validation", "test"):
+            accepted = ctx.client.get(url, headers=ctx.headers).json()
+            assert accepted["stage"] == stage and accepted["state"] == "queued"
+            completed = ctx.service.run_admin(UUID(accepted["operation_id"]))
+            assert completed is not None and completed.operation.state == "succeeded", completed
+        ready = ctx.client.get(url, headers=ctx.headers).json()
+        assert len(ready["outputs"]) == 5 and ready["benchmark_id"] is None
+
+        other = browser.new_context(viewport={"width": 320, "height": 720})
+        try:
+            page = other.new_page()
+            login(page, server.origin + "/training/new")
+            page.get_by_text("Prepare training data", exact=True).click()
+            page.get_by_text("Saved preparations", exact=True).click()
+            page.get_by_role("link", name=re.compile("Ready for review")).click()
+            expect(page).to_have_url(permalink)
             check = page.get_by_role("checkbox", name="I confirm")
-            expect(check).to_be_visible(timeout=120_000)
+            expect(check).to_be_visible()
             expect(check).not_to_be_checked()
             page.get_by_text("Review 14 source namespaces").click()
-            expect(page.locator("#preparation-sources")).to_be_visible()
             assert len(page.locator("#preparation-sources").inner_text().splitlines()) == 14
-            assert len(jobs) == 5 and len({r["plan"]["seed"] for r in tasks[:2]}) == 2
-            assert [r["partition"] for r in tasks[2:]] == ["train", "validation", "test"]
-            assert tasks[2]["dataset_id"] == tasks[3]["dataset_id"] != tasks[4]["dataset_id"]
-            assert not acknowledged
             check.check()
+
+            def lose_acknowledgement(route: Any) -> None:
+                response = route.fetch()
+                assert response.status == 200, response.text()
+                route.abort("connectionreset")
+
+            page.route("**/training-options/selection", lose_acknowledgement, times=1)
             page.get_by_role("button", name="Reserve benchmark").click()
             expect(page.locator("#preparation-status")).to_contain_text("Could not connect")
-            page.get_by_role("button", name="Continue preparation").click()
-            check.check()
-            page.get_by_role("button", name="Reserve benchmark").click()
-            expect(second_tab.get_by_role("button", name="Use prepared data")).to_be_visible()
+            page.reload()
             page.get_by_role("button", name="Use prepared data").click()
+            expect(page).to_have_url(server.origin + "/training/new")
             expect(
                 page.get_by_role("combobox", name="Development dataset", exact=True)
-            ).to_have_value(tasks[2]["dataset_id"])
-            assert len(acknowledged) == 2 and acknowledged[0] == acknowledged[1]
-            expect(page.get_by_label("Reserved benchmark")).to_have_value(acknowledged[0])
+            ).to_have_value(ready["outputs"]["development"])
+            benchmark = ctx.client.get(url, headers=ctx.headers).json()["benchmark_id"]
+            expect(page.get_by_label("Reserved benchmark")).to_have_value(benchmark)
             expect(page.get_by_role("button", name="Start training")).to_be_enabled()
-            history = ctx.client.get("/api/v1/training-runs", headers=ctx.headers)
-            assert history.status_code == 200 and history.json()["items"] == []
-            assert not any(path.endswith("/annotations") for path in requested)
-            assert not page.evaluate(
-                "Object.keys(localStorage).some(key => key.includes('training-preparation'))"
+            page.go_back()
+            expect(page).to_have_url(permalink)
+            expect(page.get_by_role("button", name="Use prepared data")).to_be_visible()
+            assert (
+                ctx.client.get("/api/v1/training-runs", headers=ctx.headers).json()["items"] == []
             )
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
-            expect(second_tab.locator("#data-preparation")).not_to_have_attribute("open", "")
         finally:
-            context.close()
+            other.close()
+
+
+def test_preparation_retry_is_scoped_and_keeps_completed_stages(
+    administrative_api: AdministrativeAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from regimex.infrastructure.preparation_repository import PreparationRepository
+    from regimex.service_worker import recover_operations
+
+    ctx = administrative_api
+    resource = "/api/v1/training-preparations"
+    path = resource + "/" + str(uuid4())
+    payload = {"development": 3, "final": 3, "steps": 64}
+    ctx.service.settings = ctx.service.settings.model_copy(
+        update={"max_generation_experiments": 5, "max_admin_pending_per_owner": 1}
+    )
+    assert (
+        ctx.client.put(path, json={**payload, "development": 8}, headers=ctx.headers).status_code
+        == 429
+    )
+    response = ctx.client.put(path, json=payload, headers=ctx.headers)
+    assert response.status_code == 202, response.text
+    first = response.json()
+    assert ctx.client.put(path, json=payload, headers=ctx.headers).json() == first
+    assert (
+        ctx.client.put(path, json={**payload, "steps": 128}, headers=ctx.headers).status_code == 409
+    )
+    other = ctx.analysis.repository.create_token("separate-owner", "admin")
+    foreign = {"Authorization": "Bearer " + other}
+    assert ctx.client.get(path, headers=foreign).status_code == 404
+    assert ctx.client.get(resource, headers=foreign).json()["items"] == []
+    assert (
+        ctx.client.get(path, headers={"Authorization": "Bearer " + ctx.user_token}).status_code
+        == 403
+    )
+    with monkeypatch.context() as old_worker:
+        old_worker.setattr(PreparationRepository, "advance", lambda *_: None)
+        completed = ctx.service.run_admin(UUID(first["operation_id"]))
+    assert completed is not None and completed.operation.state == "succeeded"
+    competing = ctx.client.put(resource + "/" + str(uuid4()), json=payload, headers=ctx.headers)
+    assert competing.status_code == 202, competing.text
+    assert recover_operations(ctx.service.settings, ctx.analysis) == 0
+    owner = ctx.analysis.authenticate(ctx.token)
+    ctx.analysis.cancel_operation(owner, UUID(competing.json()["operation_id"]))
+    assert recover_operations(ctx.service.settings, ctx.analysis) == 1
+    assert recover_operations(ctx.service.settings, ctx.analysis) == 0
+    second = ctx.client.get(path, headers=ctx.headers).json()
+    assert second["stage"] == "final" and list(second["outputs"]) == ["development"]
+    retry = {"operation_id": second["operation_id"]}
+    assert ctx.client.post(path + "/retry", json=retry, headers=ctx.headers).status_code == 409
+    ctx.analysis.cancel_operation(owner, UUID(second["operation_id"]))
+    assert ctx.client.get(path, headers=ctx.headers).json()["state"] == "cancelled"
+    assert ctx.client.post(path + "/retry", json=retry, headers=foreign).status_code == 404
+    restored = ctx.client.post(path + "/retry", json=retry, headers=ctx.headers).json()
+    assert restored["stage"] == second["stage"] and restored["outputs"] == second["outputs"]
+    assert restored["state"] == "queued" and restored["operation_id"] != retry["operation_id"]
+    assert ctx.client.post(path + "/retry", json=retry, headers=ctx.headers).json() == restored
+
+
+def test_adopt_started_browser_preparation_reuses_its_jobs(
+    administrative_api: AdministrativeAPI,
+) -> None:
+    ctx = administrative_api
+    preparation = uuid4()
+    path = f"/api/v1/training-preparations/{preparation}"
+    request = {
+        "development": 3,
+        "final": 4,
+        "steps": 64,
+        "browser_seeds": {"development": 20, "final": 21},
+    }
+    started = []
+    for stage, count, seed, fractions in (
+        ("development", 3, 20, (0.7, 0.25)),
+        ("final", 4, 21, (0.001, 0.001)),
+    ):
+        response = ctx.client.post(
+            "/api/v1/datasets",
+            json={
+                "mode": "generate",
+                "plan": {"experiment_count": count, "step_count": 64, "seed": seed},
+                "splits": {
+                    "seed": 1729,
+                    "train_fraction": fractions[0],
+                    "validation_fraction": fractions[1],
+                },
+            },
+            headers={**ctx.headers, "Idempotency-Key": f"{preparation}:{stage}:0"},
+        )
+        assert response.status_code == 202, response.text
+        started.append(response.json()["run_id"])
+        if stage == "development":
+            completed = ctx.service.run_admin(UUID(started[0]))
+            assert completed is not None and completed.operation.state == "succeeded"
+    mismatch = ctx.client.put(path, json={**request, "development": 4}, headers=ctx.headers)
+    assert mismatch.status_code == 409
+    assert ctx.client.get(path, headers=ctx.headers).status_code == 404
+    adopted = ctx.client.put(path, json=request, headers=ctx.headers)
+    assert adopted.status_code == 202, adopted.text
+    assert adopted.json()["operation_id"] == started[1]
+    assert list(adopted.json()["outputs"]) == ["development"]
+    ctx.service.run_admin(UUID(started[1]))
+    current = ctx.client.get(path, headers=ctx.headers).json()
+    assert current["stage"] == "train" and set(current["outputs"]) == {"development", "final"}
+    assert ctx.client.put(path, json=request, headers=ctx.headers).json() == current

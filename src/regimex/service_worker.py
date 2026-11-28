@@ -95,6 +95,9 @@ def create_worker_app(
 
 def recover_operations(settings: ServiceSettings, service: AnalysisService) -> int:
     """Fence stale attempts and repair operations whose queue deliveries were lost."""
+    from regimex.infrastructure.admin_repository import AdminRepository
+    from regimex.infrastructure.preparation_repository import PreparationRepository
+
     recovered = service.repository.recover_operations(
         stale_after=timedelta(seconds=settings.stale_seconds)
     )
@@ -102,4 +105,7 @@ def recover_operations(settings: ServiceSettings, service: AnalysisService) -> i
         stalled_worker_seconds=settings.stale_seconds
     )
     service.repository.prune_successful_recovery_deliveries()
-    return len(recovered) + len(queued)
+    preparations = PreparationRepository(AdminRepository(service.repository)).recover(
+        settings.max_admin_pending_per_owner
+    )
+    return len(recovered) + len(queued) + preparations

@@ -430,6 +430,7 @@ def test_restore_object_larger_than_compose_tmpfs(
         "0013_training_archive",
         "0014_external_training",
         "0015_terminal_activity",
+        "0016_s3_coordination",
     ],
 )
 def test_previous_schema_backup_can_be_restored_then_migrated(
@@ -441,7 +442,9 @@ def test_previous_schema_backup_can_be_restored_then_migrated(
     revision: str,
 ) -> None:
     with minimal.source.connection() as connection:
-        connection.execute("DROP TABLE regimex_s3_pending_writes,regimex_s3_namespaces")
+        connection.execute("DROP TABLE regimex_training_preparations")
+        if revision < "0016_s3_coordination":
+            connection.execute("DROP TABLE regimex_s3_pending_writes,regimex_s3_namespaces")
         if revision < "0015_terminal_activity":
             connection.execute("DROP TABLE regimex_terminal_activities")
         if revision < "0014_external_training":

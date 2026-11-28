@@ -168,7 +168,9 @@ async function restoreLocation() {
     if (section === "connections") return integrations.show(id);
     const view = url.searchParams.get("view");
     const pair = ["left", "right"].map(key => url.searchParams.get(key)).filter(id => uuid.test(id));
-    return training.show(id, ["archived", "all"].includes(view) ? view : "active", pair);
+    const preparation = url.searchParams.get("preparation");
+    return training.show(id, ["archived", "all"].includes(view) ? view : "active", pair,
+      id === "new" && uuid.test(preparation) ? preparation : null);
   }
   let initialHistory;
   if (!analysesOpened) {

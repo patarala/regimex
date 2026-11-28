@@ -89,6 +89,7 @@ from regimex.infrastructure.object_store import (
     ObjectInfo,
     ObjectIntegrityError,
 )
+from regimex.infrastructure.preparation_repository import PreparationRepository
 from regimex.market_config import GENERATOR_VERSION
 from regimex.market_identity import imported_seed_group
 from regimex.model_bundles import BundleMember, ModelBundle
@@ -101,6 +102,7 @@ from regimex.model_registry import (
     canonical_architecture_id,
 )
 from regimex.operations import LaunchSource, OperationFailure
+from regimex.preparation import PreparationPage, PreparationRequest, PreparationView
 from regimex.service_contracts import (
     CapacityExceeded,
     Conflict,
@@ -157,6 +159,7 @@ class AdminService:
         self.analysis_service = analysis_service
         self.repository = repository
         self.settings = settings
+        self.preparations = PreparationRepository(repository)
         self.authorize_selection = authorize_selection
         self.authorize_final_evaluation = authorize_final_evaluation
 
@@ -318,6 +321,35 @@ class AdminService:
                 "Publication evaluation differs from the immutable model or policy.",
                 422,
             )
+
+    def start_preparation(
+        self,
+        principal: Principal,
+        preparation_id: UUID,
+        request: PreparationRequest,
+        launch_source: LaunchSource,
+    ) -> PreparationView:
+        return self.preparations.start(
+            principal,
+            preparation_id,
+            request,
+            launch_source=launch_source,
+            max_experiments=self.max_generation_experiments,
+            max_pending=self.settings.max_admin_pending_per_owner,
+        )
+
+    def get_preparation(self, principal: Principal, preparation_id: UUID) -> PreparationView:
+        return self.preparations.get(principal, preparation_id)
+
+    def list_preparations(self, principal: Principal, limit: int, offset: int) -> PreparationPage:
+        return self.preparations.list(principal, limit, offset)
+
+    def retry_preparation(
+        self, principal: Principal, preparation_id: UUID, operation_id: UUID
+    ) -> PreparationView:
+        return self.preparations.retry(
+            principal, preparation_id, operation_id, self.settings.max_admin_pending_per_owner
+        )
 
     def submit_generation(
         self,

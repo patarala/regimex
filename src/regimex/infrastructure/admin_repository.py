@@ -1006,51 +1006,69 @@ class AdminRepository:
                 if previous is not None:
                     self._validate_spec(connection, principal.owner_id, spec)
                     return previous
-            count = connection.execute(
-                "SELECT count(*) FROM regimex_operations WHERE owner_id=%s "
-                "AND state IN ('queued','running','cancel_requested')",
-                (principal.owner_id,),
-            ).fetchone()
-            assert count is not None
-            if cast(int, count[0]) >= max_pending:
-                raise CapacityExceeded()
+            self._check_capacity(connection, principal.owner_id, max_pending)
             model = self._validate_spec(connection, principal.owner_id, spec)
-            now = self.database._now(connection)
-            run_id = uuid4()
-            operation = Operation(
-                operation_id=run_id,
-                owner_id=principal.owner_id,
-                kind=spec.kind,
-                launch_source=launch_source,
-                resource_id=str(run_id),
-                request_sha256=request.digest,
-                idempotency_key=idempotency_key,
-                model=model,
-                created_at=now,
-                updated_at=now,
+            return self._insert_run(
+                connection, principal.owner_id, spec, request, launch_source, model, display_name
             )
-            connection.execute(
-                "INSERT INTO regimex_operations (operation_id,owner_id,kind,idempotency_key,"
-                "request_sha256,state,document) VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                (
-                    run_id,
-                    principal.owner_id,
-                    spec.kind,
-                    idempotency_key,
-                    request.digest,
-                    operation.state,
-                    Jsonb(operation.model_dump(mode="json")),
-                ),
-            )
-            connection.execute(
-                "INSERT INTO regimex_admin_runs (operation_id,kind,request) VALUES (%s,%s,%s)",
-                (run_id, spec.kind, Json(spec.model_dump(mode="json"))),
-            )
-            self._reserve_request(connection, operation, spec, display_name)
-            self.database._enqueue(connection, operation)
-            return AdminRunRecord(
-                run_id=run_id, operation=operation, spec=spec, display_name=display_name
-            )
+
+    @staticmethod
+    def _check_capacity(connection: Connection, owner_id: str, max_pending: int) -> None:
+        count = connection.execute(
+            "SELECT count(*) FROM regimex_operations WHERE owner_id=%s "
+            "AND state IN ('queued','running','cancel_requested')",
+            (owner_id,),
+        ).fetchone()
+        assert count is not None
+        if cast(int, count[0]) >= max_pending:
+            raise CapacityExceeded()
+
+    def _insert_run(
+        self,
+        connection: Connection,
+        owner_id: str,
+        spec: AdminSpec,
+        request: IntakeRequest,
+        launch_source: LaunchSource | None,
+        model: ResolvedModel | None = None,
+        display_name: str | None = None,
+    ) -> AdminRunRecord:
+        now = self.database._now(connection)
+        run_id = uuid4()
+        operation = Operation(
+            operation_id=run_id,
+            owner_id=owner_id,
+            kind=spec.kind,
+            launch_source=launch_source,
+            resource_id=str(run_id),
+            request_sha256=request.digest,
+            idempotency_key=request.idempotency_key,
+            model=model,
+            created_at=now,
+            updated_at=now,
+        )
+        connection.execute(
+            "INSERT INTO regimex_operations (operation_id,owner_id,kind,idempotency_key,"
+            "request_sha256,state,document) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            (
+                run_id,
+                owner_id,
+                spec.kind,
+                request.idempotency_key,
+                request.digest,
+                operation.state,
+                Jsonb(operation.model_dump(mode="json")),
+            ),
+        )
+        connection.execute(
+            "INSERT INTO regimex_admin_runs (operation_id,kind,request) VALUES (%s,%s,%s)",
+            (run_id, spec.kind, Json(spec.model_dump(mode="json"))),
+        )
+        self._reserve_request(connection, operation, spec, display_name)
+        self.database._enqueue(connection, operation)
+        return AdminRunRecord(
+            run_id=run_id, operation=operation, spec=spec, display_name=display_name
+        )
 
     @staticmethod
     def _reserve_request(
@@ -1129,6 +1147,10 @@ class AdminRepository:
             (Json(output), run.run_id),
         )
         self.database._save(connection, completed)
+        if isinstance(run.spec, GenerationSpec | ReferenceGenerationSpec):
+            from regimex.infrastructure.preparation_repository import PreparationRepository
+
+            PreparationRepository(self).advance(connection, completed, run.spec)
         return run.model_copy(update={"operation": completed, "output": output})
 
     def complete_generation(

@@ -54,7 +54,7 @@ function formBody(name, selections, profile, {policy, parameters, training_runti
     analysis_profile_id: profile}, {policy, parameters, training_runtime, inference_runtime});
 }
 
-export function createTrainingForm({session, eachPage}) {
+export function createTrainingForm({session, eachPage, navigate}) {
   let generation = 0, busy = false, architectures = new Map(), draft = null;
   let currentArchitecture = null;
   let sourceConfiguration = null;
@@ -64,7 +64,7 @@ export function createTrainingForm({session, eachPage}) {
   const architectureDrafts = new Map();
   const policy = createTrainingPolicy($("training-policy"));
   const sizePicker = createSizePicker();
-  const preparation = createDataPreparation({session, onUse: usePreparedData});
+  const preparation = createDataPreparation({session, navigate, onUse: usePreparedData});
   const hint = $("training-prerequisite");
   function architectureFor(id) {
     return architectures.get(canonicalArchitectureId(id));
@@ -195,7 +195,7 @@ export function createTrainingForm({session, eachPage}) {
     picker.dispatchEvent(new Event("input", {bubbles: true}));
     return true;
   }
-  async function open() {
+  async function open(preparationId = null) {
     for (const label of $("training-fields").querySelectorAll("label[data-help]")) {
       addFieldHelp(label, label.control, label.dataset.help);
       delete label.dataset.help;
@@ -208,7 +208,7 @@ export function createTrainingForm({session, eachPage}) {
       if (draft?.jsonBase) showEditor(draft.jsonBase, draft.jsonText);
     }
     $("training-config").hidden = false;
-    preparation.open();
+    preparation.open(preparationId);
     loading = true;
     feedback();
     for (const id of selectors) choices(id, [], "Loading…");
@@ -259,7 +259,7 @@ export function createTrainingForm({session, eachPage}) {
       }
       await loadDataset();
     } catch (error) {
-      if (valid()) { loading = false; updateSubmit(); feedback(error.message, ["Retry", open]); }
+      if (valid()) { loading = false; updateSubmit(); feedback(error.message, ["Retry", () => open(new URL(location.href).searchParams.get("preparation"))]); }
     }
   }
   function close(remember = true) {
@@ -453,7 +453,7 @@ export function createTrainingForm({session, eachPage}) {
     }
   }
   return {
-    open, close, payload,
+    open, close, payload, selectPreparation: preparation.select,
     useSavedRun(configuration) { sourceConfiguration = configuration; },
     discard() { close(false); },
     setBusy(value) { busy = value; updateSubmit(); },
