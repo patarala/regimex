@@ -148,7 +148,7 @@ export function createTraining({session, navigate, deletion, onPublication}) {
   const progress = createTrainingProgress(session, metrics);
   const benchmark = createFinalBenchmark({session, action, refresh: refreshDetail});
   let comparedIds = [];
-  const archive = createRunArchive({apply: setArchived, renderRows,
+  const archive = createRunArchive({session, apply: setArchived, renderRows,
     compare: ids => navigate(runPath("compare", view, ids))});
   const runsToggle = $("training-runs-toggle");
   function runPath(id, filter = view, ids = comparedIds) {

@@ -1173,6 +1173,27 @@ test("an old rerun response cannot replace another selected analysis", async () 
   assert.equal(ui.calls.some((call) => call.url === `/api/v1/analyses/${id(3000)}`), false);
 });
 
+test("Back to the history stays there when a pending rerun is accepted", async () => {
+  const ui = await workspace();
+  await flush();
+  void ui.select(0);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  void ui.get("rerun").click();
+  const submission = ui.pending("/api/v1/analyses");
+  await ui.window.history.go(-1);
+  submission.reply({analysis_id: id(3000)}, 202);
+  await flush();
+  assert.equal(ui.location.href, "http://localhost/");
+  assert.equal(ui.get("analysis-panel").hidden, true);
+  assert.equal(ui.calls.some(call => call.url === `/api/v1/analyses/${id(3000)}`), false);
+
+  void ui.window.history.go(1);
+  ui.pending(`/api/v1/analyses/${id(1)}`).reply(metadata("job-A", "failed"));
+  await flush();
+  assert.equal(new URL(ui.location.href).searchParams.get("analysis"), id(1));
+});
+
 test("model paging is bounded and preserves a version selected on another page", async () => {
   const ui = await workspace();
   await flush();

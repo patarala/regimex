@@ -193,7 +193,7 @@ async function restoreAnalysis(url, resumed) {
     if (resumed) await resumed;
     else if (analysis.current.loading) await analysis.current.loading;
     if (analysis.current?.metadata) await restoreComparison(url);
-  } else if (analysis.current?.id) {
+  } else if (analysis.current) {
     deletion.close();
     analysis.clearSelection();
   }

@@ -5,18 +5,20 @@ const bulkActions = [["training-archive-selected", true], ["training-restore-sel
 export const finished = job => ["succeeded", "failed", "cancelled"].includes(job.state);
 const archiveState = row => finished(row.job) ? Boolean(row.archived_at) : null;
 
-export function createRunArchive({apply, compare, renderRows}) {
+export function createRunArchive({session, apply, compare, renderRows}) {
   const selected = new Map();
   const toggle = $("training-select-runs");
   const detail = $("training-archive-run");
-  let selecting = false, saving = false, stale = false, current = null;
+  let selecting = false, stale = false, current = null;
+  let savingEpoch = null;
+  const saving = () => savingEpoch === session.epoch;
 
   function controls() {
     toggle.textContent = selecting ? "Done" : "Select runs";
     toggle.setAttribute("aria-pressed", String(selecting));
-    toggle.disabled = saving || stale;
+    toggle.disabled = saving() || stale;
     $("training-selection").hidden = !selecting;
-    $("training-compare-selected").disabled = selected.size !== 2 || saving || stale;
+    $("training-compare-selected").disabled = selected.size !== 2 || saving() || stale;
     $("training-selection-count").textContent = selected.size === selectionLimit
       ? selectionLimit + " of " + selectionLimit + " selected" : selected.size + " selected";
     const view = $("training-history-view").value;
@@ -25,7 +27,7 @@ export function createRunArchive({apply, compare, renderRows}) {
       const button = $(id);
       const count = statuses.filter(state => state === !archived).length;
       button.hidden = view !== "all" && view !== (archived ? "active" : "archived");
-      button.disabled = !count || saving || stale;
+      button.disabled = !count || saving() || stale;
       if (count && count < selected.size) {
         button.title = count + (count === 1 ? " run" : " runs");
         button.setAttribute("aria-label", button.textContent + " (" + button.title + ")");
@@ -38,34 +40,37 @@ export function createRunArchive({apply, compare, renderRows}) {
 
   function runControl() {
     detail.hidden = !current || !finished(current.job);
-    detail.disabled = saving;
+    detail.disabled = saving();
     detail.textContent = current?.archived_at ? "Restore run" : "Archive run";
   }
 
   async function save(ids, archived) {
-    if (saving || !ids.length) return;
+    if (saving() || !ids.length) return;
     const trigger = document.activeElement;
-    saving = true;
+    const workspace = session.epoch;
+    savingEpoch = workspace;
     runControl();
     renderRows();
     try {
-      if (await apply(ids, archived)) {
+      if (await apply(ids, archived) && workspace === session.epoch) {
         for (const id of ids) selected.delete(id);
         if (!selected.size) selecting = false;
       }
     } finally {
-      saving = false;
-      runControl();
-      renderRows();
-      if (bulkActions.some(([id]) => $(id) === trigger) && document.activeElement === document.body &&
-          !$("training").hidden) {
-        (toggle.hidden ? $("training-history-view") : toggle).focus({preventScroll: true});
+      if (workspace === session.epoch) {
+        savingEpoch = null;
+        runControl();
+        renderRows();
+        if (bulkActions.some(([id]) => $(id) === trigger) && document.activeElement === document.body &&
+            !$("training").hidden) {
+          (toggle.hidden ? $("training-history-view") : toggle).focus({preventScroll: true});
+        }
       }
     }
   }
 
   $("training-compare-selected").addEventListener("click", () => {
-    if (selecting && selected.size === 2 && !saving && !stale) compare([...selected.keys()]);
+    if (selecting && selected.size === 2 && !saving() && !stale) compare([...selected.keys()]);
   });
   for (const [id, archived] of bulkActions) {
     const button = $(id);
@@ -91,9 +96,9 @@ export function createRunArchive({apply, compare, renderRows}) {
     input.dataset.selectRun = row.run_id;
     input.setAttribute("aria-label", "Select " + label);
     input.checked = selected.has(row.run_id);
-    input.disabled = saving || (!input.checked && selected.size >= selectionLimit);
+    input.disabled = saving() || (!input.checked && selected.size >= selectionLimit);
     input.addEventListener("change", () => {
-      if (input.disabled || saving || stale || !selecting) return;
+      if (input.disabled || saving() || stale || !selecting) return;
       if (input.checked) selected.set(row.run_id, archiveState(row));
       else selected.delete(row.run_id);
       renderRows();

@@ -92,6 +92,47 @@ def test_navigation_during_archive_ignores_a_stale_detail(browser: Any) -> None:
         page.close()
 
 
+def test_new_session_can_archive_while_previous_session_awaits_confirmation(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.runs.append(api.run)
+    page = browser.new_page()
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(
+        "**/api/v1/session",
+        lambda route: route.fulfill(
+            json={
+                "principal": {
+                    "owner_id": "second" if route.request.method == "POST" else "first",
+                    "role": "admin",
+                },
+                "csrf_token": "test",
+            }
+        ),
+    )
+    patches: list[Any] = []
+    page.route("**/training-runs/archive", lambda route: patches.append(route))
+    archive = page.get_by_role("button", name="Archive run", exact=True)
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        with page.expect_request(lambda request: request.method == "PATCH"):
+            archive.click()
+        page.get_by_role("button", name="Sign out").click()
+        page.get_by_label("Access token").fill("test-token")
+        page.get_by_role("button", name="Sign in").click()
+        page.get_by_role("link", name="Training", exact=True).click()
+        expect(archive).to_be_enabled()
+        with page.expect_request(lambda request: request.method == "PATCH"):
+            archive.click()
+        with page.expect_response(lambda response: response.request.method == "PATCH"):
+            patches[0].fulfill(status=204)
+        expect(archive).to_be_disabled()
+        api.dispatch(patches[1])
+        expect(page.get_by_role("button", name="Restore run")).to_be_enabled()
+    finally:
+        page.close()
+
+
 def test_filter_preserves_the_run_selected_repeat_and_epoch_table(browser: Any) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
