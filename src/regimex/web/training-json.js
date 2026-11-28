@@ -77,6 +77,12 @@ function formatTagged(value) {
     token.startsWith('"n') ? token.slice(2, -1) : '"' + token.slice(2));
 }
 
+function normalizeArchitecture(record) {
+  const id = record.sarchitecture_id;
+  if (typeof id === "string" && id.startsWith("s"))
+    record.sarchitecture_id = "s" + canonicalArchitectureId(id.slice(1));
+}
+
 // Keep the persisted request's number literals when a stored run becomes a new draft.
 function savedConfiguration(row) {
   if (row.straining.sorigin === "sexternal") {
@@ -86,6 +92,7 @@ function savedConfiguration(row) {
   const fields = Object.fromEntries([...requestFields]
     .filter(key => Object.hasOwn(row.straining, "s" + key))
     .map(key => ["s" + key, row.straining["s" + key]]));
+  normalizeArchitecture(fields);
   if (row.sdisplay_name) fields.sdisplay_name = row.sdisplay_name;
   return formatTagged(fields);
 }
@@ -112,8 +119,7 @@ export function differentSettings(left, right) {
   const differences = [];
   function settings(text) {
     const record = JSON.parse(taggedTokens(text));
-    if (typeof record.sarchitecture_id === "string" && record.sarchitecture_id.startsWith("s"))
-      record.sarchitecture_id = "s" + canonicalArchitectureId(record.sarchitecture_id.slice(1));
+    normalizeArchitecture(record);
     return record;
   }
   function compare(a, b, path) {

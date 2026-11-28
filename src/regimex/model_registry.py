@@ -570,8 +570,9 @@ class ArchitectureRegistry:
         return tuple(self._entries[key] for key in sorted(self._entries))
 
     def get(self, architecture_id: str) -> ArchitectureDescriptor:
+        architecture_id = canonical_architecture_id(architecture_id)
         try:
-            return self._entries[canonical_architecture_id(architecture_id)]
+            return self._entries[architecture_id]
         except KeyError as exc:
             raise RegistryError(f"unknown installed architecture {architecture_id!r}") from exc
 
@@ -637,8 +638,8 @@ class ArchitectureRegistry:
                     causes[0] if len(causes) == 1 else ExceptionGroup("Dependency failures", causes)
                 )
             raise RegistryError(
-                f"architecture {architecture_id!r} is unavailable on worker {worker_id!r}: "
-                + "; ".join(capability.reasons)
+                f"architecture {capability.architecture_id!r} is unavailable "
+                f"on worker {worker_id!r}: " + "; ".join(capability.reasons)
             ) from cause
         assert factory is not None
         return factory

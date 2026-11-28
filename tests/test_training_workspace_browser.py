@@ -1044,18 +1044,19 @@ def test_old_segment_moe_run_opens_and_copies_under_its_current_architecture(
         page.goto(f"{ORIGIN}/training/{RUN_ID}")
         expect(page.get_by_role("heading", name="Segment MoE · development")).to_be_visible()
         saved = json.loads(page.locator("#training-settings").text_content())
-        assert saved["architecture_id"] == "persistence"
+        assert saved["architecture_id"] == "segment-moe"
+        assert saved["training_runtime"]["memory_budget_bytes"] == 9007199254740993
         page.get_by_role("button", name="New run from this run").click()
         picker = page.get_by_label("Architecture")
         expect(picker).to_have_value("segment-moe")
         expect(picker.locator("option")).to_have_text(["Segment MoE"])
         page.get_by_role("button", name="Edit JSON").click()
         editor = page.get_by_label("Run configuration (JSON)")
-        assert json.loads(editor.input_value()) == {**saved, "architecture_id": "segment-moe"}
-        editor.fill(json.dumps(saved))
+        assert json.loads(editor.input_value()) == saved
+        editor.fill(json.dumps({**saved, "architecture_id": "persistence"}))
         page.get_by_role("button", name="Start training").click()
         expect(page.locator("#training-detail")).to_be_visible()
-        assert api.posts[0][1] == {**saved, "architecture_id": "segment-moe"}
+        assert api.posts[0][1] == saved
     finally:
         page.close()
 

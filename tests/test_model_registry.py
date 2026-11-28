@@ -168,6 +168,16 @@ def test_worker_probe_and_lazy_factory(installed_plugin: Path) -> None:
     assert import_module("regimex_test_plugin").probe_calls == ["cpu", "cpu"]
 
 
+def test_archived_model_reports_current_architecture_in_worker_errors() -> None:
+    with pytest.raises(RegistryError, match="unknown installed architecture 'segment-moe'"):
+        ArchitectureRegistry(()).get("persistence")
+    unavailable = ArchitectureRegistry((changed_descriptor(architecture_id="segment-moe"),))
+    with pytest.raises(RegistryError, match="architecture 'segment-moe' is unavailable"):
+        unavailable.load_backend_factory_on_worker(
+            "persistence", InferenceRuntime(), worker_id="test"
+        )
+
+
 def test_startup_imports_no_scientific_libraries(installed_plugin: Path) -> None:
     source_root = str(Path(__file__).resolve().parents[1] / "src")
     subprocess.run(

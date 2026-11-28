@@ -15,7 +15,8 @@ const runtimes = ["training-runtime", "training-inference"];
 const api = "/api/v1/";
 
 export function shortId(id) {
-  return id.replace(/^(?:dataset|reference)-([0-9a-f]{8})[0-9a-f]{24}$/, "$1");
+  const hex = /^(?:dataset|reference)-([0-9a-f]+)$/.exec(id)?.[1];
+  return hex && (hex.length === 32 || hex.length === 40) ? hex.slice(0, 8) : id;
 }
 
 export function datasetName(id) {

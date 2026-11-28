@@ -135,14 +135,14 @@ def word_bounds(element: Any, word: str) -> dict[str, float]:
     )
 
 
-@pytest.mark.parametrize("width", [320, 821, 1280])
+@pytest.mark.parametrize(("width", "id_length"), [(320, 40), (821, 32), (1280, 40)])
 def test_unnamed_archived_baseline_keeps_its_dataset_id_with_its_name(
-    browser: Any, width: int
+    browser: Any, width: int, id_length: int
 ) -> None:
     expect = pytest.importorskip("playwright.sync_api").expect
     api = TrainingAPI()
     prefix = "f6805c13"
-    dataset = f"dataset-{prefix}" + "0" * 24
+    dataset = "dataset-" + prefix.ljust(id_length, "0")
     api.run.update(display_name=None, archived_at="2026-10-01T12:00:00Z", trainable_parameters=9315)
     api.run["training"].update(architecture_id="baseline", dataset_id=dataset)
     api.run["job"]["state"] = "cancelled"
@@ -152,7 +152,7 @@ def test_unnamed_archived_baseline_keeps_its_dataset_id_with_its_name(
     try:
         page.goto(f"{ORIGIN}/training/{RUN_ID}?view=all")
         heading = page.locator("#training-detail-title")
-        expect(heading).to_contain_text(prefix)
+        expect(heading).to_contain_text("Dataset\u00a0" + prefix)
         assert word_bounds(heading, "Dataset")["top"] == word_bounds(heading, prefix)["top"]
         if width == 320:
             page.get_by_role("button", name="Run history", exact=True).click()
