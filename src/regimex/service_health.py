@@ -107,9 +107,10 @@ def worker_healthy(settings: ServiceSettings, queue: QueueName) -> bool:
             return False
         with repository.connection() as connection:
             row = connection.execute(
-                "SELECT last_heartbeat >= now() - %s * interval '1 second' "
-                "FROM procrastinate_workers WHERE id=%s",
-                (settings.stale_seconds, identity.worker_id),
+                "SELECT w.last_heartbeat >= now() - %s * interval '1 second' "
+                "FROM procrastinate_workers w JOIN regimex_worker_queues q ON q.worker_id=w.id "
+                "WHERE w.id=%s AND q.queue_name=%s",
+                (settings.stale_seconds, identity.worker_id, queue),
             ).fetchone()
         return row is not None and row[0] is True
     except OSError, ValueError, psycopg.Error:

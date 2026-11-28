@@ -32,7 +32,13 @@ from typer.testing import CliRunner
 
 from regimex.cli import app
 from regimex.infrastructure.database import DatabaseRepository
-from regimex.service_health import api_healthy, queue_status, read_worker_identity, worker_healthy
+from regimex.service_health import (
+    api_healthy,
+    queue_status,
+    read_worker_identity,
+    worker_healthy,
+    write_worker_identity,
+)
 from regimex.service_logging import RedactingJSONFormatter
 from regimex.service_settings import ServiceSettings
 
@@ -276,6 +282,26 @@ def test_queue_status_uses_actual_queue_capacity_and_heartbeat_freshness(
         assert connection.execute("SELECT * FROM regimex_worker_queues").fetchall() == []
         connection.execute("DELETE FROM regimex_restore_state")
     assert queue_status(database, "analysis", stale_seconds=3).state == "unknown"
+
+
+def test_local_worker_health_requires_registration_for_its_queue(
+    database: DatabaseRepository, tmp_path: Path
+) -> None:
+    config = settings(database, tmp_path)
+    config.work_root.mkdir()
+    with database.connection() as connection:
+        row = connection.execute(
+            "INSERT INTO procrastinate_workers DEFAULT VALUES RETURNING id"
+        ).fetchone()
+        assert row is not None and isinstance(row[0], int)
+        worker_id = row[0]
+    write_worker_identity(config, "analysis", worker_id)
+    assert not worker_healthy(config, "analysis")
+    with database.connection() as connection:
+        connection.execute(
+            "INSERT INTO regimex_worker_queues VALUES (%s, 'admin', 1)", (worker_id,)
+        )
+    assert not worker_healthy(config, "analysis")
 
 
 def test_queue_registry_migration_preserves_existing_resources_and_is_repeatable(

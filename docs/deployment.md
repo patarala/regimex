@@ -295,9 +295,10 @@ database, the expected schema and a completed restore.
 the public origin when it is a loopback address or `localhost`. For other
 origins they connect to `127.0.0.1`. Use `--host` and `--port` to probe a
 particular listener. HTTPS still checks the certificate for the public origin.
-`service health --component worker --queue analysis` checks the registered local
-worker and fresh database heartbeat. A completed saved-model analysis is the
-functional check for backend loading, prediction, report rendering and persistence.
+`service health --component worker --queue analysis` checks that the local
+worker has a fresh database heartbeat and is registered for the selected queue.
+A completed saved-model analysis verifies backend loading, prediction, report
+rendering and persistence.
 
 For a combined diagnostic report, run from the operator image with the same
 configuration and storage mounts:
