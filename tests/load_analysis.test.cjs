@@ -128,15 +128,16 @@ test("a verified result needs the resolved model and a complete classification o
     sequences: [{ instrument_id: "ETH/USD", probabilities: [[1, 0, 0], [0.5, 0.2, 0.3]], intervals: [interval] }],
   };
   const apiSource = { channel: "api", command: null };
-  function verify(result, intakeSource = apiSource, pollSource = apiSource) {
+  function verify(result, intakeSource = apiSource, pollSource = apiSource, changeView = () => {}) {
     http.request = (method, url) => {
       if (url.endsWith("/result")) return { status: 200, json: () => result };
       const intake = method === "POST";
-      const job = { model: result.model, created_at: "2026-01-01T00:00:00Z",
+      const job = { operation_id: "job", model: { ...result.model }, created_at: "2026-01-01T00:00:00Z",
         state: intake ? "queued" : "succeeded", launch_source: intake ? intakeSource : pollSource };
-      return { status: intake ? 202 : 200, json: () => ({
-        analysis_id: "analysis", snapshot_id: snapshot.id, result_available: !intake, job,
-      }) };
+      const view = { analysis_id: "analysis", snapshot_id: snapshot.id, snapshot_sha256: snapshot.digest,
+        result_available: !intake, job };
+      changeView(view, intake);
+      return { status: intake ? 202 : 200, json: () => view };
     };
     client.default([snapshot]);
   }
@@ -191,9 +192,22 @@ test("a verified result needs the resolved model and a complete classification o
     assert.throws(() => verify(valid, source, apiSource), /launch source/);
     assert.throws(() => verify(valid, apiSource, source), /launch source/);
   }
+  const changes = [
+    (view, intake) => { if (intake) view.snapshot_sha256 = "ff".repeat(32); },
+    (view, intake) => { if (intake) delete view.job.operation_id; },
+    (view, intake) => { if (!intake) view.job.operation_id = "another-job"; },
+    (view, intake) => { if (!intake) view.snapshot_id = "another-snapshot"; },
+    (view, intake) => { if (!intake) view.snapshot_sha256 = "ff".repeat(32); },
+    (view, intake) => { if (!intake) view.job.model.model_version_id = "another-model"; },
+    (view, intake) => { if (!intake) view.job.model.bundle_sha256 = "ff".repeat(32); },
+    (view, intake) => { if (!intake) view.job.model.inference_policy_sha256 = "ff".repeat(32); },
+  ];
+  for (const change of changes) {
+    assert.throws(() => verify(valid, apiSource, apiSource, change), /[Ss]ubmission|[Ss]tatus/);
+  }
   assert.deepEqual(metrics.get("analyses_verified"), classifications.map(() => 1));
   assert.equal(metrics.get("analyses_failed").length,
-    invalid.length + invalidClassifications.length + 2 * invalidSources.length);
+    invalid.length + invalidClassifications.length + 2 * invalidSources.length + changes.length);
 });
 
 test("only HTTPS may carry a token to a named load balancer", async () => {

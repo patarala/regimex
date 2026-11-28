@@ -101,3 +101,12 @@ export function checkLaunchSource(job) {
     fail("Direct API submission has an unexpected launch source");
   }
 }
+
+export function checkStatus(view, { id, operation, snapshot, pinned }) {
+  if (view.analysis_id !== id || view.job?.operation_id !== operation ||
+      view.snapshot_id !== snapshot.id || view.snapshot_sha256 !== snapshot.digest ||
+      !sameMetadata(pinned, view.job.model)) {
+    fail("Status differs from the accepted analysis, operation, snapshot or model");
+  }
+  checkLaunchSource(view.job);
+}

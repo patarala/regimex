@@ -36,9 +36,10 @@ immutable model version. The timer starts after snapshot upload and one warm-up.
 With two workers, only one worker is guaranteed to have seen the model. Supply
 `--runtime-file PATH` to compare different thread counts or batch sizes.
 
-k6 checks the launch source, model digest, inference policy, snapshot, source
-revision, instruments, units and time grid. For every step it checks normalized
-class probabilities. Decoded intervals must cover the input and represent each
+k6 checks that every status response refers to the accepted analysis, queue
+operation, snapshot and pinned model. It checks the result against the model
+digests, source revision, instruments, units and time grid. For every step it
+checks normalized class probabilities. Decoded intervals must cover the input and represent each
 unavailable interval with a null direction.
 
 The whole stand, including PostgreSQL and k6, shares two CPU cores, 3 GiB of

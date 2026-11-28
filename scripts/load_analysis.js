@@ -3,7 +3,7 @@ import exec from "k6/execution";
 import http from "k6/http";
 import { Counter, Trend } from "k6/metrics";
 
-import { checkLaunchSource, checkResult, integer, loadTarget, rejectionCode, validDigest } from "./load_checks.js";
+import { checkLaunchSource, checkResult, checkStatus, integer, loadTarget, rejectionCode, validDigest } from "./load_checks.js";
 
 const api = loadTarget();
 const model = __ENV.REGIMEX_LOAD_MODEL;
@@ -183,8 +183,10 @@ function submitAndVerify(snapshot) {
   if (!id) fail("Accepted analysis has no ID");
   console.log(`REGIMEX_ACCEPTED ${JSON.stringify({ phase, analysis_id: id })}`);
   checkLaunchSource(analysis.job);
+  const operation = analysis.job.operation_id;
   const resolved = analysis.job.model;
-  if (analysis.snapshot_id !== snapshot.id || resolved.model_version_id !== model ||
+  if (!operation || analysis.snapshot_id !== snapshot.id || analysis.snapshot_sha256 !== snapshot.digest ||
+    resolved.model_version_id !== model ||
     !validDigest(resolved.bundle_sha256) || !validDigest(resolved.inference_policy_sha256) ||
     (expectedBundle !== undefined && resolved.bundle_sha256 !== expectedBundle) ||
     (expectedPolicy !== undefined && resolved.inference_policy_sha256 !== expectedPolicy)) {
@@ -202,8 +204,7 @@ function submitAndVerify(snapshot) {
     if (Date.now() - start >= resultTimeoutMs) fail(`Analysis ${id} timed out`);
     sleep(0.5);
     analysis = request("poll analysis", path, 200).json();
-    if (analysis.analysis_id !== id) fail("Status belongs to a different analysis");
-    checkLaunchSource(analysis.job);
+    checkStatus(analysis, { id, operation, snapshot, pinned: resolved });
   }
   if (!analysis.result_available) fail("Successful analysis has no result");
   const result = request("download result", path + "/result", 200);

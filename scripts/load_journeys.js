@@ -2,7 +2,7 @@ import { fail, sleep } from "k6";
 import exec from "k6/execution";
 import http from "k6/http";
 import { Counter, Trend } from "k6/metrics";
-import { checkLaunchSource, checkResult, integer, loadTarget, rejectionCode, validDigest } from "./load_checks.js";
+import { checkLaunchSource, checkResult, checkStatus, integer, loadTarget, rejectionCode, validDigest } from "./load_checks.js";
 
 const api = loadTarget();
 const model = __ENV.REGIMEX_LOAD_MODEL;
@@ -145,8 +145,7 @@ function isDone(job) {
   checkDeadline(start);
   const view = request(snapshot.owner, "poll analysis", path).json();
   checkDeadline(start);
-  if (view.analysis_id !== id || view.job.operation_id !== job.operation) fail("Poll returned a different job");
-  checkLaunchSource(view.job);
+  checkStatus(view, job);
   if (view.job.state === "succeeded") {
     if (!view.result_available) fail("Successful job has no result");
     const response = request(snapshot.owner, "download result", path + "/result");
@@ -317,7 +316,8 @@ function browse(state) {
     fail("The prepared experiment or analysis is missing from history");
   }
   const detail = request(owner, "analysis details", `/analyses/${job.id}`).json();
-  if (detail.analysis_id !== job.id || !detail.report_available || !detail.result_available) {
+  checkStatus(detail, job);
+  if (!detail.report_available || !detail.result_available) {
     fail("Workspace detail is incomplete");
   }
   const report = request(owner, "download report", `/analyses/${job.id}/report`);
