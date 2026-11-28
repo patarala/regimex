@@ -1,7 +1,10 @@
 # Analysis workspace
 
-Sign in with your access token. For a first analysis you can download the
-[included JSON export](../tests/fixtures/experiment-v2.json) or
+Sign in with your access token. For a first analysis, choose **Try an example**
+under **New analysis**, then **Analyze**. The example is a 256-step ADA/USD
+simulation with rising, falling and relatively flat stretches. The intervals
+you see depend on the selected model. You can also [download the same
+export](../src/regimex/web/mixed-market.json) or
 [generate your own](cli.md#generate-and-analyze-an-experiment).
 
 ## Analyze an experiment

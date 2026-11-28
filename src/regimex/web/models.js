@@ -41,6 +41,7 @@ export function createModels({session, getSelection, getBusy, getUploadReady, ge
   function updateActions() {
     $("classify").disabled = getBusy() || !session.value || !getUploadReady() || !modelsReady || !$("upload-model").value;
     $("export-file").disabled = getBusy() || getBatchLocked();
+    $("try-example").disabled = $("export-file").disabled;
     const unavailable = getBusy() || modelsLoading || !modelsReady;
     $("upload-model").disabled = unavailable || getBatchLocked() || $("upload-model").children.length < 2;
     $("rerun-model").disabled = unavailable || $("rerun-model").children.length < 2;

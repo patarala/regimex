@@ -7,8 +7,8 @@ price chart, compare models on the same run or download an interactive HTML repo
 ## Analyze your first experiment
 
 1. Sign in to the service with your access token.
-2. In **Analyses → New analysis**, choose the export and a published model.
-   You can try the [included experiment](tests/fixtures/experiment-v2.json).
+2. In **Analyses → New analysis**, choose your export or select **Try an example**
+   to load a 256-step ADA/USD market simulation. Choose a published model.
 3. Select **Analyze**. The report appears when the job finishes. Use
    **Download JSON** for predictions and statistics on the original time grid.
 

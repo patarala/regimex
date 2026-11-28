@@ -128,27 +128,32 @@ export function createAnalysis({session, models, history, comparison, onStorageC
     $("file-name").focus();
   }
 
-  async function chooseFiles(files) {
-    if (!prepareInput()) return;
-    const selected = Array.from(files);
-    const selection = fileEpoch;
-    if (selected.length > 1) {
-      batch.choose(selected);
-      return;
-    }
-    const [file] = selected;
-    if (!file) return;
+  async function validateInput(name, contents, selection) {
     try {
-      const text = await readExport(file);
+      const text = await contents;
       if (selection !== fileEpoch || !session.value) return;
       const validated = await session.json("/api/v1/validate", { method: "POST", body: text });
       if (selection !== fileEpoch || !session.value) return;
       exportText = text;
-      showInput(file.name, [validated.run_id, `${validated.step_count.toLocaleString()} steps`,
+      showInput(name, [validated.run_id, `${validated.step_count.toLocaleString()} steps`,
         validated.instrument_ids.join(", ")]);
     } catch (error) {
       if (selection === fileEpoch && session.value) throw error;
     }
+  }
+
+  async function chooseFiles(files) {
+    if (!prepareInput()) return;
+    const selected = Array.from(files);
+    if (selected.length > 1) batch.choose(selected);
+    else if (selected.length) await validateInput(selected[0].name, readExport(selected[0]), fileEpoch);
+  }
+
+  async function chooseExample() {
+    if (!prepareInput()) return;
+    $("export-file").value = "";
+    const contents = session.request("/examples/mixed-market.json").then(response => response.text());
+    await validateInput("Mixed market · ADA/USD", contents, fileEpoch);
   }
 
   function retry(action) {
@@ -414,6 +419,9 @@ export function createAnalysis({session, models, history, comparison, onStorageC
   }
   $("export-file").addEventListener("change", (event) =>
     chooseFiles(event.target.files).catch((error) => notice(error.message, true)),
+  );
+  $("try-example").addEventListener("click", () =>
+    chooseExample().catch(error => notice(error.message, true)),
   );
   ["dragenter", "dragover"].forEach((name) =>
     $("drop-zone").addEventListener(name, (event) => {

@@ -39,6 +39,20 @@ def test_packaged_browser_assets_are_available_without_authentication() -> None:
         assert client.get("/assets/missing.js").status_code == 404
 
 
+def test_mixed_market_example_is_a_valid_snapshot() -> None:
+    from regimex.exports import parse_export_v2
+
+    app = FastAPI()
+    install_web_routes(app)
+    with TestClient(app) as client:
+        response = client.get("/examples/mixed-market.json")
+        response.raise_for_status()
+        assert response.headers["content-type"] == "application/json"
+        snapshot = parse_export_v2(response.content)
+        assert snapshot.time_grid.step_count == 256
+        assert [item.instrument_id for item in snapshot.instruments] == ["ADA/USD"]
+
+
 def test_running_app_can_serve_a_new_browser_module(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

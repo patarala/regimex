@@ -50,7 +50,8 @@ class Element {
 }
 
 function response(value, status = 200) {
-  return {ok: status >= 200 && status < 300, status, json: async () => structuredClone(await value)};
+  return {ok: status >= 200 && status < 300, status, json: async () => structuredClone(await value),
+    text: async () => typeof value === "string" ? value : JSON.stringify(await value)};
 }
 
 async function loadWorkspace(context, entryFile = "app.js") {
@@ -483,6 +484,24 @@ test("empty experiments remain visible and can be renamed or deleted", async () 
   await flush();
   assert.equal(ui.get("file-details").hidden, true);
   assert.equal(ui.get("classify").disabled, true);
+});
+
+test("the example follows the same validation and model selection as a file", async () => {
+  const ui = await workspace(0);
+  await flush();
+  const body = fs.readFileSync(path.join(root, "src/regimex/web/mixed-market.json"), "utf8");
+  void ui.get("try-example").click();
+  ui.pending("/examples/mixed-market.json").reply(body);
+  await flush();
+  const validation = ui.pending("/api/v1/validate");
+  assert.equal(validation.options.body, body);
+  validation.reply({run_id: "example", step_count: 256, instrument_ids: ["ADA/USD"]});
+  await flush();
+  assert.match(ui.get("file-summary").textContent, /256 steps/);
+  assert.equal(ui.get("classify").disabled, false);
+  assert.equal(ui.calls.some(call => call.url === "/api/v1/snapshots"), false);
+  void ui.get("classify").click();
+  assert.equal(ui.pending("/api/v1/snapshots").options.body, body);
 });
 
 test("choosing a saved experiment supersedes validation and submits its existing snapshot", async () => {

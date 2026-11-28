@@ -28,6 +28,14 @@ _MEDIA_TYPES = {"js": "text/javascript", "css": "text/css"}
 
 
 def install_web_routes(app: FastAPI) -> None:
+    @app.get("/examples/mixed-market.json", include_in_schema=False)
+    def mixed_market_example() -> Response:
+        return Response(
+            files("regimex.web").joinpath("mixed-market.json").read_bytes(),
+            media_type="application/json",
+            headers=_HEADERS,
+        )
+
     @app.get("/assets/plotly/{digest}.js", include_in_schema=False)
     def report_plotting_script(digest: str) -> Response:
         runtime = plot_runtime()
