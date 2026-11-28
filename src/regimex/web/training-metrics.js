@@ -42,7 +42,7 @@ function envelope(points, buckets = 160) {
 }
 
 function horizontalAxis(history, records) {
-  const values = records.map(row => row[history.field]);
+  const values = records.map(row => row[history.field]).sort((a, b) => a - b);
   const first = values[0], last = values.at(-1);
   const useLog = history.field === "regularization" && first > 0 && last / first >= 100;
   const scale = useLog ? Math.log : value => value;
@@ -480,7 +480,6 @@ export function createTrainingMetrics() {
     seedLabel.hidden = seeds.length < 2;
     function draw() {
       const selected = (records || []).filter(row => !seeds.length || row.seed === Number(seed.value));
-      selected.sort((a, b) => a[history.field] - b[history.field]);
       const last = selected.at(-1);
       const outcome = outcomes.find(item => item.seed === Number(seed.value));
       const reason = outcome?.reason ?? last?.stop_reason;
