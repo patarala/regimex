@@ -51,8 +51,10 @@ def submissions(path: Path) -> dict[UUID, str]:
     return jobs
 
 
-def child_records(paths: list[Path], jobs: dict[UUID, str]) -> dict[str, list[dict[str, object]]]:
-    ids = {str(job) for job in jobs}
+def child_records(
+    paths: list[Path], operation_ids: set[UUID]
+) -> dict[str, list[dict[str, object]]]:
+    ids = {str(operation_id) for operation_id in operation_ids}
     records: dict[str, list[dict[str, object]]] = defaultdict(list)
     for path in paths:
         with path.open() as stream:
@@ -186,11 +188,12 @@ def collect_timings(
         if not pending_ack or time.monotonic() >= deadline:
             break
         time.sleep(0.1)
-    children = child_records(worker_logs, jobs)
-    records = [
-        measure(phase, job, activity.get(job), children.get(str(job), []))
-        for job, phase in jobs.items()
-    ]
+    children = child_records(worker_logs, {row.operation_id for row in activity.values()})
+    records = []
+    for analysis_id, phase in jobs.items():
+        row = activity.get(analysis_id)
+        events = children.get(str(row.operation_id), []) if row else []
+        records.append(measure(phase, analysis_id, row, events))
     write_json(
         output, {"analyses": [asdict(r) for r in records], "phases": phase_summaries(records)}
     )

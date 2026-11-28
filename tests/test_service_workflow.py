@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from subprocess import Popen
 from threading import Event
@@ -39,10 +39,13 @@ from test_baseline_backend import bundle, rehash
 
 from regimex.application import analysis as analysis_worker
 from regimex.application.analysis_computation import snapshot_inputs
+from regimex.application.deletion import DeletionService
 from regimex.application.service import AnalysisService
 from regimex.computation_worker import supervise_child
 from regimex.exports import ExportPayloadV2, seal_export
+from regimex.infrastructure.analysis_timings import queue_activity
 from regimex.infrastructure.database import DatabaseRepository
+from regimex.infrastructure.deletion_repository import DeletionRepository
 from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
 from regimex.infrastructure.resource_lifecycle import owner_payload_lock
 from regimex.model_registry import ArchitectureRegistry, InferenceRuntime, baseline_descriptor
@@ -363,6 +366,60 @@ def test_real_baseline_result_survives_restart_and_redelivery(
             restarted.get_report_metadata(denied, queued.analysis_id)
         with pytest.raises(NotFound):
             restarted.read_report(denied, queued.analysis_id)
+
+
+def test_analysis_and_job_keep_their_own_ids_across_recovery_and_deletion(
+    service: AnalysisService, tmp_path: Path
+) -> None:
+    published_model(service, tmp_path)
+    database = service.repository
+    owner = principal(database)
+    snapshot = service.create_snapshot(owner, source(2000).export)
+    intake = service.submit_analysis(owner, snapshot.snapshot_id, idempotency_key="distinct-ids")
+    operation_id = intake.operation.operation_id
+    analysis_id = uuid4()
+    # The analysis primary key and its job foreign key are independent.
+    with database.connection() as connection:
+        connection.execute(
+            "UPDATE regimex_analyses SET analysis_id=%s WHERE operation_id=%s",
+            (analysis_id, operation_id),
+        )
+        connection.execute(
+            "UPDATE regimex_operations SET document=jsonb_set(document, '{resource_id}', "
+            "to_jsonb(%s::text)) WHERE operation_id=%s",
+            (str(analysis_id), operation_id),
+        )
+    scoped = Principal(
+        owner_id=owner.owner_id,
+        role="integration",
+        token_id=uuid4(),
+        source_namespace=snapshot.source_id,
+        run_scope=snapshot.run_id,
+    )
+    assert service.get_analysis(owner, analysis_id).operation.operation_id == operation_id
+    assert service.get_operation(scoped, operation_id).resource_id == str(analysis_id)
+    assert database.claim_operation(operation_id) is not None
+    (recovered,) = database.recover_operations(stale_after=timedelta())
+    assert recovered.operation_id == operation_id and recovered.state == "queued"
+    completed = service.run_analysis(operation_id)
+    assert completed is not None and completed.state == "succeeded"
+    assert service.get_result(scoped, analysis_id)["analysis_id"] == str(analysis_id)
+    assert service.cancel_operation(scoped, operation_id) == completed
+    assert queue_activity(database, [analysis_id])[analysis_id].operation_id == operation_id
+
+    deletions = DeletionService(DeletionRepository(database), service.store)
+    preview = deletions.preview(owner, "analysis", analysis_id)
+    assert (
+        deletions.apply(owner, preview.plan_id, expected_sha256=preview.sha256).state == "completed"
+    )
+    for actor in (owner, scoped):
+        with pytest.raises(NotFound):
+            service.get_analysis(actor, analysis_id)
+        with pytest.raises(NotFound):
+            service.get_operation(actor, operation_id)
+        with pytest.raises(NotFound):
+            service.cancel_operation(actor, operation_id)
+    assert database.get_operation_internal(operation_id) == completed
 
 
 def test_repeated_analysis_materializes_only_the_snapshot_in_each_attempt(

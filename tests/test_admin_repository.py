@@ -13,7 +13,7 @@ import sys
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Never
@@ -1035,7 +1035,7 @@ def test_recovered_generation_fences_old_attempt_and_commits_all_effects_once(
     )
     run = repository.submit(principal(), spec, idempotency_key="generation")
     old_token = claim(repository, run.run_id)
-    repository.database.recover_stale(datetime.now(UTC))
+    repository.database.recover_operations(stale_after=timedelta())
     new_token = claim(repository, run.run_id)
     record, snapshots, bindings = dataset_records("generated", generation=spec)
     with pytest.raises(StaleAttempt):
@@ -1564,7 +1564,7 @@ def test_retry_and_stale_recovery_keep_administrative_queue_routing(
         ),
     )
     claim(repository, run.run_id)
-    repository.database.recover_stale(datetime.now(UTC))
+    repository.database.recover_operations(stale_after=timedelta())
     with repository.database.connection() as connection:
         rows = connection.execute(
             "SELECT DISTINCT queue_name,task_name FROM procrastinate_jobs"

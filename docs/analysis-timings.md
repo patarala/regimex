@@ -21,8 +21,9 @@ Supply one raw JSON service log per analysis worker. The jobs file contains
 one acceptance per line, for example
 `{"phase":"serial","analysis_id":"7acb77f4-6144-4ab1-bd3f-0aab23535fa3"}`.
 Every accepted ID must be unique across phases. The k6 summaries give the
-client's intake and result latencies and verified job count. The timing
-collector only sees IDs listed in the jobs file.
+client's intake and result latencies and verified job count. For each analysis
+in the jobs file, the collector looks up its queue operation in PostgreSQL and
+matches that operation ID to the worker log.
 
 | Metric (ms) | Measurement boundaries |
 | --- | --- |

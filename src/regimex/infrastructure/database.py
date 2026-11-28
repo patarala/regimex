@@ -870,8 +870,11 @@ class DatabaseRepository:
 
     def get_analysis(self, principal: Principal, analysis_id: UUID) -> AnalysisRecord:
         with self.connection() as connection:
-            self._summary(connection, principal, analysis_id)
-            return self._analysis(connection, analysis_id)
+            summary = self._summary(connection, principal, analysis_id)
+            record = self._analysis(connection, summary.operation.operation_id)
+            if record.analysis_id != analysis_id:
+                raise Conflict("The stored job does not belong to the requested analysis.")
+            return record
 
     @staticmethod
     def _summary_row(row: tuple[object, ...]) -> AnalysisSummary:
@@ -993,10 +996,6 @@ class DatabaseRepository:
             # Establish ownership before reporting an unsupported stored version.
             query += " AND o.owner_id=%s"
             parameters.append(principal.owner_id)
-            query += (
-                " AND NOT EXISTS(SELECT 1 FROM regimex_deleted_analyses d "
-                "WHERE d.analysis_id=o.operation_id)"
-            )
             if principal.role != "admin":
                 query += " AND o.kind='analysis'"
             if principal.role == "integration":
@@ -1010,12 +1009,24 @@ class DatabaseRepository:
                     query += " AND s.run_id=%s"
                     parameters.append(principal.run_scope)
                 query += ")"
+            else:
+                # Deletion removes the analysis row but keeps its terminal job for workers.
+                query += (
+                    " AND (o.kind<>'analysis' OR EXISTS(SELECT 1 FROM regimex_analyses a "
+                    "WHERE a.operation_id=o.operation_id))"
+                )
         if lock:
             query += " FOR UPDATE OF o"
         row = connection.execute(query, parameters).fetchone()
         if row is None:
             raise NotFound()
-        return _read_operation(row[0])
+        operation = _read_operation(row[0])
+        if principal is not None and (
+            operation.owner_id != principal.owner_id
+            or (operation.kind != "analysis" and principal.role != "admin")
+        ):
+            raise NotFound()
+        return operation
 
     @staticmethod
     def _save(connection: psycopg.Connection[tuple[object, ...]], operation: Operation) -> None:
@@ -1050,34 +1061,16 @@ class DatabaseRepository:
 
     def get_operation(self, principal: Principal, operation_id: UUID) -> Operation:
         with self.connection() as connection:
-            operation = self._operation(connection, operation_id, principal=principal)
-            if operation.owner_id != principal.owner_id:
-                raise NotFound()
-            self._authorize_operation(connection, principal, operation)
-            return operation
+            return self._operation(connection, operation_id, principal=principal)
 
     def get_operation_internal(self, operation_id: UUID) -> Operation:
         """Workers may still unwind after an owner removed a terminal analysis."""
         with self.connection() as connection:
             return self._operation(connection, operation_id)
 
-    def _authorize_operation(
-        self,
-        connection: psycopg.Connection[tuple[object, ...]],
-        principal: Principal,
-        operation: Operation,
-    ) -> None:
-        if operation.kind != "analysis" and principal.role != "admin":
-            raise NotFound()
-        if principal.role == "integration":
-            self._summary(connection, principal, operation.operation_id)
-
     def cancel_operation(self, principal: Principal, operation_id: UUID) -> Operation:
         with self.connection() as connection:
             operation = self._operation(connection, operation_id, lock=True, principal=principal)
-            if operation.owner_id != principal.owner_id:
-                raise NotFound()
-            self._authorize_operation(connection, principal, operation)
             operation = request_cancel(operation, self._now(connection, operation))
             self._save(connection, operation)
             return operation
@@ -1260,9 +1253,6 @@ class DatabaseRepository:
                     self._enqueue(connection, operation)
                 recovered.append(operation)
             return tuple(recovered)
-
-    def recover_stale(self, stale_before: datetime) -> tuple[Operation, ...]:
-        return self.recover_operations(stale_before)
 
     def prune_successful_recovery_deliveries(self) -> None:
         """Expire successful maintenance ticks, including any backlog from earlier runs."""

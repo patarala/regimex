@@ -12,6 +12,7 @@ from regimex.infrastructure.database import DatabaseRepository
 @dataclass(frozen=True)
 class QueueActivity:
     analysis_id: UUID
+    operation_id: UUID
     state: str
     attempts: int
     deliveries: int
@@ -28,7 +29,8 @@ def queue_activity(repository: DatabaseRepository, ids: list[UUID]) -> dict[UUID
     ):
         cursor.execute(
             """
-            SELECT a.analysis_id, o.state, (o.document->>'attempt')::int AS attempts,
+            SELECT a.analysis_id, o.operation_id, o.state,
+                   (o.document->>'attempt')::int AS attempts,
                    count(DISTINCT d.job_id) AS deliveries,
                    array_remove(array_agg(e.type::text ORDER BY d.job_id, e.id), NULL) AS events,
                    min(e.at) FILTER (WHERE e.type = 'deferred') AS deferred,
