@@ -14,6 +14,7 @@ from regimex.features import DoubleArray, IntArray
 from regimex.storage import json_bytes
 
 IOU_THRESHOLD = 0.5
+STRICT_IOU_THRESHOLD = 0.75
 BOUNDARY_TOLERANCE = 4
 BOOTSTRAP_SEED = 1729
 ExperimentCounts = tuple[IntArray, IntArray, IntArray, IntArray]
@@ -150,16 +151,21 @@ def interval_iou(expected: DirectionSpan, actual: DirectionSpan) -> float:
 
 
 def matched_interval_indices(
-    reference: Sequence[DirectionSpan], predicted: Sequence[DirectionSpan]
+    reference: Sequence[DirectionSpan],
+    predicted: Sequence[DirectionSpan],
+    *,
+    iou_threshold: float = IOU_THRESHOLD,
 ) -> dict[int, int]:
     """Match two ordered, disjoint interval lists for one instrument and direction."""
+    if not 0 < iou_threshold <= 1:
+        raise ValueError("interval IoU threshold must be greater than zero and at most one")
     matches: dict[int, int] = {}
     left = right = 0
     while left < len(reference) and right < len(predicted):
         expected, actual = reference[left], predicted[right]
         # Overlaps cannot cross: matching this pair can replace either interval's
         # later match without reducing the maximum number of pairs.
-        if interval_iou(expected, actual) >= IOU_THRESHOLD:
+        if interval_iou(expected, actual) >= iou_threshold:
             matches[left] = right
             left += 1
             right += 1
@@ -172,13 +178,16 @@ def matched_interval_indices(
 
 
 def _segment_counts(
-    reference: tuple[DirectionSpan, ...], predicted: tuple[DirectionSpan, ...]
+    reference: tuple[DirectionSpan, ...],
+    predicted: tuple[DirectionSpan, ...],
+    *,
+    iou_threshold: float = IOU_THRESHOLD,
 ) -> IntArray:
     result = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
     for index, name in enumerate(DIRECTION_NAMES):
         expected = [item for item in reference if item.direction == name]
         actual = [item for item in predicted if item.direction == name]
-        matched = len(matched_interval_indices(expected, actual))
+        matched = len(matched_interval_indices(expected, actual, iou_threshold=iou_threshold))
         result[index] = matched, len(actual) - matched, len(expected) - matched
     return result
 
@@ -186,11 +195,13 @@ def _segment_counts(
 def segment_macro_f1(
     references: tuple[tuple[DirectionSpan, ...], ...],
     predictions: tuple[tuple[DirectionSpan, ...], ...],
+    *,
+    iou_threshold: float = IOU_THRESHOLD,
 ) -> float:
     """Score complete decoded sequences using the pooled counts from the full report."""
     counts = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
     for reference, predicted in zip(references, predictions, strict=True):
-        counts += _segment_counts(reference, predicted)
+        counts += _segment_counts(reference, predicted, iou_threshold=iou_threshold)
     return cast(float, _metrics(counts)["macro_f1"])
 
 
@@ -604,6 +615,7 @@ def report(
     grouped_lags: dict[str, list[int]] = {}
     sequence_indices: dict[str, list[int]] = {}
     segment_total = np.zeros((len(DIRECTION_NAMES), 3), dtype=np.int64)
+    strict_segment_total = np.zeros_like(segment_total)
     point_total = np.zeros((len(DIRECTION_NAMES) + 1, len(DIRECTION_NAMES) + 1), dtype=np.int64)
     reference_lengths: list[int] = []
     predicted_lengths: list[int] = []
@@ -621,6 +633,9 @@ def report(
             raise ValueError("evaluation references disagree with dense targets")
         predicted_labels = dense_labels(predicted, info.step_count)
         segment_counts = _segment_counts(reference, predicted)
+        strict_segment_total += _segment_counts(
+            reference, predicted, iou_threshold=STRICT_IOU_THRESHOLD
+        )
         point_table = _point_table(labels, predicted_labels)
         point_total += point_table
         point_counts = _point_direction_counts(point_table)
@@ -685,6 +700,10 @@ def report(
         "point_macro_f1": point_metrics["macro_f1"],
         "primary_metric": "segment_macro_f1",
         "segment_metrics": segment_metrics,
+        "strict_segment_metrics": {
+            **_metrics(strict_segment_total),
+            "iou_threshold": STRICT_IOU_THRESHOLD,
+        },
         "point_metrics": point_metrics,
         "boundary_metrics": {
             "tolerance_steps": BOUNDARY_TOLERANCE,

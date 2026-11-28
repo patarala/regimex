@@ -30,6 +30,15 @@ at least half their union (IoU ≥ 0.50). The evaluator takes the largest set
 of one-to-one matches. A missed reference lowers recall, and an extra predicted
 interval lowers precision.
 
+New evaluation reports also score the same predictions at **IoU ≥ 0.75**.
+Compare this value (`strict_segment_metrics.macro_f1`) with the primary score
+to see how often a direction was found with close agreement on its extent.
+A two-step shift gives two ten-step intervals an IoU of 8/12, about 0.67. They
+match at 0.50 and miss at 0.75. The same shift on a hundred-step interval gives
+an IoU of 98/102, about 0.96. For timing in steps, read the boundary F1 with
+its four-step tolerance and the reported early or late transition times.
+Training uses the 0.50 score for selection.
+
 **Point macro-F1** scores each step with a known reference direction. Leaving such
 a step unclassified counts as a miss. A model can score well by step and still miss
 a short interval. Both metrics give equal weight to all three directions. A class

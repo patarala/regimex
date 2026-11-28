@@ -167,6 +167,29 @@ def test_one_reference_cannot_match_two_predicted_halves() -> None:
     assert result["segment_macro_f1"] == pytest.approx(2 / 9)
 
 
+def test_strict_interval_score_uses_the_same_predictions_and_includes_exact_threshold() -> None:
+    observations = rows(32)
+    ref = intervals(observations, [(0, 16, Direction.GROWTH), (16, 32, Direction.DECLINE)])
+    pred = intervals(
+        observations,
+        [(0, 12, Direction.GROWTH), (12, 22, Direction.SIDEWAYS), (22, 32, Direction.DECLINE)],
+    )
+    result = evaluation.report(sequences((ref,)), (pred,), bootstrap_repetitions=0)
+    standard = result["segment_metrics"]
+    strict = result["strict_segment_metrics"]
+    assert standard["iou_threshold"] == 0.50
+    assert strict["iou_threshold"] == 0.75
+    assert strict["per_class"]["growth"]["matched"] == 1  # 12/16
+    assert strict["per_class"]["decline"]["matched"] == 0  # 10/16
+    assert standard["per_class"]["decline"]["matched"] == 1
+    assert result["segment_macro_f1"] == evaluation.segment_macro_f1((ref,), (pred,)) == 2 / 3
+    assert (
+        strict["macro_f1"]
+        == evaluation.segment_macro_f1((ref,), (pred,), iou_threshold=0.75)
+        == 1 / 3
+    )
+
+
 def test_interval_matching_resolves_half_overlap_ties_without_scanning_all_pairs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

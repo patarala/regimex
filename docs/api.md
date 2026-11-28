@@ -465,8 +465,10 @@ After the worker saves the candidate, reloads it and verifies its predictions:
    run if the evaluation is still in progress. If all attempts failed or were
    cancelled, submit a new idempotency key to retry. Replaying a previously
    accepted key always returns its original run.
-   Download the completed metrics from `GET /evaluations/{id}/result`. A
-   validation report can include `validation_examples`, keyed by missed
+   Download the completed metrics from `GET /evaluations/{id}/result`.
+   `segment_metrics` uses the 0.50 overlap threshold. Reports that include
+   `strict_segment_metrics` also give aggregate and per-direction F1 at 0.75.
+   A validation report can include `validation_examples`, keyed by missed
    direction. Each example contains the original step bounds, last prices and
    both sets of intervals. These windows are private to the evaluation owner.
 2. To activate the candidate, submit `POST /models/publish?model_version_id=ID`

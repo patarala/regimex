@@ -70,13 +70,15 @@ At least two experiments with matching reference grids are required for a range.
 Under **Model evaluation → Validation**, choose **Evaluate model** to score the saved weights
 against the run's validation references. Once it finishes, inspect the interval
 and step scores and the results for each direction on the run page.
+If both overlap thresholds are shown, compare the 50% and 75% scores to see
+how much the model loses when the predicted span must fit the reference more
+closely. The direction table and its **Missed** counts use 50% overlap.
 Select a count in the **Missed** row to see an example on the original price
 series, with the reference and predicted intervals aligned by step. New validation
 reports save up to one example for each direction when the windows fit the report
 size limit. The owner can also download the windows with the evaluation JSON.
-When the report includes confidence intervals, the range below each F1 score
-describes sampling uncertainty across experiments. The evaluation resamples
-whole experiments, keeping all their instruments together.
+When a score has a confidence interval, the range beneath it shows sampling
+uncertainty across experiments. All instruments from one experiment stay together.
 **All fields** opens the evaluation details. **Download JSON** saves them.
 Under **Final benchmark**, choose **Freeze this model** after training finishes
 and you have selected a candidate. Confirm the version and benchmark. Freezing

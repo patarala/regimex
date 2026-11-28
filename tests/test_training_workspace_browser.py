@@ -1937,6 +1937,7 @@ def test_inspect_a_missed_validation_interval_on_its_price_grid(browser: Any) ->
     api = TrainingAPI()
     api.actions.append(completed_run(EVALUATION_ID, "evaluation"))
     report = evaluation_report()
+    report["strict_segment_metrics"] = {"iou_threshold": 0.75, "macro_f1": 0.25}
     report["validation_examples"] = {
         "sideways": {
             "experiment_id": "validation-003",
@@ -1959,6 +1960,15 @@ def test_inspect_a_missed_validation_interval_on_its_price_grid(browser: Any) ->
     page.route(f"**/evaluations/{EVALUATION_ID}/result", lambda route: route.fulfill(json=report))
     try:
         page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        scores = page.locator("#training-actions .evaluation-summary")
+        expect(scores.locator("dt")).to_have_text(
+            [
+                "Interval macro-F1 · 50% overlap",
+                "Interval macro-F1 · 75% overlap",
+                "Per-step macro-F1",
+            ]
+        )
+        expect(scores.locator("dd")).to_have_text(["0.6", "0.25", "0.8"])
         button = page.get_by_role("button", name="Inspect a missed sideways interval (1 missed)")
         button.press("Enter")
         expect(button).to_have_attribute("aria-expanded", "true")

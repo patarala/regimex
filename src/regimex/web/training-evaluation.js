@@ -42,18 +42,21 @@ function showReport(content, report) {
   const enoughExperiments = (report.confidence_intervals?.experiment_count ?? report.experiment_count) > 1;
   const uncertainty = enoughExperiments ? report.confidence_intervals : null;
   const hasPointScore = report.point_metrics?.defined !== false;
-  scores.append(
-    scoreEntry("Interval macro-F1", report.segment_macro_f1,
-      uncertainty?.segment_macro_f1_percentile_interval, uncertainty?.confidence_level),
-    scoreEntry("Per-step macro-F1", hasPointScore ? report.point_macro_f1 : null,
-      uncertainty?.point_macro_f1_percentile_interval, uncertainty?.confidence_level,
-      hasPointScore ? "Unavailable" : "No labeled steps"),
-  );
+  const intervals = report.segment_metrics;
+  const strict = report.strict_segment_metrics;
+  const hasStrictScore = Number.isFinite(strict?.macro_f1) && Number.isFinite(intervals?.iou_threshold) &&
+    strict.iou_threshold > intervals.iou_threshold && strict.iou_threshold <= 1;
+  const intervalLabel = threshold => "Interval macro-F1 · " + percent.format(threshold) + " overlap";
+  scores.append(scoreEntry(hasStrictScore ? intervalLabel(intervals.iou_threshold) : "Interval macro-F1",
+    report.segment_macro_f1, uncertainty?.segment_macro_f1_percentile_interval, uncertainty?.confidence_level));
+  if (hasStrictScore) scores.append(scoreEntry(intervalLabel(strict.iou_threshold), strict.macro_f1));
+  scores.append(scoreEntry("Per-step macro-F1", hasPointScore ? report.point_macro_f1 : null,
+    uncertainty?.point_macro_f1_percentile_interval, uncertainty?.confidence_level,
+    hasPointScore ? "Unavailable" : "No labeled steps"));
   content.replaceChildren();
   if (cohort.length) content.append(element("p", cohort.join(" · "), "hint"));
   content.append(scores);
 
-  const intervals = report.segment_metrics;
   if (!Array.isArray(intervals?.class_names) || !intervals.per_class) return;
   const table = element("table", undefined, "evaluation-directions");
   table.createCaption().textContent = "Intervals by direction";
@@ -110,7 +113,7 @@ function showReport(content, report) {
   }
   if (Number.isFinite(intervals.iou_threshold)) {
     const threshold = percent.format(intervals.iou_threshold);
-    content.append(element("p", "A match requires the same direction and at least " + threshold +
+    content.append(element("p", "The table counts same-direction intervals with at least " + threshold +
       " overlap (intersection over union).", "hint"));
   }
 }
