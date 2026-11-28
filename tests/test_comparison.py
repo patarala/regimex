@@ -205,6 +205,25 @@ def test_comparison_rejects_inconsistent_metrics(
         render_model_comparison((first, second), tmp_path / "invalid")
 
 
+def test_predictions_outside_reference_must_fit_the_unlabeled_steps(tmp_path: Path) -> None:
+    from test_evaluation import intervals, rows, sequences
+
+    from regimex.evaluation import report
+
+    observations = rows(12)
+    references = (intervals(observations, [(0, 9, Direction.GROWTH), (9, 12, None)]),)
+    predictions = (intervals(observations, [(0, 9, None), (9, 12, Direction.SIDEWAYS)]),)
+    first, second = evaluation("baseline"), evaluation("tcn")
+    for item in (first, second):
+        item.update(report(sequences(references), predictions, bootstrap_repetitions=20))
+    render_model_comparison((first, second), tmp_path / "valid")
+
+    coverage = cast(dict[str, JsonValue], second["coverage"])
+    coverage.update(predicted_classified_step_count=4, predicted_classified_fraction=4 / 12)
+    with pytest.raises(ValueError, match="coverage or interval totals"):
+        render_model_comparison((first, second), tmp_path / "invalid")
+
+
 def test_experiment_scores_cannot_disagree_with_saved_counts(tmp_path: Path) -> None:
     first, second = evaluation("baseline"), evaluation("tcn")
     details = cast(list[dict[str, JsonValue]], second["experiment_statistics"])

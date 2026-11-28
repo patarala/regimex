@@ -356,9 +356,13 @@ class _Evaluation(_Metric):
         eligible_predicted_steps = sum(
             item.predicted for item in self.point_metrics.per_class.values()
         )
+        predictions_without_reference = (
+            self.coverage.predicted_classified_step_count - eligible_predicted_steps
+        )
+        unlabeled_steps = self.coverage.observed_step_count - reference_steps
         if (
             reference_steps != self.coverage.reference_classified_step_count
-            or eligible_predicted_steps > self.coverage.predicted_classified_step_count
+            or not 0 <= predictions_without_reference <= unlabeled_steps
             or (
                 reference_steps
                 and not math.isclose(
