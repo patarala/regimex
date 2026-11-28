@@ -35,7 +35,8 @@ from regimex.exports import ExportV2
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.model_bundles import verify_model_bundle
 from regimex.model_registry import configured_parameter_count
-from regimex.service_contracts import ModelRecord, Principal, SnapshotRecord
+from regimex.report_contracts import MAX_REPORT_BYTES
+from regimex.service_contracts import CapacityExceeded, ModelRecord, Principal, SnapshotRecord
 from regimex.storage import digest, json_bytes
 
 if TYPE_CHECKING:
@@ -318,11 +319,19 @@ class AdminResultCommitter:
             self.principal, spec.reference_set_id, allow_test=spec.partition == "test"
         )
         metrics = _dict(result["metrics"])
-        info = self._upload(result["report_path"], f"{self._prefix}/evaluation.json")
-        if digest(
-            _result_path(self.root, result["report_path"]), checkpoint=self.heartbeat
-        ) != content_hash(metrics):
-            raise ValueError("evaluation report differs from its summary")
+        if spec.partition != "validation" and "validation_examples" in metrics:
+            raise ValueError("only validation reports can contain missed interval examples")
+        report_path = _result_path(self.root, result["report_path"])
+        if report_path.stat().st_size > MAX_REPORT_BYTES:
+            raise CapacityExceeded(f"Evaluation report must not exceed {MAX_REPORT_BYTES} bytes.")
+        info = self.analysis_service.store.put(
+            f"{self._prefix}/evaluation.json",
+            report_path,
+            expected_sha256=content_hash(metrics),
+            checkpoint=self.heartbeat,
+        )
+        # Published models expose summary metrics to other users. Price windows and
+        # reference intervals belong only in the owner's verified evaluation artifact.
         evaluation = EvaluationRecord(
             run_id=self.run.run_id,
             owner_id=self.principal.owner_id,
@@ -335,7 +344,7 @@ class AdminResultCommitter:
             reference_sha256=evaluation_refs.references.content_sha256,
             partition=spec.partition,
             report=info,
-            metrics=metrics,
+            metrics={key: value for key, value in metrics.items() if key != "validation_examples"},
             created_at=datetime.now(UTC),
         )
         self.heartbeat()

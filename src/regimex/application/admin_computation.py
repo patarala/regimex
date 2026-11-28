@@ -55,6 +55,7 @@ from regimex.market_sampling import sample_market
 from regimex.model_bundles import ModelBundle
 from regimex.model_contracts import LoadedPredictor
 from regimex.model_registry import ArchitectureRegistry
+from regimex.report_contracts import MAX_REPORT_BYTES
 from regimex.segmentation import DECODER_VERSION, annotate
 from regimex.service_contracts import ModelRecord
 from regimex.storage import json_bytes
@@ -402,6 +403,7 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
         metrics = evaluator.evaluate(
             predictor.predict(inputs, runtime=model.inference_runtime),
             bootstrap_repetitions=1000,
+            include_validation_diagnostics=spec.partition == "validation",
         )
         metrics.update(
             {
@@ -429,7 +431,12 @@ def compute(payload: dict[str, JsonValue], root: Path) -> dict[str, JsonValue]:
             }
         )
         (root / "output").mkdir()
-        (root / "output/evaluation.json").write_bytes(json_bytes(metrics))
+        encoded = json_bytes(metrics)
+        if len(encoded) > MAX_REPORT_BYTES and "validation_examples" in metrics:
+            # Reserve the report's size budget for the complete scientific evidence.
+            del metrics["validation_examples"]
+            encoded = json_bytes(metrics)
+        (root / "output/evaluation.json").write_bytes(encoded)
         return {"metrics": metrics, "report_path": "output/evaluation.json"}
     _predictor(context, root)
     return {"verified": True}

@@ -72,7 +72,7 @@ def test_comparison_preserves_downloads_and_escapes_embedded_script(tmp_path: Pa
             "paired-comparisons.json",
         )
     }
-    assert manifest["version"] == "model-comparison/2.2"
+    assert manifest["version"] == "model-comparison/2.3"
     paired = json.loads((target / "paired-comparisons.json").read_text())
     assert paired[0]["reference_model_version_id"] == "baseline"
     assert paired[0]["candidate_model_version_id"] == "tcn"
@@ -276,8 +276,10 @@ def test_comparison_checks_typed_alignment_against_experiment_lags(tmp_path: Pat
         render_model_comparison((first, second), tmp_path / "invalid")
 
 
+@pytest.mark.parametrize("saved_draws", [False, True])
 def test_paired_download_is_invariant_to_experiment_order_and_negates_on_swap(
     tmp_path: Path,
+    saved_draws: bool,
 ) -> None:
     pytest.importorskip("numpy")
     from test_evaluation import intervals, rows, sequences
@@ -296,14 +298,42 @@ def test_paired_download_is_invariant_to_experiment_order_and_negates_on_swap(
     wrong = intervals(observations, [(0, 96, Direction.GROWTH)])
     first, second = evaluation("baseline"), evaluation("tcn")
     data = sequences((reference, reference, reference))
-    first.update(report(data, (wrong, reference, reference), bootstrap_repetitions=101))
-    second.update(report(data, (reference, reference, reference), bootstrap_repetitions=101))
+    first.update(
+        report(
+            data,
+            (wrong, reference, reference),
+            bootstrap_repetitions=101,
+            keep_segment_draws=saved_draws,
+        )
+    )
+    second.update(
+        report(
+            data,
+            (reference, reference, reference),
+            bootstrap_repetitions=101,
+            keep_segment_draws=saved_draws,
+        )
+    )
     details = cast(list[dict[str, JsonValue]], second["experiment_statistics"])
     details.reverse()
     render_model_comparison((first, second), tmp_path / "forward")
     render_model_comparison((second, first), tmp_path / "backward")
     forward = json.loads((tmp_path / "forward/paired-comparisons.json").read_text())[0]
     backward = json.loads((tmp_path / "backward/paired-comparisons.json").read_text())[0]
+    from regimex.paired_scores import compare_interval_scores
+
+    web = compare_interval_scores(first, second)
+    assert web.status == "available" and web.experiment_count == 3
+    interval_score = forward["metrics"]["segment_macro_f1"]
+    assert web.delta == pytest.approx(interval_score["delta"])
+    assert web.percentile_interval == pytest.approx(interval_score["percentile_interval"])
+    assert compare_interval_scores({**first, "evaluation_version": "2.3"}, second) == web
+    assert (
+        compare_interval_scores(first, {**second, "scope": "controlled_final_benchmark"}).status
+        == "insufficient_evidence"
+    )
+    details[0]["reference_grid_sha256"] = "6" * 64
+    assert compare_interval_scores(first, second).status == "different_population"
     for name, item in forward["metrics"].items():
         swapped = backward["metrics"][name]
         assert swapped["delta"] == -item["delta"]

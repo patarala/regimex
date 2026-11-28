@@ -59,11 +59,21 @@ validation labels and analysis profile. Imported runs can use different training
 datasets and still be compared when their validation dataset, validation
 partition, labels and analysis profile match.
 
+Once both models have saved validation evaluations, the comparison also shows
+the change in interval macro-F1 with a paired 95% interval. Each draw samples
+the same whole experiments for both models. An interval spanning zero means
+the observed advantage could change sign with a different sample of experiments.
+At least two experiments with matching reference grids are required for a range.
+
 ## Evaluate and publish
 
 Under **Model evaluation → Validation**, choose **Evaluate model** to score the saved weights
 against the run's validation references. Once it finishes, inspect the interval
 and step scores and the results for each direction on the run page.
+Select a count in the **Missed** row to see an example on the original price
+series, with the reference and predicted intervals aligned by step. New validation
+reports save up to one example for each direction when the windows fit the report
+size limit. The owner can also download the windows with the evaluation JSON.
 When the report includes confidence intervals, the range below each F1 score
 describes sampling uncertainty across experiments. The evaluation resamples
 whole experiments, keeping all their instruments together.

@@ -7,7 +7,7 @@ from collections.abc import Callable
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from uuid import UUID
@@ -102,6 +102,7 @@ from regimex.model_registry import (
     canonical_architecture_id,
 )
 from regimex.operations import LaunchSource, OperationFailure
+from regimex.paired_scores import PairedValidationScore, compare_interval_scores
 from regimex.preparation import PreparationPage, PreparationRequest, PreparationView
 from regimex.service_contracts import (
     CapacityExceeded,
@@ -162,6 +163,7 @@ class AdminService:
         self.preparations = PreparationRepository(repository)
         self.authorize_selection = authorize_selection
         self.authorize_final_evaluation = authorize_final_evaluation
+        self._paired_evaluations = lru_cache(maxsize=64)(self._compare_saved_evaluations)
 
     @staticmethod
     def _admin(principal: Principal) -> None:
@@ -602,6 +604,36 @@ class AdminService:
         return self.repository.list_runs(
             principal, training=run.spec, include_final=include_final, limit=limit, offset=offset
         )
+
+    def compare_training_validation(
+        self, principal: Principal, first_id: UUID, second_id: UUID
+    ) -> PairedValidationScore:
+        first_run = self.get_run(principal, first_id)
+        second_run = self.get_run(principal, second_id)
+        first, second = first_run.spec, second_run.spec
+        if not isinstance(first, (TrainingSpec, ImportedTrainingSpec)) or not isinstance(
+            second, (TrainingSpec, ImportedTrainingSpec)
+        ):
+            raise NotFound()
+        if first_id == second_id:
+            raise Conflict("Select two different training runs.")
+        if any(run.operation.state != "succeeded" for run in (first_run, second_run)):
+            return PairedValidationScore(status="missing_evaluation")
+        a = self.repository.saved_validation_identity(principal, first)
+        b = self.repository.saved_validation_identity(principal, second)
+        if a is None or b is None:
+            return PairedValidationScore(status="missing_evaluation")
+        return self._paired_evaluations(principal, a, b)
+
+    def _compare_saved_evaluations(
+        self, principal: Principal, first: tuple[UUID, str], second: tuple[UUID, str]
+    ) -> PairedValidationScore:
+        # Authorize both runs and resolve their current report digests before every cache lookup.
+        a = self.get_evaluation(principal, first[0])
+        b = self.get_evaluation(principal, second[0])
+        if a.report.sha256 != first[1] or b.report.sha256 != second[1]:
+            raise Conflict("The saved validation evaluation changed. Refresh the comparison.")
+        return compare_interval_scores(a.metrics, b.metrics)
 
     def get_dataset(self, principal: Principal, dataset_id: str) -> DatasetRecord:
         return self.repository.get_dataset(principal, dataset_id)

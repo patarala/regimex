@@ -2,7 +2,7 @@
 
 import hashlib
 import math
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from itertools import pairwise
 from typing import Literal, Protocol, cast
 
@@ -373,7 +373,7 @@ def point_macro_f1_from_counts(counts: IntArray) -> float:
 
 
 def _bootstrap(
-    grouped: dict[str, ExperimentCounts], repetitions: int
+    grouped: dict[str, ExperimentCounts], repetitions: int, *, keep_segment_draws: bool = False
 ) -> dict[str, JsonValue] | None:
     if repetitions == 0:
         return None
@@ -423,6 +423,7 @@ def _bootstrap(
     undefined_typed = sum(map(math.isnan, typed_values))
     return {
         **metadata,
+        **({"segment_draws_pcg64": cast(JsonValue, segment_values)} if keep_segment_draws else {}),
         "segment_macro_f1_percentile_interval": cast(
             JsonValue,
             np.quantile(np.asarray(segment_values, dtype=np.float64), [0.025, 0.975]).tolist(),
@@ -461,6 +462,7 @@ def paired_bootstrap(
     *,
     repetitions: int,
     seed: int = BOOTSTRAP_SEED,
+    index_samples: Iterator[list[int]] | None = None,
 ) -> dict[str, JsonValue]:
     """Compare aggregate-count scores using identical resampled experiments."""
     if not reference or reference.keys() != candidate.keys() or repetitions < 1:
@@ -494,7 +496,11 @@ def paired_bootstrap(
     draws = repetitions if len(identifiers) > 1 else 0
     samples = np.empty((draws, 4), dtype=np.float64)
     for repeat in range(draws):
-        chosen = rng.integers(0, len(identifiers), size=len(identifiers))
+        chosen = (
+            rng.integers(0, len(identifiers), size=len(identifiers))
+            if index_samples is None
+            else np.asarray(next(index_samples), dtype=np.int64)
+        )
         for index, (left, right) in enumerate(zip(left_arrays, right_arrays, strict=True)):
             samples[repeat, index] = score(right[chosen].sum(axis=0), index) - score(
                 left[chosen].sum(axis=0), index
@@ -575,6 +581,8 @@ def report(
     predictions: tuple[tuple[DirectionSpan, ...], ...],
     reference_kind: Literal["automatic", "human"] = "automatic",
     bootstrap_repetitions: int = 200,
+    *,
+    keep_segment_draws: bool = False,
 ) -> dict[str, JsonValue]:
     """Score complete intervals; model scores or reference boundaries are not inputs."""
     if reference_kind not in {"automatic", "human"}:
@@ -718,7 +726,9 @@ def report(
         "observed_step_count": len(sequences.labels),
         "classified_step_count": predicted_count,
         "sample_count": eligible_count,
-        "confidence_intervals": _bootstrap(grouped, bootstrap_repetitions),
+        "confidence_intervals": _bootstrap(
+            grouped, bootstrap_repetitions, keep_segment_draws=keep_segment_draws
+        ),
         "experiment_statistics": [
             {
                 "experiment_id": identifier,

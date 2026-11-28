@@ -56,6 +56,7 @@ from regimex.prediction_inputs import PredictionSequenceInfo
 from regimex.segmentation import DECODER_VERSION, DecoderGrid
 from regimex.storage import output_directory
 from regimex.training_statistics import TrainingFitStatistics
+from regimex.validation_examples import missed_interval_examples
 
 
 class TrainingRequest(StrictModel):
@@ -156,7 +157,11 @@ class SharedSelectionEvaluator:
         return np.asarray(self._offsets, dtype=np.int64), predicted
 
     def evaluate(
-        self, probabilities: DoubleArray, *, bootstrap_repetitions: int = 0
+        self,
+        probabilities: DoubleArray,
+        *,
+        bootstrap_repetitions: int = 0,
+        include_validation_diagnostics: bool = False,
     ) -> dict[str, JsonValue]:
         offsets, predicted = self._decode(probabilities, with_statistics=False)
         labels = np.concatenate(
@@ -165,12 +170,18 @@ class SharedSelectionEvaluator:
                 for intervals, item in zip(self.references, self.inputs.info, strict=True)
             ]
         )
-        return report(
+        metrics = report(
             _EvaluationData(self.inputs.info, labels, offsets, self.references),
             predicted,
             reference_kind=self.reference_kind,
             bootstrap_repetitions=bootstrap_repetitions,
+            keep_segment_draws=include_validation_diagnostics,
         )
+        if include_validation_diagnostics:
+            metrics["validation_examples"] = missed_interval_examples(
+                self.inputs, self.references, predicted, min_duration=self.analysis.min_duration
+            )
+        return metrics
 
     def __call__(self, probabilities: DoubleArray) -> float:
         _, predicted = self._decode(probabilities, with_statistics=False)

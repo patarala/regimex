@@ -10,11 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 from regimex.contracts import Identifier
 from regimex.directions import DIRECTION_NAMES
 from regimex.operations import Sha256
+from regimex.paired_scores import paired_draws
 from regimex.report_assets import report_assets
 from regimex.report_licenses import license_notices
 from regimex.storage import content_hash, digest, output_directory, write_json
 
-COMPARISON_VERSION = "model-comparison/2.2"
+COMPARISON_VERSION = "model-comparison/2.3"
 Score = Annotated[float, Field(ge=0, le=1)]
 Count = Annotated[int, Field(ge=0)]
 DirectionName = Literal["sideways", "growth", "decline"]
@@ -212,6 +213,7 @@ class _Coverage(_Metric):
 
 
 class _Confidence(_Metric):
+    segment_draws_pcg64: list[Score] | None = None
     seed: Count
     repetitions: Annotated[int, Field(gt=0)]
     confidence_level: Score
@@ -229,6 +231,8 @@ class _Confidence(_Metric):
         if self.confidence_level != 0.95:
             raise ValueError("comparison requires 95% confidence intervals")
         draws = self.repetitions if self.experiment_count > 1 else 0
+        if self.segment_draws_pcg64 is not None and len(self.segment_draws_pcg64) != draws:
+            raise ValueError("saved interval scores must cover every bootstrap draw")
         legacy = (
             self.boundary_f1_undefined_draws is None
             and self.typed_boundary_f1_undefined_draws is None
@@ -439,6 +443,16 @@ def _paired_comparison(reference: _Evaluation, candidate: _Evaluation) -> dict[s
             counts(candidate),
             repetitions=reference.confidence_intervals.repetitions,
             seed=reference.confidence_intervals.seed,
+            index_samples=None
+            if (
+                reference.confidence_intervals.segment_draws_pcg64 is not None
+                and candidate.confidence_intervals.segment_draws_pcg64 is not None
+            )
+            else paired_draws(
+                reference.experiment_count,
+                reference.confidence_intervals.repetitions,
+                reference.confidence_intervals.seed,
+            ),
         ),
     }
 

@@ -384,6 +384,7 @@ administrator:
 | `GET /training-runs/{id}/progress` | New chart samples from the current training attempt |
 | `GET /training-runs/{id}/metrics` | Selected seed, validation interval macro-F1 and the history saved by the backend. Returns `409` until the run succeeds. |
 | `GET /training-runs/{id}/validation-score` | Model version and verified validation interval macro-F1, without the training history. |
+| `GET /training-runs/{id}/validation-comparison?other_run_id=UUID` | Paired interval macro-F1 difference (other minus first) for the owner's saved validation evaluations. Returns a 95% percentile interval for matching populations with at least two experiments, or a reason it is unavailable. |
 | `GET /training-runs/{id}/actions` | Paginated validation evaluations on the run's references and publication jobs for its model. `include_final=true` also returns test evaluations of that model on the run's reserved benchmark, identified by `final_benchmark_id`. |
 
 Send `{"run_ids":["RUN_UUID"],"archived":true}` to archive a selection, or
@@ -464,7 +465,10 @@ After the worker saves the candidate, reloads it and verifies its predictions:
    run if the evaluation is still in progress. If all attempts failed or were
    cancelled, submit a new idempotency key to retry. Replaying a previously
    accepted key always returns its original run.
-   Download the completed metrics from `GET /evaluations/{id}/result`.
+   Download the completed metrics from `GET /evaluations/{id}/result`. A
+   validation report can include `validation_examples`, keyed by missed
+   direction. Each example contains the original step bounds, last prices and
+   both sets of intervals. These windows are private to the evaluation owner.
 2. To activate the candidate, submit `POST /models/publish?model_version_id=ID`
    with `evaluation_run_id` and `expected_previous`. The single-segment form
    `POST /models/{model_version_id}/publish` shares the same idempotency key.

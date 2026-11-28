@@ -1306,6 +1306,39 @@ class AdminRepository:
             ).fetchone()
             return None if row is None else EvaluationRecord.model_validate_json(json_bytes(row[0]))
 
+    def saved_validation_identity(
+        self, principal: Principal, training: TrainingSpec | ImportedTrainingSpec
+    ) -> tuple[UUID, str] | None:
+        self.database._admin(principal)
+        query = (
+            "SELECT e.run_id,obj.sha256 FROM regimex_evaluation_records e "
+            "JOIN regimex_objects obj ON obj.object_key=e.report_key "
+            "JOIN regimex_operations o ON o.operation_id=e.run_id "
+            "JOIN regimex_reference_sets r ON r.reference_set_id=e.reference_set_id "
+            "JOIN regimex_datasets d ON d.dataset_id=e.dataset_id "
+            "WHERE e.owner_id=%s AND e.model_version_id=%s AND r.partition='validation' "
+        )
+        parameters: list[object] = [principal.owner_id, training.model_version_id]
+        if isinstance(training, ImportedTrainingSpec):
+            evidence = training.evidence
+            query += "AND d.content_sha256=%s AND r.content_sha256=%s "
+            parameters.extend(
+                (
+                    evidence.validation_dataset_sha256 or evidence.dataset_sha256,
+                    evidence.validation_references.content_sha256,
+                )
+            )
+        else:
+            query += "AND e.dataset_id=%s AND e.reference_set_id=%s "
+            parameters.extend((training.dataset_id, training.validation_reference_set_id))
+        with self.database.connection() as connection:
+            row = connection.execute(
+                query
+                + "ORDER BY (o.document->>'updated_at')::timestamptz DESC,e.run_id DESC LIMIT 1",
+                parameters,
+            ).fetchone()
+        return None if row is None else (cast(UUID, row[0]), cast(str, row[1]))
+
     def complete_evaluation(
         self, run_id: UUID, token: UUID, evaluation: EvaluationRecord
     ) -> AdminRunRecord:

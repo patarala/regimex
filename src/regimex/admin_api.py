@@ -77,6 +77,7 @@ from regimex.model_registry import (
     resolve_training_policy,
 )
 from regimex.operations import LaunchSource
+from regimex.paired_scores import PairedValidationScore
 from regimex.preparation import (
     PreparationPage,
     PreparationRequest,
@@ -89,6 +90,10 @@ from regimex.training_statistics import TrainingRunStatistics
 
 
 class AdminAPIService(Protocol):
+    def compare_training_validation(
+        self, principal: Principal, first_id: UUID, second_id: UUID
+    ) -> PairedValidationScore: ...
+
     def start_preparation(
         self,
         principal: Principal,
@@ -892,6 +897,12 @@ def install_admin_routes(
             model_version_id=metrics.model_version_id,
             validation_segment_macro_f1=metrics.validation_segment_macro_f1,
         )
+
+    @app.get("/api/v1/training-runs/{run_id}/validation-comparison")
+    def validation_comparison(
+        run_id: UUID, other_run_id: UUID, identity: Identity
+    ) -> PairedValidationScore:
+        return service.compare_training_validation(identity, run_id, other_run_id)
 
     @app.post("/api/v1/training-runs/{run_id}/weights/deletion-preview")
     def preview_weight_deletion(run_id: UUID, identity: Identity) -> DeletionPreview:

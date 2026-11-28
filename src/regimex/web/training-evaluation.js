@@ -1,4 +1,5 @@
 import {analysisStateLabel, element, launchSourceLabel, shortDate} from "./ui.js";
+import {validationExample} from "./training-validation-example.js";
 
 const number = new Intl.NumberFormat(undefined, {maximumFractionDigits: 5});
 const percent = new Intl.NumberFormat(undefined, {style: "percent", maximumFractionDigits: 1});
@@ -76,6 +77,37 @@ function showReport(content, report) {
   const wrapper = element("div", undefined, "training-values");
   wrapper.append(table);
   content.append(wrapper);
+  if (report.scope === "fixed_model_validation" && report.validation_examples) {
+    const panel = element("div");
+    const buttons = [];
+    const row = body.insertRow();
+    const title = element("th", "Missed");
+    title.scope = "row";
+    row.append(title);
+    for (const direction of directions) {
+      const stats = intervals.per_class[direction];
+      const count = stats.support - stats.matched;
+      const cell = row.insertCell();
+      const example = report.validation_examples[direction];
+      if (!count || !example) {
+        cell.textContent = reading(count);
+        continue;
+      }
+      const button = element("button", reading(count), "validation-example-button");
+      button.type = "button";
+      button.setAttribute("aria-label", `Inspect a missed ${direction} interval (${count} missed)`);
+      button.setAttribute("aria-expanded", "false");
+      button.addEventListener("click", () => {
+        const opening = button.getAttribute("aria-expanded") === "false";
+        for (const item of buttons) item.setAttribute("aria-expanded", String(opening && item === button));
+        if (opening) panel.replaceChildren(validationExample(direction, example, report.reference_kind));
+        else panel.replaceChildren();
+      });
+      buttons.push(button);
+      cell.append(button);
+    }
+    content.append(panel);
+  }
   if (Number.isFinite(intervals.iou_threshold)) {
     const threshold = percent.format(intervals.iou_threshold);
     content.append(element("p", "A match requires the same direction and at least " + threshold +

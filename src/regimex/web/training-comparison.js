@@ -131,13 +131,22 @@ export function createTrainingComparison({readRun, session, runPath, duration, o
     updateRows(view.overview, rows);
   }
 
+  function pairedSummary(pair) {
+    if (pair.status !== "available") return "";
+    const signed = value => (value > 0 ? "+" : "") + value.toFixed(4);
+    const difference = "Evaluated interval macro-F1 (B − A): " + signed(pair.delta);
+    if (!pair.percentile_interval) return difference + " · One validation experiment; no sampling interval.";
+    const [low, high] = pair.percentile_interval;
+    return difference + ` · 95% paired interval [${signed(low)}, ${signed(high)}] across ${pair.experiment_count} experiments.`;
+  }
+
   async function refresh(poll = false) {
     clearTimeout(timer);
     const view = current;
     if (!view || view.request || document.hidden) return;
     const request = new AbortController();
     view.request = request;
-    const timeout = setTimeout(() => request.abort(), 15000);
+    const timeout = setTimeout(() => request.abort(), 30000);
     let delay = null;
     try {
       const runs = await Promise.all(view.ids.map((id, i) =>
@@ -150,9 +159,25 @@ export function createTrainingComparison({readRun, session, runPath, duration, o
       if (!runs.every(run => run.job.state === "succeeded")) {
         setText(status, "Both runs must succeed to compare their validation scores.");
         if (runs.some(run => !finished(run.job))) delay = pollInterval;
-      } else if (!sameValidation(runs[0].training, runs[1].training)) {
-        setText(status, "Comparing validation scores requires the same dataset, validation labels and analysis profile.");
       } else {
+        if (!view.pair || (!poll && view.pair.status !== "available")) {
+          setText(status, "Comparing validation evaluations…");
+          const query = new URLSearchParams({other_run_id: runs[1].run_id});
+          const pair = await session.json(`/api/v1/training-runs/${encodeURIComponent(runs[0].run_id)}/validation-comparison?${query}`,
+            {signal: request.signal});
+          if (current !== view || document.hidden) return;
+          view.pair = pair;
+        }
+        if (view.pair.status === "available") {
+          view.scores = view.pair.scores;
+          render(view, runs);
+          setText(status, pairedSummary(view.pair));
+          return;
+        }
+        if (!sameValidation(runs[0].training, runs[1].training)) {
+          setText(status, "Comparing validation scores requires the same dataset, validation labels and analysis profile.");
+          return;
+        }
         if (!view.scores) {
           setText(status, "Loading validation scores…");
           const scores = await Promise.all(runs.map(async run => {
@@ -165,7 +190,11 @@ export function createTrainingComparison({readRun, session, runPath, duration, o
           render(view, runs);
         }
         const change = view.scores[1] - view.scores[0];
-        setText(status, "Validation interval macro-F1 (B − A): " + (change > 0 ? "+" : "") + change.toFixed(4));
+        const point = "Validation interval macro-F1 (B − A): " + (change > 0 ? "+" : "") + change.toFixed(4);
+        const reasons = {missing_evaluation: "A paired interval needs a saved validation evaluation for each model.",
+          different_population: "The saved evaluations use different validation data or scoring rules.",
+          insufficient_evidence: "The saved evaluations lack comparable per-experiment counts."};
+        setText(status, point + " · " + reasons[view.pair.status]);
       }
       view.retryDelay = pollInterval;
     } catch (error) {

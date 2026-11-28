@@ -43,6 +43,11 @@ Evaluation reports from version 2.5 omit the per-step confidence interval
 in that case and record how many draws lacked labels. Predictions that miss
 every labeled step still score zero.
 
+Training run comparisons and offline comparison reports (version 2.3) use the
+same seeded draws to measure a difference between two fixed models. Each draw
+pools the direction counts before computing macro-F1. The paired interval
+describes variation across validation experiments with these weights and labels.
+
 ## Compare models
 
 Compare candidates on the same experiments, reference labels, analysis profile

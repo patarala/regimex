@@ -333,6 +333,10 @@ def test_generic_candidate_evaluate_publish_and_saved_analysis(
     assert metric.bundle_sha256 == candidate.bundle_sha256
     assert metric.dataset_sha256 == dataset.manifest.content_sha256
     assert metric.metrics["reference_kind"] == validation.references.kind
+    assert "validation_examples" not in metric.metrics
+    private_report = service.read_evaluation_report(principal, evaluation.run_id)
+    assert isinstance(private_report["validation_examples"], dict)
+    assert private_report["bundle_sha256"] == candidate.bundle_sha256
     assert metric.metrics["independent"] == validation.references.independent
     assert metric.metrics["blind_review"] == validation.references.blind_review
     confidence = metric.metrics["confidence_intervals"]
@@ -404,6 +408,10 @@ def test_generic_candidate_evaluate_publish_and_saved_analysis(
     completed(service, final.run_id)
     final_report = service.read_evaluation_report(principal, final.run_id)
     assert final_report["scope"] == "controlled_final_benchmark"
+    assert isinstance(training.spec, TrainingSpec)
+    saved_validation = service.repository.saved_validation_identity(principal, training.spec)
+    assert saved_validation is not None and saved_validation[0] == evaluation.run_id
+    assert "validation_examples" not in final_report
     assert final_report["quality_status"] == "validation_only"
     assert final_report["reference_kind"] == "automatic"
     assert final_report["independent"] is False

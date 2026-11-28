@@ -169,6 +169,9 @@ class TrainingAPI:
                 }
             )
             return
+        if path.endswith("/validation-comparison"):
+            route.fulfill(json={"status": "missing_evaluation"})
+            return
         if path == "training-options/benchmarks":
             dataset = parse_qs(url.query)["dataset_id"][0]
             route.fulfill(json={"benchmark_ids": self.benchmarks[dataset]})
@@ -1925,6 +1928,56 @@ def test_evaluation_only_displays_intervals_for_defined_scores(
         else:
             expect(segment.locator(".evaluation-score-interval")).to_have_text(interval_text)
         expect(point.locator(".evaluation-score-interval")).to_have_count(0)
+    finally:
+        page.close()
+
+
+def test_inspect_a_missed_validation_interval_on_its_price_grid(browser: Any) -> None:
+    expect = pytest.importorskip("playwright.sync_api").expect
+    api = TrainingAPI()
+    api.actions.append(completed_run(EVALUATION_ID, "evaluation"))
+    report = evaluation_report()
+    report["validation_examples"] = {
+        "sideways": {
+            "experiment_id": "validation-003",
+            "instrument_id": "BTC/USD",
+            "price_unit": "USD / BTC",
+            "missed_start": 2,
+            "missed_stop": 5,
+            "window_start": 1,
+            "prices": [101.0, 102.0, None, 102.0, 103.0],
+            "reference": [
+                {"start": 0, "stop": 2, "label": "growth"},
+                {"start": 2, "stop": 5, "label": "sideways"},
+                {"start": 5, "stop": 8, "label": "growth"},
+            ],
+            "prediction": [{"start": 0, "stop": 8, "label": "growth"}],
+        }
+    }
+    page = browser.new_page(viewport={"width": 390, "height": 844})
+    page.route(ORIGIN + "/**", api.dispatch)
+    page.route(f"**/evaluations/{EVALUATION_ID}/result", lambda route: route.fulfill(json=report))
+    try:
+        page.goto(f"{ORIGIN}/training/{RUN_ID}")
+        button = page.get_by_role("button", name="Inspect a missed sideways interval (1 missed)")
+        button.press("Enter")
+        expect(button).to_have_attribute("aria-expanded", "true")
+        figure = page.locator("figure.validation-example")
+        expect(figure.locator("figcaption")).to_have_text(
+            "BTC/USD · Missed sideways interval [2, 5)"
+        )
+        # Two separate lines leave the unknown price at step 3 as a gap.
+        path = (
+            figure.locator(".validation-example-grid svg").first.locator("path").get_attribute("d")
+        )
+        assert path and path.count("M") == 2
+        figure.get_by_text("Interval boundaries").click()
+        expect(figure).to_contain_text("Prediction · Growth [0, 8)")
+        expect(figure).to_contain_text(
+            "Auto labels · Growth [0, 2), Sideways [2, 5), Growth [5, 8)"
+        )
+        button.click()
+        expect(figure).to_have_count(0)
     finally:
         page.close()
 

@@ -1570,6 +1570,41 @@ iframe {
   margin-bottom: 6px;
   font-weight: 550;
 }
+.validation-example-button {
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--focus);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  font: inherit;
+}
+.validation-example {
+  margin: 14px 0;
+}
+.validation-example figcaption { font-weight: 550; }
+.validation-example-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: center;
+  gap: 4px 10px;
+  margin-block: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.validation-example-axis, .validation-example-legend, .validation-example-legend span {
+  display: flex;
+  align-items: center;
+}
+.validation-example-axis { justify-content: space-between; }
+.validation-example-legend {
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.validation-example-legend span { gap: 5px; }
 #training-direction-quality small {
   display: block;
   color: var(--muted);

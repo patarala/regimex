@@ -374,9 +374,26 @@ def test_evaluator_scores_the_shared_decoded_intervals() -> None:
     for start, stop, column in ((0, 64, 1), (64, 128, 2), (128, 192, 0)):
         probabilities[start:stop, column] = 0.998
     assert evaluator(cast(DoubleArray, probabilities)) == 1.0
+    assert (
+        evaluator.evaluate(probabilities, include_validation_diagnostics=True)[
+            "validation_examples"
+        ]
+        == {}
+    )
     flat = np.full((192, 3), 0.001, dtype=np.float64)
     flat[:, 0] = 0.998
     assert evaluator(cast(DoubleArray, flat)) < 1.0
+    examples = evaluator.evaluate(flat, include_validation_diagnostics=True)["validation_examples"]
+    assert isinstance(examples, dict) and set(examples) == {"sideways", "growth", "decline"}
+    growth = examples["growth"]
+    assert isinstance(growth, dict)
+    assert (growth["missed_start"], growth["missed_stop"], growth["window_start"]) == (0, 64, 0)
+    assert growth["prices"] == [row.last_price for row in evaluator.inputs.observations[0][:96]]
+    assert growth["prediction"] == [{"start": 0, "stop": 192, "label": "sideways"}]
+    assert growth["reference"] == [
+        {"start": 0, "stop": 64, "label": "growth"},
+        {"start": 64, "stop": 128, "label": "decline"},
+    ]
 
 
 @pytest.mark.parametrize("inactive", [False, True])

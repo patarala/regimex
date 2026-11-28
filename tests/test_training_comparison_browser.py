@@ -113,6 +113,19 @@ def test_compare_two_finished_runs_from_history_and_bookmark(browser: Any, match
         route.fulfill(json={"model_version_id": "control", "validation_segment_macro_f1": 0.625})
 
     page.route("**/validation-score", score)
+    if matched:
+        page.route(
+            "**/validation-comparison?*",
+            lambda route: route.fulfill(
+                json={
+                    "status": "available",
+                    "delta": 0.12,
+                    "scores": [0.625, 0.745],
+                    "experiment_count": 24,
+                    "percentile_interval": [-0.012, 0.218],
+                }
+            ),
+        )
     try:
         page.goto(f"{ORIGIN}/training/new")
         page.get_by_role("button", name="Run history", exact=True).click()
@@ -138,10 +151,13 @@ def test_compare_two_finished_runs_from_history_and_bookmark(browser: Any, match
         note = page.locator("#training-comparison-status")
         if matched:
             expect(note).to_contain_text("+0.1200")
+            expect(note).to_contain_text(
+                "95% paired interval [-0.0120, +0.2180] across 24 experiments"
+            )
             expect(results.get_by_role("row", name="Validation interval macro-F1")).to_contain_text(
                 "0.7450"
             )
-            assert calls == [f"{ORIGIN}/api/v1/training-runs/{RUN_ID}/validation-score"]
+            assert not calls
         else:
             expect(note).to_contain_text(
                 "requires the same dataset, validation labels and analysis profile"
