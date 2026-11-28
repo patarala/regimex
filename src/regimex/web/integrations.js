@@ -392,8 +392,12 @@ export function createIntegrations({session, navigate}) {
             lifetime_days: Number($("connection-key-days").value), scopes: selectedScopes},
         });
       } catch (error) {
-        if (!error.status) throw new Error("Key creation could not be confirmed. Refresh the key list and revoke any new key you could not save before creating another.");
-        throw error;
+        if (error.status && error.status < 500 && error.status !== 408) throw error;
+        if (!current(stamp)) return;
+        // A gateway timeout can arrive after the key was issued. Its secret is shown only once.
+        message("Key creation could not be confirmed. Check the latest keys and revoke any new key you could not save before creating another.", true);
+        await Promise.all([loadPage("keys", 0), loadPage("events", 0)]);
+        return;
       }
       if (!current(stamp)) return;
       $("connection-secret-label").textContent = `New service key · ${issued.key.name}`;

@@ -9,7 +9,13 @@ export async function readExport(file) {
   if (file.size > MAX_BYTES)
     throw new Error("The export exceeds 16 MiB. Choose an export within the supported limit.");
   if (!file.size) throw new Error("The selected file is empty.");
-  const text = await file.text();
+  const bytes = await file.arrayBuffer();
+  let text;
+  try {
+    text = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
+  } catch {
+    throw new Error("Save the export as UTF-8 and choose it again.");
+  }
   let data;
   try {
     data = JSON.parse(text);

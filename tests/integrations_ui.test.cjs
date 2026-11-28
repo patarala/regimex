@@ -246,6 +246,30 @@ test("a key response from a previous connection never appears in the current con
   assert.equal(page.get("connection-secret").hidden, true);
 });
 
+test("an unconfirmed key issuance reloads keys and events without issuing another key", async () => {
+  for (const status of [undefined, 504, 422]) {
+    const page = await workspace();
+    await page.open();
+    page.state.delayIssue = true;
+    const start = page.calls.length;
+    page.issue();
+    const issued = page.calls[start];
+    issued.reject(Object.assign(new Error("Request failed."), {status}));
+    await flush();
+    assert.equal(page.calls.slice(start).filter(call => call.options.method === "POST").length, 1);
+    const reads = page.calls.slice(start + 1).map(call => call.url);
+    if (status === 422) {
+      assert.deepEqual(reads, []);
+      assert.equal(page.get("connection-notice").textContent, "Request failed.");
+    } else {
+      assert.ok(reads.some(url => url.includes("/one/keys?") && url.endsWith("offset=0")));
+      assert.ok(reads.some(url => url.includes("/one/events?") && url.endsWith("offset=0")));
+      assert.match(page.get("connection-notice").textContent, /could not be confirmed/);
+    }
+    assert.equal(page.get("connection-secret").hidden, true);
+  }
+});
+
 test("logout invalidates pending issuance and clears connection details", async () => {
   const page = await workspace();
   await page.open();

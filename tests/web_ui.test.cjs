@@ -218,7 +218,7 @@ async function workspace(count = 45, {href = "http://localhost/", holdHistory = 
   let requestId = 0;
   const context = {
     document: Object.assign(new Element(), {getElementById: get, createElement: () => new Element()}),
-    window: Object.assign(window, {history}), location, URL, URLSearchParams, AbortController, console,
+    window: Object.assign(window, {history}), location, URL, URLSearchParams, AbortController, TextDecoder, console,
     Date: class extends Date { static now() { return state.now; } },
     crypto: {randomUUID: () => `request-key-${++requestId}`},
     setTimeout: (callback, delay) => { callback.delay = delay; timers.set(++timerId, callback); return timerId; },
@@ -885,14 +885,23 @@ test("an in-flight history response cannot undo a terminal state observed by pol
   assert.equal(ui.get("history-list").children[0].children[0]["aria-current"], "true");
 });
 
+test("export uploads reject malformed UTF-8 and preserve valid Unicode and numeric literals", async () => {
+  const {readExport} = await loadWorkspace({TextDecoder}, "uploads.js");
+  const prefix = '{"schema_version":"2.1","source_id":"';
+  const suffix = '","value":1.2500}';
+  const malformed = new Blob([prefix, Uint8Array.of(0xff), suffix]);
+  await assert.rejects(readExport(malformed), /UTF-8/);
+  const original = prefix + "台北\uFFFD" + suffix;
+  assert.equal(await readExport(new Blob([original])), original);
+});
+
 test("an older invalid-file response cannot replace the selected valid file", async () => {
   const ui = await workspace();
   await flush();
-  const file = (name) => ({name, size: 24, text: async () => '{"schema_version":"2.1"}'});
-  void ui.get("export-file").emit("change", {target: {files: [file("old.json")]}});
+  void ui.get("export-file").emit("change", {target: {files: [batchFile("old.json")]}});
   await flush();
   const old = ui.pending("/api/v1/validate");
-  void ui.get("export-file").emit("change", {target: {files: [file("new.json")]}});
+  void ui.get("export-file").emit("change", {target: {files: [batchFile("new.json")]}});
   await flush();
   const latest = ui.calls.filter((call) => call.url === "/api/v1/validate").at(-1);
   latest.reply({source_id: "test", run_id: "new", step_count: 1, instrument_ids: ["BTC/USD"]});
@@ -930,7 +939,7 @@ test("failed analyses show a reason and next action without offering an exhauste
 test("validation errors identify the rejected field with bounded readable details", async () => {
   const ui = await workspace();
   await flush();
-  const file = {name: "bad.json", size: 24, text: async () => '{"schema_version":"2.1"}'};
+  const file = batchFile("bad.json");
   void ui.get("export-file").emit("change", {target: {files: [file]}});
   await flush();
   ui.pending("/api/v1/validate").reply({error: {
@@ -1027,7 +1036,7 @@ test("an old authentication error cannot reset a newly opened session", async ()
 test("upload retries keep the captured model, snapshot and request identity", async () => {
   const ui = await workspace();
   await flush();
-  const file = {name: "input.json", size: 24, text: async () => '{"schema_version":"2.1"}'};
+  const file = batchFile("input.json");
   void ui.get("export-file").emit("change", {target: {files: [file]}});
   await flush();
   ui.pending("/api/v1/validate").reply({step_count: 12, instrument_ids: ["BTC/USD"]});
@@ -1926,7 +1935,7 @@ test("analysis report reset restores the full extent after repeated linked drag 
 });
 
 const batchFile = (name, content = '{"schema_version":"2.1"}') =>
-  ({name, size: content.length, text: async () => content});
+  Object.assign(new Blob([content]), {name});
 
 async function startBatch(ui, files) {
   await ui.get("export-file").emit("change", {target: {files}});
