@@ -120,6 +120,25 @@ def test_integrity_checks_allow_independent_human_validation_provenance(tmp_path
     assert expected.training.validation_references.kind == "human"
 
 
+@pytest.mark.parametrize("damage", ["later_checkpoint", "missing_checkpoint", "missing_seed"])
+def test_repeat_outcomes_must_describe_all_recorded_seeds(tmp_path: Path, damage: str) -> None:
+    training = bundle(tmp_path / "bundle").training
+    original = training.model_dump(mode="json")
+    assert "repeat_outcomes" not in original
+    outcomes = [
+        {"seed": seed, "step": 3, "best_step": 2, "reason": "epoch_limit"}
+        for seed in training.seeds
+    ]
+    if damage == "later_checkpoint":
+        outcomes[0]["best_step"] = 4
+    elif damage == "missing_checkpoint":
+        del outcomes[0]["best_step"]
+    else:
+        outcomes.pop()
+    with pytest.raises(ValueError, match="checkpoint"):
+        TrainingEvidence.model_validate_json(json.dumps(original | {"repeat_outcomes": outcomes}))
+
+
 def test_segment_moe_alias_verifies_the_original_manifest_bytes(tmp_path: Path) -> None:
     root = tmp_path / "bundle"
     legacy = bundle(root).model_copy(update={"architecture_id": "persistence"})

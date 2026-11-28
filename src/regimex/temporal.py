@@ -12,6 +12,7 @@ from pydantic import JsonValue
 from torch import Tensor, nn
 from torch.nn import functional as functional
 
+from regimex.backends.checkpoints import ValidationCheckpoints
 from regimex.backends.tcn_layout import (
     CONTEXT_SIZES as CONTEXT_SIZES,
 )
@@ -26,6 +27,7 @@ from regimex.backends.tcn_layout import (
 )
 from regimex.directions import DIRECTION_NAMES
 from regimex.features import FEATURE_NAMES, DoubleArray, FloatArray, IntArray, Preprocessor
+from regimex.model_bundles import RepeatOutcome
 from regimex.model_contracts import HistoryCallback
 from regimex.model_registry import TCNParameters, TrainingPolicy, TrainingRuntime
 from regimex.prediction_inputs import (
@@ -446,6 +448,7 @@ def fit_tcn(
     scorer: Scorer,
     check_budget: Callable[[], None] | None = None,
     on_history: HistoryCallback | None = None,
+    on_repeat_end: Callable[[RepeatOutcome], None] | None = None,
 ) -> tuple[TCNClassifier, list[dict[str, JsonValue]], int]:
     """Fit saved numeric inputs with supervision kept outside prediction data."""
     require_prepared_inputs(training)
@@ -484,8 +487,7 @@ def fit_tcn(
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=policy.learning_rate, weight_decay=policy.weight_decay
         )
-        seed_best = -1.0
-        stale = 0
+        checkpoints = ValidationCheckpoints()
         for epoch in range(1, policy.epochs + 1):
             ordering = rng.permutation(len(training.info)).astype(np.int64)
             total_loss = 0.0
@@ -530,19 +532,13 @@ def fit_tcn(
                     best_state = {
                         key: tensor.detach().clone() for key, tensor in model.state_dict().items()
                     }
-                if score > seed_best:
-                    seed_best, stale = score, 0
-                else:
-                    stale += 1
+                checkpoints.observe(epoch, score)
             history.append(entry)
-            if on_history is not None:
-                measurement = entry.copy()
-                if epoch == policy.epochs:
-                    measurement["stop_reason"] = "epoch_limit"
-                elif stale >= policy.patience:
-                    measurement["stop_reason"] = "early_stopping"
-                on_history(measurement)
-            if stale >= policy.patience:
+            reason = checkpoints.epoch_stop_reason(epoch, policy)
+            checkpoints.report(
+                seed, epoch, entry, reason, on_history=on_history, on_repeat_end=on_repeat_end
+            )
+            if reason:
                 break
     assert best_state is not None
     best = TCNClassifier(

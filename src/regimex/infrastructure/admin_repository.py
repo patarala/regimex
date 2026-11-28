@@ -29,7 +29,6 @@ from regimex.admin_contracts import (
     PublicationSpec,
     ReferenceGenerationSpec,
     ReferenceSetRecord,
-    RepeatOutcome,
     RequestDigest,
     TrainingArchiveFilter,
     TrainingMetrics,
@@ -37,6 +36,7 @@ from regimex.admin_contracts import (
     TrainingRunName,
     TrainingSpec,
     admin_request_hash,
+    legacy_repeat_outcomes,
 )
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.data_catalog import validate_reference_membership
@@ -78,6 +78,7 @@ _CHART_FIELDS = {
     "seed",
     "training_loss",
     "stop_reason",
+    "best_step",
     "validation_segment_macro_f1",
 }
 Connection = psycopg.Connection[tuple[object, ...]]
@@ -1456,12 +1457,10 @@ class AdminRepository:
                 elif run.spec != spec:
                     raise Conflict("The training run already records different bundle evidence.")
                 if curve is not None or metrics.direction_quality is not None:
-                    if isinstance(run.spec, TrainingSpec):
+                    if isinstance(run.spec, TrainingSpec) and not metrics.repeat_outcomes:
                         metrics = metrics.model_copy(
                             update={
-                                "repeat_outcomes": RepeatOutcome.from_history(
-                                    run.spec, metrics.history
-                                )
+                                "repeat_outcomes": legacy_repeat_outcomes(run.spec, metrics.history)
                             }
                         )
                     store_training_metrics(connection, run, metrics)

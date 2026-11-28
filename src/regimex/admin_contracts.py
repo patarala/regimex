@@ -28,7 +28,7 @@ from regimex.external_latency import ExternalLatencyEvidence
 from regimex.history_contracts import DisplayName
 from regimex.infrastructure.object_store import ObjectInfo
 from regimex.market_config import GeneratorVersion, MarketConfig
-from regimex.model_bundles import BundleMember, TrainingEvidence
+from regimex.model_bundles import BundleMember, RepeatOutcome, TrainingEvidence
 from regimex.model_registry import (
     SEGMENT_MOE_ID,
     ArchitectureId,
@@ -370,52 +370,47 @@ class AdminRunRecord(StrictModel):
         return self
 
 
-class RepeatOutcome(StrictModel):
-    seed: Seed
-    step: Annotated[int, Field(ge=1)]
-    reason: Literal["early_stopping", "epoch_limit", "update_limit"]
-
-    @classmethod
-    def from_history(
-        cls, spec: TrainingSpec | ImportedTrainingSpec, history: JsonValue
-    ) -> tuple[Self, ...]:
-        if canonical_architecture_id(spec.architecture_id) not in ("tcn", SEGMENT_MOE_ID):
+def legacy_repeat_outcomes(
+    spec: TrainingSpec | ImportedTrainingSpec, history: JsonValue
+) -> tuple[RepeatOutcome, ...]:
+    """Recover stopping reasons for verified histories written before backends recorded them."""
+    if canonical_architecture_id(spec.architecture_id) not in ("tcn", SEGMENT_MOE_ID):
+        return ()
+    if not isinstance(history, dict):
+        return ()
+    policy = spec.recorded_policy if isinstance(spec, ImportedTrainingSpec) else spec.policy
+    if policy is None or isinstance(policy, SingleFitPolicy):
+        return ()
+    unit = "update" if isinstance(policy, FixedUpdatePolicy) else "epoch"
+    rows = history.get(unit + "s")
+    if not isinstance(rows, list):
+        return ()
+    # The native codec verifies every seed's complete history before publication.
+    # An epoch repeat that finishes below its budget can only have exhausted patience.
+    last_step: dict[int, int] = {}
+    for row in rows:
+        if not isinstance(row, dict):
             return ()
-        if not isinstance(history, dict):
+        seed, step = row.get("seed"), row.get(unit)
+        if type(seed) is not int or type(step) is not int:
             return ()
-        policy = spec.recorded_policy if isinstance(spec, ImportedTrainingSpec) else spec.policy
-        if policy is None or isinstance(policy, SingleFitPolicy):
-            return ()
-        unit = "update" if isinstance(policy, FixedUpdatePolicy) else "epoch"
-        rows = history.get(unit + "s")
-        if not isinstance(rows, list):
-            return ()
-        # The native codec verifies every seed's complete history before publication.
-        # An epoch repeat that finishes below its budget can only have exhausted patience.
-        last_step: dict[int, int] = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                return ()
-            seed, step = row.get("seed"), row.get(unit)
-            if type(seed) is not int or type(step) is not int:
-                return ()
-            last_step[seed] = step
-        if tuple(last_step) != policy.seeds:
-            return ()
-        if isinstance(policy, FixedUpdatePolicy):
-            return tuple(
-                cls(seed=seed, step=step, reason="update_limit")
-                for seed, step in last_step.items()
-                if step == policy.updates
-            )
+        last_step[seed] = step
+    if tuple(last_step) != policy.seeds:
+        return ()
+    if isinstance(policy, FixedUpdatePolicy):
         return tuple(
-            cls(
-                seed=seed,
-                step=step,
-                reason="epoch_limit" if step == policy.epochs else "early_stopping",
-            )
+            RepeatOutcome(seed=seed, step=step, reason="update_limit")
             for seed, step in last_step.items()
+            if step == policy.updates
         )
+    return tuple(
+        RepeatOutcome(
+            seed=seed,
+            step=step,
+            reason="epoch_limit" if step == policy.epochs else "early_stopping",
+        )
+        for seed, step in last_step.items()
+    )
 
 
 class ForestValidationPoint(StrictModel):
@@ -498,6 +493,7 @@ class ForestFitProgress(StrictModel):
 
 class TemporalProgress(StrictModel):
     seed: Seed
+    best_step: int | None = Field(default=None, ge=1, exclude_if=lambda value: value is None)
     training_loss: Annotated[float, Field(ge=0)]
     validation_segment_macro_f1: float | None = Field(
         default=None, ge=0, le=1, exclude_if=lambda value: value is None

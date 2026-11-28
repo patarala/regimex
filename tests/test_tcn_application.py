@@ -72,6 +72,30 @@ def test_tcn_uses_unchanged_shared_training_and_decoded_selection(tmp_path: Path
         if "stop_reason" in row
     ]
     assert endings == [(11, 3, "epoch_limit"), (23, 3, "epoch_limit")]
+    recorded = json.loads((root / "manifest.json").read_bytes())["training"]["repeat_outcomes"]
+    best_steps = {
+        seed: max(
+            (
+                row
+                for row in saved
+                if row["seed"] == seed and row["validation_segment_macro_f1"] is not None
+            ),
+            key=lambda row: row["validation_segment_macro_f1"],
+        )["epoch"]
+        for seed in policy.seeds
+    }
+    assert [(row["seed"], row.pop("best_step")) for row in history if "best_step" in row] == list(
+        best_steps.items()
+    )
+    assert recorded == [
+        {
+            "seed": seed,
+            "step": policy.epochs,
+            "best_step": best_steps[seed],
+            "reason": "epoch_limit",
+        }
+        for seed in policy.seeds
+    ]
     assert history == [{k: v for k, v in row.items() if v is not None} for row in saved]
     assert [row["seed"] for row in history] == [11] * 3 + [23] * 3
     assert all(("validation_segment_macro_f1" in row) == (row["epoch"] != 2) for row in history)

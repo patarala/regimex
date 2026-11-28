@@ -15,7 +15,12 @@ import torch
 from pydantic import Field, JsonValue, field_validator
 from torch import Tensor, nn
 
-from regimex.backends.epoch_history import HistoryRecord, ValidationRecord, validate_epoch_selection
+from regimex.backends.checkpoints import ValidationCheckpoints
+from regimex.backends.epoch_history import (
+    HistoryRecord,
+    ValidationRecord,
+    validate_epoch_selection,
+)
 from regimex.backends.segment_moe_features import SegmentFeatureVersion, segment_features
 from regimex.backends.segment_moe_layout import (
     BLOCK_FEATURE_COUNT,
@@ -31,6 +36,7 @@ from regimex.model_bundles import (
     BundleMember,
     BundleRole,
     ModelBundle,
+    RepeatOutcome,
     read_bundle_json,
     verify_model_bundle,
 )
@@ -292,6 +298,7 @@ def _select_checkpoint(
     policy: TrainingPolicy,
     evaluator: SelectionEvaluator,
     on_history: HistoryCallback | None,
+    on_repeat_end: Callable[[RepeatOutcome], None],
     check_budget: Callable[[], None],
 ) -> tuple[list[dict[str, JsonValue]], _Checkpoint]:
     history: list[dict[str, JsonValue]] = []
@@ -304,7 +311,7 @@ def _select_checkpoint(
             optimizer = torch.optim.AdamW(
                 model.parameters(), lr=policy.learning_rate, weight_decay=policy.weight_decay
             )
-            repeat_best, stale = -1.0, 0
+            checkpoints = ValidationCheckpoints()
             for epoch in range(1, policy.epochs + 1):
                 model.train()
                 loss = _train_epoch(
@@ -320,18 +327,17 @@ def _select_checkpoint(
                     row["validation_segment_macro_f1"] = score
                     if best is None or score > best.score:
                         best = _Checkpoint(copy.deepcopy(model), seed, epoch, score)
-                    if score > repeat_best:
-                        repeat_best, stale = score, 0
-                    else:
-                        stale += 1
+                    checkpoints.observe(epoch, score)
                 history.append(row)
-                stop_reason = None
-                if epoch == policy.epochs:
-                    stop_reason = "epoch_limit"
-                elif stale >= policy.patience:
-                    stop_reason = "early_stopping"
-                if on_history:
-                    on_history(row | {"stop_reason": stop_reason} if stop_reason else row.copy())
+                stop_reason = checkpoints.epoch_stop_reason(epoch, policy)
+                checkpoints.report(
+                    seed,
+                    epoch,
+                    row,
+                    stop_reason,
+                    on_history=on_history,
+                    on_repeat_end=on_repeat_end,
+                )
                 if stop_reason:
                     break
     # Every seed is evaluated at its first and last epoch.
@@ -384,6 +390,7 @@ class SegmentMoEBackend:
         scale = BlockScale.fit(train.blocks)
         segments = TrainingSegments.from_table(train.standardized(scale), training.targets)
         valid = valid.standardized(scale)
+        outcomes: list[RepeatOutcome] = []
         history, checkpoint = _select_checkpoint(
             segments,
             valid,
@@ -392,6 +399,7 @@ class SegmentMoEBackend:
             policy=policy,
             evaluator=evaluator,
             on_history=training.on_history,
+            on_repeat_end=outcomes.append,
             check_budget=check_budget,
         )
         check_budget()
@@ -414,6 +422,7 @@ class SegmentMoEBackend:
             checkpoint.score,
             {"epoch": checkpoint.epoch},
             environment,
+            repeat_outcomes=tuple(outcomes),
         )
 
     def write_bundle(
@@ -445,7 +454,13 @@ class SegmentMoEBackend:
             selected_epoch=cast(int, result.selected_settings["epoch"]),
         )
         history = HistoryRecord.model_validate({"epochs": result.history})
-        validate_epoch_selection("Segment MoE", config.training_policy, validation, history)
+        validate_epoch_selection(
+            "Segment MoE",
+            config.training_policy,
+            validation,
+            history,
+            provenance.training.repeat_outcomes,
+        )
         with output_directory(root) as out:
             for role, doc in [
                 ("configuration", config),
@@ -511,7 +526,13 @@ class SegmentMoEBackend:
         )
         history = read_bundle_json(root / _ROLES["history"], HistoryRecord, limit=16 << 20)
         validate_segment_moe_policy(config.training_policy)
-        validate_epoch_selection("Segment MoE", config.training_policy, validation, history)
+        validate_epoch_selection(
+            "Segment MoE",
+            config.training_policy,
+            validation,
+            history,
+            bundle.training.repeat_outcomes,
+        )
         if (
             _hash(config.analysis.model_dump(mode="json")) != bundle.analysis_profile_sha256
             or _hash(config.environment) != bundle.environment_sha256

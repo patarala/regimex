@@ -1,10 +1,13 @@
 """Checkpoint records shared by epoch-trained models."""
 
+from itertools import groupby
 from typing import Literal, cast
 
 from pydantic import Field
 
+from regimex.backends.checkpoints import ValidationCheckpoints
 from regimex.contracts import Seed, StrictModel
+from regimex.model_bundles import RepeatOutcome
 from regimex.model_registry import TrainingPolicy
 
 
@@ -31,45 +34,38 @@ def validate_epoch_selection(
     policy: TrainingPolicy,
     validation: ValidationRecord,
     history: HistoryRecord,
+    repeat_outcomes: tuple[RepeatOutcome, ...],
 ) -> None:
-    seeds: list[int] = []
-    previous_epoch = 0
-    seed_best = -1.0
-    stale = 0
-    for entry in history.epochs:
-        if not seeds or entry.seed != seeds[-1]:
-            if seeds and previous_epoch != policy.epochs and stale < policy.patience:
+    outcomes = []
+    for seed, entries in groupby(history.epochs, key=lambda entry: entry.seed):
+        checkpoints = ValidationCheckpoints()
+        reason = None
+        last_epoch = 0
+        for epoch, entry in enumerate(entries, 1):
+            if reason is not None:
+                raise ValueError(f"{architecture} history continues after its stopping condition")
+            if entry.epoch != epoch or epoch > policy.epochs:
+                raise ValueError(f"{architecture} history epochs differ from the configured search")
+            scored = epoch in (1, policy.epochs) or epoch % policy.validation_interval == 0
+            if scored != (entry.validation_segment_macro_f1 is not None):
                 raise ValueError(
-                    f"{architecture} history ends a seed before its stopping condition"
+                    f"{architecture} validation history differs from the configured interval"
                 )
-            seeds.append(entry.seed)
-            previous_epoch = 0
-            seed_best = -1.0
-            stale = 0
-        elif stale >= policy.patience:
-            raise ValueError(f"{architecture} history continues after its stopping condition")
-        if entry.epoch != previous_epoch + 1 or entry.epoch > policy.epochs:
-            raise ValueError(f"{architecture} history epochs differ from the configured search")
-        scored = (
-            entry.epoch == 1
-            or entry.epoch % policy.validation_interval == 0
-            or entry.epoch == policy.epochs
-        )
-        if scored != (entry.validation_segment_macro_f1 is not None):
-            raise ValueError(
-                f"{architecture} validation history differs from the configured interval"
+            if entry.validation_segment_macro_f1 is not None:
+                checkpoints.observe(epoch, entry.validation_segment_macro_f1)
+            last_epoch = epoch
+            reason = checkpoints.epoch_stop_reason(epoch, policy)
+        if reason is None:
+            raise ValueError(f"{architecture} history ends a seed before its stopping condition")
+        outcomes.append(
+            RepeatOutcome(
+                seed=seed, step=last_epoch, best_step=checkpoints.best_step, reason=reason
             )
-        if entry.validation_segment_macro_f1 is not None:
-            if entry.validation_segment_macro_f1 > seed_best:
-                seed_best = entry.validation_segment_macro_f1
-                stale = 0
-            else:
-                stale += 1
-        previous_epoch = entry.epoch
-    if previous_epoch != policy.epochs and stale < policy.patience:
-        raise ValueError(f"{architecture} history ends a seed before its stopping condition")
-    if tuple(seeds) != policy.seeds:
+        )
+    if tuple(row.seed for row in outcomes) != policy.seeds:
         raise ValueError(f"{architecture} history seeds differ from the configured search")
+    if repeat_outcomes and repeat_outcomes != tuple(outcomes):
+        raise ValueError(f"{architecture} repeat outcomes disagree with the validation history")
     best = max(
         (entry for entry in history.epochs if entry.validation_segment_macro_f1 is not None),
         key=lambda entry: cast(float, entry.validation_segment_macro_f1),

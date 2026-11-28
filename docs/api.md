@@ -416,9 +416,12 @@ epochs, and the TCN records epochs or optimizer updates according to its budget.
 An empty `history` means there are no new samples. Read the next page immediately
 when `has_more` is true. If the attempt changes, replace your local history
 with the new attempt's points. A successful run serves its saved history from
-`/metrics`. For TCN and Segment MoE, `repeat_outcomes` gives the last step
-and stopping reason for each seed. This includes imported bundles with a
-recorded training policy and history. A forest trained before tree-count scores
+`/metrics`. Backends can record `repeat_outcomes` in the model bundle. Each
+entry identifies the seed, its final `step`, its `best_step` by validation
+score and the stopping `reason` (`early_stopping`, `epoch_limit` or
+`update_limit`). The same information is available for registered offline
+fits. Older TCN and Segment MoE histories can supply the final step and reason
+without a recorded best step. A forest trained before tree-count scores
 were recorded can also return `forest_validation_curve.points` when an administrator supplies scores
 measured from its saved weights on the original validation data. Each point
 contains `trees` and `validation_segment_macro_f1`. The original `history`

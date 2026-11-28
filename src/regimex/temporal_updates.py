@@ -7,7 +7,9 @@ import torch
 from pydantic import JsonValue
 from torch import Tensor, nn
 
+from regimex.backends.checkpoints import ValidationCheckpoints
 from regimex.features import IntArray
+from regimex.model_bundles import RepeatOutcome, RepeatStopReason
 from regimex.model_contracts import HistoryCallback
 from regimex.model_registry import FixedUpdatePolicy, TCNParameters, TrainingRuntime
 from regimex.prediction_inputs import PreparedPredictionInputs, require_prepared_inputs
@@ -34,6 +36,7 @@ def fit_tcn_updates(
     scorer: Scorer,
     check_budget: Callable[[], None] | None = None,
     on_history: HistoryCallback | None = None,
+    on_repeat_end: Callable[[RepeatOutcome], None] | None = None,
 ) -> tuple[TCNClassifier, list[dict[str, JsonValue]], int]:
     def build(features: int) -> TCNClassifier:
         return TCNClassifier(
@@ -52,6 +55,7 @@ def fit_tcn_updates(
         scorer=scorer,
         check_budget=check_budget,
         on_history=on_history,
+        on_repeat_end=on_repeat_end,
     )
 
 
@@ -69,6 +73,7 @@ def fit_temporal_updates[Network: nn.Module](
     scorer: Scorer,
     check_budget: Callable[[], None] | None = None,
     on_history: HistoryCallback | None = None,
+    on_repeat_end: Callable[[RepeatOutcome], None] | None = None,
 ) -> tuple[Network, list[dict[str, JsonValue]], int]:
     """Use the same batches, loss and validation selection for each sequence classifier."""
     require_prepared_inputs(training)
@@ -102,6 +107,7 @@ def fit_temporal_updates[Network: nn.Module](
         optimizer = torch.optim.AdamW(
             model.parameters(), lr=policy.learning_rate, weight_decay=policy.weight_decay
         )
+        checkpoints = ValidationCheckpoints()
         update, pass_index = 0, 0
         while update < policy.updates:
             pass_index += 1
@@ -138,6 +144,7 @@ def fit_temporal_updates[Network: nn.Module](
                     if not np.isfinite(score) or not 0 <= score <= 1:
                         raise ValueError("nonfinite or invalid TCN validation score")
                     entry["validation_segment_macro_f1"] = score
+                    checkpoints.observe(update, score)
                     if score > best_score:
                         best_score, best_seed = score, seed
                         best_state = {
@@ -145,12 +152,13 @@ def fit_temporal_updates[Network: nn.Module](
                             for name, tensor in model.state_dict().items()
                         }
                 history.append(entry)
-                if on_history is not None:
-                    measurement = entry.copy()
-                    if update == policy.updates:
-                        measurement["stop_reason"] = "update_limit"
-                    on_history(measurement)
-                if update == policy.updates:
+                reason: RepeatStopReason | None = (
+                    "update_limit" if update == policy.updates else None
+                )
+                checkpoints.report(
+                    seed, update, entry, reason, on_history=on_history, on_repeat_end=on_repeat_end
+                )
+                if reason:
                     break
             if update == before_pass:
                 raise ValueError("TCN completed a pass without any supervised optimizer update")

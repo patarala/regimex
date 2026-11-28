@@ -117,6 +117,15 @@ def test_fixed_policy_candidate_uses_shared_training_and_exact_bundle_restore(
     saved = json.loads((tmp_path / "bundle/history.json").read_bytes())["updates"]
     endings = [(row["update"], row.pop("stop_reason")) for row in history if "stop_reason" in row]
     assert endings == [(4, "update_limit")]
+    best = max(
+        (row for row in saved if row["validation_segment_macro_f1"] is not None),
+        key=lambda row: row["validation_segment_macro_f1"],
+    )["update"]
+    assert history[-1].pop("best_step") == best
+    manifest = json.loads((tmp_path / "bundle" / "manifest.json").read_bytes())
+    assert manifest["training"]["repeat_outcomes"] == [
+        {"seed": 11, "step": 4, "best_step": best, "reason": "update_limit"}
+    ]
     assert history == [{k: v for k, v in row.items() if v is not None} for row in saved]
     assert [row["update"] for row in history if "validation_segment_macro_f1" in row] == [2, 4]
     restored = TCNBackend().load_bundle(

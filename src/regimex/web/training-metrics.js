@@ -461,15 +461,9 @@ export function createTrainingMetrics() {
       score.replaceChildren(element("strong", format(validated.validation_segment_macro_f1)),
         " validation interval macro-F1 ", element("span", "· " + selection));
     }
-    if (!records?.length || (history.rows === "fits" && records.length === 1)) {
-      for (const view of figures.values()) view.inspector.hide();
-      figures.clear();
-      if ((policy?.budget === "fit" || fit) && validated && !result?.history_note) charts.replaceChildren();
-      else charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
-      ending.hidden = seedLabel.hidden = true;
-      return;
-    }
-    const seeds = [...new Set(records.map(row => row.seed).filter(Number.isInteger))];
+    const outcomes = result?.repeat_outcomes || [];
+    const seeds = outcomes.length ? outcomes.map(row => row.seed) :
+      [...new Set((records || []).map(row => row.seed).filter(Number.isInteger))];
     const selectedSeed = result?.selected_seed;
     for (const [index, value] of seeds.entries()) {
       const label = "Seed " + value + (value === selectedSeed ? " (used for this model)" : "");
@@ -485,17 +479,29 @@ export function createTrainingMetrics() {
     }
     seedLabel.hidden = seeds.length < 2;
     function draw() {
-      const selected = records.filter(row => !seeds.length || row.seed === Number(seed.value));
+      const selected = (records || []).filter(row => !seeds.length || row.seed === Number(seed.value));
+      selected.sort((a, b) => a[history.field] - b[history.field]);
+      const last = selected.at(-1);
+      const outcome = outcomes.find(item => item.seed === Number(seed.value));
+      const reason = outcome?.reason ?? last?.stop_reason;
+      const summary = repeatEnding(reason, outcome?.step ?? last?.[history.field], policy);
+      const best = outcome?.best_step ?? last?.best_step;
+      const unit = reason === "update_limit" ? "update" : "epoch";
+      const message = summary && best ? summary + ` Best validation score at ${unit} ${best}.` : summary;
+      if (ending.textContent !== message) ending.textContent = message;
+      ending.hidden = !message;
+      if (!selected.length || (history.rows === "fits" && selected.length === 1)) {
+        for (const view of figures.values()) view.inspector.hide();
+        figures.clear();
+        drawn = null;
+        if ((policy?.budget === "fit" || fit) && validated && !result?.history_note) charts.replaceChildren();
+        else charts.replaceChildren(element("p", result?.history_note || "The run has no recorded metric values to plot."));
+        return;
+      }
       if (drawn?.rows === rows && drawn.seed === seed.value && drawn.count === selected.length) return;
       const resetPage = drawn?.seed !== seed.value;
       drawn = {rows, seed: seed.value, count: selected.length};
       const series = chartSeries(history, selected, fromSavedWeights);
-      selected.sort((a, b) => a[history.field] - b[history.field]);
-      const last = selected.at(-1);
-      const outcome = result?.repeat_outcomes?.find(item => item.seed === last.seed && item.step === last[history.field]);
-      const summary = repeatEnding(outcome?.reason ?? last.stop_reason, last[history.field], policy);
-      if (ending.textContent !== summary) ending.textContent = summary;
-      ending.hidden = !summary;
       const axis = horizontalAxis(history, selected);
       for (const [key, view] of figures) {
         if (!series.some(metric => metric.field === key)) {

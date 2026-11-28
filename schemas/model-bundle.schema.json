@@ -221,6 +221,54 @@
       "title": "ReferenceIdentity",
       "type": "object"
     },
+    "RepeatOutcome": {
+      "additionalProperties": false,
+      "description": "A repeat's final step and earliest best-scoring checkpoint.",
+      "properties": {
+        "best_step": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Best Step"
+        },
+        "reason": {
+          "$ref": "#/$defs/RepeatStopReason"
+        },
+        "seed": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "title": "Seed",
+          "type": "integer"
+        },
+        "step": {
+          "minimum": 1,
+          "title": "Step",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "seed",
+        "step",
+        "reason"
+      ],
+      "title": "RepeatOutcome",
+      "type": "object"
+    },
+    "RepeatStopReason": {
+      "enum": [
+        "early_stopping",
+        "epoch_limit",
+        "update_limit"
+      ],
+      "type": "string"
+    },
     "TrainingEvidence": {
       "additionalProperties": false,
       "properties": {
@@ -246,6 +294,14 @@
             "$ref": "#/$defs/ParentModelEvidence"
           },
           "title": "Parent Models",
+          "type": "array"
+        },
+        "repeat_outcomes": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/RepeatOutcome"
+          },
+          "title": "Repeat Outcomes",
           "type": "array"
         },
         "run_id": {

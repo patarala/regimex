@@ -9,8 +9,8 @@ from psycopg.types.json import Json
 from regimex.admin_contracts import (
     AdminRunRecord,
     ImportedTrainingSpec,
-    RepeatOutcome,
     TrainingMetrics,
+    legacy_repeat_outcomes,
 )
 from regimex.direction_quality import DirectionQualityEvidence
 from regimex.service_contracts import Conflict, NotFound
@@ -55,13 +55,9 @@ def read_training_metrics(
         raise Conflict("Only a successful training run can have saved metrics.")
     metrics = verified_metrics(document, committed_model_version_id)
     # Earlier imports saved the policy and history separately, even after weight deletion.
-    if (
-        imported_request is not None
-        and not metrics.repeat_outcomes
-        and isinstance(metrics.history, dict)
-    ):
+    if imported_request is not None and not metrics.repeat_outcomes:
         spec = ImportedTrainingSpec.model_validate_json(json_bytes(imported_request))
-        outcomes = RepeatOutcome.from_history(spec, metrics.history)
+        outcomes = spec.evidence.repeat_outcomes or legacy_repeat_outcomes(spec, metrics.history)
         if outcomes:
             return metrics.model_copy(update={"repeat_outcomes": outcomes})
     return metrics

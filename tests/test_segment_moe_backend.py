@@ -48,6 +48,10 @@ def test_workspace_fit_records_epochs_and_restores_identical_probabilities(tmp_p
         evaluator=lambda _: 0.6,
     )
     assert len(progress) == 4 and progress[1]["stop_reason"] == "early_stopping"
+    assert [row.model_dump() for row in fitted.repeat_outcomes] == [
+        {"seed": seed, "step": 2, "best_step": 1, "reason": "early_stopping"}
+        for seed in settings.seeds
+    ]
     assert [r["seed"] for r in fitted.history] == [11, 11, 23, 23]
     assert fitted.selected_seed == 11 and fitted.selected_settings == {"epoch": 1}
     assert all(isinstance(r["training_loss"], float) for r in fitted.history)

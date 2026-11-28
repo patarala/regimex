@@ -558,6 +558,19 @@ def test_rejects_cross_field_codec_provenance(tmp_path: Path, member: str) -> No
         backend.load_bundle(root, manifest_sha256=rehash(root), runtime=InferenceRuntime(threads=1))
 
 
+def test_rejects_repeat_outcome_that_disagrees_with_the_saved_scores(tmp_path: Path) -> None:
+    backend, result, _, _ = bundle(tmp_path)
+    root = tmp_path / "bundle"
+    path = root / "manifest.json"
+    manifest = json.loads(path.read_bytes())
+    outcomes = [row.model_dump(mode="json") for row in result.repeat_outcomes]
+    outcomes[0]["best_step"] = 2 if outcomes[0]["best_step"] == 1 else 1
+    manifest["training"]["repeat_outcomes"] = outcomes
+    write_json(path, manifest)
+    with pytest.raises(ValueError, match="repeat outcomes"):
+        backend.load_bundle(root, manifest_sha256=digest(path), runtime=InferenceRuntime(threads=1))
+
+
 def test_custom_dilations_are_used_and_survive_reload(tmp_path: Path) -> None:
     training, validation = inputs("train"), inputs("validation")
     backend = TCNBackend()

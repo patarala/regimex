@@ -41,8 +41,9 @@ tabs, training continues and the charts catch up when you return. Hover over a
 chart to inspect a measurement. Validation scores appear only for epochs or
 updates where a check ran. For repeated fits, **Training repeat** selects a
 curve and **used for this model** identifies the repeat that supplied the saved
-weights. The run shows when training stopped after consecutive checks without
-improvement.
+weights. For each repeat, the run shows why training ended and the epoch or
+update with its best validation score when the backend recorded it. Tied scores
+keep the earlier checkpoint for TCN and Segment MoE.
 
 To change a workspace run, choose **New run from this run**. The form opens
 with that run's data and settings. To compare two runs, choose **Select runs**

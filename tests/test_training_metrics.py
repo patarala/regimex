@@ -6,11 +6,11 @@ import pytest
 from pydantic import JsonValue
 from test_model_bundles import bundle
 
-from regimex.admin_contracts import ImportedTrainingSpec, RepeatOutcome, TrainingSpec
+from regimex.admin_contracts import ImportedTrainingSpec, TrainingSpec, legacy_repeat_outcomes
 from regimex.application.training_metrics import build_training_metrics
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.object_store import ObjectIntegrityError
-from regimex.model_bundles import BundleMember, ModelBundle
+from regimex.model_bundles import BundleMember, ModelBundle, RepeatOutcome
 from regimex.model_registry import (
     FixedUpdatePolicy,
     InferenceRuntime,
@@ -92,6 +92,24 @@ def imported_spec(
     )
 
 
+def test_plugin_completion_is_available_without_a_chart_or_recorded_policy(tmp_path: Path) -> None:
+    manifest = bundle(tmp_path / "bundle")
+    outcomes = (
+        RepeatOutcome(seed=11, step=8, best_step=5, reason="early_stopping"),
+        RepeatOutcome(seed=23, step=12, best_step=12, reason="epoch_limit"),
+    )
+    evidence = manifest.training.model_copy(update={"repeat_outcomes": outcomes})
+    manifest = manifest.model_copy(update={"architecture_id": "test-plugin", "training": evidence})
+    spec = imported_spec(manifest, "test-plugin", TrainingPolicy(optimizer="adamw"))
+    spec = spec.model_copy(update={"configuration": None})
+
+    def unexpected_read(member: BundleMember) -> bytes:
+        pytest.fail(f"Attempted to read the binary history {member.path}")
+
+    metrics = build_training_metrics(spec, manifest, read_history=unexpected_read)
+    assert metrics.history is None and metrics.repeat_outcomes == outcomes
+
+
 @pytest.mark.parametrize("architecture", ("tcn", "segment-moe", "persistence"))
 def test_imported_epoch_history_records_each_repeats_stopping_reason(
     tmp_path: Path, architecture: str
@@ -114,7 +132,7 @@ def test_imported_epoch_history_records_each_repeats_stopping_reason(
         RepeatOutcome(seed=11, step=2, reason="early_stopping"),
         RepeatOutcome(seed=23, step=3, reason="epoch_limit"),
     )
-    assert not RepeatOutcome.from_history(spec.model_copy(update={"configuration": None}), history)
+    assert not legacy_repeat_outcomes(spec.model_copy(update={"configuration": None}), history)
 
 
 def test_imported_update_history_records_the_update_limit(tmp_path: Path) -> None:
@@ -124,7 +142,7 @@ def test_imported_update_history_records_the_update_limit(tmp_path: Path) -> Non
     history: dict[str, JsonValue] = {
         "updates": [{"seed": 11, "update": 1}, {"seed": 23, "update": 1}]
     }
-    assert RepeatOutcome.from_history(spec, history) == (
+    assert legacy_repeat_outcomes(spec, history) == (
         RepeatOutcome(seed=11, step=1, reason="update_limit"),
         RepeatOutcome(seed=23, step=1, reason="update_limit"),
     )

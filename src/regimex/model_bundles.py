@@ -108,6 +108,24 @@ class ParentModelEvidence(StrictModel):
         )
 
 
+type RepeatStopReason = Literal["early_stopping", "epoch_limit", "update_limit"]
+
+
+class RepeatOutcome(StrictModel):
+    """A repeat's final step and earliest best-scoring checkpoint."""
+
+    seed: Seed
+    step: Annotated[int, Field(ge=1)]
+    reason: RepeatStopReason
+    best_step: int | None = Field(default=None, ge=1, exclude_if=lambda value: value is None)
+
+    @model_validator(mode="after")
+    def checkpoint_was_reached(self) -> Self:
+        if self.best_step is not None and self.best_step > self.step:
+            raise ValueError("the best checkpoint must precede or equal the final step")
+        return self
+
+
 class TrainingEvidence(StrictModel):
     run_id: Identifier
     dataset_sha256: Sha256
@@ -121,6 +139,9 @@ class TrainingEvidence(StrictModel):
     selected_seed: Seed
     selection_metric: Literal["decoded_segment_macro_f1/iou-0.50"]
     validation_segment_macro_f1: Annotated[float, Field(ge=0, le=1)]
+    repeat_outcomes: tuple[RepeatOutcome, ...] = Field(
+        default=(), exclude_if=lambda values: not values
+    )
     additional_training_sources: tuple[AdditionalTrainingSource, ...] = Field(
         default=(), exclude_if=lambda sources: not sources
     )
@@ -166,6 +187,13 @@ class TrainingEvidence(StrictModel):
             )
         if len(set(self.seeds)) != len(self.seeds) or self.selected_seed not in self.seeds:
             raise ValueError("selected seed must belong to a unique recorded search")
+        if self.repeat_outcomes and (
+            tuple(outcome.seed for outcome in self.repeat_outcomes) != self.seeds
+            or any(outcome.best_step is None for outcome in self.repeat_outcomes)
+        ):
+            raise ValueError(
+                "repeat outcomes must record a best checkpoint for every seed in order"
+            )
         if (
             self.labels.direction_semantics_sha256
             != self.validation_references.direction_semantics_sha256

@@ -2012,11 +2012,14 @@ def test_training_repeat_explains_early_stopping_live_and_after_completion(brows
         ending = page.locator("#training-repeat-end")
         expect(page.get_by_role("img", name="Training loss by epoch")).to_be_visible()
         expect(ending).to_be_hidden()
-        api.progress_rows.append({**first, "epoch": 2, "stop_reason": "early_stopping"})
+        api.progress_rows.append(
+            {**first, "epoch": 2, "stop_reason": "early_stopping", "best_step": 1}
+        )
         refresh = page.get_by_role("button", name="Refresh", exact=True)
         refresh.click()
         expect(ending).to_contain_text("Stopped early at epoch 2 of 3")
         expect(ending).to_contain_text("Interval macro-F1 did not improve for 1 validation check.")
+        expect(ending).to_contain_text("Best validation score at epoch 1.")
         expect(page.locator("#training-state")).to_have_text("Running")
 
         # Published TCN histories omit live-only messages, including existing bundles.
@@ -2036,7 +2039,7 @@ def test_training_repeat_explains_early_stopping_live_and_after_completion(brows
             ]
         }
         api.metrics["repeat_outcomes"] = [
-            {"seed": 11, "step": 2, "reason": "early_stopping"},
+            {"seed": 11, "step": 2, "reason": "early_stopping", "best_step": 1},
             {"seed": 23, "step": 3, "reason": "epoch_limit"},
         ]
         api.run["job"]["state"] = "succeeded"
@@ -2045,6 +2048,14 @@ def test_training_repeat_explains_early_stopping_live_and_after_completion(brows
         expect(ending).to_have_text("Completed all 3 epochs.")
         page.get_by_label("Training repeat").select_option("11")
         expect(ending).to_contain_text("Stopped early at epoch 2 of 3")
+        expect(ending).to_contain_text("Best validation score at epoch 1.")
+
+        # A plugin can report repeat outcomes even when it uses a different chart format.
+        api.metrics["history"] = {"custom": []}
+        page.reload()
+        expect(ending).to_have_text("Completed all 3 epochs.")
+        page.get_by_label("Training repeat").select_option("11")
+        expect(ending).to_contain_text("Best validation score at epoch 1.")
     finally:
         page.close()
 

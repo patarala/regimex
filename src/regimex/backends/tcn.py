@@ -31,6 +31,7 @@ from regimex.model_bundles import (
     BundleMember,
     BundleRole,
     ModelBundle,
+    RepeatOutcome,
     read_bundle_json,
     verify_model_bundle,
 )
@@ -508,6 +509,7 @@ class TCNBackend:
             validation, preprocessing, side_slopes=parameters.side_slopes, check_budget=check_budget
         )
         check_budget()
+        outcomes: list[RepeatOutcome] = []
         if isinstance(policy, FixedUpdatePolicy):
             model, history, selected_seed = fit_tcn_updates(
                 prepared_training,
@@ -519,6 +521,7 @@ class TCNBackend:
                 scorer=evaluate,
                 check_budget=check_budget,
                 on_history=training.on_history,
+                on_repeat_end=outcomes.append,
             )
         else:
             model, history, selected_seed = fit_tcn(
@@ -531,6 +534,7 @@ class TCNBackend:
                 scorer=evaluate,
                 check_budget=check_budget,
                 on_history=training.on_history,
+                on_repeat_end=outcomes.append,
             )
         check_budget()
         selected = max(
@@ -570,14 +574,20 @@ class TCNBackend:
             validation_score=cast(float, selected["validation_segment_macro_f1"]),
             selected_settings=selected_settings,
             environment=environment,
+            repeat_outcomes=tuple(outcomes),
         )
 
     @staticmethod
     def _validate_selection(
-        configuration: TCNConfiguration, validation: ValidationRecord, history: HistoryRecord
+        configuration: TCNConfiguration,
+        validation: ValidationRecord,
+        history: HistoryRecord,
+        repeat_outcomes: tuple[RepeatOutcome, ...],
     ) -> None:
         validate_tcn_policy(configuration.training_policy)
-        validate_epoch_selection("TCN", configuration.training_policy, validation, history)
+        validate_epoch_selection(
+            "TCN", configuration.training_policy, validation, history, repeat_outcomes
+        )
 
     def write_bundle(
         self,
@@ -622,6 +632,7 @@ class TCNBackend:
                 configuration.training_sequence_count,
                 validation,
                 history,
+                provenance.training.repeat_outcomes,
             )
         else:
             validation = ValidationRecord(
@@ -630,7 +641,9 @@ class TCNBackend:
                 selected_epoch=cast(int, result.selected_settings["epoch"]),
             )
             history = HistoryRecord.model_validate({"epochs": result.history})
-            self._validate_selection(configuration, validation, history)
+            self._validate_selection(
+                configuration, validation, history, provenance.training.repeat_outcomes
+            )
         with output_directory(root) as output:
             write_json(
                 output / _MEMBERS["configuration"], predictor.configuration.model_dump(mode="json")
@@ -719,13 +732,16 @@ class TCNBackend:
                 configuration.training_sequence_count,
                 validation,
                 history,
+                bundle.training.repeat_outcomes,
             )
         else:
             validation = read_bundle_json(
                 root / _MEMBERS["validation"], ValidationRecord, limit=_JSON_LIMIT
             )
             history = read_bundle_json(root / _MEMBERS["history"], HistoryRecord, limit=_JSON_LIMIT)
-            self._validate_selection(configuration, validation, history)
+            self._validate_selection(
+                configuration, validation, history, bundle.training.repeat_outcomes
+            )
         versions = _feature_versions(configuration.parameters)
         if (
             bundle.feature_version not in versions

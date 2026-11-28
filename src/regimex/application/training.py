@@ -286,6 +286,7 @@ def train_candidate(
         validation_references=data.validation_references,
         seeds=request.policy.seeds,
         selected_seed=fitted.selected_seed,
+        repeat_outcomes=fitted.repeat_outcomes,
         selection_metric="decoded_segment_macro_f1/iou-0.50",
         validation_segment_macro_f1=verified_score,
     )

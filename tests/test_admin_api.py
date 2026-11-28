@@ -1152,7 +1152,7 @@ def test_http_lifecycle_trains_evaluates_publishes_and_analyzes(
     }
     assert metrics.json()["history"]["epochs" if tcn else "candidates"]
     assert metrics.json()["repeat_outcomes"] == (
-        [{"seed": 11, "step": 1, "reason": "epoch_limit"}] if tcn else []
+        [{"seed": 11, "step": 1, "reason": "epoch_limit", "best_step": 1}] if tcn else []
     )
     user_headers = {"Authorization": f"Bearer {context.user_token}"}
     for part in ("metrics", "progress", "actions", "validation-score"):

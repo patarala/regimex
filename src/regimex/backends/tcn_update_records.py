@@ -4,7 +4,9 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
+from regimex.backends.checkpoints import ValidationCheckpoints
 from regimex.contracts import MAX_STEPS, Seed, StrictModel
+from regimex.model_bundles import RepeatOutcome
 from regimex.model_registry import FixedUpdatePolicy
 
 
@@ -49,9 +51,12 @@ def validate_update_selection(
     sequence_count: int,
     validation: UpdateValidationRecord,
     history: UpdateHistoryRecord,
+    repeat_outcomes: tuple[RepeatOutcome, ...],
 ) -> None:
     """Require complete budgets, the declared schedule and first-win selection."""
     FixedUpdatePolicy.model_validate(policy.model_dump())
+    if repeat_outcomes and tuple(row.seed for row in repeat_outcomes) != policy.seeds:
+        raise ValueError("TCN repeat outcomes differ from the configured search")
     if len(history.updates) != len(policy.seeds) * policy.updates:
         raise ValueError("TCN update history does not complete every seed's budget")
     batches = (sequence_count + policy.batch_size - 1) // policy.batch_size
@@ -59,6 +64,7 @@ def validate_update_selection(
     best_score = -1.0
     for seed_index, seed in enumerate(policy.seeds):
         entries = history.updates[seed_index * policy.updates : (seed_index + 1) * policy.updates]
+        checkpoints = ValidationCheckpoints()
         previous_pass, previous_batch = 0, 0
         for update, entry in enumerate(entries, 1):
             expected_batch_size = min(
@@ -78,8 +84,14 @@ def validate_update_selection(
             if scored != (update in policy.validation_updates):
                 raise ValueError("TCN update validation differs from its configured schedule")
             score = entry.validation_segment_macro_f1
-            if score is not None and score > best_score:
-                selected, best_score = entry, score
+            if score is not None:
+                checkpoints.observe(update, score)
+                if score > best_score:
+                    selected, best_score = entry, score
+        if repeat_outcomes and repeat_outcomes[seed_index] != RepeatOutcome(
+            seed=seed, step=policy.updates, best_step=checkpoints.best_step, reason="update_limit"
+        ):
+            raise ValueError("TCN repeat outcomes disagree with the validation history")
     if selected is None or (
         validation.selected_seed,
         validation.selected_update,

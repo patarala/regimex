@@ -8,9 +8,9 @@ from pydantic import JsonValue
 
 from regimex.admin_contracts import (
     ImportedTrainingSpec,
-    RepeatOutcome,
     TrainingMetrics,
     TrainingSpec,
+    legacy_repeat_outcomes,
 )
 from regimex.contracts import MAX_INPUT_BYTES
 from regimex.infrastructure.object_store import ObjectIntegrityError
@@ -40,7 +40,7 @@ def build_training_metrics(
         validation_segment_macro_f1=manifest.training.validation_segment_macro_f1,
         history=history,
         history_note=note,
-        repeat_outcomes=RepeatOutcome.from_history(spec, history),
+        repeat_outcomes=manifest.training.repeat_outcomes or legacy_repeat_outcomes(spec, history),
     )
 
 

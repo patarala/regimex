@@ -18,7 +18,7 @@ from regimex.exports import (
     ModelTimeGrid,
 )
 from regimex.features import DoubleArray, IntArray
-from regimex.model_bundles import TrainingEvidence
+from regimex.model_bundles import RepeatOutcome, TrainingEvidence
 from regimex.model_registry import InferenceRuntime, TrainingPolicySpec, TrainingRuntime
 from regimex.operations import Sha256
 from regimex.prediction_inputs import PredictionSequenceInfo
@@ -191,6 +191,7 @@ class FitResult:
     validation_score: float
     selected_settings: dict[str, JsonValue]
     environment: dict[str, JsonValue]
+    repeat_outcomes: tuple[RepeatOutcome, ...] = ()
 
 
 class BundleProvenance(StrictModel):

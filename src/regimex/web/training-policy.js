@@ -1,5 +1,4 @@
 import {addFieldHelp, element, option} from "./ui.js";
-import {canonicalArchitectureId} from "./training-architectures.js";
 
 const maxSeed = 2 ** 32 - 1;
 const maxUpdates = 32000;
@@ -221,9 +220,6 @@ export function createTrainingPolicy(container) {
       hint = "The logistic baseline records one seed and fits once for each regularization setting.";
     if (key === "seeds" && architecture.default_training_policy.budget === "fit")
       hint = "The seed controls how the forest chooses splits. Reuse it to reproduce a fit.";
-    if (key === "validation_interval" &&
-        ["tcn", "segment-moe"].includes(canonicalArchitectureId(architecture.architecture_id)))
-      hint = "With a value of 2, the model scores validation intervals at epochs 1, 2, 4, 6 and so on. It also scores the final epoch if reached.";
     if (hint) addFieldHelp(label, field, hint);
     return field;
   }
