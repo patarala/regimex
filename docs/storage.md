@@ -313,6 +313,9 @@ the public object is deleted and does not hold up quota reconciliation for other
 keys. Unknown private entries fail planning.
 Each plan includes up to 1,000 candidates. Create another plan after applying a
 full batch. A pending resource deletion keeps its objects until its own retry.
+After the provider acknowledges a deletion or multipart abort, cleanup checks
+the final inventory for that exact version or upload ID. If it is still present,
+the receipt stays incomplete and the same plan can be retried.
 Receipts report completion for the entire plan and return up to 1,000 audit
 events per page. To read the next page, run `storage-gc-receipt` with
 `--after-event-id` set to the returned `next_after_event_id`. Incomplete cleanup

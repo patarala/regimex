@@ -1,6 +1,5 @@
 """Conservative offline orphan cleanup with reviewed plans and durable fences."""
 
-import os
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
@@ -27,7 +26,7 @@ from regimex.retention_contracts import (
     OrphanPlanPayload,
 )
 from regimex.service_contracts import CapacityExceeded, Conflict, Principal
-from regimex.storage import content_hash, json_bytes
+from regimex.storage import content_hash, json_bytes, write_new_file
 
 
 class MaintenanceStore(Protocol):
@@ -191,16 +190,7 @@ class RetentionService:
         data = json_bytes(plan.model_dump(mode="json"))
         if len(data) > self.limits.max_plan_bytes:
             raise CapacityExceeded("The review plan exceeds its serialized byte limit.")
-        descriptor = os.open(
-            destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-        )
-        try:
-            with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                stream.write(data)
-                stream.flush()
-                os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        write_new_file(destination, data, sync_contents=True)
         return plan
 
     def apply(
@@ -231,11 +221,12 @@ class RetentionService:
             # Registration inserts every ObjectInfo; the SQL trigger fences its
             # exact version before an external object can be deleted.
             successful = {
-                identity
+                identity: status
                 for identity, status in self.repository.latest_statuses(connection, plan_id).items()
                 if status
                 in {"deleted", "already_missing", "protected", "mpu_aborted", "mpu_already_missing"}
             }
+            acknowledged: dict[tuple[str, str, str], CleanupStatus] = {}
             for item in plan.objects:
                 self._check_time(deadline)
                 info = item.object
@@ -249,9 +240,11 @@ class RetentionService:
                         if current != info:
                             raise ObjectConflictError("A reviewed object has changed.")
                         self.store.delete_version(info)
-                        status = "deleted"
+                        acknowledged[("object", info.key, info.version_id)] = "deleted"
+                        continue
                     except FileNotFoundError:
                         status = "already_missing"
+                        successful[("object", info.key, info.version_id)] = status
                     except ObjectConflictError, ObjectIntegrityError:
                         status = "changed"
                     except OSError, ValueError:
@@ -273,9 +266,11 @@ class RetentionService:
                 else:
                     try:
                         self.store.abort_multipart(upload, initiated_before=plan.cutoff_at)
-                        status = "mpu_aborted"
+                        acknowledged[("multipart", upload.key, upload.upload_id)] = "mpu_aborted"
+                        continue
                     except FileNotFoundError:
                         status = "mpu_already_missing"
+                        successful[("multipart", upload.key, upload.upload_id)] = status
                     except ObjectConflictError, ObjectIntegrityError:
                         status = "mpu_changed"
                     except OSError, ValueError:
@@ -294,6 +289,18 @@ class RetentionService:
             inventory = self.store.inventory()
             multipart = self.store.list_multipart_uploads()
             self._check_time(deadline)
+            present = {("object", item.key, item.version_id) for item in inventory}
+            present.update(("multipart", item.key, item.upload_id) for item in multipart)
+            # Older receipts could record success as soon as a provider acknowledged removal.
+            for candidate in successful.keys() & present:
+                if successful[candidate] != "protected":
+                    acknowledged[candidate] = successful[candidate]
+            for (kind, key, identity), status in acknowledged.items():
+                if (kind, key, identity) in present:
+                    status = "failed" if kind == "object" else "mpu_failed"
+                self.repository.append_event(
+                    connection, plan_id, kind=kind, key=key, identity=identity, status=status
+                )
             # Local staging names do not identify their eventual destination.
             # Until they are gone, no absent reservation is provably unused.
             if not any(item.upload_id.startswith("local-temporary-v1:") for item in multipart):

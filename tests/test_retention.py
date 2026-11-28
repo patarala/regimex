@@ -33,6 +33,7 @@ from regimex.infrastructure.object_store import LocalObjectStore, ObjectInfo
 from regimex.infrastructure.retention_repository import RetentionRepository
 from regimex.model_registry import InferenceRuntime
 from regimex.operations import Operation
+from regimex.retention_contracts import CleanupReceipt
 from regimex.service_contracts import (
     Conflict,
     Forbidden,
@@ -153,6 +154,26 @@ def test_preserves_every_ledger_object_and_collects_only_reviewed_old_orphans(
     assert replay.complete and replay.events == receipt.events
 
 
+def test_plan_export_can_retry_after_a_failed_file_sync(
+    context: Context, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plan = context.service.plan(context.principal, attestation=stopped())
+    directory = context.root / "output"
+    directory.mkdir()
+    output = directory / "review.json"
+
+    def fail_sync(fd: int) -> Never:
+        raise OSError("simulated disk writeback error")
+
+    with monkeypatch.context() as disk:
+        disk.setattr(os, "fsync", fail_sync)
+        with pytest.raises(OSError, match="writeback"):
+            context.service.export_plan(context.principal, plan.plan_id, output)
+    assert list(directory.iterdir()) == []
+    context.service.export_plan(context.principal, plan.plan_id, output)
+    assert type(plan).model_validate_json(output.read_bytes()) == plan
+
+
 @pytest.mark.parametrize("isolation", ["READ COMMITTED", "REPEATABLE READ"])
 def test_stale_writer_cannot_register_deleted_version_but_new_generation_can(
     context: Context, isolation: str
@@ -183,6 +204,62 @@ def test_stale_writer_cannot_register_deleted_version_but_new_generation_can(
         # The trigger runs even when ON CONFLICT would find a newer registered
         # generation at this key and otherwise discard the stale INSERT.
         database._object(connection, orphan)
+
+
+@pytest.mark.parametrize("response", ["acknowledged", "missing", "old_receipt"])
+def test_acknowledged_cleanup_stays_pending_while_reviewed_items_exist(
+    context: Context, monkeypatch: pytest.MonkeyPatch, response: str
+) -> None:
+    orphan = upload(context, "orphan/retained-after-ack")
+    temporary = context.store.root / f".regimex-temporary-{uuid4().hex}"
+    temporary.write_bytes(b"unfinished")
+    context.clock.now = datetime.now(UTC) + timedelta(days=1)
+    plan = context.service.plan(context.principal, attestation=stopped())
+    assert [item.object for item in plan.objects] == [orphan]
+    assert [item.key for item in plan.multipart] == [temporary.name]
+
+    def apply() -> CleanupReceipt:
+        return context.service.apply(
+            context.principal, plan.plan_id, expected_sha256=plan.sha256, attestation=stopped()
+        )
+
+    if response == "old_receipt":
+        with context.repository.database.connection() as connection:
+            context.repository.append_event(
+                connection,
+                plan.plan_id,
+                kind="object",
+                key=orphan.key,
+                identity=orphan.version_id,
+                status="deleted",
+            )
+            upload_id = plan.multipart[0].upload_id
+            context.repository.append_event(
+                connection,
+                plan.plan_id,
+                kind="multipart",
+                key=temporary.name,
+                identity=upload_id,
+                status="mpu_aborted",
+            )
+
+    def acknowledge(*args: object, **kwargs: object) -> None:
+        if response == "missing":
+            raise FileNotFoundError
+
+    with monkeypatch.context() as provider:
+        provider.setattr(context.store, "delete_version", acknowledge)
+        provider.setattr(context.store, "abort_multipart", acknowledge)
+        receipt = apply()
+    assert not receipt.complete
+    assert {event.status for event in receipt.events[-2:]} == {"failed", "mpu_failed"}
+    assert not context.service.get_receipt(context.principal, plan.plan_id).complete
+
+    receipt = apply()
+    assert receipt.complete
+    assert [event.status for event in receipt.events[-2:]] == ["deleted", "mpu_aborted"]
+    assert context.store.inventory() == ()
+    assert context.store.list_multipart_uploads() == ()
 
 
 def test_crash_after_physical_deletion_keeps_fence_and_resumes_audit(

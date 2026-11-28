@@ -37,11 +37,14 @@ def write_json(path: Path, value: object) -> None:
     path.write_bytes(json_bytes(value))
 
 
-def write_new_file(path: Path, data: bytes) -> None:
+def write_new_file(path: Path, data: bytes, *, sync_contents: bool = False) -> None:
     """Publish the complete file only if the destination is still free."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, delete_on_close=False) as temporary:
         temporary.write(data)
+        if sync_contents:
+            temporary.flush()
+            os.fsync(temporary.fileno())
         temporary.close()
         os.link(temporary.name, path)
 
