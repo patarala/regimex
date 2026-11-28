@@ -39,9 +39,10 @@ trend. The highlight appears only in the report. [Reading the report](usage.md#r
   available prices. Their step numbers show which part of the interval the
   calculation covers. A null with two distinct endpoint steps means the
   percentage exceeds the finite numeric range.
-- **Return SD** is the population standard deviation of one-step log returns.
+- **Return standard deviation** measures the variability of one-step log
+  returns. Reports show the population standard deviation multiplied by 100.
   Both steps of each return must have prices. A gap breaks the sequence, and
-  fewer than two returns gives a null result.
+  fewer than two returns give a null result.
 - **Trade count and volume** sum the observations available for each field.
   A total is null if the field is missing throughout. The coverage fractions
   show how much of the interval contributed. A null volume with positive

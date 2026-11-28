@@ -24,7 +24,7 @@ from regimex.model_registry import canonical_architecture_id
 from regimex.observation_availability import known_no_executions
 from regimex.storage import json_bytes
 
-REPORT_VERSION = "6.6"
+REPORT_VERSION = "6.7"
 OBSERVABLE_FIELDS = tuple(
     name for name in Observation.model_fields if name not in {"step", "instrument_id"}
 )

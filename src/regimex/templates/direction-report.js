@@ -147,22 +147,17 @@
   function zoom(interval) {
     zoomRange(interval);
     const stats = interval.statistics;
+    const price = priceChange(stats) + (stats.price_change_percent == null ? "" : "%");
+    const activity = stats.trade_active_fraction == null
+      ? "Trade counts unavailable"
+      : pct(stats.trade_active_fraction) + "% of steps with known counts had trades";
     $("focus-summary").hidden = false;
-    $("focus-summary").textContent =
-      "[" +
-      interval.start +
-      ", " +
-      interval.stop +
-      ") " +
-      label(interval) +
-      " · " +
-      (interval.stop - interval.start) +
-      " steps · change " +
-      priceChange(stats) +
-      (stats.price_change_percent == null ? "" : "%") +
-      " · active steps " +
-      pct(stats.trade_active_fraction) +
-      "%";
+    $("focus-summary").textContent = [
+      "[" + interval.start + ", " + interval.stop + ") " + label(interval),
+      countLabel(interval.stop - interval.start, "step"),
+      "change " + price,
+      activity,
+    ].join(" · ");
   }
   function updatePauseList() {
     const enabled = $("trend-pauses").checked;

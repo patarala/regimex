@@ -365,6 +365,7 @@ def test_single_bin_probabilities_and_submicrosecond_grid(browser: Any, tmp_path
 
     raw = _export(steps=1).model_dump(mode="json", exclude={"content_sha256"})
     raw["time_grid"].update(origin=0.0, bin_width=1e-9, completed_horizon=1e-9)
+    raw["observations"][1]["trade_count"] = None
     export = seal_export(ExportPayloadV2.model_validate_json(json.dumps(raw)))
     result = prediction_for(export)
     single = tmp_path / "analysis.html"
@@ -384,6 +385,14 @@ def test_single_bin_probabilities_and_submicrosecond_grid(browser: Any, tmp_path
             page.locator("#time-guide").text_content()
             == "Step width: 1e-9 model_second · history [0, 1e-9)"
         )
+        zoom = page.locator("#intervals button").first
+        zoom.click()
+        summary = page.locator("#focus-summary")
+        assert "1 step ·" in summary.inner_text()
+        assert "100% of steps with known counts had trades" in summary.inner_text()
+        page.get_by_label("Instrument", exact=True).select_option(index=1)
+        zoom.click()
+        assert "Trade counts unavailable" in summary.inner_text()
     finally:
         page.close()
 
