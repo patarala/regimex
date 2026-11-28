@@ -46,7 +46,9 @@ continues on the server after you stop waiting.
 To use the predictions in another program or a multi-experiment report, choose
 `--format json`. You can request JSON on the initial submission or download it
 later using the analysis ID printed by the command. Before saving JSON, the CLI
-checks that its snapshot, model weights and inference policy match the job.
+checks the source run, snapshot and model against the job. It also verifies
+the inference settings against the pinned policy digest and checks the instruments
+and step count when the snapshot records them.
 The offline report shows the SHA-256 of the canonical
 result JSON. You can reformat the file while preserving that digest. Keep
 numeric values as written, including the distinction between `1` and `1.0`.

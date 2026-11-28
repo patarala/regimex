@@ -3,6 +3,7 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel
@@ -11,8 +12,14 @@ from regimex.contracts import MAX_INPUT_BYTES
 from regimex.service_client import connect, read_file, request
 
 
+class _TrainingJob(BaseModel):
+    kind: Literal["training"]
+    operation_id: UUID
+
+
 class _AcceptedRun(BaseModel):
     run_id: UUID
+    job: _TrainingJob
 
 
 async def submit_training(
@@ -39,4 +46,6 @@ async def submit_training(
             limit=MAX_INPUT_BYTES + 64 * 1024,
         )
         run = _AcceptedRun.model_validate_json(response)
+        if run.job.operation_id != run.run_id:
+            raise ValueError("The service returned a job for a different training run.")
         progress(f"Open in browser: {client.base_url.join(f'/training/{run.run_id}')}")

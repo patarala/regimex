@@ -23,6 +23,7 @@ EXPORT = Path(__file__).parent / "fixtures" / "experiment-v2.json"
 PREDICTION = prediction_for(load_export_v2(EXPORT))
 PINNED_MODEL = PREDICTION.model.model_dump(mode="json")
 ANALYSIS_ID = str(uuid4())
+OPERATION_ID = str(uuid4())
 SNAPSHOT_ID = str(uuid4())
 HTML = b"<!doctype html><title>Analysis</title>"
 
@@ -37,12 +38,27 @@ def reply(status: int, value: object) -> httpx2.Response:
     )
 
 
-def status_for(state: str, **changes: object) -> dict[str, object]:
+def status_for(
+    state: str, *, job: dict[str, object] | None = None, **changes: object
+) -> dict[str, object]:
     return {
         "analysis_id": ANALYSIS_ID,
         "snapshot_id": SNAPSHOT_ID,
         "snapshot_sha256": PREDICTION.snapshot_sha256,
-        "job": {"state": state, "failure": None, "model": PINNED_MODEL},
+        "source_id": PREDICTION.source.source_id,
+        "run_id": PREDICTION.source.run_id,
+        "source_snapshot_id": PREDICTION.source.snapshot_id,
+        "instrument_ids": [item.instrument_id for item in PREDICTION.instruments],
+        "step_count": PREDICTION.time_grid.step_count,
+        "job": {
+            "kind": "analysis",
+            "operation_id": OPERATION_ID,
+            "resource_id": changes.get("analysis_id", ANALYSIS_ID),
+            "state": state,
+            "failure": None,
+            "model": PINNED_MODEL,
+            **(job or {}),
+        },
         "result_available": state == "succeeded",
         "report_available": state == "succeeded",
         **changes,
@@ -158,20 +174,20 @@ def test_rejects_receipt_for_a_different_input(
     assert result.exit_code == 1 and message in result.output
 
 
-def test_polling_preserves_the_first_observed_model(
-    command: list[str], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    "job_change",
+    [{"model": {**PINNED_MODEL, "bundle_sha256": "0" * 64}}, {"operation_id": str(uuid4())}],
+)
+def test_polling_preserves_the_first_observed_model_and_job(
+    command: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    job_change: dict[str, object],
 ) -> None:
     responses = iter(
         [
             status_for("running"),
-            status_for(
-                "succeeded",
-                job={
-                    "state": "succeeded",
-                    "failure": None,
-                    "model": {**PINNED_MODEL, "bundle_sha256": "0" * 64},
-                },
-            ),
+            status_for("succeeded", job=job_change),
         ]
     )
 
@@ -189,6 +205,22 @@ def test_polling_preserves_the_first_observed_model(
     assert not (tmp_path / "report.html").exists()
 
 
+def test_submission_checks_the_source_against_the_uploaded_export(
+    command: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def service(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path.endswith("/snapshots"):
+            return reply(
+                201, {"snapshot_id": SNAPSHOT_ID, "content_sha256": PREDICTION.snapshot_sha256}
+            )
+        assert request.url.path == "/api/v1/analyses"
+        return reply(202, status_for("succeeded", source_snapshot_id="different-source-snapshot"))
+
+    mock_http(monkeypatch, service)
+    result = CliRunner().invoke(app, [*command, "--input", str(EXPORT)])
+    assert result.exit_code == 1 and "snapshot metadata" in result.output
+
+
 def test_submit_training_links_the_accepted_run_and_preserves_request_bytes(
     tmp_path: Path, token_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -202,7 +234,14 @@ def test_submit_training_links_the_accepted_run_and_preserves_request_bytes(
         assert request.headers["Idempotency-Key"] == str(key)
         assert request.headers["X-Regimex-Command"] == "submit-training"
         assert request.headers["Authorization"] == "Bearer test-client-token"
-        return reply(202, {"run_id": str(run_id), "polling_url": "https://unrelated.example/"})
+        return reply(
+            202,
+            {
+                "run_id": str(run_id),
+                "job": {"kind": "training", "operation_id": str(run_id)},
+                "polling_url": "https://unrelated.example/",
+            },
+        )
 
     mock_http(monkeypatch, service)
     monkeypatch.setenv("REGIMEX_CLI_ORIGIN", "https://unrelated.example")
@@ -225,9 +264,31 @@ def test_submit_training_links_the_accepted_run_and_preserves_request_bytes(
     assert "unrelated" not in result.output
 
 
-@pytest.mark.parametrize("resume", [False, True])
+@pytest.mark.parametrize("issue", ["evaluation_job", "different_operation"])
+def test_submit_training_rejects_a_receipt_for_another_job(
+    tmp_path: Path, token_file: Path, monkeypatch: pytest.MonkeyPatch, issue: str
+) -> None:
+    run_id = str(uuid4())
+    job = {
+        "kind": "evaluation" if issue == "evaluation_job" else "training",
+        "operation_id": str(uuid4()) if issue == "different_operation" else run_id,
+    }
+    mock_http(monkeypatch, lambda request: reply(202, {"run_id": run_id, "job": job}))
+    path = tmp_path / "training.json"
+    path.write_text("{}")
+    result = CliRunner().invoke(
+        app, ["submit-training", "--input", str(path), "--token-file", str(token_file)]
+    )
+    assert result.exit_code == 1 and "Open in browser" not in result.output
+
+
+@pytest.mark.parametrize(("resume", "recorded_grid"), [(False, True), (True, True), (True, False)])
 def test_save_json_predictions(
-    tmp_path: Path, token_file: Path, monkeypatch: pytest.MonkeyPatch, resume: bool
+    tmp_path: Path,
+    token_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    resume: bool,
+    recorded_grid: bool,
 ) -> None:
     export = load_export_v2(EXPORT)
     payload = prediction_for(export).model_dump(mode="json")
@@ -235,6 +296,9 @@ def test_save_json_predictions(
     # Large results use the artifact limit, while polling responses have a smaller limit.
     body = b" " * (64 * 1024) + json.dumps(payload).encode()
     calls = []
+    completed = status_for("succeeded", report_available=False)
+    if not recorded_grid:
+        completed.update(instrument_ids=[], step_count=None)
 
     def service(request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
@@ -242,9 +306,9 @@ def test_save_json_predictions(
         if path.endswith("/snapshots"):
             return reply(201, {"snapshot_id": SNAPSHOT_ID, "content_sha256": export.content_sha256})
         if path.endswith("/analyses"):
-            return reply(202, status_for("succeeded", report_available=False))
+            return reply(202, completed)
         if path == f"/api/v1/analyses/{ANALYSIS_ID}":
-            return reply(200, status_for("succeeded", report_available=False))
+            return reply(200, completed)
         assert path == f"/api/v1/analyses/{ANALYSIS_ID}/result"
         assert request.headers["Accept"] == "application/json"
         return httpx2.Response(
@@ -286,6 +350,10 @@ def test_save_json_predictions(
         ("wrong_snapshot_hash", "pinned at intake"),
         ("wrong_weights", "pinned at intake"),
         ("wrong_inference_policy", "pinned at intake"),
+        ("wrong_runtime", "inference settings"),
+        ("wrong_source", "snapshot metadata"),
+        ("wrong_instruments", "snapshot metadata"),
+        ("wrong_steps", "snapshot metadata"),
         ("duplicate_instrument", "schema"),
     ],
 )
@@ -306,10 +374,20 @@ def test_rejects_unusable_json_result(
                 data["model"]["bundle_sha256"] = "0" * 64
             if issue == "wrong_inference_policy":
                 data["model"]["inference_policy_sha256"] = "0" * 64
+            if issue == "wrong_runtime":
+                data["inference_runtime"]["threads"] += 1
+            if issue == "wrong_source":
+                data["source"]["run_id"] = "different-source-run"
             if issue == "duplicate_instrument":
                 data["instruments"] = [data["instruments"][0]] * 2
                 data["sequences"] = [data["sequences"][0]] * 2
             return reply(200, data)
+        if issue == "wrong_steps":
+            return reply(
+                200, status_for("succeeded", step_count=PREDICTION.time_grid.step_count + 1)
+            )
+        if issue == "wrong_instruments":
+            return reply(200, status_for("succeeded", instrument_ids=["another-instrument"]))
         return reply(200, status_for("succeeded", result_available=issue != "missing"))
 
     mock_http(monkeypatch, service)
@@ -324,6 +402,8 @@ def test_rejects_unusable_json_result(
         (status_for("cancelled"), "cancelled"),
         (status_for("succeeded", report_available=False), "without a saved HTML report"),
         (status_for("running", analysis_id=str(uuid4())), "different analysis ID"),
+        (status_for("succeeded", job={"resource_id": str(uuid4())}), "schema"),
+        (status_for("succeeded", job={"kind": "training"}), "schema"),
         (
             status_for(
                 "failed",

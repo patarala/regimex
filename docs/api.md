@@ -72,10 +72,12 @@ of uncompressed JSON. Save the export with `POST /snapshots` and copy its
 {"snapshot_id":"SNAPSHOT_UUID","model_version_id":"active"}
 ```
 
-Poll the returned analysis link. When the job succeeds, download the saved JSON
-result or HTML report. To analyze the same experiment again, submit the same
-snapshot ID with a new idempotency key. Choose a published model version to
-pin it explicitly or use `"active"` for the version active at acceptance.
+Poll the returned analysis link. The job's `resource_id` identifies the analysis.
+Use its `operation_id` for job status and cancellation. When the job succeeds,
+download the saved JSON result or HTML report. To analyze the same experiment
+again, submit the same snapshot ID with a new idempotency key. Choose a published
+model version to pin it explicitly or use `"active"` for the version active at
+acceptance.
 
 | Request | Result |
 | --- | --- |
@@ -349,8 +351,10 @@ and all seeds together can use at most 32,000 updates.
 }
 ```
 
-Training returns `202` with the run URL in `Location`. These routes report
-run status and the choices available to the signed-in administrator:
+Training returns `202` with the run URL in `Location`. Each training run uses
+its job's `operation_id` as its `run_id`. This also applies to imported runs.
+These routes report run status and the choices available to the signed-in
+administrator:
 
 | Request | Result |
 | --- | --- |
