@@ -1594,3 +1594,21 @@ def test_unsupported_backup_revisions_are_rejected_before_target_access(
             ),
             attestation=stopped(),
         )
+
+
+def test_postgres_version_probe_honors_remaining_recovery_time(tmp_path: Path) -> None:
+    executable = tmp_path / "pg_dump"
+    executable.write_text("#!/bin/sh\nsleep 2\necho 'pg_dump (PostgreSQL) 16.0'\n")
+    executable.chmod(0o700)
+    with pytest.raises(TimeoutError, match="wall-time"):
+        recovery._tool_version(executable, deadline=time.monotonic() + 0.1)
+
+
+def test_failed_postgres_version_probe_reports_a_recovery_error(tmp_path: Path) -> None:
+    executable = tmp_path / "pg_restore"
+    executable.write_text("#!/bin/sh\necho 'local diagnostic' >&2\nexit 1\n")
+    executable.chmod(0o700)
+    with pytest.raises(
+        RuntimeError, match=r"^pg_restore exited with status 1 during offline recovery\.$"
+    ):
+        recovery._tool_version(executable, deadline=time.monotonic() + 10)

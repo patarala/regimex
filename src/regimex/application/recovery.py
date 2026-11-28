@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from functools import wraps
 from pathlib import Path
@@ -114,14 +115,16 @@ def _attestation(value: ServicesStoppedAttestation) -> ServicesStoppedAttestatio
     return result
 
 
-def _tool_version(executable: Path) -> str:
-    return subprocess.run(
-        [str(executable), "--version"],
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    ).stdout.strip()
+def _tool_version(executable: Path, *, deadline: float) -> str:
+    with tempfile.TemporaryFile() as output:
+        _run_tool(
+            [str(executable), "--version"],
+            deadline=min(deadline, time.monotonic() + 10),
+            stdout=output,
+            output_limit=4096,
+        )
+        output.seek(0)
+        return output.read().decode().strip()
 
 
 def _postgres_major(value: str) -> str:
@@ -240,7 +243,7 @@ def _libpq_environment(dsn: SecretStr) -> dict[str, str]:
 
 def _run_tool(
     command: list[str],
-    dsn: SecretStr,
+    dsn: SecretStr | None = None,
     *,
     deadline: float,
     output: Path | None = None,
@@ -248,15 +251,14 @@ def _run_tool(
     output_limit: int,
 ) -> None:
     check_deadline(deadline)
-    # libpq diagnostics may contain connection details. Keep stderr private.
-    with tempfile.TemporaryFile() as stderr:
-        process = subprocess.Popen(
-            command,
-            env=_libpq_environment(dsn),
-            stdout=subprocess.DEVNULL if stdout is None else stdout,
-            stderr=stderr,
-            start_new_session=True,
-        )
+    # Diagnostics can contain connection details and do not belong in the archive.
+    with subprocess.Popen(
+        command,
+        env=_libpq_environment(dsn) if dsn is not None else None,
+        stdout=subprocess.DEVNULL if stdout is None else stdout,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    ) as process:
 
         def within_output_limit() -> None:
             size = output.stat().st_size if output is not None else 0
@@ -269,18 +271,23 @@ def _run_tool(
             while process.poll() is None:
                 check_deadline(deadline)
                 within_output_limit()
-                time.sleep(0.05)
+                time.sleep(max(0, min(0.05, deadline - time.monotonic())))
             check_deadline(deadline)
             if process.returncode:
-                raise RuntimeError("The PostgreSQL recovery tool failed; no target is ready.")
+                raise RuntimeError(
+                    f"{Path(command[0]).name} exited with status {process.returncode} "
+                    "during offline recovery."
+                )
             within_output_limit()
         finally:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+                with suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGTERM)
                 try:
-                    process.wait(timeout=5)
+                    process.wait(timeout=max(0, min(5, deadline - time.monotonic())))
                 except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
                     process.wait(timeout=5)
 
 
@@ -505,7 +512,7 @@ def backup_service(
             )
             snapshot = _text(_first(connection, "SELECT pg_export_snapshot()"))
             version = _text(_first(connection, "SHOW server_version"))
-            tool_version = _tool_version(tools.pg_dump)
+            tool_version = _tool_version(tools.pg_dump, deadline=deadline)
             if _postgres_major(version) != _postgres_major(tool_version):
                 raise ValueError(
                     "Offline backup requires a pg_dump matching the server major version."
@@ -669,7 +676,7 @@ def restore_service(
             _postgres_major(_text(_first(guard, "SHOW server_version"))) != major
             or _postgres_major(manifest.dump_tool_version) != major
             or any(
-                _postgres_major(_tool_version(tool)) != major
+                _postgres_major(_tool_version(tool, deadline=deadline)) != major
                 for tool in (tools.pg_dump, tools.pg_restore)
             )
         ):
