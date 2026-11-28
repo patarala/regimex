@@ -21,7 +21,6 @@ from pydantic import ConfigDict, Field, JsonValue, ValidationError, model_valida
 
 from regimex.backends import baseline_layout, segment_moe_layout, tcn_layout
 from regimex.contracts import MAX_STEPS, Seed, StrictModel
-from regimex.storage import open_binary_input
 
 ENTRY_POINT_GROUP = "regimex.models"
 SEGMENT_MOE_ID = "segment-moe"
@@ -308,6 +307,8 @@ _MAX_INFERENCE_RUNTIME_BYTES = 8 * 1024
 
 def read_inference_runtime(path: Path) -> InferenceRuntime:
     """Read a bounded inference policy, following links to regular files."""
+    from regimex.storage import open_binary_input
+
     with open_binary_input(path, follow_symlinks=True) as stream:
         if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError("Inference runtime JSON must be a regular file.")
