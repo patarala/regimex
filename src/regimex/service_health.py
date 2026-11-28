@@ -25,7 +25,7 @@ from regimex.contracts import StrictModel
 from regimex.diagnostic_contracts import QueueName, QueueStatus
 from regimex.infrastructure.database import DatabaseRepository
 from regimex.service_settings import ServiceSettings
-from regimex.storage import json_bytes
+from regimex.storage import json_bytes, open_binary_input
 
 
 class WorkerIdentity(StrictModel):
@@ -76,10 +76,7 @@ def write_worker_identity(settings: ServiceSettings, queue: QueueName, worker_id
 
 
 def read_worker_identity(settings: ServiceSettings, queue: QueueName) -> WorkerIdentity:
-    descriptor = os.open(
-        worker_identity_path(settings, queue), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
-    )
-    with os.fdopen(descriptor, "rb") as stream:
+    with open_binary_input(worker_identity_path(settings, queue)) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
             raise ValueError("worker identity must be a private regular file")

@@ -34,7 +34,7 @@ from regimex.model_registry import RegistryError
 from regimex.operations import Operation, OperationFailure, Sha256
 from regimex.report_contracts import MAX_REPORT_BYTES, AnalysisReportRecord
 from regimex.service_contracts import ModelRecord, StaleAttempt
-from regimex.storage import json_bytes
+from regimex.storage import json_bytes, open_binary_input
 
 if TYPE_CHECKING:
     from regimex.model_contracts import LoadedPredictor
@@ -186,8 +186,7 @@ class _ComputedFiles(StrictModel):
 
 
 def _read_output(path: Path, limit: int, expected_sha256: str) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as stream:
+    with open_binary_input(path) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             raise ObjectIntegrityError("computed output is not a bounded regular file")

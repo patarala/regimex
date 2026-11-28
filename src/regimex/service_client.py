@@ -19,6 +19,7 @@ import httpx2
 from pydantic import ValidationError
 
 from regimex.auth_contracts import canonical_origin
+from regimex.storage import open_binary_input
 
 _JSON_LIMIT = 64 * 1024
 _RETRYABLE_READ_STATUSES = {408, 429, 502, 503, 504}
@@ -38,9 +39,8 @@ def service_origin(value: str) -> str:
 
 
 def read_file(path: Path, limit: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as stream:
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+    with open_binary_input(path, follow_symlinks=True) as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
             raise ValueError(f"Expected a regular file: {path}")
         data = stream.read(limit + 1)
     if len(data) > limit:

@@ -57,7 +57,7 @@ from regimex.service_contracts import (
     SnapshotRecord,
     UnsupportedContract,
 )
-from regimex.storage import json_bytes
+from regimex.storage import json_bytes, open_binary_input
 from regimex.storage_contracts import StorageUsage
 
 if TYPE_CHECKING:
@@ -702,10 +702,7 @@ class AnalysisService:
         manifest_path = root / "manifest.json"
         root_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
-            descriptor_fd = os.open(
-                "manifest.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root_descriptor
-            )
-            with os.fdopen(descriptor_fd, "rb") as stream:
+            with open_binary_input("manifest.json", dir_fd=root_descriptor) as stream:
                 if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                     raise ValueError("bundle manifest must be a regular file")
                 data = stream.read(MAX_BUNDLE_MANIFEST_BYTES + 1)

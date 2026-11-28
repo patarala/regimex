@@ -1,7 +1,9 @@
 """Public CLI behavior against bounded, recorded service responses."""
 
 import asyncio
+import errno
 import json
+import os
 import time
 from collections.abc import Callable
 from functools import partial
@@ -64,6 +66,18 @@ def mock_http(
 ) -> None:
     transport = httpx2.MockTransport(handler)
     monkeypatch.setattr(httpx2, "AsyncClient", partial(httpx2.AsyncClient, transport=transport))
+
+
+def test_directory_input_closes_the_file_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    descriptor = os.open(tmp_path, os.O_RDONLY)
+    monkeypatch.setattr(os, "open", lambda *args, **kwargs: descriptor)
+    with pytest.raises(IsADirectoryError):
+        service_client.read_file(tmp_path, 1024)
+    with pytest.raises(OSError) as closed:
+        os.fstat(descriptor)
+    assert closed.value.errno == errno.EBADF
 
 
 def test_submit_wait_and_save(

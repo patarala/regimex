@@ -10,6 +10,7 @@ from pydantic import ConfigDict, Field, SecretStr, ValidationError, model_valida
 from regimex.auth_contracts import AuthPolicy
 from regimex.contracts import StrictModel
 from regimex.infrastructure.s3_config import S3Config
+from regimex.storage import open_binary_input
 
 _DEFAULT_WORK_ROOT = Path("var/work")
 
@@ -99,8 +100,7 @@ class ServiceSettings(StrictModel):
         if dsn is not None and dsn_file is not None:
             raise ValueError("Configure exactly one database DSN value or private DSN file")
         if dsn_file is not None:
-            descriptor = os.open(dsn_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(descriptor, "rb") as stream:
+            with open_binary_input(dsn_file) as stream:
                 info = os.fstat(stream.fileno())
                 if (
                     not stat.S_ISREG(info.st_mode)

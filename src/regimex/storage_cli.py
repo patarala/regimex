@@ -11,6 +11,7 @@ from uuid import UUID
 import typer
 
 from regimex.service_settings import ServiceSettings
+from regimex.storage import open_binary_input
 
 if TYPE_CHECKING:
     from regimex.application.retention import RetentionService
@@ -19,8 +20,7 @@ if TYPE_CHECKING:
 
 
 def _read_regular(path: Path, maximum: int) -> bytes:
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as stream:
+    with open_binary_input(path) as stream:
         metadata = os.fstat(stream.fileno())
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum:
             raise ValueError("Maintenance inputs must be bounded regular files.")

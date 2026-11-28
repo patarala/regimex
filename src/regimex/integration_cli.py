@@ -11,6 +11,7 @@ from uuid import UUID
 import typer
 
 from regimex.service_settings import ServiceSettings
+from regimex.storage import open_binary_input
 
 if TYPE_CHECKING:
     from regimex.infrastructure.integration_repository import IntegrationRepository
@@ -56,8 +57,7 @@ def _administrator(context: typer.Context) -> tuple[IntegrationRepository, Princ
     path = context.obj
     if not isinstance(path, Path):
         raise ValueError("Supply --token-file before the connection command.")
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, "rb") as stream:
+    with open_binary_input(path) as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
             raise ValueError("The administrator token file must be private and owned by this user.")

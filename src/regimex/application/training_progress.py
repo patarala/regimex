@@ -13,7 +13,7 @@ from uuid import UUID
 from pydantic import JsonValue, TypeAdapter
 
 from regimex.service_contracts import ServiceError, StaleAttempt
-from regimex.storage import json_bytes
+from regimex.storage import json_bytes, open_binary_input
 
 PROGRESS_FILENAME = "training-progress.jsonl"
 _ROW = TypeAdapter(dict[str, JsonValue])
@@ -53,10 +53,10 @@ def record_training_progress(root: Path) -> Iterator[Callable[[dict[str, JsonVal
 
 def _read_batch(path: Path, offset: int) -> tuple[list[dict[str, JsonValue]], int]:
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+        stream = open_binary_input(path)
     except FileNotFoundError:
         return [], offset
-    with os.fdopen(descriptor, "rb") as stream:
+    with stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size < offset:
             raise ValueError("Training progress must be an append-only regular file.")
